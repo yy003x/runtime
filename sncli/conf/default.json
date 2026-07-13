@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "default_provider": "codex",
+  "runtime": {
+    "command": "apps/runtime/cmd/runtime-provider",
+    "default_sandbox": "read-only",
+    "default_timeout_seconds": 1800
+  },
+  "paths": {
+    "sessions_root": "runs/global/sn-cli/session"
+  },
+  "native": {
+    "python": "python3",
+    "conf_dir": "apps/runtime/conf",
+    "runs_dir": "runs/global/runtime",
+    "project": "agent",
+    "profiles": {
+      "codex": "tmux-codex",
+      "claude": "tmux-claude"
+    }
+  },
+  "tools": {
+    "cx": {
+      "description": "Launch Codex CLI with Sinan defaults.",
+      "command": "codex",
+      "args": [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c check_for_update_on_startup=false",
+        "-c model_reasoning_effort='xhigh'",
+        "--no-alt-screen"
+      ],
+      "env": {}
+    },
+    "cc": {
+      "description": "Launch Claude Code with Sinan defaults.",
+      "command": "claude",
+      "args": [
+        "--dangerously-skip-permissions",
+        "--disallowed-tools",
+        "Bash(rm -rf:*),Bash(sudo:*),Bash(su:*),Bash(git push --force:*),Bash(kubectl delete:*),Bash(docker rm:*)"
+      ],
+      "env": {
+        "BASH_DEFAULT_TIMEOUT_MS": "600000",
+        "BASH_MAX_TIMEOUT_MS": "3600000",
+        "API_TIMEOUT_MS": "300000",
+        "MCP_TIMEOUT_MS": "120000",
+        "MCP_TOOL_TIMEOUT_MS": "600000",
+        "MAX_READ_FILE_TOKENS": "100000",
+        "MAX_MCP_OUTPUT_TOKENS": "100000",
+        "CLAUDE_CODE_EFFORT_LEVEL": "xhigh",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+      }
+    }
+  },
+  "update": {
+    "enabled": true,
+    "check_interval_hours": 24,
+    "ref": "main",
+    "state_file": "runs/global/sn-cli/state/current/update-check.json",
+    "install_script": "scripts/install-sn-cli.sh",
+    "repo_url": "https://github.com/yy003x/agent-arch.git"
+  }
+}

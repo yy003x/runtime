@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT_DIR/runs/global/sn-cli/storage/current/bin/sn-cli"
+
+if [ ! -x "$BIN" ]; then
+  echo "sn-cli binary not found: $BIN" >&2
+  echo "Run: make sn-cli-build" >&2
+  exit 127
+fi
+
+export SN_CLI_ROOT="$ROOT_DIR"
+exec "$BIN" "$@"

@@ -1,0 +1,8 @@
+name: fake
+provider:
+  type: fake
+  echo_prefix: ""
+runtime:
+  timeout_seconds: 30
+artifacts:
+  root: runs/global/runtime
