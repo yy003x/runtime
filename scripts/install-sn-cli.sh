@@ -3,17 +3,17 @@
 # Local checkout:
 #   bash scripts/install-sn-cli.sh
 # Remote install:
-#   curl -fsSL https://raw.githubusercontent.com/yy003x/agent-arch/main/scripts/install-sn-cli.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
 
 set -euo pipefail
 
-DEFAULT_REPO_URL="https://github.com/yy003x/agent-arch.git"
+DEFAULT_REPO_URL="https://github.com/yy003x/runtime.git"
 DEFAULT_REF="main"
 
 SN_CLI_REPO_URL="${SN_CLI_REPO_URL:-$DEFAULT_REPO_URL}"
 SN_CLI_REF="${SN_CLI_REF:-$DEFAULT_REF}"
 SN_CLI_HOME="${SN_CLI_HOME:-$HOME/.sn-cli}"
-SN_CLI_REPO_DIR="${SN_CLI_REPO_DIR:-$SN_CLI_HOME/agent-arch}"
+SN_CLI_REPO_DIR="${SN_CLI_REPO_DIR:-$SN_CLI_HOME/runtime}"
 SN_CLI_INSTALL_DIR="${SN_CLI_INSTALL_DIR:-${PREFIX:-$HOME/.local}/bin}"
 SN_CLI_REPO="${SN_CLI_REPO:-}"
 SN_CLI_FORCE_CLONE="${SN_CLI_FORCE_CLONE:-0}"
@@ -26,7 +26,7 @@ Install sn-cli.
 
 Usage:
   bash scripts/install-sn-cli.sh [options]
-  curl -fsSL https://raw.githubusercontent.com/yy003x/agent-arch/main/scripts/install-sn-cli.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
 
 Options:
   --dry-run              Print the install plan without writing files.
@@ -41,7 +41,7 @@ Environment:
   SN_CLI_INSTALL_DIR     Same as --install-dir.
   PREFIX                 Uses PREFIX/bin when SN_CLI_INSTALL_DIR is not set.
   SN_CLI_HOME            Base directory for managed checkout. Default: $HOME/.sn-cli.
-  SN_CLI_REPO_DIR        Managed checkout path. Default: $SN_CLI_HOME/agent-arch.
+  SN_CLI_REPO_DIR        Managed checkout path. Default: $SN_CLI_HOME/runtime.
   SN_CLI_REPO            Existing local checkout to use.
   SN_CLI_REPO_URL        Git URL for managed checkout.
   SN_CLI_REF             Branch or tag for managed checkout.

@@ -1,0 +1,20 @@
+{
+  "name": "codex",
+  "provider": {
+    "type": "command",
+    "command": "codex",
+    "args": ["exec"],
+    "env": {}
+  },
+  "runtime": {
+    "timeout_seconds": 1800
+  },
+  "input": {
+    "prompt": "",
+    "prompt_file": "",
+    "images": []
+  },
+  "artifacts": {
+    "root": "runs/global/runtime"
+  }
+}

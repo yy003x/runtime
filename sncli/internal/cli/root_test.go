@@ -51,6 +51,54 @@ provider:
 	if profileConfigExists(root, "missing") {
 		t.Fatal("profileConfigExists(missing)=true, want false")
 	}
+	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"provider":{"type":"fake"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !profileConfigExists(root, "json") {
+		t.Fatal("profileConfigExists(json)=false, want true")
+	}
+}
+
+func TestParseProfileInvocationSupportsPromptFileAndImages(t *testing.T) {
+	got, err := parseProfileInvocation([]string{
+		"codex", "--prompt_file", "prompt.md", "--image", "one.png", "--image", "two.png", "--session-id", "s1",
+	})
+	if err != nil {
+		t.Fatalf("parseProfileInvocation returned error: %v", err)
+	}
+	if got.Profile != "codex" || got.PromptFile != "prompt.md" || got.SessionID != "s1" {
+		t.Fatalf("invocation=%#v", got)
+	}
+	if len(got.Images) != 2 || got.Images[0] != "one.png" || got.Images[1] != "two.png" {
+		t.Fatalf("images=%#v", got.Images)
+	}
+}
+
+func TestParseProfileInvocationSupportsInlinePrompt(t *testing.T) {
+	got, err := parseProfileInvocation([]string{"codex", "review", "this", "repo"})
+	if err != nil {
+		t.Fatalf("parseProfileInvocation returned error: %v", err)
+	}
+	if got.Prompt != "review this repo" {
+		t.Fatalf("prompt=%q", got.Prompt)
+	}
+}
+
+func TestParseProfileInvocationKeepsLeadingDashPrompt(t *testing.T) {
+	got, err := parseProfileInvocation([]string{"codex", "--not-a-cli-flag", "-x"})
+	if err != nil {
+		t.Fatalf("parseProfileInvocation returned error: %v", err)
+	}
+	if got.Prompt != "--not-a-cli-flag -x" {
+		t.Fatalf("prompt=%q", got.Prompt)
+	}
+}
+
+func TestParseProfileInvocationRejectsPromptConflict(t *testing.T) {
+	_, err := parseProfileInvocation([]string{"codex", "inline", "--prompt-file", "prompt.md"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("error=%v", err)
+	}
 }
 
 func TestPrintProvidersUsesInternalRegistry(t *testing.T) {

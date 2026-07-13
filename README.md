@@ -96,16 +96,26 @@ make sn-cli-test
 ./cmd/sn-cli-wrapper update --help
 ```
 
-Runtime profile execution uses `configs/<profile>.yaml`:
+Runtime profile execution supports `configs/<cnf_id>.json`, with YAML kept for compatibility. JSON takes precedence when the same ID has multiple files:
 
 ```bash
 sn-cli fake "hello"
 sn-cli fake --session-id local-dev "hello again"
+sn-cli codex "review this repository"
+sn-cli codex --prompt_file ./prompt.md --image ./screen.png
 ```
+
+`--prompt-file` and `--prompt_file` are aliases. Repeated `--image` values are forwarded to command providers. CLI prompt and image values override defaults in the profile's `input` object.
 
 The MVP `fake` provider runs fully in-process and writes run artifacts under `runs/global/runtime/runs/<date>/<run_id>/`, including `request.json`, `resolved_config.json`, `events.jsonl`, `stdout.log`, `stderr.log`, `output.txt`, and `result.json`.
 
 Current migration mode (D1-A): legacy native/shell runtime actions are still delegated to a `sinan` checkout via `SINAN_ROOT`.
+
+Remote install from this repository:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
+```
 
 Recommended local test flow:
 ```bash

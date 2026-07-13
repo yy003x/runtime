@@ -4,8 +4,8 @@
 
 ## 定位
 
-- `sn-cli <profile> "文本"` 读取仓库内 `configs/<profile>.yaml`，执行单次 runtime，并把结果输出到 stdout。
-- 当前 P0 内置 `fake` provider，不访问远端模型，用于验证配置加载、状态机、事件和产物链路。
+- `sn-cli <cnf_id> "文本"` 优先读取仓库内 `configs/<cnf_id>.json`，并兼容 `.yaml` / `.yml`，执行单次 runtime 后把结果输出到 stdout。
+- 当前内置 `fake` 与 `command` provider；`fake` 用于无远端测试，`command` 用于 Codex 风格命令透传。
 - 默认进入司南自研 REPL，普通输入走结构化 runtime。
 - `cx` / `cc` 通过配置化 command、args、env 直接启动 Codex / Claude Code。
 - `/runtime` 命令和 `run` 子命令保留旧迁移链路，仍调用 `apps/runtime/cmd/runtime-provider`。
@@ -25,6 +25,8 @@ cmd/sn-cli-wrapper tools
 cmd/sn-cli-wrapper providers
 cmd/sn-cli-wrapper fake "hello"
 cmd/sn-cli-wrapper fake --session-id local-dev "hello again"
+cmd/sn-cli-wrapper codex "分析当前仓库"
+cmd/sn-cli-wrapper codex --prompt_file ./prompt.md --image ./screen.png
 cmd/sn-cli-wrapper native codex
 cmd/sn-cli-wrapper doctor --json
 cmd/sn-cli-wrapper update --check
@@ -35,20 +37,37 @@ cmd/sn-cli-wrapper update --check
 单次执行入口：
 
 ```bash
-sn-cli <profile> [--session-id SESSION_ID] "文本"
+sn-cli <cnf_id> [--session-id SESSION_ID] "文本"
+sn-cli <cnf_id> [--prompt-file FILE] [--image FILE ...]
 ```
 
-profile 文件放在仓库 `configs/` 下，例如 `configs/fake.yaml`：
+配置文件放在仓库 `configs/` 下。加载顺序为 `.json`、`.yaml`、`.yml`；同名文件同时存在时 JSON 生效。例如 `configs/codex.json`：
 
-```yaml
-name: fake
-provider:
-  type: fake
-runtime:
-  timeout_seconds: 30
-artifacts:
-  root: runs/global/runtime
+```json
+{
+  "name": "codex",
+  "provider": {
+    "type": "command",
+    "command": "codex",
+    "args": ["exec"],
+    "env": {}
+  },
+  "runtime": {"timeout_seconds": 1800},
+  "input": {
+    "prompt": "",
+    "prompt_file": "",
+    "images": []
+  },
+  "artifacts": {"root": "runs/global/runtime"}
+}
 ```
+
+默认输入放在 `input.prompt`、`input.prompt_file` 和 `input.images`。配置中的相对路径以仓库根目录解析；命令行路径以执行 `sn-cli` 时的当前目录解析。覆盖优先级如下：
+
+- `sn-cli <cnf_id> "prompt"` 的内联 prompt 覆盖 JSON 默认 prompt 或 prompt file。
+- `--prompt-file` 与 `--prompt_file` 等价，并覆盖 JSON 默认 prompt 或 prompt file；不能与内联 prompt 同时使用。
+- 一个或多个 `--image` 覆盖 JSON 的 `input.images`。
+- `command` provider 保留 JSON 中的 `provider.args` 和 `provider.env`，再追加 `--image <绝对路径>`，并通过 stdin 传入最终 prompt。
 
 `artifacts.root` 必须是 `runs/` 下的相对路径，避免 profile 把产物写到仓库外。
 
@@ -71,17 +90,17 @@ bash scripts/install-sn-cli.sh
 远程安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/agent-arch/main/scripts/install-sn-cli.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
 ```
 
-默认安装到 `~/.local/bin/sn-cli`。脚本会优先使用当前仓库；如果不是在仓库内执行，会把仓库 clone/update 到 `~/.sn-cli/agent-arch`，构建 `runs/global/sn-cli/storage/current/bin/sn-cli`，再安装 launcher。
+默认安装到 `~/.local/bin/sn-cli`。脚本会优先使用当前仓库；如果不是在仓库内执行，会把 `yy003x/runtime` clone/update 到 `~/.sn-cli/runtime`，构建 `runs/global/sn-cli/storage/current/bin/sn-cli`，再安装 launcher。
 
 可选覆盖：
 
 ```bash
 SN_CLI_INSTALL_DIR=/usr/local/bin bash scripts/install-sn-cli.sh
-SN_CLI_REF=main curl -fsSL https://raw.githubusercontent.com/yy003x/agent-arch/main/scripts/install-sn-cli.sh | bash
-SN_CLI_REPO_DIR="$HOME/.local/share/agent-arch" bash scripts/install-sn-cli.sh
+SN_CLI_REF=main curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
+SN_CLI_REPO_DIR="$HOME/.local/share/runtime" bash scripts/install-sn-cli.sh
 bash scripts/install-sn-cli.sh --dry-run
 ```
 

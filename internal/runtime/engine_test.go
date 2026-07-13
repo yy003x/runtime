@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +117,144 @@ artifacts:
 	if result != nil {
 		t.Fatalf("result=%#v, want nil when artifact paths cannot be created", result)
 	}
+}
+
+func TestEngineLoadsJSONProfileAndResolvesDefaultInputs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default-prompt.md"), []byte("from default file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default.png"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{
+  "name": "json-profile",
+  "provider": {"type": "fake", "echo_prefix": "json: "},
+  "runtime": {"timeout_seconds": 30},
+  "input": {"prompt_file": "default-prompt.md", "images": ["default.png"]},
+  "artifacts": {"root": "runs/global/runtime"}
+}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "json-profile.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeProfile(t, root, "json-profile", `name: yaml-profile
+provider:
+  type: fake
+  echo_prefix: "yaml: "
+`)
+
+	result, err := NewEngine(root).Run(context.Background(), RunOptions{
+		Profile: "json-profile",
+		CWD:     root,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.FinalText != "json: from default file\n" {
+		t.Fatalf("final_text=%q", result.FinalText)
+	}
+
+	request := readRunRequest(t, result.Artifacts["request"])
+	if request.PromptFile != filepath.Join(root, "default-prompt.md") {
+		t.Fatalf("prompt_file=%q", request.PromptFile)
+	}
+	if len(request.Images) != 1 || request.Images[0] != filepath.Join(root, "default.png") {
+		t.Fatalf("images=%#v", request.Images)
+	}
+}
+
+func TestEngineCLIInputsOverrideJSONDefaults(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{
+  "provider": {"type": "fake"},
+  "input": {"prompt": "default prompt", "images": ["default.png"]}
+}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "override.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default.png"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "prompt.md"), []byte("CLI prompt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "cli.png"), []byte("cli"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewEngine(root).Run(context.Background(), RunOptions{
+		Profile:    "override",
+		PromptFile: "prompt.md",
+		Images:     []string{"cli.png"},
+		ImagesSet:  true,
+		CWD:        cwd,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.FinalText != "CLI prompt\n" {
+		t.Fatalf("final_text=%q", result.FinalText)
+	}
+	request := readRunRequest(t, result.Artifacts["request"])
+	if request.PromptFile != filepath.Join(cwd, "prompt.md") {
+		t.Fatalf("prompt_file=%q", request.PromptFile)
+	}
+	if len(request.Images) != 1 || request.Images[0] != filepath.Join(cwd, "cli.png") {
+		t.Fatalf("images=%#v", request.Images)
+	}
+}
+
+func TestEngineInlinePromptOverridesJSONPromptFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default.md"), []byte("default prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{
+  "provider": {"type": "fake"},
+  "input": {"prompt_file": "default.md"}
+}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "inline.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewEngine(root).Run(context.Background(), RunOptions{
+		Profile: "inline",
+		Prompt:  "CLI inline prompt",
+		CWD:     root,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.FinalText != "CLI inline prompt" {
+		t.Fatalf("final_text=%q", result.FinalText)
+	}
+	request := readRunRequest(t, result.Artifacts["request"])
+	if request.PromptFile != "" {
+		t.Fatalf("prompt_file=%q, want empty for inline override", request.PromptFile)
+	}
+}
+
+func readRunRequest(t *testing.T, path string) RunRequest {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read request: %v", err)
+	}
+	var request RunRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	return request
 }
 
 func writeProfile(t *testing.T, root, name, body string) {

@@ -173,40 +173,21 @@ func printProviders() error {
 }
 
 func runProfile(cfg *config.Config, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("profile is required")
-	}
-	profile := args[0]
-	sessionID := ""
-	var promptParts []string
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "--session", "--session-id", "--session_id":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("%s requires value", args[i-1])
-			}
-			sessionID = args[i]
-		case "--":
-			promptParts = append(promptParts, args[i+1:]...)
-			i = len(args)
-		default:
-			promptParts = append(promptParts, args[i])
-		}
-	}
-
-	prompt := strings.TrimSpace(strings.Join(promptParts, " "))
-	if prompt == "" {
-		return fmt.Errorf("prompt is required")
+	invocation, err := parseProfileInvocation(args)
+	if err != nil {
+		return err
 	}
 
 	cwd, _ := os.Getwd()
 	engine := runtimecore.NewEngine(cfg.Root)
 	result, err := engine.Run(context.Background(), runtimecore.RunOptions{
-		Profile:   profile,
-		Prompt:    prompt,
-		CWD:       cwd,
-		SessionID: sessionID,
+		Profile:    invocation.Profile,
+		Prompt:     invocation.Prompt,
+		PromptFile: invocation.PromptFile,
+		Images:     invocation.Images,
+		ImagesSet:  len(invocation.Images) > 0,
+		CWD:        cwd,
+		SessionID:  invocation.SessionID,
 	})
 	if result != nil {
 		if result.FinalText != "" {
@@ -217,6 +198,54 @@ func runProfile(cfg *config.Config, args []string) error {
 		}
 	}
 	return err
+}
+
+type profileInvocation struct {
+	Profile    string
+	Prompt     string
+	PromptFile string
+	Images     []string
+	SessionID  string
+}
+
+func parseProfileInvocation(args []string) (profileInvocation, error) {
+	if len(args) == 0 {
+		return profileInvocation{}, fmt.Errorf("profile is required")
+	}
+	invocation := profileInvocation{Profile: args[0]}
+	var promptParts []string
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--session", "--session-id", "--session_id":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
+			}
+			invocation.SessionID = args[i]
+		case "--prompt-file", "--prompt_file":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
+			}
+			invocation.PromptFile = args[i]
+		case "--image":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--image requires value")
+			}
+			invocation.Images = append(invocation.Images, args[i])
+		case "--":
+			promptParts = append(promptParts, args[i+1:]...)
+			i = len(args)
+		default:
+			promptParts = append(promptParts, args[i])
+		}
+	}
+	invocation.Prompt = strings.TrimSpace(strings.Join(promptParts, " "))
+	if invocation.Prompt != "" && strings.TrimSpace(invocation.PromptFile) != "" {
+		return profileInvocation{}, fmt.Errorf("inline prompt and --prompt-file cannot be used together")
+	}
+	return invocation, nil
 }
 
 func runDoctor(cfg *config.Config, args []string) error {
@@ -380,7 +409,8 @@ func printHelp() {
 
 Usage:
   sn-cli
-  sn-cli <profile> [--session-id SESSION_ID] <prompt>
+  sn-cli <cnf_id> [--session-id SESSION_ID] <prompt>
+  sn-cli <cnf_id> [--prompt-file FILE] [--image FILE ...]
   sn-cli cx [args...]
   sn-cli cc [args...]
   sn-cli chat
@@ -451,9 +481,14 @@ func profileConfigExists(root, name string) bool {
 	if filepath.Base(profileName) != profileName || strings.Contains(profileName, "..") {
 		return false
 	}
-	path := filepath.Join(root, "configs", profileName+".yaml")
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	for _, ext := range []string{".json", ".yaml", ".yml"} {
+		path := filepath.Join(root, "configs", profileName+ext)
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func rootRel(root, path string) string {

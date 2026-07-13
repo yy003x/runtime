@@ -335,7 +335,7 @@ func applyDefaults(c *Config) {
 		c.Update.InstallScript = "scripts/install-sn-cli.sh"
 	}
 	if c.Update.RepoURL == "" {
-		c.Update.RepoURL = "https://github.com/yy003x/agent-arch.git"
+		c.Update.RepoURL = "https://github.com/yy003x/runtime.git"
 	}
 }
 

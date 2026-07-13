@@ -26,6 +26,7 @@ type Profile struct {
 	Name      string          `yaml:"name" json:"name"`
 	Provider  ProviderConfig  `yaml:"provider" json:"provider"`
 	Runtime   RuntimeConfig   `yaml:"runtime" json:"runtime"`
+	Input     InputConfig     `yaml:"input" json:"input"`
 	Artifacts ArtifactsConfig `yaml:"artifacts" json:"artifacts"`
 }
 
@@ -41,24 +42,35 @@ type RuntimeConfig struct {
 	TimeoutSeconds int `yaml:"timeout_seconds" json:"timeout_seconds"`
 }
 
+type InputConfig struct {
+	Prompt     string   `yaml:"prompt" json:"prompt,omitempty"`
+	PromptFile string   `yaml:"prompt_file" json:"prompt_file,omitempty"`
+	Images     []string `yaml:"images" json:"images,omitempty"`
+}
+
 type ArtifactsConfig struct {
 	Root string `yaml:"root" json:"root"`
 }
 
 type RunOptions struct {
-	Profile   string
-	Prompt    string
-	CWD       string
-	SessionID string
+	Profile    string
+	Prompt     string
+	PromptFile string
+	Images     []string
+	ImagesSet  bool
+	CWD        string
+	SessionID  string
 }
 
 type RunRequest struct {
-	RunID     string    `json:"run_id"`
-	Profile   string    `json:"profile"`
-	Prompt    string    `json:"prompt"`
-	CWD       string    `json:"cwd"`
-	SessionID string    `json:"session_id,omitempty"`
-	StartedAt time.Time `json:"started_at"`
+	RunID      string    `json:"run_id"`
+	Profile    string    `json:"profile"`
+	Prompt     string    `json:"prompt"`
+	PromptFile string    `json:"prompt_file,omitempty"`
+	Images     []string  `json:"images,omitempty"`
+	CWD        string    `json:"cwd"`
+	SessionID  string    `json:"session_id,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
 }
 
 type RunResult struct {

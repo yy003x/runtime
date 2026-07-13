@@ -58,6 +58,6 @@
     "ref": "main",
     "state_file": "runs/global/sn-cli/state/current/update-check.json",
     "install_script": "scripts/install-sn-cli.sh",
-    "repo_url": "https://github.com/yy003x/agent-arch.git"
+    "repo_url": "https://github.com/yy003x/runtime.git"
   }
 }

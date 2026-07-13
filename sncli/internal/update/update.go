@@ -101,7 +101,7 @@ func Apply(cfg *config.Config, installDir string, ref string) error {
 	if dirty, err := dirtyTrackedFiles(cfg.Root); err != nil {
 		return err
 	} else if dirty {
-		return fmt.Errorf("Sinan checkout has uncommitted tracked changes; commit or stash before update: %s", cfg.Root)
+		return fmt.Errorf("runtime checkout has uncommitted tracked changes; commit or stash before update: %s", cfg.Root)
 	}
 	if _, err := gitOutputWithTimeout(30*time.Second, cfg.Root, "fetch", "origin", ref); err != nil {
 		return err
@@ -131,7 +131,7 @@ func Apply(cfg *config.Config, installDir string, ref string) error {
 		cmd.Env = append(cmd.Env, "SN_CLI_INSTALL_DIR="+installDir)
 	}
 	if cfg.Update.RepoURL != "" {
-		cmd.Env = append(cmd.Env, "SINAN_REPO_URL="+cfg.Update.RepoURL)
+		cmd.Env = append(cmd.Env, "SN_CLI_REPO_URL="+cfg.Update.RepoURL)
 	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
