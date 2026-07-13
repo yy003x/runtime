@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestResolvePath(t *testing.T) {
 	cfg := &Config{Root: "/repo"}
@@ -43,5 +47,37 @@ func TestUpdateEnabledDefault(t *testing.T) {
 	applyDefaults(cfg)
 	if !cfg.UpdateEnabled() {
 		t.Fatal("UpdateEnabled should default to true")
+	}
+}
+
+func TestFindRootRecognizesRepositoryLayout(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"sncli/cmd/sn-cli/main.go", "sncli/conf/default.json"} {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nested := filepath.Join(root, "nested", "dir")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	t.Setenv("SN_CLI_ROOT", "")
+	got, err := FindRoot()
+	want, _ := filepath.EvalSymlinks(root)
+	got, _ = filepath.EvalSymlinks(got)
+	if err != nil || got != want {
+		t.Fatalf("FindRoot()=(%q,%v), want %q", got, err, want)
 	}
 }

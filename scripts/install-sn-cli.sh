@@ -183,6 +183,14 @@ build_binary() {
   [ -x "$output" ] || die "binary was not created"
 }
 
+validate_binary() {
+  local repo="$1"
+  local binary="$repo/runs/global/sn-cli/storage/current/bin/sn-cli"
+  log "Validating runtime profiles"
+  SN_CLI_ROOT="$repo" "$binary" profiles >/dev/null
+  SN_CLI_ROOT="$repo" "$binary" config validate --name fake >/dev/null
+}
+
 write_launcher() {
   local repo="$1"
   local launcher="$2"
@@ -247,6 +255,7 @@ else
 fi
 
 build_binary "$REPO_ROOT"
+validate_binary "$REPO_ROOT"
 mkdir -p "$SN_CLI_INSTALL_DIR"
 write_launcher "$REPO_ROOT" "$SN_CLI_INSTALL_DIR/sn-cli"
 

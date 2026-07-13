@@ -7,35 +7,40 @@ import (
 	"testing"
 )
 
-func TestCommandEnvPrefersRepoPython(t *testing.T) {
+func TestClientRunsInProcessMockProfile(t *testing.T) {
 	root := t.TempDir()
-	venvBin := filepath.Join(root, ".venv", "bin")
-	if err := os.MkdirAll(venvBin, 0755); err != nil {
-		t.Fatal(err)
+	writeProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true}}`)
+	result, err := (Client{Root: root}).Run(RunOptions{Provider: "fake", Prompt: "hello", CWD: root, Timeout: 30})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	t.Setenv("PATH", "/usr/bin")
-	t.Setenv("PYTHONPATH", "/tmp/old")
-
-	cmd := Client{Command: "runtime-provider", Root: root}.command("providers")
-
-	if got := envValue(cmd.Env, "SINAN_ROOT"); got != root {
-		t.Fatalf("SINAN_ROOT=%q, want %q", got, root)
+	if result.Outcome != "succeeded" || !strings.Contains(result.FinalText, "[mock openai:mock]") {
+		t.Fatalf("result=%#v", result)
 	}
-	if got := envValue(cmd.Env, "PATH"); !strings.HasPrefix(got, venvBin+string(os.PathListSeparator)) {
-		t.Fatalf("PATH=%q does not start with %q", got, venvBin)
-	}
-	if got := envValue(cmd.Env, "PYTHONPATH"); !strings.HasPrefix(got, root+string(os.PathListSeparator)) {
-		t.Fatalf("PYTHONPATH=%q does not start with %q", got, root)
+	if !strings.HasPrefix(result.Artifacts["run_dir"], filepath.Join(root, "runs", "global", "runtime")) {
+		t.Fatalf("run_dir=%q", result.Artifacts["run_dir"])
 	}
 }
 
-func envValue(env []string, key string) string {
-	prefix := key + "="
-	value := ""
-	for _, item := range env {
-		if strings.HasPrefix(item, prefix) {
-			value = strings.TrimPrefix(item, prefix)
-		}
+func TestProvidersJSONUsesRepositoryConfigs(t *testing.T) {
+	root := t.TempDir()
+	writeProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true}}`)
+	data, err := (Client{Root: root}).ProvidersJSON()
+	if err != nil {
+		t.Fatal(err)
 	}
-	return value
+	if !strings.Contains(string(data), `"source":"configs"`) || !strings.Contains(string(data), `"fake"`) {
+		t.Fatalf("providers=%s", data)
+	}
+}
+
+func writeProfile(t *testing.T, root, name, body string) {
+	t.Helper()
+	dir := filepath.Join(root, "configs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

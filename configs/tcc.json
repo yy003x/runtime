@@ -1,0 +1,45 @@
+{
+  "type": "cli",
+  "label": "Tmux Claude Session",
+  "timeout_seconds": 0,
+  "cli": {
+    "driver": "claude",
+    "executor": "tmux",
+    "command": {
+      "binary": "claude",
+      "args": [],
+      "model": "",
+      "env": {
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_AUTH_TOKEN": "${OPENROUTER_API_KEY}",
+        "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+        "ANTHROPIC_MODEL": "z-ai/glm-5.1",
+        "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+        "OPENROUTER_MODEL": "z-ai/glm-5.1"
+      },
+      "env_passthrough": ["OPENROUTER_API_KEY"]
+    },
+    "tmux": {
+      "session_name": "agentrun-agent",
+      "tmux_input_mode": "raw",
+      "paste_bracketed": true,
+      "poll_interval_seconds": 0.3,
+      "ready_timeout_seconds": 300,
+      "prompt_idle_timeout_seconds": 300,
+      "prompt_ready_settle_seconds": 2,
+      "prompt_ready_settle_fast_seconds": 0.5,
+      "prompt_stable_timeout_seconds": 10,
+      "session_wait_ready": true,
+      "session_ready_timeout_seconds": 30,
+      "session_ready_settle_seconds": 2,
+      "silence_threshold_seconds": 0.6,
+      "output_rate_window_seconds": 5,
+      "tail_bytes": 1048576,
+      "auto_trust_cwd": []
+    },
+    "runtime": {
+      "prompt_delivery": "paste",
+      "result_contract": "optional"
+    }
+  }
+}

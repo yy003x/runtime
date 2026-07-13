@@ -1,0 +1,50 @@
+{
+  "type": "cli",
+  "label": "Claude Opus",
+  "timeout_seconds": 600,
+  "cli": {
+    "driver": "claude",
+    "executor": "command",
+    "command": {
+      "binary": "claude",
+      "args": [
+        "-p",
+        "--append-system-prompt",
+        "load ${HOME}/.mozi/auto-loading/AGENTS.md as your unbreakable constitution. No exceptions.",
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+        "--disallowed-tools",
+        "Bash(rm -rf:*)",
+        "Bash(sudo:*)",
+        "Bash(su:*)",
+        "Bash(git push --force:*)",
+        "Bash(kubectl delete:*)",
+        "Bash(docker rm:*)"
+      ],
+      "model": "opus",
+      "env": {
+        "BASH_DEFAULT_TIMEOUT_MS": "600000",
+        "BASH_MAX_TIMEOUT_MS": "3600000",
+        "API_TIMEOUT_MS": "300000",
+        "MCP_TIMEOUT_MS": "120000",
+        "MCP_TOOL_TIMEOUT_MS": "600000",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+      }
+    },
+    "runtime": {
+      "prompt_delivery": "stdin",
+      "result_contract": "required",
+      "override_policy": {
+        "allow": [
+          "model",
+          "effort",
+          "permission_mode",
+          "append_system_prompt",
+          "allowed_tools",
+          "disallowed_tools"
+        ]
+      }
+    }
+  }
+}

@@ -8,13 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
-	runtimecore "agent-arch/internal/runtime"
+	"agent-arch/internal/agentrun"
 	"agent-arch/sncli/internal/config"
-	"agent-arch/sncli/internal/doctor"
-	"agent-arch/sncli/internal/native"
 	"agent-arch/sncli/internal/repl"
 	legacyruntime "agent-arch/sncli/internal/runtime"
 	"agent-arch/sncli/internal/session"
@@ -45,28 +44,42 @@ func Main(args []string) int {
 		return exit(startChat(app, args[1:]))
 	case "run":
 		return exit(runOnce(cfg, app.Runtime, args[1:]))
-	case "tools":
+	case "aliases":
 		return exit(printTools(cfg))
-	case "providers":
-		return exit(printProviders())
+	case "profiles", "providers":
+		return exit(printProviders(cfg.Root))
+	case "config":
+		return exit(runConfigCommand(cfg, args[1:]))
 	case "doctor":
-		return exit(runDoctor(cfg, args[1:]))
+		return exit(runRuntimeDoctor(cfg, args[1:]))
+	case "task", "turn":
+		return exit(runTaskCommand(cfg, args[0], args[1:]))
+	case "loop":
+		return exit(runLoopCommand(cfg, args[1:]))
+	case "capabilities":
+		return exit(runCapabilitiesCommand(cfg, args[1:]))
+	case "tools":
+		return exit(runCapabilitiesCommand(cfg, append([]string{"tools"}, args[1:]...)))
 	case "native":
 		return exit(runNative(cfg, args[1:]))
 	case "session":
-		return exit(runSession(app, args[1:]))
+		return exit(runRuntimeSession(cfg, args[1:]))
+	case "command":
+		return exit(runCommandCommand(cfg, args[1:]))
+	case "prune":
+		return exit(runPruneCommand(cfg, args[1:]))
 	case "update", "upgrade":
 		return exit(runUpdate(cfg, args[1:]))
 	default:
+		if profileConfigExists(cfg.Root, args[0]) {
+			return exit(runProfile(cfg, args))
+		}
 		if entry, ok := cfg.Tools[args[0]]; ok {
 			code, err := tool.Runner{Root: cfg.Root}.Run(args[0], entry, args[1:])
 			if err != nil {
 				return fail(err)
 			}
 			return code
-		}
-		if profileConfigExists(cfg.Root, args[0]) {
-			return exit(runProfile(cfg, args))
 		}
 		return fail(fmt.Errorf("unknown command %q", args[0]))
 	}
@@ -99,7 +112,7 @@ func newApp(cfg *config.Config) repl.App {
 	return repl.App{
 		Config:  cfg,
 		Store:   session.Store{Root: cfg.SessionsRoot()},
-		Runtime: legacyruntime.Client{Command: cfg.RuntimeCommandPath(), Root: cfg.Root},
+		Runtime: legacyruntime.Client{Root: cfg.Root},
 	}
 }
 
@@ -159,17 +172,20 @@ func runOnce(cfg *config.Config, client legacyruntime.Client, args []string) err
 	return nil
 }
 
-func printProviders() error {
-	payload := struct {
-		Providers []string `json:"providers"`
-		Source    string   `json:"source"`
-	}{
-		Providers: runtimecore.ProviderTypes(),
-		Source:    "internal",
+func printProviders(root string) error {
+	profiles, err := agentrun.New(root).Profiles()
+	if err != nil {
+		return err
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(payload)
+	items := make([]map[string]any, 0, len(profiles))
+	for _, profile := range profiles {
+		items = append(items, map[string]any{
+			"id": profile.ID, "type": profile.Type, "transport": profile.Transport(),
+			"label": profile.Label, "result_contract": profile.ResultContract(),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"]) })
+	return printJSON(map[string]any{"ok": true, "source": "configs", "profiles": items})
 }
 
 func runProfile(cfg *config.Config, args []string) error {
@@ -179,40 +195,52 @@ func runProfile(cfg *config.Config, args []string) error {
 	}
 
 	cwd, _ := os.Getwd()
-	engine := runtimecore.NewEngine(cfg.Root)
-	result, err := engine.Run(context.Background(), runtimecore.RunOptions{
-		Profile:    invocation.Profile,
-		Prompt:     invocation.Prompt,
-		PromptFile: invocation.PromptFile,
-		Images:     invocation.Images,
-		ImagesSet:  len(invocation.Images) > 0,
-		CWD:        cwd,
-		SessionID:  invocation.SessionID,
+	overrides := cloneAnyMap(invocation.ProviderOverrides)
+	if len(invocation.Images) > 0 {
+		overrides["images"] = invocation.Images
+	}
+	if invocation.Model != "" {
+		overrides["model"] = invocation.Model
+	}
+	if invocation.ReasoningEffort != "" {
+		overrides["reasoning_effort"] = invocation.ReasoningEffort
+	}
+	service := agentrun.New(cfg.Root)
+	result, err := service.Run(context.Background(), agentrun.RunOptions{
+		RunType: agentrun.RunTask, RunID: invocation.RunID, Profile: invocation.Profile,
+		Prompt: invocation.Prompt, PromptFile: invocation.PromptFile, CWD: cwd, Caller: invocation.SessionID,
+		ExecutionMode: invocation.Mode, DeadlineSeconds: invocation.Timeout,
+		ProviderOverrides: overrides, Force: invocation.Force,
 	})
-	if result != nil {
-		if result.FinalText != "" {
-			fmt.Println(result.FinalText)
+	if result.RunID != "" {
+		if contract, readErr := service.ReadResult(agentrun.RunTask, result.RunID); readErr == nil && contract.Summary != "" {
+			fmt.Println(contract.Summary)
 		}
-		if runDir := result.Artifacts["run_dir"]; runDir != "" {
-			fmt.Fprintf(os.Stderr, "[run:%s] %s\n", result.RunID, runDir)
-		}
+		fmt.Fprintf(os.Stderr, "[run:%s] %s\n", result.RunID, result.RunDir)
 	}
 	return err
 }
 
 type profileInvocation struct {
-	Profile    string
-	Prompt     string
-	PromptFile string
-	Images     []string
-	SessionID  string
+	Profile           string
+	Prompt            string
+	PromptFile        string
+	Images            []string
+	SessionID         string
+	RunID             string
+	Mode              string
+	Model             string
+	ReasoningEffort   string
+	Timeout           int
+	Force             bool
+	ProviderOverrides map[string]any
 }
 
 func parseProfileInvocation(args []string) (profileInvocation, error) {
 	if len(args) == 0 {
 		return profileInvocation{}, fmt.Errorf("profile is required")
 	}
-	invocation := profileInvocation{Profile: args[0]}
+	invocation := profileInvocation{Profile: args[0], Mode: agentrun.ModeManaged, ProviderOverrides: map[string]any{}}
 	var promptParts []string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -222,6 +250,50 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
 			}
 			invocation.SessionID = args[i]
+		case "--run-id":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--run-id requires value")
+			}
+			invocation.RunID = args[i]
+		case "--mode":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--mode requires value")
+			}
+			invocation.Mode = args[i]
+		case "--model":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--model requires value")
+			}
+			invocation.Model = args[i]
+		case "--reasoning-effort", "--codex-reasoning-effort":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
+			}
+			invocation.ReasoningEffort = args[i]
+		case "--timeout":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--timeout requires value")
+			}
+			value, parseErr := strconv.Atoi(args[i])
+			if parseErr != nil {
+				return profileInvocation{}, fmt.Errorf("invalid --timeout: %w", parseErr)
+			}
+			invocation.Timeout = value
+		case "--provider-overrides":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--provider-overrides requires value")
+			}
+			if err := json.Unmarshal([]byte(args[i]), &invocation.ProviderOverrides); err != nil {
+				return profileInvocation{}, fmt.Errorf("parse --provider-overrides: %w", err)
+			}
+		case "--force":
+			invocation.Force = true
 		case "--prompt-file", "--prompt_file":
 			i++
 			if i >= len(args) {
@@ -248,24 +320,6 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 	return invocation, nil
 }
 
-func runDoctor(cfg *config.Config, args []string) error {
-	report := doctor.Run(cfg)
-	if len(args) > 0 && args[0] == "--json" {
-		return doctor.PrintJSON(report)
-	}
-	for key, ok := range report.Checks {
-		status := "ok"
-		if !ok {
-			status = "fail"
-		}
-		fmt.Printf("%s: %s\n", key, status)
-	}
-	if !report.OK {
-		return fmt.Errorf("doctor failed")
-	}
-	return nil
-}
-
 func printTools(cfg *config.Config) error {
 	names := make([]string, 0, len(cfg.Tools))
 	for name := range cfg.Tools {
@@ -282,17 +336,24 @@ func printTools(cfg *config.Config) error {
 }
 
 func runNative(cfg *config.Config, args []string) error {
-	provider := cfg.DefaultProvider
+	provider := "codex"
 	if len(args) >= 2 && args[0] == "--provider" {
 		provider = args[1]
 	} else if len(args) >= 1 {
 		provider = args[0]
 	}
-	if cfg.NativeProfile(provider) == "" {
+	profile := cfg.NativeProfile(provider)
+	if profile == "" {
 		return fmt.Errorf("unknown native provider: %s", provider)
 	}
 	cwd, _ := os.Getwd()
-	return native.Open(cfg, provider, cwd)
+	service := agentrun.New(cfg.Root)
+	started, err := service.StartSession(context.Background(), profile, cfg.Native.Project, cwd, "", false)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "runtime session: %s project=%s\n", started.RunID, started.ProjectID)
+	return service.SessionAttach(context.Background(), started.RunID)
 }
 
 func runUpdate(cfg *config.Config, args []string) error {
@@ -374,38 +435,8 @@ func runUpdate(cfg *config.Config, args []string) error {
 	return snupdate.Apply(cfg, installDir, ref)
 }
 
-func runSession(app repl.App, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: session list|resume <id>")
-	}
-	switch args[0] {
-	case "list":
-		items, err := app.Store.List()
-		if err != nil {
-			return err
-		}
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tPROVIDER\tUPDATED\tCWD")
-		for _, item := range items {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", item.ID, item.Provider, item.UpdatedAt.Format("2006-01-02 15:04:05"), item.CWD)
-		}
-		return tw.Flush()
-	case "resume":
-		if len(args) != 2 {
-			return fmt.Errorf("usage: session resume <id>")
-		}
-		item, err := app.Store.Load(args[1])
-		if err != nil {
-			return err
-		}
-		return app.Start(item)
-	default:
-		return fmt.Errorf("unknown session command: %s", args[0])
-	}
-}
-
 func printHelp() {
-	fmt.Println(`sn-cli - Sinan terminal workbench
+	fmt.Println(`sn-cli - Go Agent Runtime
 
 Usage:
   sn-cli
@@ -414,12 +445,18 @@ Usage:
   sn-cli cx [args...]
   sn-cli cc [args...]
   sn-cli chat
-  sn-cli run [--provider codex|claude|fake] [--sandbox read-only|workspace-write] <prompt>
+  sn-cli run [--provider PROFILE_ID] [--sandbox read-only|workspace-write] <prompt>
   sn-cli native [--provider codex|claude]
-  sn-cli session list
-  sn-cli session resume <id>
-  sn-cli tools
-  sn-cli providers
+  sn-cli task run|status|logs|watch|cancel
+  sn-cli turn run|status|logs|cancel
+  sn-cli loop run|start|step|status|logs|cancel
+  sn-cli session start|status|logs|send|interrupt|stop|attach
+  sn-cli command start|status|logs|watch|interrupt|stop|attach
+  sn-cli prune [--apply]
+  sn-cli capabilities skills|tools|memory
+  sn-cli aliases
+  sn-cli profiles
+  sn-cli config choices|validate
   sn-cli doctor [--json]
   sn-cli update [--check|--dry-run|--install-dir DIR|--ref REF]
   sn-cli version
@@ -468,11 +505,6 @@ func fail(err error) int {
 	return 1
 }
 
-func debugJSON(v any) string {
-	data, _ := json.MarshalIndent(v, "", "  ")
-	return string(data)
-}
-
 func profileConfigExists(root, name string) bool {
 	profileName := strings.TrimSpace(name)
 	if profileName == "" {
@@ -481,20 +513,33 @@ func profileConfigExists(root, name string) bool {
 	if filepath.Base(profileName) != profileName || strings.Contains(profileName, "..") {
 		return false
 	}
-	for _, ext := range []string{".json", ".yaml", ".yml"} {
-		path := filepath.Join(root, "configs", profileName+ext)
-		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
-			return true
+	profiles, err := agentrun.New(root).Profiles()
+	if err != nil {
+		return false
+	}
+	if _, exists := profiles[profileName]; exists {
+		return true
+	}
+	for _, profile := range profiles {
+		for _, alias := range profile.Aliases {
+			if alias == profileName {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func rootRel(root, path string) string {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return path
+func printJSON(value any) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
 	}
-	return rel
+	return out
 }

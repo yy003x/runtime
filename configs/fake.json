@@ -1,0 +1,16 @@
+{
+  "type": "api",
+  "label": "Local Mock Provider",
+  "timeout_seconds": 30,
+  "api": {
+    "protocol": "openai",
+    "base_url": "https://example.test/v1",
+    "model": "mock-model",
+    "api_key_env": "SN_CLI_FAKE_API_KEY",
+    "mock": true,
+    "result_contract": "none",
+    "override_policy": {
+      "allow": ["model", "max_tokens", "temperature", "stream"]
+    }
+  }
+}

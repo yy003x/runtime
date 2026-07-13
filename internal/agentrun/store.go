@@ -1,0 +1,200 @@
+package agentrun
+
+import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+type Store struct {
+	eventMu sync.Mutex
+}
+
+func (s *Store) WriteRequest(paths Paths, request Request) error {
+	return writeJSONAtomic(paths.RequestFile, request)
+}
+
+func (s *Store) WriteStatus(paths Paths, request Request, state, failureReason, message string, providerStatus map[string]any) (Status, error) {
+	status := Status{
+		SchemaVersion: 1, RunID: request.RunID, RunType: request.RunType,
+		ProjectID: request.ProjectID, State: state, FailureReason: failureReason,
+		Provider: request.Provider, ProviderStatus: providerStatus, Message: message,
+		UpdatedAt: time.Now().UTC(),
+	}
+	if status.ProviderStatus == nil {
+		status.ProviderStatus = map[string]any{}
+	}
+	return status, writeJSONAtomic(paths.StatusFile, status)
+}
+
+func (s *Store) ReadStatus(paths Paths) (Status, error) {
+	var status Status
+	err := readJSON(paths.StatusFile, &status)
+	return status, err
+}
+
+func (s *Store) ReadRequest(paths Paths) (Request, error) {
+	var request Request
+	err := readJSON(paths.RequestFile, &request)
+	return request, err
+}
+
+func (s *Store) ReadEvents(paths Paths) ([]Event, error) {
+	file, err := os.Open(paths.EventsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Event{}, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+	var events []Event
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, fmt.Errorf("parse events: %w", err)
+		}
+		events = append(events, event)
+	}
+	return events, scanner.Err()
+}
+
+func (s *Store) WriteResult(paths Paths, result Result) error {
+	return writeJSONAtomic(paths.ResultFile, result)
+}
+
+func (s *Store) ReadResult(paths Paths) (Result, error) {
+	var result Result
+	err := readJSON(paths.ResultFile, &result)
+	return result, err
+}
+
+func (s *Store) ValidateResult(paths Paths, runID, schemaRef string) (Result, string) {
+	data, readErr := os.ReadFile(paths.ResultFile)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return Result{}, "result_missing"
+		}
+		return Result{}, "schema_invalid"
+	}
+	var raw map[string]any
+	if json.Unmarshal(data, &raw) != nil || !validBuiltinResult(raw, runID) {
+		return Result{}, "schema_invalid"
+	}
+	result, err := s.ReadResult(paths)
+	if err != nil {
+		return Result{}, "schema_invalid"
+	}
+	if err := validateResultSchema(paths.ResultFile, schemaRef); err != nil {
+		return Result{}, "schema_invalid"
+	}
+	return result, ""
+}
+
+func validBuiltinResult(raw map[string]any, runID string) bool {
+	for _, key := range []string{"schema_version", "run_id", "outcome", "summary", "artifacts", "errors", "validation"} {
+		if _, exists := raw[key]; !exists {
+			return false
+		}
+	}
+	version, ok := raw["schema_version"].(float64)
+	if !ok || version != 1 {
+		return false
+	}
+	id, ok := raw["run_id"].(string)
+	if !ok || id != runID {
+		return false
+	}
+	outcome, ok := raw["outcome"].(string)
+	if !ok || !validOutcome(outcome) {
+		return false
+	}
+	if _, ok := raw["summary"].(string); !ok {
+		return false
+	}
+	if _, ok := raw["artifacts"].([]any); !ok {
+		return false
+	}
+	if _, ok := raw["errors"].([]any); !ok {
+		return false
+	}
+	if _, ok := raw["validation"].(map[string]any); !ok {
+		return false
+	}
+	return true
+}
+
+func (s *Store) Event(paths Paths, request Request, eventType string, data map[string]any) error {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	sequence := 1
+	if file, err := os.Open(paths.EventsFile); err == nil {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			sequence++
+		}
+		_ = file.Close()
+	}
+	record := Event{
+		SchemaVersion: 1, EventID: randomID(16), RunID: request.RunID,
+		RunType: request.RunType, Type: eventType, Timestamp: time.Now().UTC(),
+		Sequence: sequence, Data: data,
+	}
+	file, err := os.OpenFile(paths.EventsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open events: %w", err)
+	}
+	defer file.Close()
+	return json.NewEncoder(file).Encode(record)
+}
+
+func writeJSONAtomic(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
+	}
+	data = append(data, '\n')
+	tmp := path + ".tmp-" + randomID(8)
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+func readJSON(path string, value any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, value); err != nil {
+		return fmt.Errorf("parse %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+func randomID(bytesCount int) string {
+	data := make([]byte, bytesCount)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(data)
+}
+
+func validOutcome(value string) bool {
+	return value == OutcomeSucceeded || value == OutcomeFailed || value == OutcomeBlocked || value == OutcomePartial || value == OutcomeCancelled
+}

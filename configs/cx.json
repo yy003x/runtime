@@ -1,0 +1,105 @@
+{
+  "type": "cli",
+  "label": "GPT-5.6 Sol",
+  "timeout_seconds": 300,
+  "cli": {
+    "driver": "codex",
+    "executor": "command",
+    "command": {
+      "binary": "codex",
+      "args": [
+        "--search",
+        "--enable",
+        "multi_agent",
+        "--enable",
+        "hooks",
+        "--disable",
+        "enable_fanout",
+        "--enable",
+        "memories",
+        "--enable",
+        "fast_mode",
+        "-c",
+        "model_instructions_file=${HOME}/.mozi/auto-loading/AGENTS.md",
+        "-c",
+        "sandbox_mode=danger-full-access",
+        "-c",
+        "approval_policy=never",
+        "-c",
+        "service_tier=fast",
+        "-c",
+        "model_reasoning_effort=high",
+        "-c",
+        "model_verbosity=high",
+        "-c",
+        "suppress_unstable_features_warning=true",
+        "exec"
+      ],
+      "model": "gpt-5.6-sol"
+    },
+    "runtime": {
+      "prompt_delivery": "stdin",
+      "result_contract": "required",
+      "override_policy": {
+        "allow": [
+          "model",
+          "reasoning_effort",
+          "sandbox_mode",
+          "approval_policy",
+          "service_tier",
+          "verbosity",
+          "images"
+        ]
+      }
+    }
+  },
+  "presets": {
+    "cx-terra": {
+      "label": "GPT-5.6 Terra",
+      "overrides": {
+        "model": "gpt-5.6-terra",
+        "reasoning_effort": "medium"
+      }
+    },
+    "cx-luna": {
+      "label": "GPT-5.6 Luna",
+      "overrides": {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "medium"
+      }
+    },
+    "cx-spark": {
+      "label": "GPT-5.3 Codex Spark",
+      "cli": {
+        "command": {
+          "args": [
+            "-c",
+            "sandbox_mode=danger-full-access",
+            "-c",
+            "approval_policy=never",
+            "-c",
+            "model_reasoning_effort=high",
+            "exec"
+          ],
+          "model": "gpt-5.3-codex-spark"
+        }
+      }
+    },
+    "cx-image": {
+      "label": "GPT-5.6 Sol Image",
+      "timeout_seconds": 180,
+      "cli": {
+        "command": {
+          "args_append": [
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+            "--image",
+            "${WB_RUNTIME_IMAGE_PATH}"
+          ],
+          "env_passthrough_append": ["WB_RUNTIME_IMAGE_PATH"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+runs_dir: runs/global/runtime
+default_project: _default
+default_profile: cx
+max_concurrency: 1
+provider_config_dir: configs

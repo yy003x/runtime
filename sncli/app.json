@@ -2,6 +2,9 @@
   "id": "sn-cli",
   "type": "go-cli",
   "source_roots": [
+    "internal/agentrun",
+    "internal/provider",
+    "internal/capability",
     "sncli/cmd",
     "sncli/internal"
   ],
@@ -9,6 +12,6 @@
     "cli": "cmd/sn-cli-wrapper",
     "build": "go build -o ../../runs/global/sn-cli/storage/current/bin/sn-cli ./cmd/sn-cli"
   },
-  "config_root": "sncli/conf",
-  "runs_root": "runs/global/sn-cli"
+  "config_root": "configs",
+  "runs_root": "runs/global/runtime"
 }

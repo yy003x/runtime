@@ -1,21 +1,18 @@
 package runtime
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"strings"
 
-	"agent-arch/sncli/internal/redact"
+	"agent-arch/internal/agentrun"
+	"agent-arch/internal/provider"
 )
 
+// Client keeps the small interface used by the interactive REPL while routing
+// every request to the Go runtime in this repository.
 type Client struct {
-	Command string
-	Root    string
+	Root string
 }
 
 type RunOptions struct {
@@ -41,106 +38,92 @@ type RunResult struct {
 }
 
 func (c Client) ProvidersJSON() ([]byte, error) {
-	return c.command("providers", "--json").Output()
-}
-
-func (c Client) DoctorJSON() ([]byte, error) {
-	return c.command("doctor", "--json").Output()
-}
-
-func (c Client) Run(opts RunOptions) (*RunResult, error) {
-	args := []string{
-		"run",
-		"--provider", opts.Provider,
-		"--purpose", "sn-cli",
-		"--cwd", opts.CWD,
-		"--sandbox", opts.Sandbox,
-		"--timeout", strconv.Itoa(opts.Timeout),
-		"--prompt-file", "-",
-		"--json",
-	}
-	if opts.Model != "" {
-		args = append(args, "--model", opts.Model)
-	}
-	cmd := c.command(args...)
-	cmd.Stdin = strings.NewReader(opts.Prompt)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if stderr.Len() > 0 && err != nil {
-		return nil, fmt.Errorf("%w: %s", err, redact.Text(strings.TrimSpace(stderr.String())))
-	}
+	profiles, err := agentrun.New(c.Root).Profiles()
 	if err != nil {
 		return nil, err
 	}
-	var result RunResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return nil, fmt.Errorf("parse runtime result: %w: %s", err, redact.Text(stdout.String()))
-	}
-	return &result, nil
+	return json.Marshal(map[string]any{"ok": true, "source": "configs", "profiles": profiles})
 }
 
-func (c Client) command(args ...string) *exec.Cmd {
-	cmd := exec.Command(c.resolveCommand(), args...)
-	cmd.Dir = c.Root
-	cmd.Env = c.env()
-	return cmd
+func (c Client) DoctorJSON() ([]byte, error) {
+	service := agentrun.New(c.Root)
+	profiles, err := service.Profiles()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"ok": true, "runtime": service.RuntimeVersion, "runs_dir": service.RunsDir,
+		"default_profile": service.DefaultProfile, "profile_count": len(profiles),
+	})
 }
 
-func (c Client) resolveCommand() string {
-	if filepath.IsAbs(c.Command) {
-		return c.Command
+func (c Client) Run(opts RunOptions) (*RunResult, error) {
+	service := agentrun.New(c.Root)
+	profileName := opts.Provider
+	if profileName == "" {
+		profileName = service.DefaultProfile
 	}
-	rootCandidates := []string{c.Root}
-	if sinanRoot := os.Getenv("SINAN_ROOT"); sinanRoot != "" {
-		rootCandidates = append(rootCandidates, sinanRoot)
+	profiles, err := service.Profiles()
+	if err != nil {
+		return nil, err
 	}
-	for _, candidate := range rootCandidates {
-		full := filepath.Join(candidate, c.Command)
-		if _, err := os.Stat(full); err == nil {
-			return full
+	profile, ok := provider.Resolve(profiles, profileName)
+	if !ok {
+		return nil, fmt.Errorf("unknown provider profile: %s", profileName)
+	}
+	overrides := map[string]any{}
+	if opts.Model != "" {
+		overrides["model"] = opts.Model
+	}
+	if opts.Sandbox != "" && profile.CLI != nil && profile.CLI.Driver == "codex" {
+		overrides["sandbox_mode"] = opts.Sandbox
+	}
+	summary, runErr := service.Run(context.Background(), agentrun.RunOptions{
+		RunType: agentrun.RunTask, Profile: profileName, Prompt: opts.Prompt, CWD: opts.CWD,
+		ExecutionMode: agentrun.ModeCapture, DeadlineSeconds: opts.Timeout, ProviderOverrides: overrides,
+	})
+	result := &RunResult{
+		RunID: summary.RunID, Requested: profileName, Provider: profile.ID,
+		Outcome: outcomeFromState(summary.State), Artifacts: map[string]string{"run_dir": summary.RunDir},
+	}
+	if summary.RunID != "" {
+		if contract, err := service.ReadResult(agentrun.RunTask, summary.RunID); err == nil {
+			result.Outcome = contract.Outcome
+			result.FinalText = contract.Summary
+		}
+		if status, err := service.Status(agentrun.RunTask, summary.RunID); err == nil {
+			result.FailureReason = status.FailureReason
+			if status.State == agentrun.StateBlocked {
+				result.BlockedReason = status.FailureReason
+			}
+			if code, ok := status.ProviderStatus["returncode"].(float64); ok {
+				result.ReturnCode = int(code)
+			} else if code, ok := status.ProviderStatus["returncode"].(int); ok {
+				result.ReturnCode = code
+			}
 		}
 	}
-	return c.Command
-}
-
-func (c Client) env() []string {
-	env := os.Environ()
-	root := c.Root
-	if envRoot := os.Getenv("SINAN_ROOT"); envRoot != "" {
-		root = envRoot
-	}
-	env = setEnv(env, "SINAN_ROOT", root)
-	if root != "" {
-		env = setEnv(env, "PYTHONPATH", prependPath(root, os.Getenv("PYTHONPATH")))
-		if venvBin := filepath.Join(root, ".venv", "bin"); dirExists(venvBin) {
-			env = setEnv(env, "PATH", prependPath(venvBin, os.Getenv("PATH")))
+	if runErr != nil {
+		if result.FailureReason == "" {
+			result.FailureReason = runErr.Error()
 		}
+		return result, runErr
 	}
-	return env
+	if result.FinalText == "" && result.Outcome == agentrun.OutcomeSucceeded {
+		return result, fmt.Errorf("runtime returned empty final text")
+	}
+	return result, nil
 }
 
-func setEnv(env []string, key string, value string) []string {
-	prefix := key + "="
-	out := make([]string, 0, len(env)+1)
-	for _, item := range env {
-		if !strings.HasPrefix(item, prefix) {
-			out = append(out, item)
-		}
+func outcomeFromState(state string) string {
+	switch state {
+	case agentrun.StateDone:
+		return agentrun.OutcomeSucceeded
+	case agentrun.StateBlocked:
+		return agentrun.OutcomeBlocked
+	case agentrun.StateCancelled:
+		return agentrun.OutcomeCancelled
+	default:
+		return agentrun.OutcomeFailed
 	}
-	return append(out, prefix+value)
-}
-
-func prependPath(entry, existing string) string {
-	if existing == "" {
-		return entry
-	}
-	return entry + string(os.PathListSeparator) + existing
-}
-
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }

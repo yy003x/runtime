@@ -13,15 +13,16 @@ import (
 
 func TestRunProfilePrintsFinalText(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `name: fake
-provider:
-  type: fake
-  echo_prefix: ""
-runtime:
-  timeout_seconds: 30
-artifacts:
-  root: runs/global/runtime
-`)
+	writeCLIProfile(t, root, "fake", `{
+  "type": "api",
+  "api": {
+    "protocol": "openai",
+    "base_url": "https://example.test/v1",
+    "model": "mock-model",
+    "api_key_env": "UNSET_TEST_KEY",
+    "mock": true
+  }
+}`)
 
 	stdout := captureStdout(t, func() {
 		err := runProfile(&config.Config{Root: root}, []string{"fake", "hello"})
@@ -30,17 +31,14 @@ artifacts:
 		}
 	})
 
-	if strings.TrimSpace(stdout) != "hello" {
-		t.Fatalf("stdout=%q, want %q", stdout, "hello")
+	if strings.TrimSpace(stdout) != "[mock openai:mock-model] 5 chars" {
+		t.Fatalf("stdout=%q", stdout)
 	}
 }
 
 func TestProfileConfigExists(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `name: fake
-provider:
-  type: fake
-`)
+	writeCLIProfile(t, root, "fake", `{"type":"api","aliases":["mock-alias"],"api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true},"presets":{"fake-fast":{"overrides":{"model":"fast"}}}}`)
 
 	if !profileConfigExists(root, "fake") {
 		t.Fatal("profileConfigExists(fake)=false, want true")
@@ -51,7 +49,10 @@ provider:
 	if profileConfigExists(root, "missing") {
 		t.Fatal("profileConfigExists(missing)=true, want false")
 	}
-	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"provider":{"type":"fake"}}`), 0o644); err != nil {
+	if !profileConfigExists(root, "fake-fast") || !profileConfigExists(root, "mock-alias") {
+		t.Fatal("profileConfigExists did not resolve preset/alias")
+	}
+	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !profileConfigExists(root, "json") {
@@ -102,13 +103,15 @@ func TestParseProfileInvocationRejectsPromptConflict(t *testing.T) {
 }
 
 func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
+	root := t.TempDir()
+	writeCLIProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true}}`)
 	stdout := captureStdout(t, func() {
-		if err := printProviders(); err != nil {
+		if err := printProviders(root); err != nil {
 			t.Fatalf("printProviders returned error: %v", err)
 		}
 	})
-	if !strings.Contains(stdout, `"source": "internal"`) {
-		t.Fatalf("stdout=%q, want internal source", stdout)
+	if !strings.Contains(stdout, `"source": "configs"`) {
+		t.Fatalf("stdout=%q, want configs source", stdout)
 	}
 	if !strings.Contains(stdout, `"fake"`) {
 		t.Fatalf("stdout=%q, want fake provider", stdout)
@@ -145,7 +148,7 @@ func writeCLIProfile(t *testing.T, root, name, body string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("create configs dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write profile: %v", err)
 	}
 }

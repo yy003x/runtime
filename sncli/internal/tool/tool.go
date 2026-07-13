@@ -41,12 +41,8 @@ func (r Runner) Run(name string, cfg config.ToolConfig, extraArgs []string) (int
 func (r Runner) env(overrides map[string]string) []string {
 	env := os.Environ()
 	if r.Root != "" {
-		root := r.Root
-		if envRoot := os.Getenv("SINAN_ROOT"); envRoot != "" {
-			root = envRoot
-		}
-		env = setEnv(env, "SINAN_ROOT", root)
-		if venvBin := filepath.Join(root, ".venv", "bin"); dirExists(venvBin) {
+		env = setEnv(env, "SN_CLI_ROOT", r.Root)
+		if venvBin := filepath.Join(r.Root, ".venv", "bin"); dirExists(venvBin) {
 			env = setEnv(env, "PATH", prependPath(venvBin, os.Getenv("PATH")))
 		}
 	}

@@ -53,7 +53,7 @@ sn-cli-install:
 	bash scripts/install-sn-cli.sh
 
 sn-cli-test:
-	$(GO_ENV) $(GO) test ./sncli/...
+	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider ./internal/capability ./sncli/...
 
 sn-cli-doctor: sn-cli-build
 	./cmd/sn-cli-wrapper doctor --json
@@ -67,7 +67,7 @@ dev:
 	pid=""; \
 	trap 'if [[ -n "$$pid" ]]; then kill "$$pid" 2>/dev/null || true; wait "$$pid" 2>/dev/null || true; fi; exit 0' INT TERM EXIT; \
 	while true; do \
-		sig="$$(find cmd internal configs -type f \( -name '*.go' -o -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 stat -f '%m %N' | sort | shasum | awk '{print $$1}')"; \
+		sig="$$(find cmd internal configs -type f \( -name '*.go' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 stat -f '%m %N' | sort | shasum | awk '{print $$1}')"; \
 		if [[ "$$sig" != "$$last_sig" ]]; then \
 			if [[ -n "$$pid" ]]; then \
 				echo "change detected, restarting"; \

@@ -7,8 +7,10 @@ import (
 	"os"
 	"strings"
 
+	"context"
+
+	"agent-arch/internal/agentrun"
 	"agent-arch/sncli/internal/config"
-	"agent-arch/sncli/internal/native"
 	"agent-arch/sncli/internal/runtime"
 	"agent-arch/sncli/internal/session"
 )
@@ -71,7 +73,7 @@ func (a App) command(current *session.Session, line string) (bool, error) {
 		printHelp()
 	case "/provider":
 		if len(fields) != 2 {
-			return false, fmt.Errorf("usage: /provider codex|claude|fake")
+			return false, fmt.Errorf("usage: /provider <profile_id>")
 		}
 		current.Provider = fields[1]
 		if err := a.Store.Save(current); err != nil {
@@ -122,15 +124,27 @@ func (a App) runPrompt(current *session.Session, prompt string) error {
 }
 
 func (a App) openNative(providerName string) error {
+	switch providerName {
+	case "cx", "tcx":
+		providerName = "codex"
+	case "cc", "tcc":
+		providerName = "claude"
+	}
 	if a.Config.NativeProfile(providerName) == "" {
 		return fmt.Errorf("unknown native provider: %s", providerName)
 	}
 	cwd, _ := os.Getwd()
-	return native.Open(a.Config, providerName, cwd)
+	service := agentrun.New(a.Config.Root)
+	started, err := service.StartSession(context.Background(), a.Config.NativeProfile(providerName), a.Config.Native.Project, cwd, "", false)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "runtime session: %s project=%s\n", started.RunID, started.ProjectID)
+	return service.SessionAttach(context.Background(), started.RunID)
 }
 
 func printHelp() {
-	fmt.Println(`/provider codex|claude|fake
+	fmt.Println(`/provider <profile_id>
 /runtime <prompt>
 /native codex|claude
 /session

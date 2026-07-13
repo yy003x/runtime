@@ -20,7 +20,6 @@ type Config struct {
 }
 
 type RuntimeConfig struct {
-	Command               string `json:"command"`
 	DefaultSandbox        string `json:"default_sandbox"`
 	DefaultTimeoutSeconds int    `json:"default_timeout_seconds"`
 }
@@ -30,9 +29,6 @@ type PathsConfig struct {
 }
 
 type NativeConfig struct {
-	Python   string            `json:"python"`
-	ConfDir  string            `json:"conf_dir"`
-	RunsDir  string            `json:"runs_dir"`
 	Project  string            `json:"project"`
 	Profiles map[string]string `json:"profiles"`
 }
@@ -79,11 +75,6 @@ func FindRoot() (string, error) {
 	if root := os.Getenv("SN_CLI_ROOT"); root != "" {
 		return filepath.Abs(root)
 	}
-	if root := os.Getenv("SINAN_ROOT"); root != "" {
-		if fileExists(filepath.Join(root, "apps", "sn-cli", "conf", "default.json")) {
-			return filepath.Abs(root)
-		}
-	}
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -93,7 +84,7 @@ func FindRoot() (string, error) {
 		return "", err
 	}
 	for {
-		if fileExists(filepath.Join(current, "cmd", "sn-cli", "main.go")) &&
+		if fileExists(filepath.Join(current, "sncli", "cmd", "sn-cli", "main.go")) &&
 			fileExists(filepath.Join(current, "sncli", "conf", "default.json")) {
 			return current, nil
 		}
@@ -106,13 +97,6 @@ func FindRoot() (string, error) {
 	return "", fmt.Errorf("cannot locate sn-cli runtime repo; set SN_CLI_ROOT")
 }
 
-func (c *Config) SinanRoot() string {
-	if root := strings.TrimSpace(os.Getenv("SINAN_ROOT")); root != "" {
-		return root
-	}
-	return c.Root
-}
-
 func (c *Config) Validate() error {
 	if c.SchemaVersion != 1 {
 		return fmt.Errorf("schema_version must be 1")
@@ -120,20 +104,11 @@ func (c *Config) Validate() error {
 	if c.DefaultProvider == "" {
 		return fmt.Errorf("default_provider is required")
 	}
-	if c.Runtime.Command == "" {
-		return fmt.Errorf("runtime.command is required")
-	}
 	if c.Paths.SessionsRoot == "" {
 		return fmt.Errorf("paths.sessions_root is required")
 	}
 	if c.Native.Project == "" {
 		return fmt.Errorf("native.project is required")
-	}
-	if c.Native.ConfDir == "" {
-		return fmt.Errorf("native.conf_dir is required")
-	}
-	if c.Native.RunsDir == "" {
-		return fmt.Errorf("native.runs_dir is required")
 	}
 	for name, tool := range c.Tools {
 		if tool.Command == "" {
@@ -143,37 +118,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func (c *Config) RuntimeCommandPath() string {
-	return c.ResolvePathWithRuntimeFallback(c.Runtime.Command)
-}
-
 func (c *Config) SessionsRoot() string {
 	return c.ResolvePath(c.Paths.SessionsRoot)
-}
-
-func (c *Config) NativePython() string {
-	python := strings.TrimSpace(c.Native.Python)
-	if python != "" && python != "python3" {
-		return c.ResolvePath(python)
-	}
-	if c.Root != "" {
-		venvPython := filepath.Join(c.Root, ".venv", "bin", "python3")
-		if fileExists(venvPython) {
-			return venvPython
-		}
-	}
-	if python != "" {
-		return python
-	}
-	return "python3"
-}
-
-func (c *Config) NativeConfDir() string {
-	return c.ResolvePathWithRuntimeFallback(c.Native.ConfDir)
-}
-
-func (c *Config) NativeRunsDir() string {
-	return c.ResolvePathWithRuntimeFallback(c.Native.RunsDir)
 }
 
 func (c *Config) NativeProfile(provider string) string {
@@ -186,21 +132,6 @@ func (c *Config) UpdateStateFile() string {
 
 func (c *Config) UpdateInstallScript() string {
 	return c.ResolvePath(c.Update.InstallScript)
-}
-
-func (c *Config) ResolvePathWithRuntimeFallback(path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	if _, err := os.Stat(filepath.Join(c.Root, path)); err == nil {
-		return filepath.Join(c.Root, path)
-	}
-	if sinanRoot := c.SinanRoot(); sinanRoot != "" {
-		if _, err := os.Stat(filepath.Join(sinanRoot, path)); err == nil {
-			return filepath.Join(sinanRoot, path)
-		}
-	}
-	return c.ResolvePath(path)
 }
 
 func (c *Config) ResolvePath(path string) string {
@@ -232,9 +163,6 @@ func mergeConfig(base, overlay *Config) {
 	if overlay.DefaultProvider != "" {
 		base.DefaultProvider = overlay.DefaultProvider
 	}
-	if overlay.Runtime.Command != "" {
-		base.Runtime.Command = overlay.Runtime.Command
-	}
 	if overlay.Runtime.DefaultSandbox != "" {
 		base.Runtime.DefaultSandbox = overlay.Runtime.DefaultSandbox
 	}
@@ -243,15 +171,6 @@ func mergeConfig(base, overlay *Config) {
 	}
 	if overlay.Paths.SessionsRoot != "" {
 		base.Paths.SessionsRoot = overlay.Paths.SessionsRoot
-	}
-	if overlay.Native.Python != "" {
-		base.Native.Python = overlay.Native.Python
-	}
-	if overlay.Native.ConfDir != "" {
-		base.Native.ConfDir = overlay.Native.ConfDir
-	}
-	if overlay.Native.RunsDir != "" {
-		base.Native.RunsDir = overlay.Native.RunsDir
 	}
 	if overlay.Native.Project != "" {
 		base.Native.Project = overlay.Native.Project
@@ -277,22 +196,13 @@ func mergeConfig(base, overlay *Config) {
 
 func applyDefaults(c *Config) {
 	if c.DefaultProvider == "" {
-		c.DefaultProvider = "codex"
+		c.DefaultProvider = "cx"
 	}
 	if c.Runtime.DefaultSandbox == "" {
 		c.Runtime.DefaultSandbox = "read-only"
 	}
 	if c.Runtime.DefaultTimeoutSeconds == 0 {
 		c.Runtime.DefaultTimeoutSeconds = 1800
-	}
-	if c.Native.Python == "" {
-		c.Native.Python = "python3"
-	}
-	if c.Native.ConfDir == "" {
-		c.Native.ConfDir = "apps/runtime/conf"
-	}
-	if c.Native.RunsDir == "" {
-		c.Native.RunsDir = "runs/global/runtime"
 	}
 	if c.Native.Project == "" {
 		c.Native.Project = "agent"
@@ -301,10 +211,10 @@ func applyDefaults(c *Config) {
 		c.Native.Profiles = map[string]string{}
 	}
 	if c.Native.Profiles["codex"] == "" {
-		c.Native.Profiles["codex"] = "tmux-codex"
+		c.Native.Profiles["codex"] = "tcx"
 	}
 	if c.Native.Profiles["claude"] == "" {
-		c.Native.Profiles["claude"] = "tmux-claude"
+		c.Native.Profiles["claude"] = "tcc"
 	}
 	if c.Tools == nil {
 		c.Tools = map[string]ToolConfig{}
