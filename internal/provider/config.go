@@ -28,8 +28,8 @@ var ReservedCommands = map[string]struct{}{
 	"step": {}, "send": {}, "interrupt": {}, "block": {}, "continue": {},
 	"patch-resume": {}, "stop": {}, "attach": {},
 	"choices": {}, "validate": {}, "help": {}, "version": {}, "list": {},
-	"completion": {},
-	"daemon":     {},
+	"completion": {}, "prompt": {},
+	"daemon": {},
 }
 
 type Config struct {
@@ -117,6 +117,7 @@ type CommandConfig struct {
 type CLIRuntime struct {
 	PromptDelivery string         `json:"prompt_delivery"`
 	PromptArgs     []string       `json:"prompt_args,omitempty"`
+	ManagedArgs    []string       `json:"managed_args,omitempty"`
 	ResultContract string         `json:"result_contract"`
 	OverridePolicy OverridePolicy `json:"override_policy,omitempty"`
 }
@@ -494,6 +495,9 @@ func validateCLI(cfg *Config, source string) error {
 		}
 		if len(cli.Runtime.PromptArgs) > 0 {
 			return fmt.Errorf("%s: tmux 不支持 cli.runtime.prompt_args", source)
+		}
+		if len(cli.Runtime.ManagedArgs) > 0 {
+			return fmt.Errorf("%s: tmux 不支持 cli.runtime.managed_args", source)
 		}
 		if strings.TrimSpace(cli.Tmux.SessionName) == "" {
 			return fmt.Errorf("%s: cli.tmux.session_name is required", source)

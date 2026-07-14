@@ -175,6 +175,9 @@ func (c *Client) start() error {
 	if err := os.MkdirAll(c.config.Dir, 0o700); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(c.config.LogPath()), 0o700); err != nil {
+		return err
+	}
 	executable, err := c.executable()
 	if err != nil {
 		return err
@@ -185,7 +188,7 @@ func (c *Client) start() error {
 	}
 	defer logFile.Close()
 	command := exec.Command(executable, "daemon", "serve")
-	command.Env = append(os.Environ(), "SN_CLI_ROOT="+c.config.Root, "AGENT_RUNTIME_DAEMON_DIR="+c.config.Dir, "AGENT_RUNTIME_VERSION="+c.config.Version)
+	command.Env = append(os.Environ(), "SN_CLI_HOME="+c.config.Home, "AGENT_RUNTIME_VERSION="+c.config.Version)
 	command.Stdin = nil
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -204,7 +207,7 @@ func (c *Client) executable() (string, error) {
 	if filepath.Base(self) == "sn-cli" {
 		return self, nil
 	}
-	candidate := filepath.Join(c.config.Root, "runs", "global", "sn-cli", "storage", "current", "bin", "sn-cli")
+	candidate := filepath.Join(c.config.Home, "bin", "sn-cli")
 	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 		return candidate, nil
 	}

@@ -110,7 +110,7 @@ func startBackendTestDaemon(t *testing.T) *daemon.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := daemon.Config{Root: t.TempDir(), Dir: dir, Version: "provider-test", IdleTimeout: time.Minute}
+	config := daemon.Config{Home: t.TempDir(), Dir: dir, Version: "provider-test", IdleTimeout: time.Minute}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	server := daemon.NewServer(config)

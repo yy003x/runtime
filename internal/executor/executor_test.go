@@ -113,3 +113,18 @@ func TestRunCancellationKillsProcessGroup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestRunInteractiveExecutesWithoutCapture(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "interactive.txt")
+	result, err := Run(context.Background(), Options{
+		Argv: []string{"sh", "-c", "printf interactive > \"$OUTPUT\""},
+		Env:  append(os.Environ(), "OUTPUT="+output), Interactive: true, ForwardSignals: true,
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	data, readErr := os.ReadFile(output)
+	if readErr != nil || string(data) != "interactive" {
+		t.Fatalf("output=%q err=%v", data, readErr)
+	}
+}

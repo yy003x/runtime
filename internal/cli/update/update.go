@@ -5,246 +5,306 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"agent-runtime/internal/cli/config"
+	"agent-runtime/internal/installbundle"
 )
-
-const gitTimeout = 2 * time.Second
 
 type Status struct {
 	SchemaVersion   int       `json:"schema_version"`
 	Enabled         bool      `json:"enabled"`
-	Root            string    `json:"root"`
-	Ref             string    `json:"ref"`
-	CurrentCommit   string    `json:"current_commit,omitempty"`
-	LatestCommit    string    `json:"latest_commit,omitempty"`
-	Relation        string    `json:"relation,omitempty"`
+	Repository      string    `json:"repository"`
+	CurrentVersion  string    `json:"current_version"`
+	LatestVersion   string    `json:"latest_version,omitempty"`
 	UpdateAvailable bool      `json:"update_available"`
 	CheckedAt       time.Time `json:"checked_at"`
 	Message         string    `json:"message,omitempty"`
 	Error           string    `json:"error,omitempty"`
 }
 
+type ApplyResult struct {
+	Version       string   `json:"version"`
+	Archive       string   `json:"archive"`
+	Binary        string   `json:"binary"`
+	CopiedConfigs []string `json:"copied_configs"`
+}
+
 type state struct {
-	CheckedAt     time.Time `json:"checked_at"`
-	CurrentCommit string    `json:"current_commit,omitempty"`
-	LatestCommit  string    `json:"latest_commit,omitempty"`
+	CheckedAt      time.Time `json:"checked_at"`
+	CurrentVersion string    `json:"current_version,omitempty"`
+	LatestVersion  string    `json:"latest_version,omitempty"`
 }
 
-func MaybePrintHint(cfg *config.Config, w io.Writer) {
-	if !cfg.UpdateEnabled() || !checkDue(cfg) {
-		return
-	}
-	status := Check(cfg)
-	if status.UpdateAvailable {
-		fmt.Fprintf(w, "sn-cli 有更新：%s -> %s，运行 `sn-cli update` 升级。\n", short(status.CurrentCommit), short(status.LatestCommit))
-	}
-}
-
-func Check(cfg *config.Config) Status {
+func Check(ctx context.Context, cfg *config.Config, currentVersion string) Status {
 	status := Status{
-		SchemaVersion: 1,
-		Enabled:       cfg.UpdateEnabled(),
-		Root:          cfg.Root,
-		Ref:           cfg.Update.Ref,
-		CheckedAt:     time.Now().UTC(),
+		SchemaVersion: 1, Enabled: cfg.UpdateEnabled(), Repository: cfg.Update.Repository,
+		CurrentVersion: currentVersion, CheckedAt: time.Now().UTC(),
 	}
 	if !status.Enabled {
 		status.Message = "update check disabled"
 		return status
 	}
-	current, err := gitOutput(cfg.Root, "rev-parse", "HEAD")
+	latest, err := latestRelease(ctx, cfg)
 	if err != nil {
 		status.Error = err.Error()
+		status.Message = "update check failed"
 		_ = writeState(cfg, status)
 		return status
 	}
-	latest, err := latestRemoteCommit(cfg.Root, cfg.Update.Ref)
-	if err != nil {
-		status.Error = err.Error()
-		status.CurrentCommit = current
-		_ = writeState(cfg, status)
-		return status
-	}
-	status.CurrentCommit = current
-	status.LatestCommit = latest
-	status.Relation = commitRelation(cfg.Root, current, latest)
-	status.UpdateAvailable = status.Relation == "behind"
-	switch status.Relation {
-	case "behind":
+	status.LatestVersion = latest
+	status.UpdateAvailable = normalizeVersion(latest) != normalizeVersion(currentVersion)
+	if status.UpdateAvailable {
 		status.Message = "update available"
-	case "up_to_date":
+	} else {
 		status.Message = "up to date"
-	case "ahead":
-		status.Message = "local checkout is ahead of remote"
-	case "diverged":
-		status.Message = "local checkout diverged from remote"
-	default:
-		status.Message = "remote relation unknown"
 	}
 	_ = writeState(cfg, status)
 	return status
 }
 
-func Apply(cfg *config.Config, installDir string, ref string) error {
-	if ref == "" {
-		ref = cfg.Update.Ref
+func Plan(cfg *config.Config, version string) (archiveName, archiveURL, checksumURL string, err error) {
+	if strings.TrimSpace(version) == "" {
+		return "", "", "", fmt.Errorf("release version is required")
 	}
-	if ref == "" {
-		ref = "main"
-	}
-	if dirty, err := dirtyTrackedFiles(cfg.Root); err != nil {
-		return err
-	} else if dirty {
-		return fmt.Errorf("runtime checkout has uncommitted tracked changes; commit or stash before update: %s", cfg.Root)
-	}
-	if _, err := gitOutputWithTimeout(30*time.Second, cfg.Root, "fetch", "origin", ref); err != nil {
-		return err
-	}
-	branch, err := gitOutput(cfg.Root, "rev-parse", "--abbrev-ref", "HEAD")
+	osName, arch, err := platform()
 	if err != nil {
-		return err
+		return "", "", "", err
 	}
-	if branch == ref {
-		if _, err := gitOutputWithTimeout(60*time.Second, cfg.Root, "pull", "--ff-only", "origin", ref); err != nil {
-			return err
-		}
-	} else {
-		if _, err := gitOutputWithTimeout(30*time.Second, cfg.Root, "checkout", "--detach", "FETCH_HEAD"); err != nil {
-			return err
-		}
+	archiveName = fmt.Sprintf("sn-cli-%s-%s.tar.gz", osName, arch)
+	base := strings.TrimRight(os.Getenv("SN_CLI_RELEASE_BASE_URL"), "/")
+	if base == "" {
+		base = fmt.Sprintf("https://github.com/%s/releases/download", cfg.Update.Repository)
 	}
-	script := cfg.UpdateInstallScript()
-	if info, err := os.Stat(script); err != nil || info.IsDir() {
-		return fmt.Errorf("install script not found: %s", script)
-	}
-	args := []string{script, "--local-repo", cfg.Root, "--ref", ref}
-	cmd := exec.Command("bash", args...)
-	cmd.Dir = cfg.Root
-	cmd.Env = os.Environ()
-	if installDir != "" {
-		cmd.Env = append(cmd.Env, "SN_CLI_INSTALL_DIR="+installDir)
-	}
-	if cfg.Update.RepoURL != "" {
-		cmd.Env = append(cmd.Env, "SN_CLI_REPO_URL="+cfg.Update.RepoURL)
-	}
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	releaseBase := base + "/" + version
+	return archiveName, releaseBase + "/" + archiveName, releaseBase + "/checksums.txt", nil
 }
 
-func checkDue(cfg *config.Config) bool {
-	path := cfg.UpdateStateFile()
-	data, err := os.ReadFile(path)
+func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult, error) {
+	if strings.TrimSpace(version) == "" {
+		latest, err := latestRelease(ctx, cfg)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		version = latest
+	}
+	archiveName, archiveURL, checksumURL, err := Plan(cfg, version)
 	if err != nil {
-		return true
+		return ApplyResult{}, err
 	}
-	var st state
-	if err := json.Unmarshal(data, &st); err != nil {
-		return true
+	if err := os.MkdirAll(cfg.Paths.TmpDir, 0o700); err != nil {
+		return ApplyResult{}, err
 	}
-	interval := time.Duration(cfg.Update.CheckIntervalHours) * time.Hour
-	if interval <= 0 {
-		interval = 24 * time.Hour
+	temporary, err := os.MkdirTemp(cfg.Paths.TmpDir, "update-")
+	if err != nil {
+		return ApplyResult{}, err
 	}
-	return time.Since(st.CheckedAt) >= interval
+	defer os.RemoveAll(temporary)
+	archivePath := filepath.Join(temporary, archiveName)
+	checksumsPath := filepath.Join(temporary, "checksums.txt")
+	client := &http.Client{Timeout: 2 * time.Minute}
+	if err := download(ctx, client, archiveURL, archivePath); err != nil {
+		return ApplyResult{}, err
+	}
+	if err := download(ctx, client, checksumURL, checksumsPath); err != nil {
+		return ApplyResult{}, err
+	}
+	checksums, err := os.ReadFile(checksumsPath)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if err := installbundle.VerifyChecksum(archivePath, archiveName, checksums); err != nil {
+		return ApplyResult{}, err
+	}
+	payload := filepath.Join(temporary, "payload")
+	if err := installbundle.ExtractTarGz(archivePath, payload); err != nil {
+		return ApplyResult{}, err
+	}
+	binary := filepath.Join(payload, "sn-cli")
+	packagedConfigs := filepath.Join(payload, "configs")
+	if err := validatePayload(binary, packagedConfigs); err != nil {
+		return ApplyResult{}, err
+	}
+	if info, err := os.Lstat(cfg.Paths.Binary); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return ApplyResult{}, fmt.Errorf("binary target is not a regular file: %s", cfg.Paths.Binary)
+	} else if err != nil && !os.IsNotExist(err) {
+		return ApplyResult{}, err
+	}
+	mergedHome := filepath.Join(temporary, "merged-home")
+	mergedConfigs := filepath.Join(mergedHome, "configs")
+	if info, err := os.Stat(cfg.Paths.ConfigDir); err == nil && info.IsDir() {
+		if _, err := installbundle.SyncMissing(cfg.Paths.ConfigDir, mergedConfigs); err != nil {
+			return ApplyResult{}, err
+		}
+	}
+	if _, err := installbundle.SyncMissing(packagedConfigs, mergedConfigs); err != nil {
+		return ApplyResult{}, err
+	}
+	if err := validateBinary(ctx, binary, mergedHome); err != nil {
+		return ApplyResult{}, err
+	}
+	syncResult, err := installbundle.SyncMissing(packagedConfigs, cfg.Paths.ConfigDir)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if err := installBinary(binary, cfg.Paths.Binary); err != nil {
+		return ApplyResult{}, err
+	}
+	result := ApplyResult{Version: version, Archive: archiveName, Binary: cfg.Paths.Binary, CopiedConfigs: syncResult.Copied}
+	_ = writeState(cfg, Status{CheckedAt: time.Now().UTC(), CurrentVersion: version, LatestVersion: version})
+	return result, nil
+}
+
+func latestRelease(ctx context.Context, cfg *config.Config) (string, error) {
+	if version := strings.TrimSpace(os.Getenv("SN_CLI_LATEST_VERSION")); version != "" {
+		return version, nil
+	}
+	endpoint := strings.TrimSpace(os.Getenv("SN_CLI_RELEASE_API_URL"))
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", cfg.Update.Repository)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "sn-cli-update")
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		return "", fmt.Errorf("check latest release: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("check latest release: HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode latest release: %w", err)
+	}
+	if strings.TrimSpace(payload.TagName) == "" {
+		return "", fmt.Errorf("latest release has no tag_name")
+	}
+	return payload.TagName, nil
+}
+
+func download(ctx context.Context, client *http.Client, source, target string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("User-Agent", "sn-cli-update")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", source, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("download %s: HTTP %d", source, response.StatusCode)
+	}
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(file, io.LimitReader(response.Body, 1<<30))
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func validatePayload(binary, configs string) error {
+	info, err := os.Stat(binary)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		return fmt.Errorf("release archive has no executable sn-cli")
+	}
+	if info, err := os.Stat(configs); err != nil || !info.IsDir() {
+		return fmt.Errorf("release archive has no configs directory")
+	}
+	return nil
+}
+
+func validateBinary(ctx context.Context, binary, home string) error {
+	command := exec.CommandContext(ctx, binary, "profiles")
+	command.Env = replaceEnv(os.Environ(), "SN_CLI_HOME", home)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("validate new sn-cli: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func installBinary(source, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	temporary := fmt.Sprintf("%s.new.%d", target, os.Getpid())
+	output, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(temporary)
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		_ = os.Remove(temporary)
+		return fmt.Errorf("replace sn-cli binary: %w", err)
+	}
+	return nil
+}
+
+func replaceEnv(environment []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, item := range environment {
+		if !strings.HasPrefix(item, prefix) {
+			result = append(result, item)
+		}
+	}
+	return append(result, prefix+value)
+}
+
+func platform() (string, string, error) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return "", "", fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+	}
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		return "", "", fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
+	}
+	return runtime.GOOS, runtime.GOARCH, nil
+}
+
+func normalizeVersion(value string) string {
+	return strings.TrimPrefix(strings.TrimSpace(value), "v")
 }
 
 func writeState(cfg *config.Config, status Status) error {
 	path := cfg.UpdateStateFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(state{
-		CheckedAt:     status.CheckedAt,
-		CurrentCommit: status.CurrentCommit,
-		LatestCommit:  status.LatestCommit,
-	}, "", "  ")
+	data, err := json.MarshalIndent(state{CheckedAt: status.CheckedAt, CurrentVersion: status.CurrentVersion, LatestVersion: status.LatestVersion}, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
-}
-
-func latestRemoteCommit(root string, ref string) (string, error) {
-	if ref == "" {
-		ref = "main"
-	}
-	out, err := gitOutput(root, "ls-remote", "origin", "refs/heads/"+ref)
-	if err != nil {
-		return "", err
-	}
-	if out == "" {
-		out, err = gitOutput(root, "ls-remote", "origin", ref)
-		if err != nil {
-			return "", err
-		}
-	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 {
-		return "", fmt.Errorf("remote ref not found: %s", ref)
-	}
-	return fields[0], nil
-}
-
-func dirtyTrackedFiles(root string) (bool, error) {
-	out, err := gitOutput(root, "status", "--porcelain", "--untracked-files=no")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(out) != "", nil
-}
-
-func commitRelation(root string, current string, latest string) string {
-	if current == "" || latest == "" {
-		return "unknown"
-	}
-	if current == latest {
-		return "up_to_date"
-	}
-	if isAncestor(root, current, latest) {
-		return "behind"
-	}
-	if isAncestor(root, latest, current) {
-		return "ahead"
-	}
-	return "diverged"
-}
-
-func isAncestor(root string, ancestor string, descendant string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", ancestor, descendant)
-	return cmd.Run() == nil
-}
-
-func gitOutput(root string, args ...string) (string, error) {
-	return gitOutputWithTimeout(gitTimeout, root, args...)
-}
-
-func gitOutputWithTimeout(timeout time.Duration, root string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("git %s timed out", strings.Join(args, " "))
-	}
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func short(commit string) string {
-	if len(commit) <= 7 {
-		return commit
-	}
-	return commit[:7]
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }

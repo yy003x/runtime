@@ -124,7 +124,7 @@ func (s *Service) LoopStart(options LoopStartOptions) (PersistentLoopStatus, err
 	if err != nil {
 		return PersistentLoopStatus{}, err
 	}
-	if err := os.MkdirAll(paths.LoopDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.LoopDir, 0o700); err != nil {
 		return PersistentLoopStatus{}, err
 	}
 	if options.Force {

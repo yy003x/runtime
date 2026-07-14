@@ -1,8 +1,8 @@
 # Build output
 /bin/
+/dist/
 
 # Logs and runtime artifacts
-/log/
 /logs/
 /runs/
 *.log

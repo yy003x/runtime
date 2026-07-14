@@ -12,15 +12,19 @@ import (
 	"time"
 
 	"agent-runtime/internal/daemon"
+	"agent-runtime/internal/layout"
 	"agent-runtime/internal/provider"
 )
 
 var Version = "dev"
 
 type Service struct {
-	Root           string
+	Home           string
 	ConfigDir      string
+	PersonaDir     string
 	RunsDir        string
+	StateDir       string
+	paths          layout.Paths
 	DefaultProject string
 	DefaultProfile string
 	RuntimeVersion string
@@ -82,26 +86,33 @@ func (s *runProviderSink) appendStream(name string, value []byte) error {
 	return nil
 }
 
-func New(root string) *Service {
-	settings, err := loadSettings(root)
+func New(home string) *Service {
+	paths, pathErr := layout.FromHome(home)
+	if pathErr != nil {
+		return &Service{Home: home, RuntimeVersion: Version, configErr: pathErr}
+	}
+	settings, err := loadSettings(paths.ConfigDir)
 	return &Service{
-		Root: root, ConfigDir: rooted(root, settings.ProviderConfigDir),
-		RunsDir: rooted(root, settings.RunsDir), DefaultProject: settings.DefaultProject,
+		Home: paths.Home, ConfigDir: paths.ConfigDir, PersonaDir: paths.PersonaDir,
+		RunsDir: paths.RunsDir, StateDir: paths.StateDir, paths: paths, DefaultProject: settings.DefaultProject,
 		DefaultProfile: settings.DefaultProfile, MaxConcurrency: settings.MaxConcurrency,
 		RuntimeVersion: Version, configErr: err,
 	}
 }
 
 func (s *Service) DaemonConfig() daemon.Config {
-	dir := os.Getenv("AGENT_RUNTIME_DAEMON_DIR")
-	if dir == "" {
-		dir = filepath.Join(s.RunsDir, "daemon")
-	}
 	version := os.Getenv("AGENT_RUNTIME_VERSION")
 	if version == "" {
 		version = s.RuntimeVersion
 	}
-	return daemon.Config{Root: s.Root, Dir: dir, Version: version}
+	executable := ""
+	if info, err := os.Stat(s.paths.Binary); err == nil && !info.IsDir() {
+		executable = s.paths.Binary
+	}
+	return daemon.Config{
+		Home: s.Home, Dir: s.paths.DaemonDir, LogFile: s.paths.DaemonLog,
+		Executable: executable, Version: version,
+	}
 }
 
 func (s *Service) DaemonClient() *daemon.Client {
@@ -247,7 +258,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		DoneFile:     paths.DoneFile,
 		OutputLog:    paths.OutputLog,
 		SnapshotFile: filepath.Join(paths.RunDir, "native-snapshot.json"),
-		PersonaDir:   rooted(s.Root, "configs/personas"),
+		PersonaDir:   s.PersonaDir,
 	}
 	prepared, err := selectedProvider.Prepare(runCtx, profile, providerRequest)
 	if err != nil {

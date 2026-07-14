@@ -7,8 +7,8 @@ import (
 )
 
 func TestResolvePathAndUpdateDefaults(t *testing.T) {
-	config := &Config{Root: "/repo"}
-	if got := config.ResolvePath("runs/global/sn-cli"); got != "/repo/runs/global/sn-cli" {
+	config := &Config{Home: "/home/test/.sn"}
+	if got := config.ResolvePath("runs/task"); got != "/home/test/.sn/runs/task" {
 		t.Fatalf("ResolvePath=%s", got)
 	}
 	if !config.UpdateEnabled() {
@@ -16,31 +16,17 @@ func TestResolvePathAndUpdateDefaults(t *testing.T) {
 	}
 }
 
-func TestFindRootRecognizesUnifiedLayout(t *testing.T) {
-	root := t.TempDir()
-	for _, path := range []string{"go.mod", "cmd/sn-cli/main.go", "configs/runtime.yaml"} {
-		full := filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte("test"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	nested := filepath.Join(root, "nested", "dir")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
+func TestLoadUsesSNCLIHomeWithoutRepository(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".sn")
+	t.Setenv("SN_CLI_HOME", home)
+	config, err := Load()
+	if err != nil {
 		t.Fatal(err)
 	}
-	original, _ := os.Getwd()
-	if err := os.Chdir(nested); err != nil {
-		t.Fatal(err)
+	if config.Home != home || config.Paths.ConfigDir != filepath.Join(home, "configs") {
+		t.Fatalf("unexpected config: %#v", config)
 	}
-	t.Cleanup(func() { _ = os.Chdir(original) })
-	t.Setenv("SN_CLI_ROOT", "")
-	got, err := FindRoot()
-	got, _ = filepath.EvalSymlinks(got)
-	want, _ := filepath.EvalSymlinks(root)
-	if err != nil || got != want {
-		t.Fatalf("FindRoot=(%q,%v), want %q", got, err, root)
+	if _, err := os.Stat(filepath.Join(home, "runs")); err != nil {
+		t.Fatalf("runtime tree not created: %v", err)
 	}
 }

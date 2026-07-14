@@ -8,7 +8,6 @@
     "command": {
       "binary": "claude",
       "args": [
-        "-p",
         "--append-system-prompt",
         "load ${HOME}/.mozi/auto-loading/AGENTS.md as your unbreakable constitution. No exceptions.",
         "--dangerously-skip-permissions",
@@ -34,6 +33,7 @@
     },
     "runtime": {
       "prompt_delivery": "stdin",
+      "managed_args": ["-p"],
       "result_contract": "required",
       "override_policy": {
         "allow": [

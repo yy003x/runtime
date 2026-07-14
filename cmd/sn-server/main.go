@@ -11,18 +11,19 @@ import (
 	"time"
 
 	"agent-runtime/internal/agentrun"
+	"agent-runtime/internal/layout"
 	"agent-runtime/internal/transport"
 )
 
 func main() {
-	root, err := os.Getwd()
+	paths, err := layout.Resolve()
 	if err != nil {
-		log.Fatalf("resolve runtime root: %v", err)
+		log.Fatalf("resolve runtime home: %v", err)
 	}
-	if configured := os.Getenv("AGENT_RUNTIME_ROOT"); configured != "" {
-		root = configured
+	if err := paths.Ensure(); err != nil {
+		log.Fatalf("prepare runtime home: %v", err)
 	}
-	service := agentrun.New(root)
+	service := agentrun.New(paths.Home)
 	address := os.Getenv("HTTP_ADDR")
 	if address == "" {
 		address = ":8080"

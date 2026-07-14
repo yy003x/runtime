@@ -106,6 +106,7 @@ func prepareCLI(cfg Config, prompt string, overrides map[string]any) (CLIRequest
 	if model != "" {
 		args = append(args, "--model", model)
 	}
+	args = append(args, cli.Runtime.ManagedArgs...)
 	argv := append([]string{expandHome(cli.Command.Binary)}, args...)
 	stdin := ""
 	switch cli.Runtime.PromptDelivery {
@@ -125,6 +126,30 @@ func prepareCLI(cfg Config, prompt string, overrides map[string]any) (CLIRequest
 		Stdin:              stdin,
 		RequestedOverrides: cloneStringMap(overrides),
 		EffectiveOptions:   effective,
+	}, nil
+}
+
+func PrepareInteractiveCLI(cfg Config, rawArgs []string) (CLIRequest, error) {
+	if cfg.Type != TypeCLI || cfg.CLI == nil || cfg.CLI.Executor != ExecutorCommand {
+		return CLIRequest{}, fmt.Errorf("profile %s is not an interactive command profile", cfg.ID)
+	}
+	cli := cfg.CLI
+	driver := cli.Driver
+	if driver == "" {
+		driver = inferDriver(cli.Command.Binary)
+	}
+	args, model, effective, err := applyCLIOverrides(driver, cli.Command.Args, cli.Command.Model, nil, allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy))
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: %w", cfg.ID, err)
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	args = append(args, rawArgs...)
+	effective["driver"] = driver
+	return CLIRequest{
+		ProfileID: cfg.ID, Driver: driver, Argv: append([]string{expandHome(cli.Command.Binary)}, args...),
+		RequestedOverrides: map[string]any{}, EffectiveOptions: effective,
 	}, nil
 }
 

@@ -51,7 +51,7 @@ func TestDaemonTmuxRegistrySurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
-	config := Config{Root: t.TempDir(), Dir: daemonDir, Version: "test-v1", IdleTimeout: time.Minute}
+	config := Config{Home: t.TempDir(), Dir: daemonDir, Version: "test-v1", IdleTimeout: time.Minute}
 	client, stop := startTestServer(t, config)
 	session, err := client.StartTmux(context.Background(), TmuxStartRequest{
 		ProcessID: "session/test", Session: "daemon-registry-test", CWD: t.TempDir(),
@@ -110,7 +110,7 @@ func TestDependencyReleasedWithTmuxProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
-	config := Config{Root: t.TempDir(), Dir: daemonDir, Version: "dep-test", IdleTimeout: time.Minute}
+	config := Config{Home: t.TempDir(), Dir: daemonDir, Version: "dep-test", IdleTimeout: time.Minute}
 	client, stop := startTestServer(t, config)
 	defer stop(true)
 	session, err := client.StartTmux(context.Background(), TmuxStartRequest{
@@ -141,7 +141,7 @@ func TestStatusReleasesDependencyWhenTmuxDisappears(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
-	config := Config{Root: t.TempDir(), Dir: daemonDir, Version: "stale-test", IdleTimeout: time.Minute}
+	config := Config{Home: t.TempDir(), Dir: daemonDir, Version: "stale-test", IdleTimeout: time.Minute}
 	client, stop := startTestServer(t, config)
 	defer stop(true)
 	session, err := client.StartTmux(context.Background(), TmuxStartRequest{

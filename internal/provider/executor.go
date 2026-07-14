@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"agent-runtime/internal/daemon"
 	"agent-runtime/internal/executor"
 )
 
@@ -38,6 +39,34 @@ func ExecuteCLI(ctx context.Context, cfg Config, request CLIRequest, cwd string,
 
 func ExecuteCLIWithObserver(ctx context.Context, cfg Config, request CLIRequest, cwd string, extraEnv map[string]string, observer func(ExecutionInfo)) (Result, error) {
 	return executeCLIStreaming(ctx, cfg, request, cwd, extraEnv, observer, nil, nil, nil)
+}
+
+func ExecuteCLIInteractive(ctx context.Context, cfg Config, request CLIRequest, cwd string, client *daemon.Client) (Result, error) {
+	if len(request.Argv) == 0 {
+		return Result{ExitCode: 1}, fmt.Errorf("profile %s: empty argv", cfg.ID)
+	}
+	environment := map[string]string{}
+	if requiresDaemon(cfg) {
+		if client == nil {
+			return Result{ExitCode: 1}, fmt.Errorf("profile %s: daemon client is required", cfg.ID)
+		}
+		execution, err := daemonExecution(cfg)
+		if err != nil {
+			return Result{ExitCode: 1}, err
+		}
+		processID := fmt.Sprintf("interactive/%s/%d", cfg.ID, os.Getpid())
+		injected, err := client.Acquire(ctx, processID, daemonDependencies(cfg), execution)
+		if err != nil {
+			return Result{ExitCode: 1}, err
+		}
+		defer func() { _ = client.Release(context.Background(), processID) }()
+		environment = injected
+	}
+	execution, err := executor.Run(ctx, executor.Options{
+		Argv: request.Argv, Env: CommandEnvironment(cfg.CLI.Command, environment), Dir: cwd,
+		Interactive: true, ForwardSignals: true,
+	})
+	return Result{ExitCode: execution.ExitCode, PID: execution.PID, PGID: execution.PGID}, err
 }
 
 func executeCLIStreaming(

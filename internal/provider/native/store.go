@@ -35,7 +35,7 @@ func (s *FileStore) Load() (Snapshot, error) {
 }
 
 func (s *FileStore) Save(snapshot Snapshot) error {
-	if err := os.MkdirAll(filepath.Dir(s.SnapshotPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.SnapshotPath), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(snapshot, "", "  ")

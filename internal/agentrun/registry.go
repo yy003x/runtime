@@ -78,8 +78,8 @@ func (s *Service) Prune(dryRun bool) (map[string]any, error) {
 }
 
 func (s *Service) withRegistry(persist bool, update func(*registryDocument)) error {
-	stateDir := filepath.Join(s.RunsDir, "state", "current")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	stateDir := filepath.Join(s.StateDir, "runs")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
 	lock, err := os.OpenFile(filepath.Join(stateDir, "registry.lock"), os.O_CREATE|os.O_RDWR, 0o644)

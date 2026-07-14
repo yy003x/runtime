@@ -98,7 +98,7 @@ func (m *Memory) save() error {
 	if m.Path == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(m.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(m.Path), 0o700); err != nil {
 		return err
 	}
 	items := make([]MemoryItem, 0, len(m.items))

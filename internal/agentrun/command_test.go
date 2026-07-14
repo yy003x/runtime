@@ -161,11 +161,6 @@ func TestCancelTmuxRunCleansDaemonRegistry(t *testing.T) {
 
 func startAgentRunTestDaemon(t *testing.T, service *Service) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "agentrun-daemon-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AGENT_RUNTIME_DAEMON_DIR", dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	server := daemon.NewServer(service.DaemonConfig())
@@ -181,7 +176,6 @@ func startAgentRunTestDaemon(t *testing.T, service *Service) {
 				case <-time.After(3 * time.Second):
 					cancel()
 				}
-				_ = os.RemoveAll(dir)
 			})
 			return
 		}

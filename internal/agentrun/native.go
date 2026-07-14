@@ -28,7 +28,7 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 	prepared, err := selected.Prepare(ctx, profile, provider.Request{
 		Overrides: request.ProviderOverrides, CWD: request.CWD, HTTPClient: s.HTTPClient, Profiles: profiles,
 		RunID: runID, SnapshotFile: filepath.Join(paths.RunDir, "native-snapshot.json"),
-		PersonaDir: rooted(s.Root, "configs/personas"), NativeResume: true, NativePatch: patch,
+		PersonaDir: s.PersonaDir, NativeResume: true, NativePatch: patch,
 	})
 	if err != nil {
 		return s.fail(paths, request, providerStatus, "provider_error", err)

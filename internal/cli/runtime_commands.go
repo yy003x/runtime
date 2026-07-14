@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,7 +22,7 @@ import (
 )
 
 func runRuntimeDoctor(cfg *config.Config, args []string) error {
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	if len(args) > 0 && args[0] == "daemon" {
 		status, notice, err := service.DaemonClient().EnsureRunning(context.Background())
 		if err != nil {
@@ -54,7 +53,7 @@ func runDaemonCommand(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: daemon start|status|stop|restart")
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	client := service.DaemonClient()
 	switch args[0] {
 	case "serve":
@@ -111,7 +110,7 @@ func runConfigCommand(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: config choices|validate")
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	profiles, err := service.Profiles()
 	if err != nil {
 		return err
@@ -247,7 +246,7 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: %s run|status|logs|watch|block|continue|patch-resume|stop|cancel", command)
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	runType := agentrun.RunTask
 	if command == "turn" {
 		runType = agentrun.RunTurn
@@ -460,7 +459,7 @@ func runRuntimeSession(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: session start|status|logs|send|interrupt|stop|attach")
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	ctx := context.Background()
 	switch args[0] {
 	case "start":
@@ -552,7 +551,7 @@ func runLoopCommand(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: loop run|start|step|status|logs|cancel")
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	switch args[0] {
 	case "run", "start":
 		options, err := parseLoopOptions(args[1:])
@@ -628,7 +627,7 @@ func runCommandCommand(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: command start|status|logs|watch|interrupt|stop|attach")
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	ctx := context.Background()
 	switch args[0] {
 	case "start":
@@ -788,7 +787,7 @@ func runPruneCommand(cfg *config.Config, args []string) error {
 			return fmt.Errorf("unknown prune argument: %s", arg)
 		}
 	}
-	result, err := agentrun.New(cfg.Root).Prune(!containsArg(args, "--apply"))
+	result, err := agentrun.New(cfg.Home).Prune(!containsArg(args, "--apply"))
 	if err != nil {
 		return err
 	}
@@ -912,7 +911,7 @@ func runCapabilitiesCommand(cfg *config.Config, args []string) error {
 	}
 	switch args[0] {
 	case "tools":
-		return runCapabilityTools(args[1:])
+		return runCapabilityTools(cfg, args[1:])
 	case "skills":
 		return runCapabilitySkills(cfg, args[1:])
 	case "memory":
@@ -922,15 +921,16 @@ func runCapabilitiesCommand(cfg *config.Config, args []string) error {
 	}
 }
 
-func runCapabilityTools(args []string) error {
+func runCapabilityTools(cfg *config.Config, args []string) error {
 	manager := capability.NewToolManager()
 	dir := optionValue(args, "--dir")
 	if dir == "" {
 		dir = optionValue(args, "--tools-dir")
 	}
-	if dir != "" {
-		manager.RegisterDir(dir)
+	if dir == "" {
+		dir = cfg.Paths.ToolsDir
 	}
+	manager.RegisterDir(dir)
 	command := "schemas"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
 		command = args[0]
@@ -996,7 +996,7 @@ func runCapabilitySkills(cfg *config.Config, args []string) error {
 		dir = optionValue(args[1:], "--skills-dir")
 	}
 	if dir == "" {
-		dir = filepath.Join(cfg.Root, "skills")
+		dir = cfg.Paths.SkillsDir
 	}
 	manager.RegisterDir(dir)
 	switch args[0] {
@@ -1053,7 +1053,7 @@ func runCapabilitySkills(cfg *config.Config, args []string) error {
 		if profile == "" {
 			profile = skill.DefaultProfile
 		}
-		service := agentrun.New(cfg.Root)
+		service := agentrun.New(cfg.Home)
 		run, runErr := service.Run(context.Background(), agentrun.RunOptions{
 			RunType: agentrun.RunTask, Profile: profile, ProjectID: optionValue(args[1:], "--project"),
 			RunID: optionValue(args[1:], "--run-id"), CWD: optionValue(args[1:], "--cwd"), Prompt: prompt,
@@ -1076,7 +1076,7 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 	}
 	path := optionValue(args, "--memory-file")
 	if path == "" && command != "demo" {
-		path = filepath.Join(cfg.Root, "runs", "global", "runtime", "state", "current", "memory.json")
+		path = cfg.Paths.MemoryFile
 	}
 	memory, err := capability.OpenMemory(path)
 	if err != nil {

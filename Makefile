@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-APP_NAME ?= agent-runtime
+APP_NAME ?= sn-server
 SERVER_ADDR ?= :8080
 SN_CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-dev)
 SN_CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -13,7 +13,7 @@ GOCACHE ?= /tmp/go-build
 GOMODCACHE ?= /tmp/go-mod
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
-.PHONY: help tidy fmt test build run dev check clean sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+.PHONY: help tidy fmt test build run dev check clean install release sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
 
 help:
 	@echo "Available targets:"
@@ -22,7 +22,8 @@ help:
 	@echo "  make test              - run unit tests"
 	@echo "  make build             - build server binary"
 	@echo "  make sn-cli-build      - build sn-cli binary"
-	@echo "  make sn-cli-install    - install sn-cli launcher into ~/.local/bin"
+	@echo "  make install           - build and install sn-cli into ~/.sn"
+	@echo "  make release           - build release archives for supported platforms"
 	@echo "  make sn-cli-test       - run sn-cli Go tests"
 	@echo "  make sn-cli-doctor     - run sn-cli doctor"
 	@echo "  make run               - run HTTP server"
@@ -41,23 +42,25 @@ test:
 
 build:
 	mkdir -p bin
-	$(GO_ENV) $(GO) build -ldflags "$(RUNTIME_LDFLAGS)" -o bin/$(APP_NAME) ./cmd/runtime-server
+	$(GO_ENV) $(GO) build -ldflags "$(RUNTIME_LDFLAGS)" -o bin/$(APP_NAME) ./cmd/sn-server
 
 sn-cli-build:
-	mkdir -p runs/global/sn-cli/storage/current/bin
-	$(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o runs/global/sn-cli/storage/current/bin/sn-cli ./cmd/sn-cli
+	mkdir -p bin
+	$(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o bin/sn-cli ./cmd/sn-cli
 
-sn-cli-install:
-	bash scripts/install-sn-cli.sh
+install: sn-cli-build
+	bash install.sh --binary "$(CURDIR)/bin/sn-cli" --configs "$(CURDIR)/configs"
+
+sn-cli-install: install
 
 sn-cli-test:
 	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider/... ./internal/executor ./internal/daemon ./internal/capability ./internal/transport ./internal/cli/...
 
 sn-cli-doctor: sn-cli-build
-	./cmd/sn-cli-wrapper doctor --json
+	@home="$$(mktemp -d)"; trap 'rm -rf "$$home"' EXIT; mkdir -p "$$home/configs"; cp -R configs/. "$$home/configs/"; SN_CLI_HOME="$$home" ./cmd/sn-cli-wrapper doctor --json
 
 run:
-	HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/runtime-server
+	HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/sn-server
 
 dev:
 	@echo "starting dev loop on $(SERVER_ADDR)"
@@ -73,7 +76,7 @@ dev:
 				wait "$$pid" 2>/dev/null || true; \
 			fi; \
 			last_sig="$$sig"; \
-			(HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/runtime-server) & \
+			(HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/sn-server) & \
 			pid="$$!"; \
 		fi; \
 		sleep 1; \
@@ -81,5 +84,21 @@ dev:
 
 check: fmt test
 
+release:
+	rm -rf dist
+	mkdir -p dist
+	@set -euo pipefail; \
+	for platform in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do \
+		os="$${platform%/*}"; arch="$${platform#*/}"; stage="dist/.stage-$$os-$$arch"; \
+		mkdir -p "$$stage/configs"; \
+		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" $(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o "$$stage/sn-cli" ./cmd/sn-cli; \
+		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" $(GO_ENV) $(GO) build -ldflags "$(RUNTIME_LDFLAGS)" -o "dist/sn-server-$$os-$$arch" ./cmd/sn-server; \
+		cp -R configs/. "$$stage/configs/"; \
+		COPYFILE_DISABLE=1 tar -czf "dist/sn-cli-$$os-$$arch.tar.gz" -C "$$stage" sn-cli configs; \
+		rm -rf "$$stage"; \
+	done; \
+	cd dist; \
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum sn-cli-*.tar.gz sn-server-* > checksums.txt; else shasum -a 256 sn-cli-*.tar.gz sn-server-* > checksums.txt; fi
+
 clean:
-	rm -rf bin
+	rm -rf bin dist

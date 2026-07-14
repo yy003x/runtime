@@ -38,7 +38,7 @@ func RunPaths(runsDir, runType, runID string) (Paths, error) {
 }
 
 func (p Paths) Ensure() error {
-	if err := os.MkdirAll(p.RunDir, 0o755); err != nil {
+	if err := os.MkdirAll(p.RunDir, 0o700); err != nil {
 		return fmt.Errorf("create run dir: %w", err)
 	}
 	return nil

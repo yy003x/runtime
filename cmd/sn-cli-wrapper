@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT_DIR/runs/global/sn-cli/storage/current/bin/sn-cli"
+BIN="$ROOT_DIR/bin/sn-cli"
 
 if [ ! -x "$BIN" ]; then
   echo "sn-cli binary not found: $BIN" >&2
@@ -10,5 +10,4 @@ if [ ! -x "$BIN" ]; then
   exit 127
 fi
 
-export SN_CLI_ROOT="$ROOT_DIR"
 exec "$BIN" "$@"

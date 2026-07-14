@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"agent-runtime/internal/cli/config"
+	"agent-runtime/internal/provider"
 )
 
 func TestRunProfilePrintsFinalText(t *testing.T) {
@@ -25,7 +27,7 @@ func TestRunProfilePrintsFinalText(t *testing.T) {
 }`)
 
 	stdout := captureStdout(t, func() {
-		err := runProfile(&config.Config{Root: root}, []string{"fake", "hello"})
+		err := runProfile(&config.Config{Home: root}, []string{"fake", "hello"})
 		if err != nil {
 			t.Fatalf("runProfile returned error: %v", err)
 		}
@@ -115,6 +117,52 @@ func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"fake"`) {
 		t.Fatalf("stdout=%q, want fake provider", stdout)
+	}
+}
+
+func TestInteractiveProfilePassesRawArgsWithoutRunArtifacts(t *testing.T) {
+	home := t.TempDir()
+	output := filepath.Join(home, "argv.txt")
+	script := filepath.Join(home, "tool.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OUTPUT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := provider.Config{ID: "direct", Type: provider.TypeCLI, CLI: &provider.CLIConfig{
+		Driver: "generic", Executor: provider.ExecutorCommand,
+		Command: provider.CommandConfig{Binary: script, Args: []string{"common"}, Env: map[string]string{"OUTPUT": output}},
+		Runtime: provider.CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"managed"}},
+	}}
+	code, err := runInteractiveProfile(&config.Config{Home: home}, profile, []string{"--help", "raw value"})
+	if err != nil || code != 0 {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil || string(data) != "common\n--help\nraw value\n" {
+		t.Fatalf("argv=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "runs")); !os.IsNotExist(err) {
+		t.Fatalf("interactive invocation created managed runs: %v", err)
+	}
+}
+
+func TestManagedPromptUsesAgentRunAndManagedArgs(t *testing.T) {
+	home := t.TempDir()
+	script := filepath.Join(home, "tool.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s|' \"$*\"\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, home, "direct", fmt.Sprintf(`{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":%q,"args":["common"],"model":""},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"],"result_contract":"optional"}}}`, script))
+	stdout := captureStdout(t, func() {
+		if err := runManagedPrompt(&config.Config{Home: home}, []string{"-e", "direct", "hello"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stdout, "common managed|hello") {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	matches, err := filepath.Glob(filepath.Join(home, "runs", "task", "*", "*", "result.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("result artifacts=%v err=%v", matches, err)
 	}
 }
 

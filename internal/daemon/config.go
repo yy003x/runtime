@@ -9,8 +9,9 @@ import (
 )
 
 type Config struct {
-	Root        string
+	Home        string
 	Dir         string
+	LogFile     string
 	Version     string
 	Executable  string
 	IdleTimeout time.Duration
@@ -18,7 +19,10 @@ type Config struct {
 
 func (c Config) normalized() Config {
 	if c.Dir == "" {
-		c.Dir = filepath.Join(c.Root, "runs", "global", "runtime", "daemon")
+		c.Dir = filepath.Join(c.Home, "daemon")
+	}
+	if c.LogFile == "" {
+		c.LogFile = filepath.Join(c.Home, "logs", "daemon.log")
 	}
 	if c.Version == "" {
 		c.Version = "dev"
@@ -39,7 +43,7 @@ func (c Config) SocketPath() string {
 }
 func (c Config) PIDPath() string      { return filepath.Join(c.normalized().Dir, "runtime.pid") }
 func (c Config) TokenPath() string    { return filepath.Join(c.normalized().Dir, "runtime.token") }
-func (c Config) LogPath() string      { return filepath.Join(c.normalized().Dir, "runtime.log") }
+func (c Config) LogPath() string      { return c.normalized().LogFile }
 func (c Config) RegistryPath() string { return filepath.Join(c.normalized().Dir, "processes.json") }
 
 func processAlive(pid int) bool {

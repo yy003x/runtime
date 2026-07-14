@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"agent-runtime/internal/cli/config"
 	snupdate "agent-runtime/internal/cli/update"
 	"agent-runtime/internal/cli/version"
+	"agent-runtime/internal/provider"
 )
 
 func Main(args []string) int {
@@ -32,7 +34,7 @@ func Main(args []string) int {
 	case "--version", "version":
 		fmt.Println(version.String())
 	case "profiles", "providers":
-		return exit(printProviders(cfg.Root))
+		return exit(printProviders(cfg.Home))
 	case "config":
 		return exit(runConfigCommand(cfg, args[1:]))
 	case "doctor":
@@ -41,6 +43,8 @@ func Main(args []string) int {
 		return exit(runDaemonCommand(cfg, args[1:]))
 	case "task", "turn":
 		return exit(runTaskCommand(cfg, args[0], args[1:]))
+	case "prompt":
+		return exit(runManagedPrompt(cfg, args[1:]))
 	case "loop":
 		return exit(runLoopCommand(cfg, args[1:]))
 	case "capabilities":
@@ -56,12 +60,81 @@ func Main(args []string) int {
 	case "update", "upgrade":
 		return exit(runUpdate(cfg, args[1:]))
 	default:
-		if profileConfigExists(cfg.Root, args[0]) {
+		if profile, ok := resolveProfile(cfg.Home, args[0]); ok {
+			if profile.Type == provider.TypeCLI && profile.CLI != nil && profile.CLI.Executor == provider.ExecutorCommand {
+				code, runErr := runInteractiveProfile(cfg, profile, args[1:])
+				if runErr != nil {
+					return fail(runErr)
+				}
+				return code
+			}
 			return exit(runProfile(cfg, args))
 		}
 		return fail(fmt.Errorf("unknown command %q", args[0]))
 	}
 	return 0
+}
+
+func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs []string) (int, error) {
+	request, err := provider.PrepareInteractiveCLI(profile, rawArgs)
+	if err != nil {
+		return 1, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return 1, err
+	}
+	result, err := provider.ExecuteCLIInteractive(context.Background(), profile, request, cwd, agentrun.New(cfg.Home).DaemonClient())
+	if err != nil {
+		return 1, err
+	}
+	if result.ExitCode < 0 {
+		return 1, nil
+	}
+	return result.ExitCode, nil
+}
+
+func runManagedPrompt(cfg *config.Config, args []string) error {
+	profile := ""
+	remaining := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--":
+			remaining = append(remaining, args[i:]...)
+			i = len(args)
+		case "-e", "--profile":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("%s requires value", args[i-1])
+			}
+			profile = args[i]
+		default:
+			remaining = append(remaining, args[i])
+		}
+	}
+	if profile == "" {
+		return fmt.Errorf("prompt requires -e <profile>")
+	}
+	invocationArgs := append([]string{profile}, remaining...)
+	invocation, err := parseProfileInvocation(invocationArgs)
+	if err != nil {
+		return err
+	}
+	if invocation.Prompt == "" && invocation.PromptFile == "" {
+		info, statErr := os.Stdin.Stat()
+		if statErr != nil || info.Mode()&os.ModeCharDevice != 0 {
+			return fmt.Errorf("prompt is required")
+		}
+		data, readErr := io.ReadAll(os.Stdin)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			return fmt.Errorf("prompt is required")
+		}
+		invocationArgs = append(invocationArgs, "--", string(data))
+	}
+	return runProfile(cfg, invocationArgs)
 }
 
 func printProviders(root string) error {
@@ -97,7 +170,7 @@ func runProfile(cfg *config.Config, args []string) error {
 	if invocation.ReasoningEffort != "" {
 		overrides["reasoning_effort"] = invocation.ReasoningEffort
 	}
-	service := agentrun.New(cfg.Root)
+	service := agentrun.New(cfg.Home)
 	result, err := service.Run(context.Background(), agentrun.RunOptions{
 		RunType: agentrun.RunTask, RunID: invocation.RunID, Profile: invocation.Profile,
 		Prompt: invocation.Prompt, PromptFile: invocation.PromptFile, CWD: cwd, Caller: invocation.SessionID,
@@ -216,8 +289,7 @@ func runUpdate(cfg *config.Config, args []string) error {
 	checkOnly := false
 	jsonOutput := false
 	dryRun := false
-	installDir := ""
-	ref := cfg.Update.Ref
+	targetVersion := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
@@ -229,35 +301,33 @@ func runUpdate(cfg *config.Config, args []string) error {
 			jsonOutput = true
 		case "--dry-run":
 			dryRun = true
-		case "--install-dir":
+		case "--version":
 			i++
 			if i >= len(args) {
-				return fmt.Errorf("--install-dir requires value")
+				return fmt.Errorf("--version requires value")
 			}
-			installDir = args[i]
-		case "--ref":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("--ref requires value")
-			}
-			ref = args[i]
+			targetVersion = args[i]
 		default:
 			return fmt.Errorf("unknown update argument: %s", args[i])
 		}
 	}
 	if dryRun {
-		fmt.Printf("root: %s\n", cfg.Root)
-		fmt.Printf("ref: %s\n", ref)
-		fmt.Printf("install script: %s\n", cfg.UpdateInstallScript())
-		if installDir != "" {
-			fmt.Printf("install dir: %s\n", installDir)
-		} else {
-			fmt.Println("install dir: installer default")
+		versionLabel := targetVersion
+		if versionLabel == "" {
+			versionLabel = "<latest-version>"
 		}
+		archive, archiveURL, checksumURL, err := snupdate.Plan(cfg, versionLabel)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("home: %s\nversion: %s\narchive: %s\narchive url: %s\nchecksums url: %s\n", cfg.Home, versionLabel, archive, archiveURL, checksumURL)
 		return nil
 	}
-	status := snupdate.Check(cfg)
-	if jsonOutput {
+	var status snupdate.Status
+	if checkOnly || targetVersion == "" {
+		status = snupdate.Check(context.Background(), cfg, version.Version)
+	}
+	if jsonOutput && (checkOnly || targetVersion == "") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(status); err != nil {
@@ -267,11 +337,11 @@ func runUpdate(cfg *config.Config, args []string) error {
 	if checkOnly {
 		if !jsonOutput {
 			fmt.Println(status.Message)
-			if status.CurrentCommit != "" {
-				fmt.Printf("current: %s\n", status.CurrentCommit)
+			if status.CurrentVersion != "" {
+				fmt.Printf("current: %s\n", status.CurrentVersion)
 			}
-			if status.LatestCommit != "" {
-				fmt.Printf("latest:  %s\n", status.LatestCommit)
+			if status.LatestVersion != "" {
+				fmt.Printf("latest:  %s\n", status.LatestVersion)
 			}
 		}
 		if status.Error != "" {
@@ -279,26 +349,32 @@ func runUpdate(cfg *config.Config, args []string) error {
 		}
 		return nil
 	}
-	if status.Error != "" {
-		return errors.New(status.Error)
-	}
-	if !status.UpdateAvailable {
-		if !jsonOutput {
-			fmt.Println("sn-cli already up to date")
+	if targetVersion == "" {
+		if status.Error != "" {
+			return errors.New(status.Error)
 		}
-		return nil
+		if !status.UpdateAvailable {
+			if !jsonOutput {
+				fmt.Println("sn-cli already up to date")
+			}
+			return nil
+		}
+		targetVersion = status.LatestVersion
 	}
-	return snupdate.Apply(cfg, installDir, ref)
+	result, err := snupdate.Apply(context.Background(), cfg, targetVersion)
+	if err != nil {
+		return err
+	}
+	return printJSON(map[string]any{"ok": true, "update": result})
 }
 
 func printHelp() {
 	fmt.Println(`sn-cli - Go Agent Runtime
 
 Usage:
-  sn-cli <cnf_id> [--session-id SESSION_ID] <prompt>
-  sn-cli <cnf_id> [--prompt-file FILE] [--image FILE ...]
   sn-cli cx [args...]
   sn-cli cc [args...]
+  sn-cli prompt -e <profile> [prompt...]
   sn-cli task run|status|logs|watch|block|continue|patch-resume|stop|cancel
   sn-cli turn run|status|logs|cancel
   sn-cli loop run|start|step|status|logs|cancel
@@ -311,11 +387,11 @@ Usage:
   sn-cli doctor [--json]
   sn-cli doctor daemon --json
   sn-cli daemon start|status|stop|restart
-  sn-cli update [--check|--dry-run|--install-dir DIR|--ref REF]
+  sn-cli update [--check|--dry-run|--version VERSION]
   sn-cli version
 
-Binary path: cmd/sn-cli-wrapper
-Build path:  runs/global/sn-cli/storage/current/bin/sn-cli`)
+Installed binary: ~/.sn/bin/sn-cli
+Configuration:    ~/.sn/configs`)
 }
 
 func printUpdateHelp() {
@@ -324,14 +400,13 @@ func printUpdateHelp() {
 Usage:
   sn-cli update --check
   sn-cli update --dry-run
-  sn-cli update [--install-dir DIR] [--ref REF]
+  sn-cli update [--version VERSION]
 
 Options:
   --check             Check remote version without upgrading.
   --json              Print check result as JSON.
-  --dry-run           Print upgrade plan without running git or installer.
-  --install-dir DIR   Pass install dir to scripts/install-sn-cli.sh.
-  --ref REF           Git branch or tag to upgrade from.`)
+  --dry-run           Print release download plan without changing files.
+  --version VERSION   Install a specific GitHub Release tag.`)
 }
 
 func exit(err error) int {
@@ -347,28 +422,23 @@ func fail(err error) int {
 }
 
 func profileConfigExists(root, name string) bool {
+	_, ok := resolveProfile(root, name)
+	return ok
+}
+
+func resolveProfile(root, name string) (provider.Config, bool) {
 	profileName := strings.TrimSpace(name)
 	if profileName == "" {
-		return false
+		return provider.Config{}, false
 	}
 	if filepath.Base(profileName) != profileName || strings.Contains(profileName, "..") {
-		return false
+		return provider.Config{}, false
 	}
 	profiles, err := agentrun.New(root).Profiles()
 	if err != nil {
-		return false
+		return provider.Config{}, false
 	}
-	if _, exists := profiles[profileName]; exists {
-		return true
-	}
-	for _, profile := range profiles {
-		for _, alias := range profile.Aliases {
-			if alias == profileName {
-				return true
-			}
-		}
-	}
-	return false
+	return provider.Resolve(profiles, profileName)
 }
 
 func printJSON(value any) error {
