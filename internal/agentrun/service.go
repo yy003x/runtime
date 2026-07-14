@@ -7,11 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"agent-arch/internal/provider"
+	"agent-runtime/internal/daemon"
+	"agent-runtime/internal/provider"
 )
+
+var Version = "dev"
 
 type Service struct {
 	Root           string
@@ -26,14 +30,82 @@ type Service struct {
 	configErr      error
 }
 
+type runProviderSink struct {
+	service *Service
+	paths   Paths
+	request Request
+	status  map[string]any
+	stream  sync.Mutex
+}
+
+func (s *runProviderSink) Stdout(value []byte) error {
+	return s.appendStream("stdout", value)
+}
+
+func (s *runProviderSink) Stderr(value []byte) error {
+	return s.appendStream("stderr", value)
+}
+
+func (s *runProviderSink) Event(event provider.Event) error {
+	return s.service.store.Event(s.paths, s.request, event.Type, event.Data)
+}
+
+func (s *runProviderSink) StatusPatch(patch provider.StatusPatch) error {
+	if current, err := s.service.store.ReadStatus(s.paths); err == nil && terminalStateValue(current.State) {
+		return nil
+	}
+	for key, value := range patch.Values {
+		s.status[key] = value
+	}
+	_, err := s.service.store.WriteStatus(s.paths, s.request, StateRunning, "", patch.Message, s.status)
+	return err
+}
+
+func (s *runProviderSink) appendStream(name string, value []byte) error {
+	if len(value) == 0 {
+		return nil
+	}
+	s.stream.Lock()
+	defer s.stream.Unlock()
+	file, err := os.OpenFile(s.paths.OutputLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	for _, line := range strings.SplitAfter(string(value), "\n") {
+		if line != "" {
+			if _, err := fmt.Fprintf(file, "[%s] %s", name, line); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func New(root string) *Service {
 	settings, err := loadSettings(root)
 	return &Service{
 		Root: root, ConfigDir: rooted(root, settings.ProviderConfigDir),
 		RunsDir: rooted(root, settings.RunsDir), DefaultProject: settings.DefaultProject,
 		DefaultProfile: settings.DefaultProfile, MaxConcurrency: settings.MaxConcurrency,
-		RuntimeVersion: "go-runtime", configErr: err,
+		RuntimeVersion: Version, configErr: err,
 	}
+}
+
+func (s *Service) DaemonConfig() daemon.Config {
+	dir := os.Getenv("AGENT_RUNTIME_DAEMON_DIR")
+	if dir == "" {
+		dir = filepath.Join(s.RunsDir, "daemon")
+	}
+	version := os.Getenv("AGENT_RUNTIME_VERSION")
+	if version == "" {
+		version = s.RuntimeVersion
+	}
+	return daemon.Config{Root: s.Root, Dir: dir, Version: version}
+}
+
+func (s *Service) DaemonClient() *daemon.Client {
+	return daemon.NewClient(s.DaemonConfig())
 }
 
 func (s *Service) Profiles() (map[string]provider.Config, error) {
@@ -79,7 +151,11 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		return RunSummary{}, err
 	}
 	overrides := cloneOverrides(options.ProviderOverrides)
-	if _, err := provider.Prepare(profile, "", overrides); err != nil {
+	selectedProvider, err := provider.Select(profile)
+	if err != nil {
+		return RunSummary{}, err
+	}
+	if _, err := selectedProvider.Prepare(ctx, profile, provider.Request{Overrides: overrides}); err != nil {
 		return RunSummary{}, err
 	}
 	runID := options.RunID
@@ -149,34 +225,51 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if mode == ModeManaged && profile.ResultContract() == "required" {
 		providerPrompt = managedPrompt(prompt, request, paths)
 	}
-	prepared, err := provider.Prepare(profile, providerPrompt, overrides)
+	extraEnv := map[string]string{
+		"AGENTRUN_DONE_FILE":    paths.DoneFile,
+		"AGENTRUN_OUTPUT_LOG":   paths.OutputLog,
+		"AGENTRUN_RESULT_FILE":  paths.ResultFile,
+		"AGENTRUN_REQUEST_FILE": paths.RequestFile,
+		"AGENTRUN_RUN_DIR":      paths.RunDir,
+		"AGENTRUN_RUN_ID":       request.RunID,
+	}
+	providerRequest := provider.Request{
+		Prompt:       providerPrompt,
+		Overrides:    overrides,
+		CWD:          cwd,
+		Environment:  extraEnv,
+		HTTPClient:   s.HTTPClient,
+		Daemon:       s.DaemonClient(),
+		Profiles:     profiles,
+		RunID:        request.RunID,
+		RequestFile:  paths.RequestFile,
+		ResultFile:   paths.ResultFile,
+		DoneFile:     paths.DoneFile,
+		OutputLog:    paths.OutputLog,
+		SnapshotFile: filepath.Join(paths.RunDir, "native-snapshot.json"),
+		PersonaDir:   rooted(s.Root, "configs/personas"),
+	}
+	prepared, err := selectedProvider.Prepare(runCtx, profile, providerRequest)
 	if err != nil {
 		return s.fail(paths, request, providerStatus, "provider_error", err)
 	}
-	var providerResult provider.Result
-	isTmux := profile.Transport() == provider.ExecutorTmux
-	if isTmux {
-		providerResult, err = s.executeTmuxTask(runCtx, profile, providerPrompt, request, paths, providerStatus)
-	} else if prepared.CLI != nil {
+	if prepared.CLI != nil {
 		providerStatus["argv"] = prepared.CLI.Argv
 		providerStatus["driver"] = prepared.CLI.Driver
 		providerStatus["effective_options"] = prepared.CLI.EffectiveOptions
-		extraEnv := map[string]string{
-			"AGENTRUN_RESULT_FILE":  paths.ResultFile,
-			"AGENTRUN_REQUEST_FILE": paths.RequestFile,
-			"AGENTRUN_RUN_DIR":      paths.RunDir,
-			"AGENTRUN_RUN_ID":       request.RunID,
-		}
-		providerResult, err = provider.ExecuteCLIWithObserver(runCtx, profile, *prepared.CLI, cwd, extraEnv, func(info provider.ExecutionInfo) {
-			providerStatus["pid"] = info.PID
-			providerStatus["pgid"] = info.PGID
-			_, _ = s.store.WriteStatus(paths, request, StateRunning, "", "cli running", providerStatus)
-		})
-	} else {
+	}
+	if prepared.API != nil {
 		providerStatus["protocol"] = prepared.API.Protocol
 		providerStatus["effective_options"] = prepared.API.EffectiveOptions
-		providerResult, err = provider.ExecuteAPI(runCtx, s.HTTPClient, profile, *prepared.API)
 	}
+	if prepared.Native != nil {
+		providerStatus["kind"] = provider.TypeNative
+		providerStatus["effective_options"] = prepared.Native.EffectiveOptions
+		providerStatus["snapshot_file"] = providerRequest.SnapshotFile
+	}
+	sink := &runProviderSink{service: s, paths: paths, request: request, status: providerStatus}
+	providerResult, err := selectedProvider.Execute(runCtx, prepared, sink)
+	isTmux := selectedProvider.Kind() == provider.ExecutorTmux
 	if writeErr := writeOutputLog(paths.OutputLog, prepared, providerResult); writeErr != nil {
 		return RunSummary{}, writeErr
 	}
@@ -192,7 +285,16 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if err != nil {
 		return s.fail(paths, request, providerStatus, "provider_error", err)
 	}
+	if providerResult.State == "cancelled" {
+		return s.cancelled(paths, request, providerStatus, context.Canceled)
+	}
+	if providerResult.State == "blocked" {
+		return s.blocked(paths, request, providerStatus, providerResult.BlockedReason)
+	}
 	providerStatus["returncode"] = providerResult.ExitCode
+	for key, value := range providerResult.Detail {
+		providerStatus[key] = value
+	}
 	_ = s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": providerResult.ExitCode, "execution_mode": mode})
 
 	_, _ = s.store.WriteStatus(paths, request, StateResultPending, "", "validating result", providerStatus)
@@ -209,8 +311,12 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		if text == "" {
 			text = captureSummary(providerResult.Stdout)
 		}
+		artifacts := []map[string]any{{"type": "log", "path": paths.OutputLog}}
+		if prepared.Native != nil {
+			artifacts = append(artifacts, map[string]any{"type": "native_snapshot", "path": filepath.Join(paths.RunDir, "native-snapshot.json")})
+		}
 		result := Result{SchemaVersion: 1, RunID: runID, Outcome: OutcomeSucceeded, Summary: text,
-			Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}}, Errors: []map[string]any{}, Validation: Validation{Commands: []string{}, Passed: true}}
+			Artifacts: artifacts, Errors: []map[string]any{}, Validation: Validation{Commands: []string{}, Passed: true}}
 		if err := s.store.WriteResult(paths, result); err != nil {
 			return RunSummary{}, err
 		}
@@ -289,8 +395,15 @@ func (s *Service) Cancel(runType, runID string) (RunSummary, error) {
 		return summary(paths, status, true), nil
 	}
 	if request.Provider == provider.ExecutorTmux {
-		if session, _ := status.ProviderStatus["tmux_session"].(string); session != "" {
-			_ = tmuxCommand(context.Background(), "kill-session", "-t", session).Run()
+		session, _ := status.ProviderStatus["tmux_session"].(string)
+		_ = s.DaemonClient().KillTmux(context.Background(), runID, session)
+	} else if request.Provider == provider.TypeNative {
+		detail, controlErr := provider.ControlNative(filepath.Join(paths.RunDir, "native-snapshot.json"), "cancel", "cancelled by user")
+		if controlErr != nil {
+			return RunSummary{}, controlErr
+		}
+		for key, value := range detail {
+			status.ProviderStatus[key] = value
 		}
 	} else {
 		if pgid := numberValue(status.ProviderStatus["pgid"]); pgid > 0 {
@@ -348,13 +461,23 @@ func (s *Service) cancelled(paths Paths, request Request, providerStatus map[str
 	return summary(paths, status, false), cause
 }
 
+func (s *Service) blocked(paths Paths, request Request, providerStatus map[string]any, reason string) (RunSummary, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "native provider is waiting for human input"
+	}
+	status, err := s.store.WriteStatus(paths, request, StateBlocked, reason, reason, providerStatus)
+	s.updateRegistry(paths, status)
+	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateBlocked, "failure_reason": reason})
+	return summary(paths, status, false), err
+}
+
 func (s *Service) resetRun(paths Paths) {
 	if status, err := s.store.ReadStatus(paths); err == nil {
 		if session, _ := status.ProviderStatus["tmux_session"].(string); session != "" {
-			_ = tmuxCommand(context.Background(), "kill-session", "-t", session).Run()
+			_ = s.DaemonClient().KillTmux(context.Background(), "", session)
 		}
 	}
-	for _, path := range []string{paths.RequestFile, paths.StatusFile, paths.EventsFile, paths.OutputLog, paths.ResultFile, paths.DoneFile} {
+	for _, path := range []string{paths.RequestFile, paths.StatusFile, paths.EventsFile, paths.OutputLog, paths.ResultFile, paths.DoneFile, filepath.Join(paths.RunDir, "native-snapshot.json"), filepath.Join(paths.RunDir, "native-snapshot.json.control")} {
 		_ = os.Remove(path)
 	}
 }

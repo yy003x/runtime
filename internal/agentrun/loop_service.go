@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"agent-arch/internal/capability"
+	"agent-runtime/internal/capability"
 )
 
 type LoopPaths struct {

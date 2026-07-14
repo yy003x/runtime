@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"agent-arch/internal/llm"
+	"agent-runtime/internal/llm"
 )
 
 const maxRetriesOn529 = 5

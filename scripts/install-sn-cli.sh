@@ -113,7 +113,7 @@ abs_dir() {
 is_sn_cli_repo() {
 	local dir="$1"
 	[ -f "$dir/go.mod" ] &&
-	  [ -f "$dir/sncli/cmd/sn-cli/main.go" ]
+	  [ -f "$dir/cmd/sn-cli/main.go" ]
 }
 
 find_repo_upwards() {
@@ -174,9 +174,9 @@ build_binary() {
 	(
 	  cd "$repo" &&
 	    go build \
-	      -ldflags "-X agent-arch/sncli/internal/version.Version=$version -X agent-arch/sncli/internal/version.Commit=$commit -X agent-arch/sncli/internal/version.BuildDate=$build_date" \
+	      -ldflags "-X agent-runtime/internal/agentrun.Version=$version -X agent-runtime/internal/cli/version.Version=$version -X agent-runtime/internal/cli/version.Commit=$commit -X agent-runtime/internal/cli/version.BuildDate=$build_date" \
 	      -o "$tmp_output" \
-	      ./sncli/cmd/sn-cli
+	      ./cmd/sn-cli
 	  )
   mv "$tmp_output" "$output"
   chmod +x "$output"

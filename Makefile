@@ -1,14 +1,12 @@
 SHELL := /bin/bash
 
-APP_NAME ?= agent-arch
+APP_NAME ?= agent-runtime
 SERVER_ADDR ?= :8080
-BASE_URL ?= http://localhost:8080
-PERSONA_ID ?= default
-MODEL ?= MiniMax-M2.7
 SN_CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-dev)
 SN_CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 SN_CLI_BUILDDATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-SN_CLI_LDFLAGS := -X agent-arch/sncli/internal/version.Version=$(SN_CLI_VERSION) -X agent-arch/sncli/internal/version.Commit=$(SN_CLI_COMMIT) -X agent-arch/sncli/internal/version.BuildDate=$(SN_CLI_BUILDDATE)
+RUNTIME_LDFLAGS := -X agent-runtime/internal/agentrun.Version=$(SN_CLI_VERSION)
+SN_CLI_LDFLAGS := $(RUNTIME_LDFLAGS) -X agent-runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X agent-runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X agent-runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE)
 
 GO ?= go
 GOCACHE ?= /tmp/go-build
@@ -43,23 +41,23 @@ test:
 
 build:
 	mkdir -p bin
-	$(GO_ENV) $(GO) build -o bin/$(APP_NAME) ./cmd/server
+	$(GO_ENV) $(GO) build -ldflags "$(RUNTIME_LDFLAGS)" -o bin/$(APP_NAME) ./cmd/runtime-server
 
 sn-cli-build:
 	mkdir -p runs/global/sn-cli/storage/current/bin
-	$(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o runs/global/sn-cli/storage/current/bin/sn-cli ./sncli/cmd/sn-cli
+	$(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o runs/global/sn-cli/storage/current/bin/sn-cli ./cmd/sn-cli
 
 sn-cli-install:
 	bash scripts/install-sn-cli.sh
 
 sn-cli-test:
-	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider ./internal/capability ./sncli/...
+	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider/... ./internal/executor ./internal/daemon ./internal/capability ./internal/transport ./internal/cli/...
 
 sn-cli-doctor: sn-cli-build
 	./cmd/sn-cli-wrapper doctor --json
 
 run:
-	HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/server
+	HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/runtime-server
 
 dev:
 	@echo "starting dev loop on $(SERVER_ADDR)"
@@ -75,7 +73,7 @@ dev:
 				wait "$$pid" 2>/dev/null || true; \
 			fi; \
 			last_sig="$$sig"; \
-			(HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/server) & \
+			(HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/runtime-server) & \
 			pid="$$!"; \
 		fi; \
 		sleep 1; \

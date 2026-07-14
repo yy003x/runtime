@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agent-arch/internal/persona"
+	"agent-runtime/internal/persona"
 )
 
 func TestPersonaLoader(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"agent-arch/internal/llm"
+	"agent-runtime/internal/llm"
 )
 
 type Client struct {

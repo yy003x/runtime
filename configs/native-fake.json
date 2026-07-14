@@ -1,0 +1,16 @@
+{
+  "type": "native",
+  "label": "Native Agent Mock",
+  "timeout_seconds": 30,
+  "native": {
+    "persona": "default",
+    "max_rounds": 1,
+    "token_budget": 128000,
+    "llm_timeout_seconds": 2,
+    "mock": {
+      "responses": ["native mock completed"],
+      "latency_milliseconds": 5,
+      "done_after": 1
+    }
+  }
+}

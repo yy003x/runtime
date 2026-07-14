@@ -44,7 +44,7 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
 	}
 }
 
-func TestLoadDirAcceptsAPIAndTmuxProfiles(t *testing.T) {
+func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
 	dir := t.TempDir()
 	writeConfig(t, dir, "api.json", `{
   "type":"api",
@@ -59,6 +59,10 @@ func TestLoadDirAcceptsAPIAndTmuxProfiles(t *testing.T) {
     "tmux":{"session_name":"agent"},
     "runtime":{"prompt_delivery":"paste","result_contract":"optional"}
   }
+	}`)
+	writeConfig(t, dir, "native.json", `{
+  "type":"native",
+  "native":{"persona":"default","max_rounds":2,"mock":{"responses":["ok"]}}
 }`)
 
 	profiles, err := LoadDir(dir)
@@ -70,6 +74,9 @@ func TestLoadDirAcceptsAPIAndTmuxProfiles(t *testing.T) {
 	}
 	if profiles["tmux"].Transport() != "tmux" {
 		t.Fatalf("tmux transport=%q", profiles["tmux"].Transport())
+	}
+	if profiles["native"].Transport() != "native" || profiles["native"].ResultContract() != "none" {
+		t.Fatalf("native=%#v", profiles["native"])
 	}
 }
 
@@ -96,6 +103,41 @@ func TestLoadDirRejectsUnsafeAndConflictingConfig(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 	})
+}
+
+func TestLoadDirAcceptsDaemonExecutionAndDependencies(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "managed.json", `{
+  "type":"cli",
+  "depends":[{"command":"helper --serve","wait_tcp":"127.0.0.1:4141","restart":true,"optional":false}],
+  "execution":{"audit_proxy":true,"upstream_proxy_env":["TEST_UPSTREAM_PROXY"],"bypass":["localhost"],"shim":true,"dylib":"${TEST_DYLIB}"},
+  "cli":{"executor":"command","command":{"binary":"agent","args":[],"model":""},"runtime":{}}
+}`)
+	profiles, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := profiles["managed"]
+	if len(profile.Depends) != 1 || !profile.Depends[0].Restart || !profile.Execution.AuditProxy || !profile.Execution.Shim {
+		t.Fatalf("profile=%#v", profile)
+	}
+}
+
+func TestLoadDirRejectsInvalidDaemonExecution(t *testing.T) {
+	tests := map[string]string{
+		"api":       `{"type":"api","execution":{"audit_proxy":true},"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K"}}`,
+		"proxy-env": `{"type":"cli","execution":{"upstream_proxy_env":["PROXY"]},"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+		"wait-both": `{"type":"cli","depends":[{"command":"x","wait_tcp":"127.0.0.1:1","wait_http":"http://127.0.0.1:1"}],"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeConfig(t, dir, "bad.json", body)
+			if _, err := LoadDir(dir); err == nil {
+				t.Fatal("LoadDir returned nil error")
+			}
+		})
+	}
 }
 
 func writeConfig(t *testing.T, dir, name, body string) {

@@ -1,54 +1,70 @@
-# Go Agent Runtime
+# Agent Runtime
 
-本仓库实现一个自包含的 Go Agent Runtime，并以 `sn-cli` 提供统一终端入口。Runtime 直接读取 `configs/<profile_id>.json`，支持 CLI、API、tmux provider，以及 task、turn、loop、session、command 的完整运行生命周期；不依赖外部 `SINAN_ROOT` 或 Python runtime。
+本仓库实现一个自包含的 Go Agent Runtime。`sn-cli`、HTTP service、CLI/API/tmux/native Provider 和 daemon 共用同一套 profile、生命周期与运行产物契约，不依赖外部 `SINAN_ROOT` 或 Python runtime。
 
-当前 provider 配置、运行目录契约和命令面与 `~/ai-workbench/wb/runtime` 保持一致。仓库原有的 persona、memory 与 HTTP agent service 继续保留。
+## 架构
 
-## Runtime 能力
+```text
+cmd/sn-cli                CLI 与 self-update 入口
+cmd/runtime-server        HTTP 入口
+        │
+internal/agentrun         task/turn/loop/session/command 与 artifacts
+        │
+internal/provider         CLI/API/tmux/native 统一执行接口
+        │
+internal/executor         短进程执行、流式输出、进程组与信号
+internal/daemon           UDS、长期进程、depends、proxy/shim
+```
 
-- JSON provider profile：`cli` / `api`、preset、`extends`、typed overrides、alias、环境变量展开。
-- Provider adapter：Codex、Claude、OpenAI-compatible、Anthropic-compatible。
-- 执行模式：`managed` 强制 `result.json` 完成契约，`capture` 根据 provider 输出合成结果。
-- 生命周期：`task`、`turn`、`loop`、`session`、`command`，支持 status、logs、watch、cancel/interrupt/stop/attach。
-- tmux：交互 session、prompt paste、command 托管与日志捕获。
-- Capabilities：skill 发现/路由/执行、tool schema/Guardrail、JSON file memory。
-- 运行产物：`request.json`、`status.json`、`events.jsonl`、`output.log`、`result.json`；tmux task 额外使用空 `done` 文件作为最终完成标记。
-- 配置诊断：`profiles`、`config choices`、`config validate`、`doctor`、`prune`。
+- `agentrun` 是唯一公共 run/session 语义层。
+- `Provider` 是唯一执行抽象，包含 command CLI、API、tmux 和 native agent loop。
+- daemon 只管理长期进程及其执行环境，不拥有 profile 解析、run 状态或 artifacts。
+- `configs/<profile>.json` 是 Provider 配置事实源。
 
-## Provider 配置
+详细架构与迁移结果见 [docs/integration-arch.md](docs/integration-arch.md)。
 
-Runtime settings 位于 [configs/runtime.yaml](configs/runtime.yaml)，provider 只从 `configs/*.json` 加载。配置使用 Workbench JSON schema，不再兼容旧 YAML provider schema或 `.local.json` 覆盖。
+## Provider
 
-仓库默认提供：
+支持以下 Provider：
 
-- `cx`、`cx-terra`、`cx-luna`、`cx-spark`、`cx-image`：Codex CLI 与 presets。
-- `cc`：Claude CLI。
-- `tcx`、`tcc`：Codex / Claude tmux session。
-- `ba`、`bo`：百炼 Anthropic / OpenAI-compatible API。
-- `ora`、`oro`：OpenRouter Anthropic / OpenAI-compatible API。
-- `fake`：无远端依赖的本地 mock，用于测试。
+- `type=cli`：`executor=command|tmux`，支持 Codex、Claude 和 generic CLI。
+- `type=api`：OpenAI-compatible、Anthropic-compatible 和本地 mock。
+- `type=native`：进程内多轮 agent loop，支持 snapshot、block、continue、patch-resume、stop、cancel。
 
-最小 API profile：
+仓库默认包含 Codex、Claude、百炼、OpenRouter、tmux、`fake` 和 `native-fake` profile。配置只允许引用 secret 环境变量名，不允许内联 token、password、cookie 或 private key。
+
+CLI profile 可按需显式启用 daemon 执行环境：
 
 ```json
 {
-  "type": "api",
-  "label": "My OpenAI-compatible Provider",
-  "timeout_seconds": 300,
-  "api": {
-    "protocol": "openai",
-    "base_url": "https://example.com/v1",
-    "model": "model-id",
-    "api_key_env": "MY_API_KEY"
+  "type": "cli",
+  "depends": [
+    {
+      "command": "helper --serve",
+      "wait_tcp": "127.0.0.1:4141",
+      "restart": true,
+      "optional": false
+    }
+  ],
+  "execution": {
+    "audit_proxy": true,
+    "upstream_proxy_env": ["MY_UPSTREAM_PROXY"],
+    "bypass": ["localhost", "127.0.0.1"],
+    "shim": true,
+    "dylib": "${MY_INTERPOSE_DYLIB}"
+  },
+  "cli": {
+    "driver": "generic",
+    "executor": "command",
+    "command": {"binary": "agent", "args": [], "model": ""},
+    "runtime": {"prompt_delivery": "stdin", "result_contract": "optional"}
   }
 }
 ```
 
-配置文件只引用 secret 的环境变量名，不能内联 token、password、cookie 等敏感字段。
+`depends` 支持 `wait_tcp`、`wait_http`、`optional`、`restart`。`audit_proxy`、PATH shim 和 DYLD interpose 默认关闭；只有 profile 显式配置时才注入。上游代理地址通过 `upstream_proxy_env` 指定的环境变量读取。
 
-## sn-cli
-
-构建和安装：
+## 构建与安装
 
 ```bash
 make sn-cli-build
@@ -56,17 +72,24 @@ make sn-cli-install
 sn-cli --help
 ```
 
-按 profile 直接执行：
+远程安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
+```
+
+安装脚本默认使用 `~/.sn-cli/runtime` 作为 managed checkout，构建二进制到 `runs/global/sn-cli/storage/current/bin/sn-cli`，并安装 launcher 到 `~/.local/bin/sn-cli`。
+
+## CLI
+
+按 profile 执行：
 
 ```bash
 sn-cli fake "hello"
 sn-cli cx "分析当前仓库"
 sn-cli cx --prompt-file ./prompt.md --image ./screen.png
-sn-cli cx --prompt_file ./prompt.md --image ./one.png --image ./two.png
 sn-cli cx-spark --model gpt-5.3-codex-spark "review"
 ```
-
-`<profile_id>` 的解析优先于 `sncli/conf/default.json` 中的旧工具 alias。`--prompt-file` 与 `--prompt_file` 等价；`--image` 可重复，作为 Codex typed override 透传。CLI 参数覆盖 profile/preset 的对应配置。
 
 生命周期命令：
 
@@ -82,7 +105,11 @@ sn-cli task logs <run_id>
 sn-cli task watch <run_id>
 sn-cli task cancel <run_id>
 
-sn-cli turn run --profile fake --prompt-file ./prompt.md
+sn-cli turn run --profile native-fake "继续任务"
+sn-cli task block <run_id> --reason "等待输入"
+sn-cli task continue <run_id>
+sn-cli task patch-resume <run_id> --patch '{"operation":"append","messages":[{"role":"user","content":"继续"}]}'
+
 sn-cli loop run --input "执行计划" --actions '[{"type":"respond","content":"完成"}]'
 
 sn-cli session start --profile tcx
@@ -95,59 +122,62 @@ sn-cli command start --profile tcx -- printf 'hello'
 sn-cli command status <run_id>
 sn-cli command logs <run_id>
 sn-cli command stop <run_id>
-
-sn-cli capabilities tools schemas
-sn-cli capabilities skills list --skills-dir ./skills
-sn-cli capabilities memory demo --query runtime --items '[{"id":"1","type":"fact","content":"Go runtime","source":"demo"}]'
-sn-cli prune
 ```
 
-run 产物位于：
+daemon 诊断：
+
+```bash
+sn-cli doctor daemon --json
+sn-cli daemon start
+sn-cli daemon status
+sn-cli daemon restart
+sn-cli daemon stop
+```
+
+doctor 输出包含 daemon 版本、PID、socket、clients/process registry、dependencies 和 proxy 状态。
+
+## 运行产物
 
 ```text
 runs/global/runtime/<task|turn|session|command>/<YYYY-MM-DD>/<run_id>/
 runs/global/runtime/loop/<YYYY-MM-DD>/<loop_id>/
 ```
 
-tmux task 只有在 `result.json` 已写入且 `done` 已创建后才进入结果校验；单独出现任一文件都不视为成功。
+标准产物：
 
-## 远程安装
+- `request.json`
+- `status.json`
+- `events.jsonl`
+- `output.log`
+- `result.json`
+- `done`，仅 tmux managed task 使用
+- `native-snapshot.json`，仅 native Provider 使用
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | bash
-```
+managed tmux task 必须同时存在合法 `result.json` 和空 `done` 文件才算完成。stdout/stderr、pane 静默或单独一个完成文件都不能替代该契约。
 
-脚本默认 clone/update 到 `~/.sn-cli/runtime`，构建当前仓库的 Go runtime，并安装 `~/.local/bin/sn-cli`。安装结束前会验证 `profiles` 和本地 `fake` provider 配置。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/scripts/install-sn-cli.sh | \
-  SN_CLI_REF=main bash
-```
-
-更多安装与更新选项见 [sncli/README.md](sncli/README.md)。
-
-## HTTP Agent Service
-
-原有 HTTP service 读取 `configs/config.yaml` 与 `configs/personas/*.yaml`，提供：
-
-- `POST /v1/agents`
-- `POST /v1/chat`
-- `GET /v1/sessions/{session_id}/memory`
-
-启动与测试：
+## HTTP
 
 ```bash
 make run
-make test
 ```
 
-默认监听 `:8080`。当前 memory store 为进程内实现，retrieval memory 仍是 stub。
+默认监听 `:8080`，可通过 `HTTP_ADDR` 修改。HTTP service 只调用 `agentrun`：
 
-## 项目结构
+- `GET /healthz`
+- `POST /v1/runs`
+- `GET /v1/runs/{run_type}/{run_id}/status`
+- `GET /v1/runs/{run_type}/{run_id}/logs`
+- `GET /v1/runs/{run_type}/{run_id}/result`
+- `POST /v1/runs/{run_type}/{run_id}/cancel|block|stop|continue|patch-resume`
 
-- `internal/provider`：Workbench JSON profile、preset、CLI/API adapter 与 executor。
-- `internal/agentrun`：run contract、状态机、tmux、loop、command、registry。
-- `internal/capability`：skills、tools、memory。
-- `sncli/cmd/sn-cli`、`sncli/internal`：终端入口、REPL、安装更新支持。
-- `internal/agent`、`internal/memory`、`internal/transport`：原有 HTTP agent service。
-- `configs`：runtime settings、provider profiles、HTTP service 与 persona 配置。
+## 验证
+
+```bash
+go test ./...
+make sn-cli-test
+make sn-cli-build
+./cmd/sn-cli-wrapper config validate --profile fake
+./cmd/sn-cli-wrapper fake "hello"
+./cmd/sn-cli-wrapper doctor daemon --json
+git diff --check
+```

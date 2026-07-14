@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-arch/internal/provider"
+	"agent-runtime/internal/provider"
+	providertmux "agent-runtime/internal/provider/tmux"
 )
 
 const commandExitMarker = "__AGENTRUN_COMMAND_EXIT__="
@@ -90,11 +91,16 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 	s.register(paths, request, StatePending)
 	commandParts := make([]string, 0, len(options.Argv))
 	for _, arg := range options.Argv {
-		commandParts = append(commandParts, shellQuote(arg))
+		commandParts = append(commandParts, provider.ShellQuote(arg))
 	}
-	command := tmuxCommandEnv(profile, strings.Join(commandParts, " "))
+	command := provider.TmuxCommandEnv(profile, strings.Join(commandParts, " "))
 	command += "; rc=$?; printf '\n" + commandExitMarker + "%s\n' \"$rc\"; while :; do sleep 3600; done"
-	session, err := startTmuxShell(ctx, profile, options.RunID, cwd, command)
+	backend, err := provider.NewTmuxBackend(profile, s.DaemonClient())
+	if err != nil {
+		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
+		return SessionSummary{}, err
+	}
+	session, err := backend.StartShell(ctx, options.RunID, cwd, command)
 	if err != nil {
 		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
 		return SessionSummary{}, err
@@ -103,7 +109,7 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 	status, err := s.store.WriteStatus(paths, request, StateRunning, "", "command running", providerStatus)
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": provider.ExecutorTmux})
 	if options.Input != "" {
-		if sendErr := tmuxSend(ctx, session, options.Input, false); sendErr != nil {
+		if sendErr := backend.Send(ctx, session, options.Input, providertmux.SendOptions{}); sendErr != nil {
 			return SessionSummary{}, sendErr
 		}
 	}
@@ -124,10 +130,13 @@ func (s *Service) CommandStatus(ctx context.Context, runID string) (SessionSumma
 		return SessionSummary{}, err
 	}
 	session, _ := status.ProviderStatus["tmux_session"].(string)
-	alive := tmuxHasSession(ctx, session)
+	alive, daemonErr := s.DaemonClient().HasTmux(ctx, runID, session)
+	if daemonErr != nil {
+		return SessionSummary{}, daemonErr
+	}
 	content := ""
 	if alive {
-		content, _ = tmuxCapture(ctx, session, 500)
+		content, _ = s.DaemonClient().CaptureTmux(ctx, runID, session, 500)
 		_ = os.WriteFile(paths.OutputLog, []byte(content), 0o644)
 	}
 	if terminalStateValue(status.State) {
@@ -160,7 +169,7 @@ func (s *Service) CommandLogs(ctx context.Context, runID string, tail int) (Logs
 	paths, _ := RunPaths(s.RunsDir, RunCommand, runID)
 	content, _ := os.ReadFile(paths.OutputLog)
 	if summary.Alive {
-		if live, captureErr := tmuxCapture(ctx, summary.Session, tail); captureErr == nil {
+		if live, captureErr := s.DaemonClient().CaptureTmux(ctx, runID, summary.Session, tail); captureErr == nil {
 			if strings.TrimSpace(live) != "" {
 				content = []byte(live)
 				_ = os.WriteFile(paths.OutputLog, content, 0o644)
@@ -177,7 +186,7 @@ func (s *Service) CommandInterrupt(ctx context.Context, runID string) (SessionSu
 		return summary, err
 	}
 	if summary.Alive && !terminalStateValue(summary.State) {
-		err = tmuxCommand(ctx, "send-keys", "-t", summary.Session, "C-c").Run()
+		err = s.DaemonClient().InterruptTmux(ctx, runID, summary.Session)
 	}
 	return summary, err
 }
@@ -188,7 +197,7 @@ func (s *Service) CommandStop(ctx context.Context, runID string) (SessionSummary
 		return summary, err
 	}
 	if summary.Alive {
-		if err := tmuxCommand(ctx, "kill-session", "-t", summary.Session).Run(); err != nil {
+		if err := s.DaemonClient().KillTmux(ctx, runID, summary.Session); err != nil {
 			return summary, err
 		}
 	}
@@ -209,9 +218,7 @@ func (s *Service) CommandAttach(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	cmd := tmuxCommand(ctx, "attach-session", "-t", summary.Session)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	return providertmux.Attach(ctx, summary.Session)
 }
 
 func commandExitCode(content string) (int, bool) {

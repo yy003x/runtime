@@ -5,25 +5,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
-	"syscall"
-	"time"
+
+	"agent-runtime/internal/executor"
 )
 
 type Result struct {
-	Stdout    string
-	Stderr    string
-	FinalText string
-	ExitCode  int
-	PID       int
-	PGID      int
+	Stdout        string
+	Stderr        string
+	FinalText     string
+	ExitCode      int
+	PID           int
+	PGID          int
+	State         string
+	BlockedReason string
+	Detail        map[string]any
 }
 
 type ExecutionInfo struct {
@@ -36,55 +37,43 @@ func ExecuteCLI(ctx context.Context, cfg Config, request CLIRequest, cwd string,
 }
 
 func ExecuteCLIWithObserver(ctx context.Context, cfg Config, request CLIRequest, cwd string, extraEnv map[string]string, observer func(ExecutionInfo)) (Result, error) {
+	return executeCLIStreaming(ctx, cfg, request, cwd, extraEnv, observer, nil, nil, nil)
+}
+
+func executeCLIStreaming(
+	ctx context.Context,
+	cfg Config,
+	request CLIRequest,
+	cwd string,
+	extraEnv map[string]string,
+	observer func(ExecutionInfo),
+	stdout func([]byte),
+	stderr func([]byte),
+	firstOutput func(),
+) (Result, error) {
 	if len(request.Argv) == 0 {
 		return Result{ExitCode: 1}, fmt.Errorf("profile %s: empty argv", cfg.ID)
 	}
-	cmd := exec.Command(request.Argv[0], request.Argv[1:]...)
-	cmd.Dir = cwd
-	cmd.Env = CommandEnvironment(cfg.CLI.Command, extraEnv)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stdin io.Reader
 	if request.Stdin != "" {
-		cmd.Stdin = strings.NewReader(request.Stdin)
+		stdin = strings.NewReader(request.Stdin)
 	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return Result{ExitCode: 1}, fmt.Errorf("start provider command %q: %w", request.Argv[0], err)
-	}
-	pgid, _ := syscall.Getpgid(cmd.Process.Pid)
-	if observer != nil {
-		observer(ExecutionInfo{PID: cmd.Process.Pid, PGID: pgid})
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	var err error
-	select {
-	case err = <-done:
-	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
-		select {
-		case err = <-done:
-		case <-time.After(500 * time.Millisecond):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			err = <-done
-		}
-		if err == nil {
-			err = ctx.Err()
-		}
-	}
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), FinalText: strings.TrimSpace(stdout.String()), PID: cmd.Process.Pid, PGID: pgid}
-	if err == nil {
-		return result, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		result.ExitCode = exitErr.ExitCode()
-		return result, nil
-	}
-	result.ExitCode = 1
-	return result, fmt.Errorf("run provider command %q: %w", request.Argv[0], err)
+	execution, err := executor.Run(ctx, executor.Options{
+		Argv: request.Argv, Env: CommandEnvironment(cfg.CLI.Command, extraEnv), Dir: cwd, Stdin: stdin,
+		ForwardSignals: true,
+		Observer: executor.Observer{
+			Started: func(info executor.ProcessInfo) {
+				if observer != nil {
+					observer(ExecutionInfo{PID: info.PID, PGID: info.PGID})
+				}
+			},
+			Stdout: stdout, Stderr: stderr, FirstOutput: firstOutput,
+		},
+	})
+	return Result{
+		Stdout: execution.Stdout, Stderr: execution.Stderr, FinalText: strings.TrimSpace(execution.Stdout),
+		ExitCode: execution.ExitCode, PID: execution.PID, PGID: execution.PGID,
+	}, err
 }
 
 func ExecuteAPI(ctx context.Context, client *http.Client, cfg Config, request APIRequest) (Result, error) {

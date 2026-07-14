@@ -9,8 +9,17 @@ import (
 )
 
 type PreparedRequest struct {
-	CLI *CLIRequest
-	API *APIRequest
+	CLI     *CLIRequest
+	API     *APIRequest
+	Native  *NativeRequest
+	Config  Config
+	Request Request
+}
+
+type NativeRequest struct {
+	ProfileID          string
+	RequestedOverrides map[string]any
+	EffectiveOptions   map[string]any
 }
 
 type CLIRequest struct {
@@ -48,7 +57,36 @@ func Prepare(cfg Config, prompt string, overrides map[string]any) (PreparedReque
 		}
 		return PreparedRequest{API: &request}, nil
 	}
+	if cfg.Type == TypeNative {
+		request, err := prepareNative(cfg, requested)
+		if err != nil {
+			return PreparedRequest{}, err
+		}
+		return PreparedRequest{Native: &request}, nil
+	}
 	return PreparedRequest{}, fmt.Errorf("profile %s: unsupported provider type %q", cfg.ID, cfg.Type)
+}
+
+func prepareNative(cfg Config, overrides map[string]any) (NativeRequest, error) {
+	if cfg.Native == nil {
+		return NativeRequest{}, fmt.Errorf("profile %s: missing native config", cfg.ID)
+	}
+	allowed := set("model_profile", "persona", "system_prompt", "max_rounds", "token_budget", "llm_timeout_seconds")
+	if err := rejectUnknown(overrides, allowed, "native provider"); err != nil {
+		return NativeRequest{}, err
+	}
+	effective := map[string]any{
+		"model_profile":       cfg.Native.ModelProfile,
+		"persona":             cfg.Native.Persona,
+		"system_prompt":       cfg.Native.SystemPrompt,
+		"max_rounds":          cfg.Native.MaxRounds,
+		"token_budget":        cfg.Native.TokenBudget,
+		"llm_timeout_seconds": cfg.Native.LLMTimeoutSeconds,
+	}
+	for key, value := range overrides {
+		effective[key] = cloneValue(value)
+	}
+	return NativeRequest{ProfileID: cfg.ID, RequestedOverrides: cloneStringMap(overrides), EffectiveOptions: effective}, nil
 }
 
 func prepareCLI(cfg Config, prompt string, overrides map[string]any) (CLIRequest, error) {

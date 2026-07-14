@@ -3,6 +3,8 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,8 +12,9 @@ import (
 )
 
 const (
-	TypeCLI = "cli"
-	TypeAPI = "api"
+	TypeCLI    = "cli"
+	TypeAPI    = "api"
+	TypeNative = "native"
 
 	ExecutorCommand = "command"
 	ExecutorTmux    = "tmux"
@@ -22,20 +25,58 @@ var ReservedCommands = map[string]struct{}{
 	"skills": {}, "tools": {}, "memory": {}, "task": {}, "turn": {},
 	"loop": {}, "session": {}, "command": {}, "prune": {}, "run": {},
 	"status": {}, "logs": {}, "watch": {}, "cancel": {}, "start": {},
-	"step": {}, "send": {}, "interrupt": {}, "stop": {}, "attach": {},
+	"step": {}, "send": {}, "interrupt": {}, "block": {}, "continue": {},
+	"patch-resume": {}, "stop": {}, "attach": {},
 	"choices": {}, "validate": {}, "help": {}, "version": {}, "list": {},
 	"completion": {},
+	"daemon":     {},
 }
 
 type Config struct {
-	ID             string         `json:"id"`
-	Type           string         `json:"type"`
-	Label          string         `json:"label"`
-	Aliases        []string       `json:"aliases,omitempty"`
-	TimeoutSeconds int            `json:"timeout_seconds"`
-	CLI            *CLIConfig     `json:"cli,omitempty"`
-	API            *APIConfig     `json:"api,omitempty"`
-	Raw            map[string]any `json:"-"`
+	ID             string          `json:"id"`
+	Type           string          `json:"type"`
+	Label          string          `json:"label"`
+	Aliases        []string        `json:"aliases,omitempty"`
+	TimeoutSeconds int             `json:"timeout_seconds"`
+	CLI            *CLIConfig      `json:"cli,omitempty"`
+	API            *APIConfig      `json:"api,omitempty"`
+	Native         *NativeConfig   `json:"native,omitempty"`
+	Depends        []Dependency    `json:"depends,omitempty"`
+	Execution      ExecutionConfig `json:"execution,omitempty"`
+	Raw            map[string]any  `json:"-"`
+}
+
+type Dependency struct {
+	Command  string `json:"command"`
+	WaitTCP  string `json:"wait_tcp,omitempty"`
+	WaitHTTP string `json:"wait_http,omitempty"`
+	Restart  bool   `json:"restart,omitempty"`
+	Silent   bool   `json:"silent,omitempty"`
+	Optional bool   `json:"optional,omitempty"`
+}
+
+type ExecutionConfig struct {
+	AuditProxy       bool     `json:"audit_proxy,omitempty"`
+	UpstreamProxyEnv []string `json:"upstream_proxy_env,omitempty"`
+	Bypass           []string `json:"bypass,omitempty"`
+	Shim             bool     `json:"shim,omitempty"`
+	Dylib            string   `json:"dylib,omitempty"`
+}
+
+type NativeConfig struct {
+	ModelProfile      string            `json:"model_profile,omitempty"`
+	Persona           string            `json:"persona,omitempty"`
+	SystemPrompt      string            `json:"system_prompt,omitempty"`
+	MaxRounds         int               `json:"max_rounds,omitempty"`
+	TokenBudget       int               `json:"token_budget,omitempty"`
+	LLMTimeoutSeconds float64           `json:"llm_timeout_seconds,omitempty"`
+	Mock              *NativeMockConfig `json:"mock,omitempty"`
+}
+
+type NativeMockConfig struct {
+	Responses           []string `json:"responses,omitempty"`
+	LatencyMilliseconds int      `json:"latency_milliseconds,omitempty"`
+	DoneAfter           int      `json:"done_after,omitempty"`
 }
 
 type CLIConfig struct {
@@ -104,6 +145,9 @@ type OverridePolicy struct {
 }
 
 func (c Config) Transport() string {
+	if c.Type == TypeNative {
+		return TypeNative
+	}
 	if c.Type == TypeAPI {
 		return TypeAPI
 	}
@@ -114,6 +158,9 @@ func (c Config) Transport() string {
 }
 
 func (c Config) ResultContract() string {
+	if c.Type == TypeNative {
+		return "none"
+	}
 	if c.Type == TypeAPI && c.API != nil {
 		if c.API.ResultContract == "" {
 			return "none"
@@ -318,23 +365,47 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 	}
 	switch cfg.Type {
 	case TypeCLI:
-		if cfg.API != nil {
-			return Config{}, fmt.Errorf("%s: type=cli 禁止出现 api object", source)
+		if cfg.API != nil || cfg.Native != nil {
+			return Config{}, fmt.Errorf("%s: type=cli 禁止出现 api/native object", source)
 		}
 		if err := validateCLI(&cfg, source); err != nil {
 			return Config{}, err
 		}
 	case TypeAPI:
-		if cfg.CLI != nil {
-			return Config{}, fmt.Errorf("%s: type=api 禁止出现 cli object", source)
+		if cfg.CLI != nil || cfg.Native != nil || len(cfg.Depends) > 0 || executionConfigured(cfg.Execution) {
+			return Config{}, fmt.Errorf("%s: type=api 禁止出现 cli/native object", source)
 		}
 		if err := validateAPI(&cfg, source); err != nil {
 			return Config{}, err
 		}
+	case TypeNative:
+		if cfg.CLI != nil || cfg.API != nil || len(cfg.Depends) > 0 || executionConfigured(cfg.Execution) {
+			return Config{}, fmt.Errorf("%s: type=native 禁止出现 cli/api object", source)
+		}
+		if err := validateNative(&cfg, source); err != nil {
+			return Config{}, err
+		}
 	default:
-		return Config{}, fmt.Errorf("%s: type 必须是 api|cli", source)
+		return Config{}, fmt.Errorf("%s: type 必须是 api|cli|native", source)
 	}
 	return cfg, nil
+}
+
+func validateNative(cfg *Config, source string) error {
+	if cfg.Native == nil {
+		return fmt.Errorf("%s: 缺少 native object", source)
+	}
+	value := cfg.Native
+	if value.Mock == nil && strings.TrimSpace(value.ModelProfile) == "" {
+		return fmt.Errorf("%s: native.model_profile 或 native.mock 必须提供一个", source)
+	}
+	if value.MaxRounds < 0 || value.TokenBudget < 0 || value.LLMTimeoutSeconds < 0 {
+		return fmt.Errorf("%s: native max_rounds/token_budget/llm_timeout_seconds 必须 >= 0", source)
+	}
+	if value.Persona == "" {
+		value.Persona = "default"
+	}
+	return nil
 }
 
 func validateCLI(cfg *Config, source string) error {
@@ -367,6 +438,33 @@ func validateCLI(cfg *Config, source string) error {
 	}
 	if cli.Driver == "" {
 		cli.Driver = inferDriver(cli.Command.Binary)
+	}
+	for index, dependency := range cfg.Depends {
+		if strings.TrimSpace(dependency.Command) == "" {
+			return fmt.Errorf("%s: depends[%d].command is required", source, index)
+		}
+		if dependency.WaitTCP != "" && dependency.WaitHTTP != "" {
+			return fmt.Errorf("%s: depends[%d] wait_tcp 与 wait_http 互斥", source, index)
+		}
+		if dependency.WaitTCP != "" {
+			if _, _, err := net.SplitHostPort(dependency.WaitTCP); err != nil {
+				return fmt.Errorf("%s: depends[%d].wait_tcp 无效: %w", source, index, err)
+			}
+		}
+		if dependency.WaitHTTP != "" {
+			parsed, err := url.Parse(dependency.WaitHTTP)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return fmt.Errorf("%s: depends[%d].wait_http 必须是 http/https URL", source, index)
+			}
+		}
+	}
+	if len(cfg.Execution.UpstreamProxyEnv) > 0 && !cfg.Execution.AuditProxy {
+		return fmt.Errorf("%s: execution.upstream_proxy_env requires audit_proxy=true", source)
+	}
+	for index, name := range cfg.Execution.UpstreamProxyEnv {
+		if strings.TrimSpace(name) == "" || strings.Contains(name, "=") {
+			return fmt.Errorf("%s: execution.upstream_proxy_env[%d] 必须是环境变量名", source, index)
+		}
 	}
 	if cli.Runtime.ResultContract == "" {
 		cli.Runtime.ResultContract = "optional"
@@ -402,6 +500,10 @@ func validateCLI(cfg *Config, source string) error {
 		}
 	}
 	return validateOverridePolicy(cli.Runtime.OverridePolicy, cliSupportedOverrides(cli.Driver), source)
+}
+
+func executionConfigured(config ExecutionConfig) bool {
+	return config.AuditProxy || config.Shim || config.Dylib != "" || len(config.UpstreamProxyEnv) > 0 || len(config.Bypass) > 0
 }
 
 func validateAPI(cfg *Config, source string) error {
@@ -460,6 +562,20 @@ func applyTypedOverrides(raw map[string]any, overrides map[string]any) error {
 		}
 		for key, value := range overrides {
 			api[key] = cloneValue(value)
+		}
+		return nil
+	}
+	if typeName == TypeNative {
+		nativeConfig, ok := raw["native"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("missing native object")
+		}
+		allowed := set("model_profile", "persona", "system_prompt", "max_rounds", "token_budget", "llm_timeout_seconds")
+		if err := rejectUnknown(overrides, allowed, "native provider"); err != nil {
+			return err
+		}
+		for key, value := range overrides {
+			nativeConfig[key] = cloneValue(value)
 		}
 		return nil
 	}
@@ -545,6 +661,9 @@ func rejectForbiddenKeys(value any, path []string) error {
 
 func family(raw map[string]any) string {
 	typeName := fmt.Sprint(raw["type"])
+	if typeName == TypeNative {
+		return TypeNative
+	}
 	if typeName == TypeAPI {
 		api, _ := raw["api"].(map[string]any)
 		return typeName + "/" + fmt.Sprint(api["protocol"])
