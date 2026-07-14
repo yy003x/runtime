@@ -51,15 +51,40 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | \
 
 ### 本地源码安装
 
+已经下载源码时：
+
 ```bash
 make install
 ```
 
 兼容入口 `make sn-cli-install` 等价于 `make install`。源码只参与构建，安装后的 `sn-cli` 不依赖源码目录，源码移动或删除后仍可运行。
 
+### 网络源码安装
+
+需要保留源码并在本机编译时：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.sh | bash
+```
+
+该方式要求本机已有 Git、Go 1.24+ 和 Make。源码受管 checkout 固定在：
+
+```text
+~/.sn/source/sn-runtime
+```
+
+安装指定 branch、tag 或 commit：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.sh | \
+  bash -s -- --ref v1.0.0
+```
+
+重复执行会先检查 checkout：存在本地修改时停止，干净时更新到指定 ref、重新编译并复用 `install.sh` 完成安装。
+
 ### 配置同步
 
-首次安装、再次安装和 `sn-cli update` 都执行同一规则：
+首次安装、再次安装、源码安装和 `sn-cli update` 都执行同一规则：
 
 1. 递归复制发行包 `configs/` 中本地缺失的目录和文件。
 2. 已存在的本地文件永不覆盖。
@@ -94,6 +119,7 @@ make install
 │   ├── memory.json
 │   ├── update.json
 │   └── runs/
+├── source/sn-runtime/       # 仅网络源码安装模式
 ├── logs/daemon.log
 ├── cache/
 └── tmp/

@@ -259,7 +259,17 @@ configs/
 
 `make install` 构建 `bin/sn-cli` 后调用同一安装契约。本地源码可以位于任意目录，安装结果不引用源码路径。
 
-### 6.4 Self-update
+### 6.4 网络源码安装
+
+`install-source.sh` 通过 Git 下载源码到 `~/.sn/source/sn-runtime`，checkout 指定 branch、tag 或 commit，在本机执行 `make sn-cli-build`，再调用 `install.sh --binary --configs`。
+
+- 依赖 Git、Go 1.24+ 和 Make。
+- 首次 clone 使用临时目录，完成 checkout 后再移动到正式源码目录。
+- 再次安装要求受管 checkout 无本地修改，避免覆盖用户源码。
+- binary 安装和配置同步仍复用统一安装契约。
+- 源码保留不改变 active config owner；runtime 仍只读取 `~/.sn/configs`。
+
+### 6.5 Self-update
 
 `sn-cli update` 使用 GitHub Release API 与 release asset，不执行 `git fetch/pull/checkout`。支持：
 
@@ -365,6 +375,7 @@ Capability：
 - [x] daemon 吸收 executor 周边长期进程能力。
 - [x] `~/.sn/configs` 是唯一 active config source。
 - [x] 本地与网络安装都执行不覆盖 config 同步。
+- [x] 网络源码安装将受管 checkout 保留在 `~/.sn/source/sn-runtime`。
 - [x] self-update 不依赖源码 checkout。
 - [x] `cmd/sn-cli` 与 `cmd/sn-server` 是唯一对外入口。
 - [x] CLI、HTTP、native、tmux 使用同一套 artifacts。
