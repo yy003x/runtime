@@ -114,6 +114,7 @@ type CommandConfig struct {
 	Model          string            `json:"model"`
 	Env            map[string]string `json:"env,omitempty"`
 	EnvPassthrough []string          `json:"env_passthrough,omitempty"`
+	EnvUnset       []string          `json:"env_unset,omitempty"`
 }
 
 type CLIRuntime struct {
@@ -439,6 +440,9 @@ func validateCLI(cfg *Config, source string) error {
 			return fmt.Errorf("%s: model 必须放在 cli.command.model，不能放在 args[%d]", source, i)
 		}
 	}
+	if err := validateCommandEnvironment(cli.Command, source); err != nil {
+		return err
+	}
 	if cli.Driver == "" {
 		cli.Driver = inferDriver(cli.Command.Binary)
 	}
@@ -551,6 +555,45 @@ func validateResultContract(value, source string) error {
 	return nil
 }
 
+func validateCommandEnvironment(command CommandConfig, source string) error {
+	for name := range command.Env {
+		if !validEnvironmentName(name) {
+			return fmt.Errorf("%s: cli.command.env key %q 必须是环境变量名", source, name)
+		}
+	}
+	passthrough := make(map[string]struct{}, len(command.EnvPassthrough))
+	for index, name := range command.EnvPassthrough {
+		if !validEnvironmentName(name) {
+			return fmt.Errorf("%s: cli.command.env_passthrough[%d] 必须是环境变量名", source, index)
+		}
+		if _, exists := passthrough[name]; exists {
+			return fmt.Errorf("%s: cli.command.env_passthrough 重复包含 %q", source, name)
+		}
+		passthrough[name] = struct{}{}
+	}
+	unset := make(map[string]struct{}, len(command.EnvUnset))
+	for index, name := range command.EnvUnset {
+		if !validEnvironmentName(name) {
+			return fmt.Errorf("%s: cli.command.env_unset[%d] 必须是环境变量名", source, index)
+		}
+		if _, exists := unset[name]; exists {
+			return fmt.Errorf("%s: cli.command.env_unset 重复包含 %q", source, name)
+		}
+		if _, exists := command.Env[name]; exists {
+			return fmt.Errorf("%s: cli.command.env 与 env_unset 不能同时包含 %q", source, name)
+		}
+		if _, exists := passthrough[name]; exists {
+			return fmt.Errorf("%s: cli.command.env_passthrough 与 env_unset 不能同时包含 %q", source, name)
+		}
+		unset[name] = struct{}{}
+	}
+	return nil
+}
+
+func validEnvironmentName(name string) bool {
+	return strings.TrimSpace(name) != "" && !strings.ContainsAny(name, "=\x00")
+}
+
 func cliSupportedOverrides(driver string) map[string]struct{} {
 	if driver == "claude" {
 		return set("model", "effort", "permission_mode", "append_system_prompt", "allowed_tools", "disallowed_tools")
@@ -622,7 +665,7 @@ func applyAppendFields(value any, source, presetID string) error {
 	for key, child := range object {
 		if strings.HasSuffix(key, "_append") {
 			target := strings.TrimSuffix(key, "_append")
-			if target != "args" && target != "env_passthrough" {
+			if target != "args" && target != "env_passthrough" && target != "env_unset" {
 				return fmt.Errorf("%s: presets.%s 不支持 append 字段 %q", source, presetID, key)
 			}
 			addition, ok := child.([]any)

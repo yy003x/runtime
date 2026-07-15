@@ -16,12 +16,12 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
   "cli":{
     "driver":"codex",
     "executor":"command",
-    "command":{"binary":"codex","args":["exec"],"model":"gpt-base"},
+    "command":{"binary":"codex","args":["exec"],"model":"gpt-base","env_unset":["BASE_DROP"]},
     "runtime":{"prompt_delivery":"stdin","result_contract":"required","override_policy":{"allow":["model","images"]}}
   },
   "presets":{
     "cx-fast":{"aliases":["codex-default"],"overrides":{"model":"gpt-fast"}},
-    "cx-image":{"cli":{"command":{"args_append":["--color","never"]}}}
+    "cx-image":{"cli":{"command":{"args_append":["--color","never"],"env_unset_append":["CHILD_DROP"]}}}
   }
 }`)
 
@@ -37,6 +37,9 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
 	}
 	if got := strings.Join(profiles["cx-image"].CLI.Command.Args, " "); got != "exec --color never" {
 		t.Fatalf("preset args=%q", got)
+	}
+	if got := strings.Join(profiles["cx-image"].CLI.Command.EnvUnset, " "); got != "BASE_DROP CHILD_DROP" {
+		t.Fatalf("preset env_unset=%q", got)
 	}
 	resolved, ok := Resolve(profiles, "codex-default")
 	if !ok || resolved.ID != "cx-fast" {
@@ -93,9 +96,12 @@ func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
 
 func TestLoadDirRejectsUnsafeAndConflictingConfig(t *testing.T) {
 	tests := map[string]string{
-		"secret":   `{"type":"api","api":{"protocol":"openai","base_url":"x","model":"m","api_key_env":"K","api_key":"secret"}}`,
-		"business": `{"type":"cli","purpose":"x","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
-		"modelArg": `{"type":"cli","cli":{"executor":"command","command":{"binary":"codex","args":["--model","x"],"model":""},"runtime":{}}}`,
+		"secret":          `{"type":"api","api":{"protocol":"openai","base_url":"x","model":"m","api_key_env":"K","api_key":"secret"}}`,
+		"business":        `{"type":"cli","purpose":"x","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+		"modelArg":        `{"type":"cli","cli":{"executor":"command","command":{"binary":"codex","args":["--model","x"],"model":""},"runtime":{}}}`,
+		"envConflict":     `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env":{"TOKEN":"x"},"env_unset":["TOKEN"]},"runtime":{}}}`,
+		"envPassConflict": `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env_passthrough":["TOKEN"],"env_unset":["TOKEN"]},"runtime":{}}}`,
+		"invalidEnvName":  `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env_unset":["BAD=NAME"]},"runtime":{}}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

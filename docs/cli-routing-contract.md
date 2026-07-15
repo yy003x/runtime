@@ -48,6 +48,8 @@ direct 调用只使用 `cli.command.args`、model 和 env，不加入 `managed_a
 binary + command.args + model + raw-cli-args + managed_args
 ```
 
+顶层 `sn-cli <profile> <prompt>` 的 stdout 优先返回本次 Provider 的真实 final text，使 `cx`/`cc` 保持与原生非交互 CLI 一致；只有幂等复用等本次没有 Provider 输出的情况才回退到 `result.json.summary`。run ID 和目录只写 stderr，结构化结果仍以 artifact 为准。
+
 Provider 差异必须由 config 表达，不得在入口硬编码 `cx -> exec` 或 `cc -> -p`。
 
 ```bash
@@ -61,6 +63,18 @@ sn-cli cx "hi" -- --skip-git-repo-check
 ```
 
 `sn-cli cx exec "hi"` 表示 managed prompt `exec hi`。原生 Codex `exec` 必须写为 `sn-cli cx -- exec "hi"`。
+
+### 3.1 Command 环境契约
+
+direct、managed 与 session 必须使用同一份 `cli.command` 环境配置。子进程环境顺序固定为：继承当前环境、应用 `env_unset`、应用 `env_passthrough`、应用 `env`、注入 runtime 环境。后写入的值优先。
+
+- `env` 用于 profile/preset 固定覆盖，值支持环境变量展开。
+- `env_passthrough` 用于把当前 `sn-cli` 进程变量显式传入 tmux 子进程。
+- `env_unset` 用于删除继承变量；preset 追加写法为 `env_unset_append`。
+- 同一个变量不得同时出现在 `env_unset` 与 `env`/`env_passthrough`。
+- config 不得保存 secret，只能传递或删除 secret 对应的环境变量。
+
+默认 `cx`/`cc` 继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。多账号目录应通过 shell 环境或 profile preset 表达，不得在 CLI 路由层按 profile ID 硬编码。
 
 ## 4. Namespace 契约
 

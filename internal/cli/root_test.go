@@ -39,6 +39,27 @@ func TestRunProfilePrintsFinalText(t *testing.T) {
 	}
 }
 
+func TestRunProfilePrefersProviderFinalTextOverContractSummary(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "provider.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","summary":"contract summary","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
+printf 'provider final text\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, root, "managed", fmt.Sprintf(`{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":%q,"args":[],"model":""},"runtime":{"prompt_delivery":"stdin","result_contract":"required"}}}`, script))
+
+	stdout := captureStdout(t, func() {
+		if err := runProfile(&config.Config{Home: root}, []string{"managed", "hello"}); err != nil {
+			t.Fatalf("runProfile returned error: %v", err)
+		}
+	})
+	if strings.TrimSpace(stdout) != "provider final text" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+}
+
 func TestProfileConfigExists(t *testing.T) {
 	root := t.TempDir()
 	writeCLIProfile(t, root, "fake", `{"type":"api","aliases":["mock-alias"],"api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true},"presets":{"fake-fast":{"overrides":{"model":"fast"}}}}`)

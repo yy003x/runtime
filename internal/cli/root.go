@@ -160,8 +160,14 @@ func runProfile(cfg *config.Config, args []string) error {
 		ProviderOverrides: overrides, RawCLIArgs: invocation.RawCLIArgs, Force: invocation.Force,
 	})
 	if result.RunID != "" {
-		if contract, readErr := service.ReadResult(agentrun.RunTask, result.RunID); readErr == nil && contract.Summary != "" {
-			fmt.Println(contract.Summary)
+		finalText := strings.TrimSpace(result.FinalText)
+		if finalText == "" {
+			if contract, readErr := service.ReadResult(agentrun.RunTask, result.RunID); readErr == nil {
+				finalText = strings.TrimSpace(contract.Summary)
+			}
+		}
+		if finalText != "" {
+			fmt.Println(finalText)
 		}
 		fmt.Fprintf(os.Stderr, "[run:%s] %s\n", result.RunID, result.RunDir)
 	}

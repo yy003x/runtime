@@ -162,11 +162,15 @@ command CLI profile 有两类参数：
 | API/native profile + prompt | AgentRun | 有 |
 | `sn-cli session start -c cx ...` | 同 config 的 tmux session + daemon | 有 |
 
-direct command 不解析 runtime task flags；首个 `--` 仅作为 sn-cli 强制透传分隔符并在执行前移除。managed argv 固定按 `binary + command.args + model + raw-cli-args + managed_args` 组装。普通文本必须复用 AgentRun managed 链路。terminal、SIGINT/SIGTERM/SIGHUP 和前台 process group 由 executor 处理。
+direct command 不解析 runtime task flags；首个 `--` 仅作为 sn-cli 强制透传分隔符并在执行前移除。managed argv 固定按 `binary + command.args + model + raw-cli-args + managed_args` 组装。普通文本必须复用 AgentRun managed 链路。顶层 profile prompt 的 stdout 使用本次 Provider final text，只有本次未执行 Provider 时才回退到 result summary；run 信息单独写 stderr。terminal、SIGINT/SIGTERM/SIGHUP 和前台 process group 由 executor 处理。
 
 CLI 参数契约统一为 `sn-cli <namespace> <action> [named options] [prompt] [-- raw-cli-args]`。config 只使用 `-c/--config`，lifecycle ID 只使用 `--run-id`/`--loop-id`，prompt 来源 positional、`--prompt-file`、stdin 三选一。旧 `prompt`/`prune` 命令及旧参数不保留兼容。
 
 session 运行时将 command config 包装为 tmux config，保留 binary、common args、model、env 和 preset 结果，移除一次性执行专用 `managed_args`。首个 prompt 只有在 tmux buffer 粘贴和 Enter 成功后才记录 `prompt.submitted`；这表示提交成功，不表示模型完成。session 的 pane 输出持续写入 `output.log`，CLI 非零退出时最多尝试 5 次、间隔 3 秒，显式 stop 直接终止 tmux，不触发重启。
+
+command 子进程环境由同一套 provider 逻辑生成，direct、managed 和 session 不允许各自实现。顺序固定为：继承当前环境、`env_unset` 删除、`env_passthrough` 显式传递、`env` 覆盖、AgentRun runtime env 注入。profile preset 可以用 `env_unset_append` 追加清理项。该规则用于切换 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等多账号目录，也用于消除父进程中的认证变量冲突；secret 值仍不得写入 profile。
+
+`config validate` 只暴露最终配置目录与已生效的认证变量名称，不暴露变量值；Claude 同时生效 `ANTHROPIC_API_KEY` 和 `ANTHROPIC_AUTH_TOKEN` 时返回 warning，具体保留哪一种认证由本地 profile 决定。
 
 ## 4. 目录契约
 
@@ -313,6 +317,22 @@ tmux managed task 成功条件：
 4. `done` 存在且为空。
 
 stdout、pane 静默、进程退出或单独完成文件都不构成成功。
+
+内置 `result.json` 的最小结构为：
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "<request.run_id>",
+  "outcome": "succeeded",
+  "summary": "任务结果摘要",
+  "artifacts": [],
+  "errors": [],
+  "validation": {"commands": [], "passed": true}
+}
+```
+
+`schema_version` 是数字，`validation.passed` 是布尔值，`artifacts`/`errors` 是 object 数组。`outcome` 只接受 `succeeded|failed|blocked|partial|cancelled`。managed prompt 的示例必须直接由 Go `Result` 类型序列化生成，避免提示、结构体和校验器漂移。
 
 ## 8. HTTP 与 Capability
 

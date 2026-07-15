@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,6 +29,28 @@ printf 'stdout is only a log\n'
 	contract, err := service.store.ReadResult(mustPaths(t, service, result))
 	if err != nil || contract.Summary != "managed ok" {
 		t.Fatalf("result=%#v err=%v", contract, err)
+	}
+}
+
+func TestManagedPromptContainsValidBuiltinResultExample(t *testing.T) {
+	runID := "task-20260715-120000-contract"
+	prompt := managedPrompt("完成任务", Request{RunID: runID}, Paths{ResultFile: "/tmp/result.json"})
+	start := strings.Index(prompt, "{")
+	end := strings.LastIndex(prompt, "}")
+	if start < 0 || end < start {
+		t.Fatalf("managed prompt missing JSON example: %s", prompt)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(prompt[start:end+1]), &raw); err != nil {
+		t.Fatalf("example is not valid JSON: %v", err)
+	}
+	if !validBuiltinResult(raw, runID) {
+		t.Fatalf("example does not satisfy builtin result contract: %#v", raw)
+	}
+	for _, value := range []string{"succeeded、failed、blocked、partial、cancelled", "不能把数字或布尔值写成字符串", "不要包含 Markdown code fence"} {
+		if !strings.Contains(prompt, value) {
+			t.Fatalf("managed prompt missing %q", value)
+		}
 	}
 }
 

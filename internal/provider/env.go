@@ -17,13 +17,16 @@ func CommandEnvironment(cfg CommandConfig, extra map[string]string) []string {
 			values[key] = value
 		}
 	}
-	for key, value := range cfg.Env {
-		values[key] = ExpandEnv(value)
+	for _, key := range cfg.EnvUnset {
+		delete(values, key)
 	}
 	for _, key := range cfg.EnvPassthrough {
 		if value, ok := os.LookupEnv(key); ok {
 			values[key] = value
 		}
+	}
+	for key, value := range cfg.Env {
+		values[key] = ExpandEnv(value)
 	}
 	for key, value := range extra {
 		values[key] = value

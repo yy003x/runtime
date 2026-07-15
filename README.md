@@ -145,7 +145,7 @@ sn-cli cx -- exec "分析当前仓库"   # -- 后强制原生透传
 sn-cli cx "分析当前仓库" -- --skip-git-repo-check
 ```
 
-direct 调用不创建 run artifact，也不加入 `managed_args`。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定 Codex/Claude 的实际调用方式。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
+direct 调用不创建 run artifact，也不加入 `managed_args`。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定 Codex/Claude 的实际调用方式。命令 stdout 返回 Provider 的真实 final text，run ID 与 artifact 目录写入 stderr；幂等复用时才回退输出 `result.json.summary`。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
 
 ### Managed task
 
@@ -264,6 +264,41 @@ command profile 可区分 common args 与 managed-only args：
   }
 }
 ```
+
+command profile 的子进程环境按以下顺序生成，direct、managed 和 tmux/session 使用同一规则：
+
+1. 继承 `sn-cli` 当前进程环境。
+2. 用 `env_unset` 删除不应传入目标 CLI 的变量。
+3. 用 `env_passthrough` 把当前进程变量显式带入 tmux 子进程。
+4. 用 `env` 覆盖固定值，值支持 `${HOME}` 等环境变量展开。
+5. 最后注入 AgentRun 内部变量。
+
+`env`、`env_passthrough` 与 `env_unset` 的冲突会在配置加载阶段报错。默认 `cx`/`cc` 不固定账号目录，会继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。需要不依赖 shell 显式选目录时，可以增加 preset：
+
+```json
+{
+  "presets": {
+    "cx-aip": {
+      "cli": {
+        "command": {
+          "env": {"CODEX_HOME": "${HOME}/.codex-aip"}
+        }
+      }
+    },
+    "cx-no-api-key": {
+      "cli": {
+        "command": {
+          "env_unset_append": ["OPENAI_API_KEY"]
+        }
+      }
+    }
+  }
+}
+```
+
+Claude profile 使用同样方式设置 `CLAUDE_CONFIG_DIR`。当 `ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_API_KEY` 同时存在时，应按实际认证方式在对应 preset 中用 `env_unset_append` 删除其中一个，避免改变默认账号或计费来源。
+
+切换后可先执行 `sn-cli config validate -c cx` 或 `sn-cli config validate -c cc`。输出会显示实际生效的配置目录和认证环境变量名称，但不会输出 secret 值；Claude 认证变量冲突会出现在 `warnings`。
 
 `depends`、audit proxy、PATH shim 和 DYLD 注入按 profile 显式启用。secret 只能引用环境变量名，不应写入配置、日志或 result。
 

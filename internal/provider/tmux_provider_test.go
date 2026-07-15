@@ -12,17 +12,26 @@ func TestTmuxShellCommandUsesPreparedEnvironment(t *testing.T) {
 			Args:           []string{"--base", "value"},
 			Env:            map[string]string{"BASE": "configured"},
 			EnvPassthrough: []string{},
+			EnvUnset:       []string{"ANTHROPIC_AUTH_TOKEN"},
 		},
 		Tmux: &TmuxConfig{SessionName: "test"},
 	}}
 	command := tmuxShellCommandArgv(cfg, []string{"agent cli", "--model", "override"}, map[string]string{"AGENTRUN_RUN_ID": "task-1"})
-	for _, expected := range []string{"exec env", "'AGENTRUN_RUN_ID=task-1'", "'BASE=configured'", "'agent cli'", "'--model'", "'override'"} {
+	for _, expected := range []string{"exec env", "-u 'ANTHROPIC_AUTH_TOKEN'", "'AGENTRUN_RUN_ID=task-1'", "'BASE=configured'", "'agent cli'", "'--model'", "'override'"} {
 		if !strings.Contains(command, expected) {
 			t.Fatalf("command %q missing %q", command, expected)
 		}
 	}
 	if strings.Contains(command, "--base") {
 		t.Fatalf("command must use prepared argv: %q", command)
+	}
+}
+
+func TestTmuxCommandEnvSupportsUnsetWithoutConfiguredValues(t *testing.T) {
+	cfg := Config{CLI: &CLIConfig{Command: CommandConfig{EnvUnset: []string{"CODEX_HOME"}}}}
+	command := TmuxCommandEnv(cfg, "agent run")
+	if command != "env -u 'CODEX_HOME' agent run" {
+		t.Fatalf("command=%q", command)
 	}
 }
 

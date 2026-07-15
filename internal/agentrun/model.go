@@ -127,4 +127,5 @@ type RunSummary struct {
 	ResultFile    string `json:"result_file"`
 	RunDir        string `json:"run_dir"`
 	Idempotent    bool   `json:"idempotent,omitempty"`
+	FinalText     string `json:"-"`
 }

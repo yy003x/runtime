@@ -193,10 +193,11 @@ func AsTmuxSessionProfile(cfg Config) (Config, error) {
 
 func TmuxCommandEnv(cfg Config, command string) string {
 	values := tmuxEnvironment(cfg, nil)
-	if len(values) == 0 {
+	unset := cfg.CLI.Command.EnvUnset
+	if len(values) == 0 && len(unset) == 0 {
 		return command
 	}
-	return strings.Join(append(environmentParts(values), command), " ")
+	return strings.Join(append(environmentParts(values, unset), command), " ")
 }
 
 func ShellQuote(value string) string {
@@ -209,8 +210,9 @@ func ShellQuote(value string) string {
 func tmuxShellCommandArgv(cfg Config, argv []string, extra map[string]string) string {
 	parts := []string{"exec"}
 	values := tmuxEnvironment(cfg, extra)
-	if len(values) > 0 {
-		parts = append(parts, environmentParts(values)...)
+	unset := cfg.CLI.Command.EnvUnset
+	if len(values) > 0 || len(unset) > 0 {
+		parts = append(parts, environmentParts(values, unset)...)
 	}
 	for _, arg := range argv {
 		parts = append(parts, ShellQuote(arg))
@@ -235,13 +237,18 @@ func tmuxEnvironment(cfg Config, extra map[string]string) map[string]string {
 	return values
 }
 
-func environmentParts(values map[string]string) []string {
+func environmentParts(values map[string]string, unset []string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	parts := []string{"env"}
+	unsetKeys := append([]string(nil), unset...)
+	sort.Strings(unsetKeys)
+	for _, key := range unsetKeys {
+		parts = append(parts, "-u", ShellQuote(key))
+	}
 	for _, key := range keys {
 		parts = append(parts, ShellQuote(key+"="+values[key]))
 	}

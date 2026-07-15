@@ -219,6 +219,7 @@ func validateProfile(profile provider.Config, live bool) map[string]any {
 			return result
 		}
 	}
+	addCLIEnvironmentDiagnostics(profile, result)
 	binary := profile.CLI.Command.Binary
 	if _, err := exec.LookPath(binary); err != nil {
 		if info, statErr := os.Stat(binary); statErr != nil || info.IsDir() {
@@ -228,6 +229,55 @@ func validateProfile(profile provider.Config, live bool) map[string]any {
 	}
 	result["ok"], result["message"] = true, "命令可用"
 	return result
+}
+
+func addCLIEnvironmentDiagnostics(profile provider.Config, result map[string]any) {
+	if profile.CLI == nil {
+		return
+	}
+	environment := make(map[string]string)
+	for _, item := range provider.CommandEnvironment(profile.CLI.Command, nil) {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			environment[key] = value
+		}
+	}
+	details := make(map[string]any)
+	switch profile.CLI.Driver {
+	case "codex":
+		home := environment["CODEX_HOME"]
+		if home == "" {
+			home = filepath.Join(userHomeDir(), ".codex")
+		}
+		details["CODEX_HOME"] = home
+	case "claude":
+		home := environment["CLAUDE_CONFIG_DIR"]
+		if home == "" {
+			home = filepath.Join(userHomeDir(), ".claude")
+		}
+		details["CLAUDE_CONFIG_DIR"] = home
+		var activeAuth []string
+		for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+			if environment[name] != "" {
+				activeAuth = append(activeAuth, name)
+			}
+		}
+		details["active_auth_env"] = activeAuth
+		if len(activeAuth) > 1 {
+			result["warnings"] = []string{"ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN 同时生效；请在 profile/preset 的 env_unset 中删除不使用的一项"}
+		}
+	}
+	if len(details) > 0 {
+		result["environment"] = details
+	}
+}
+
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "~"
+	}
+	return home
 }
 
 func validateExecutionEnvironment(profile provider.Config) string {

@@ -7,6 +7,7 @@ import (
 
 	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/daemon"
+	"agent-runtime/internal/provider"
 )
 
 func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
@@ -24,6 +25,49 @@ func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(options.RawCLIArgs, []string{"--search"}) {
 		t.Fatalf("raw_cli_args=%#v", options.RawCLIArgs)
+	}
+}
+
+func TestCLIEnvironmentDiagnosticsReportHomesAndAuthConflict(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/tmp/codex-aip")
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
+
+	codexResult := map[string]any{}
+	addCLIEnvironmentDiagnostics(provider.Config{CLI: &provider.CLIConfig{
+		Driver: "codex", Command: provider.CommandConfig{},
+	}}, codexResult)
+	codexEnvironment, _ := codexResult["environment"].(map[string]any)
+	if codexEnvironment["CODEX_HOME"] != "/tmp/codex-aip" {
+		t.Fatalf("codex environment=%#v", codexEnvironment)
+	}
+
+	claudeResult := map[string]any{}
+	addCLIEnvironmentDiagnostics(provider.Config{CLI: &provider.CLIConfig{
+		Driver: "claude", Command: provider.CommandConfig{Env: map[string]string{"CLAUDE_CONFIG_DIR": "/tmp/claude-aip"}},
+	}}, claudeResult)
+	claudeEnvironment, _ := claudeResult["environment"].(map[string]any)
+	if claudeEnvironment["CLAUDE_CONFIG_DIR"] != "/tmp/claude-aip" {
+		t.Fatalf("claude environment=%#v", claudeEnvironment)
+	}
+	if warnings, _ := claudeResult["warnings"].([]string); len(warnings) != 1 {
+		t.Fatalf("warnings=%#v", claudeResult["warnings"])
+	}
+}
+
+func TestCLIEnvironmentDiagnosticsHonorEnvUnset(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
+	result := map[string]any{}
+	addCLIEnvironmentDiagnostics(provider.Config{CLI: &provider.CLIConfig{
+		Driver: "claude", Command: provider.CommandConfig{EnvUnset: []string{"ANTHROPIC_AUTH_TOKEN"}},
+	}}, result)
+	if _, exists := result["warnings"]; exists {
+		t.Fatalf("unexpected warnings=%#v", result["warnings"])
+	}
+	environment, _ := result["environment"].(map[string]any)
+	if got := environment["active_auth_env"]; !reflect.DeepEqual(got, []string{"ANTHROPIC_API_KEY"}) {
+		t.Fatalf("active_auth_env=%#v", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -313,7 +314,9 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateResultPending})
 	_, validationReason := s.store.ValidateResult(paths, request.RunID, request.ResultSchema)
 	if validationReason == "" {
-		return s.markDone(paths, request, providerStatus)
+		summary, doneErr := s.markDone(paths, request, providerStatus)
+		summary.FinalText = strings.TrimSpace(providerResult.FinalText)
+		return summary, doneErr
 	}
 	if validationReason == "schema_invalid" {
 		return s.fail(paths, request, providerStatus, validationReason, fmt.Errorf("result validation failed: %s", validationReason))
@@ -333,7 +336,9 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 			return RunSummary{}, err
 		}
 		_ = s.store.Event(paths, request, "result.synthesized", map[string]any{"execution_mode": mode, "summary_chars": len(text)})
-		return s.markDone(paths, request, providerStatus)
+		summary, doneErr := s.markDone(paths, request, providerStatus)
+		summary.FinalText = text
+		return summary, doneErr
 	}
 	reason := "result_missing"
 	if providerResult.ExitCode != 0 {
@@ -495,6 +500,15 @@ func (s *Service) resetRun(paths Paths) {
 }
 
 func managedPrompt(prompt string, request Request, paths Paths) string {
+	example, _ := json.MarshalIndent(Result{
+		SchemaVersion: 1,
+		RunID:         request.RunID,
+		Outcome:       OutcomeSucceeded,
+		Summary:       "任务结果摘要",
+		Artifacts:     []map[string]any{},
+		Errors:        []map[string]any{},
+		Validation:    Validation{Commands: []string{}, Passed: true},
+	}, "", "  ")
 	return fmt.Sprintf(`%s
 
 ## AgentRun result contract
@@ -503,8 +517,18 @@ func managedPrompt(prompt string, request Request, paths Paths) string {
 
 %s
 
-JSON 必须包含 schema_version、run_id、outcome、summary、artifacts、errors、validation；run_id 必须为 %s。写入后请重新读取并确认 JSON 可解析。终端输出只作为过程日志，不能替代 result.json。
-`, strings.TrimRight(prompt, "\n"), paths.ResultFile, request.RunID)
+严格按下面的类型和枚举写入，不能把数字或布尔值写成字符串：
+
+%s
+
+- schema_version 必须是数字 1。
+- run_id 必须是字符串 %s。
+- outcome 只能是 succeeded、failed、blocked、partial、cancelled 之一。
+- artifacts 和 errors 必须是 object 数组；没有内容时写 []。
+- validation 必须包含 commands 字符串数组和 passed 布尔值。
+
+只向该文件写入一个 JSON object，不要包含 Markdown code fence 或额外文本。写入后重新读取并确认 JSON 可解析。终端输出只作为过程日志，不能替代 result.json。
+`, strings.TrimRight(prompt, "\n"), paths.ResultFile, string(example), request.RunID)
 }
 
 func writeOutputLog(path string, prepared provider.PreparedRequest, result provider.Result) error {
