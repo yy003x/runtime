@@ -46,6 +46,7 @@ type Request struct {
 	Provider                string         `json:"provider"`
 	CWD                     string         `json:"cwd,omitempty"`
 	PromptFile              string         `json:"prompt_file,omitempty"`
+	RawCLIArgs              []string       `json:"raw_cli_args,omitempty"`
 	DeadlineSeconds         int            `json:"deadline_seconds"`
 	ResultFile              string         `json:"result_file"`
 	ResultSchema            string         `json:"result_schema,omitempty"`
@@ -107,6 +108,7 @@ type RunOptions struct {
 	CWD               string
 	Prompt            string
 	PromptFile        string
+	RawCLIArgs        []string
 	DeadlineSeconds   int
 	ResultSchema      string
 	ExecutionMode     string

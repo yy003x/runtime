@@ -32,6 +32,22 @@ func TestPrepareCodexTypedOverridesReplaceDefaults(t *testing.T) {
 	}
 }
 
+func TestPrepareCLIPlacesRawArgsBeforeManagedArgs(t *testing.T) {
+	cfg := Config{ID: "cx", Type: TypeCLI, CLI: &CLIConfig{
+		Driver: "codex", Executor: ExecutorCommand,
+		Command: CommandConfig{Binary: "codex", Args: []string{"--search"}, Model: "configured"},
+		Runtime: CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"exec"}},
+	}}
+	prepared, err := prepare(cfg, "hello", nil, []string{"--skip-git-repo-check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codex", "--search", "--model", "configured", "--skip-git-repo-check", "exec"}
+	if !reflect.DeepEqual(prepared.CLI.Argv, want) {
+		t.Fatalf("argv=%#v want=%#v", prepared.CLI.Argv, want)
+	}
+}
+
 func TestPrepareClaudeTypedOverrides(t *testing.T) {
 	cfg := Config{ID: "cc", Type: TypeCLI, CLI: &CLIConfig{
 		Driver: "claude", Executor: ExecutorCommand,
@@ -51,16 +67,49 @@ func TestPrepareClaudeTypedOverrides(t *testing.T) {
 }
 
 func TestPrepareInteractiveCLIExcludesManagedArgsAndKeepsRawArgs(t *testing.T) {
+	t.Setenv("SN_TEST_HOME", "/tmp/sn-test-home")
 	cfg := Config{ID: "cx", Type: TypeCLI, CLI: &CLIConfig{
 		Driver: "codex", Executor: ExecutorCommand,
-		Command: CommandConfig{Binary: "codex", Args: []string{"--search"}, Model: "configured"},
+		Command: CommandConfig{Binary: "codex", Args: []string{"--search", "-c", "model_instructions_file=${SN_TEST_HOME}/AGENTS.md"}, Model: "configured"},
 		Runtime: CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"exec"}},
 	}}
-	prepared, err := PrepareInteractiveCLI(cfg, []string{"--help", "raw value"})
+	prepared, err := PrepareInteractiveCLI(cfg, []string{"--help", "${SN_TEST_HOME}/raw"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "--search", "--model", "configured", "--help", "raw value"}
+	want := []string{"codex", "--search", "-c", "model_instructions_file=/tmp/sn-test-home/AGENTS.md", "--model", "configured", "--help", "${SN_TEST_HOME}/raw"}
+	if !reflect.DeepEqual(prepared.Argv, want) {
+		t.Fatalf("argv=%#v want=%#v", prepared.Argv, want)
+	}
+}
+
+func TestPrepareCLIExpandsConfiguredArgs(t *testing.T) {
+	t.Setenv("SN_TEST_HOME", "/tmp/sn-test-home")
+	cfg := Config{ID: "cx", Type: TypeCLI, CLI: &CLIConfig{
+		Driver: "codex", Executor: ExecutorCommand,
+		Command: CommandConfig{Binary: "${SN_TEST_HOME}/codex", Args: []string{"-c", "model_instructions_file=${SN_TEST_HOME}/AGENTS.md"}, Model: ""},
+		Runtime: CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"${SN_TEST_HOME}/exec"}},
+	}}
+	prepared, err := Prepare(cfg, "hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/tmp/sn-test-home/codex", "-c", "model_instructions_file=/tmp/sn-test-home/AGENTS.md", "/tmp/sn-test-home/exec"}
+	if !reflect.DeepEqual(prepared.CLI.Argv, want) {
+		t.Fatalf("argv=%#v want=%#v", prepared.CLI.Argv, want)
+	}
+}
+
+func TestPrepareInteractiveCLIWithEmptyOptionsEqualsBinary(t *testing.T) {
+	cfg := Config{ID: "cx", Type: TypeCLI, CLI: &CLIConfig{
+		Driver: "codex", Executor: ExecutorCommand,
+		Command: CommandConfig{Binary: "codex", Args: []string{}, Model: ""},
+	}}
+	prepared, err := PrepareInteractiveCLI(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codex"}
 	if !reflect.DeepEqual(prepared.Argv, want) {
 		t.Fatalf("argv=%#v want=%#v", prepared.Argv, want)
 	}

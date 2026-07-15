@@ -117,13 +117,15 @@ type Provider interface {
 
 - owner-only Unix Domain Socket、PID、随机 token。
 - binary/version identity、idle exit 和 process registry。
-- tmux start/has/capture/send/interrupt/kill。
+- tmux start/has/capture/send/interrupt/kill、`pipe-pane` 持久日志与进程监督重启。
 - dependency lease、ref count、wait TCP/HTTP、restart/optional。
 - 按 profile 启用的 audit proxy、upstream proxy、shim 和 DYLD 环境。
 
 daemon 不解析 profile，不创建 run ID，不写 AgentRun artifacts。
 
 ## 3. Interactive 与 Managed 分流
+
+完整的顶层解析、profile 参数和 `--` 语义以 [`cli-routing-contract.md`](cli-routing-contract.md) 为规范源。本节只说明架构边界。
 
 command CLI profile 有两类参数：
 
@@ -151,14 +153,20 @@ command CLI profile 有两类参数：
 
 | 调用 | 执行方式 | Artifact |
 | --- | --- | --- |
-| `sn-cli cx [raw args...]` | 原生 Codex interactive | 无 |
-| `sn-cli cc [raw args...]` | 原生 Claude interactive | 无 |
-| `sn-cli prompt -e cx ...` | managed AgentRun | 有 |
-| `sn-cli task run --profile cx ...` | managed/capture AgentRun | 有 |
+| `sn-cli cx` / `sn-cli cc` | 原生 interactive | 无 |
+| `sn-cli cx --help` / `sn-cli cc -p ...` | 原生 flag passthrough | 无 |
+| `sn-cli cx -- exec ...` | 移除 `--` 后原生 command passthrough | 无 |
+| `sn-cli cx "prompt"` / `sn-cli cc "prompt"` | managed AgentRun | 有 |
+| `stdin \| sn-cli cx` | managed AgentRun | 有 |
+| `sn-cli task run -c cx ...` | managed/capture AgentRun | 有 |
 | API/native profile + prompt | AgentRun | 有 |
-| tmux session 命令 | AgentRun session + daemon | 有 |
+| `sn-cli session start -c cx ...` | 同 config 的 tmux session + daemon | 有 |
 
-direct command 不解析旧 task flags，raw args 原样追加到目标 CLI argv。terminal、SIGINT/SIGTERM/SIGHUP 和前台 process group 由 executor 处理。
+direct command 不解析 runtime task flags；首个 `--` 仅作为 sn-cli 强制透传分隔符并在执行前移除。managed argv 固定按 `binary + command.args + model + raw-cli-args + managed_args` 组装。普通文本必须复用 AgentRun managed 链路。terminal、SIGINT/SIGTERM/SIGHUP 和前台 process group 由 executor 处理。
+
+CLI 参数契约统一为 `sn-cli <namespace> <action> [named options] [prompt] [-- raw-cli-args]`。config 只使用 `-c/--config`，lifecycle ID 只使用 `--run-id`/`--loop-id`，prompt 来源 positional、`--prompt-file`、stdin 三选一。旧 `prompt`/`prune` 命令及旧参数不保留兼容。
+
+session 运行时将 command config 包装为 tmux config，保留 binary、common args、model、env 和 preset 结果，移除一次性执行专用 `managed_args`。首个 prompt 只有在 tmux buffer 粘贴和 Enter 成功后才记录 `prompt.submitted`；这表示提交成功，不表示模型完成。session 的 pane 输出持续写入 `output.log`，CLI 非零退出时最多尝试 5 次、间隔 3 秒，显式 stop 直接终止 tmux，不触发重启。
 
 ## 4. 目录契约
 
@@ -292,7 +300,7 @@ configs/
 | `request.json` | AgentRun | 不可变执行请求 |
 | `status.json` | AgentRun | 公共状态与 Provider detail |
 | `events.jsonl` | AgentRun | 追加事件流 |
-| `output.log` | AgentRun | stdout/stderr 或 pane capture |
+| `output.log` | AgentRun | stdout/stderr；session 使用 `pipe-pane` 持久终端日志 |
 | `result.json` | AgentRun/Provider contract | 结构化最终结果 |
 | `done` | tmux Provider | tmux managed task 空完成标记 |
 | `native-snapshot.json` | native Provider | native loop snapshot |
@@ -330,7 +338,8 @@ Capability：
 | P1 | 完成 | 统一 `SN_CLI_HOME`、配置 owner 与全部数据路径 |
 | P2 | 完成 | interactive `cx/cc` 与 managed prompt 分流，引入 `managed_args` |
 | P3 | 完成 | 无源码安装、release update、config 同步、server 更名 |
-| P4 | 完成 | README、架构文档和全量验收收口 |
+| P4 | 完成 | CLI 统一参数契约、同 config session、日志与异常重启 |
+| P5 | 完成 | README、架构文档和全量验收收口 |
 
 迁移不会自动删除旧 checkout、旧 run 或旧配置目录。它们不再被现行入口读取，可由用户在确认无保留需求后自行归档或删除。
 
@@ -346,7 +355,8 @@ Capability：
 | 本地安装 | 临时 home 运行 `make install` | config 同步、binary、symlink |
 | 网络安装 | 本地 HTTP fixture | 无 Go/Git、checksum、无源码运行 |
 | Interactive | `sn-cli cx --help/--version`、`cc --version` | raw args、无 artifact |
-| Managed | `sn-cli prompt -e <fixture>` | `managed_args` 与 result artifact |
+| Managed | `sn-cli <fixture> "prompt"`、`stdin \| sn-cli <fixture>` | prompt 来源、raw args、`managed_args` 与 result artifact |
+| Session | `sn-cli session start -c <fixture> "prompt"` | 同 config tmux、提交事件、持久日志、异常重启 |
 | Server | `/healthz` | `sn-server` 与共享 home |
 | 失败保护 | checksum/config/binary validation fixture | 旧 binary 保留、冲突零部分复制 |
 | 补丁质量 | `git diff --check` | 空白与补丁格式 |
@@ -357,17 +367,19 @@ Capability：
 2. active config 只从 `~/.sn/configs` 加载。
 3. 发行模板只能补齐缺失配置，不能覆盖或删除本地配置。
 4. command direct invocation 不创建 managed artifact。
-5. managed prompt 必须显式进入 AgentRun。
+5. 所有 managed prompt（包括 profile 普通文本简写）必须进入 AgentRun。
 6. daemon 只做长期进程和执行环境后端。
 7. 普通 profile 不经过 proxy/shim/dylib 路径。
 8. Provider 配置不保存 secret。
-9. tmux 成功判定始终使用 `result.json + done`。
+9. tmux managed task 成功判定使用 `result.json + done`；session start 成功判定使用 pane ready 和可选的 `prompt.submitted`。
 10. 安装后的 CLI 不依赖源码、Go 或 Git。
 
 ## 12. 完成标准
 
 - [x] `sn-cli cx` 与 `mz-cli cx` 一样启动正常 Codex interactive。
-- [x] `sn-cli prompt -e cx` 提供 managed AgentRun。
+- [x] `sn-cli cx "prompt"` 与 `sn-cli cc "prompt"` 按 profile 配置进入 managed AgentRun。
+- [x] `sn-cli session start -c cx "prompt"` 使用同一 config 完成 tmux 启动和首个 prompt 提交。
+- [x] session 支持 list/status/logs/send/interrupt/stop/attach、持久日志和异常重启。
 - [x] `agentrun` 统一 task/turn/loop/session/command。
 - [x] Provider 统一 CLI/API/tmux/native。
 - [x] native Provider 吸收 agent-arch loop、persona 和 snapshot。

@@ -23,13 +23,13 @@ const (
 var ReservedCommands = map[string]struct{}{
 	"doctor": {}, "profiles": {}, "config": {}, "capabilities": {},
 	"skills": {}, "tools": {}, "memory": {}, "task": {}, "turn": {},
-	"loop": {}, "session": {}, "command": {}, "prune": {}, "run": {},
+	"loop": {}, "session": {}, "command": {}, "clean": {}, "run": {},
 	"status": {}, "logs": {}, "watch": {}, "cancel": {}, "start": {},
 	"step": {}, "send": {}, "interrupt": {}, "block": {}, "continue": {},
 	"patch-resume": {}, "stop": {}, "attach": {},
 	"choices": {}, "validate": {}, "help": {}, "version": {}, "list": {},
-	"completion": {}, "prompt": {},
-	"daemon": {},
+	"completion": {},
+	"daemon":     {},
 }
 
 type Config struct {
@@ -104,6 +104,8 @@ type TmuxConfig struct {
 	OutputRateWindowSeconds      float64  `json:"output_rate_window_seconds,omitempty"`
 	TailBytes                    int      `json:"tail_bytes,omitempty"`
 	AutoTrustCWD                 []string `json:"auto_trust_cwd,omitempty"`
+	RestartMaxAttempts           int      `json:"restart_max_attempts,omitempty"`
+	RestartDelaySeconds          float64  `json:"restart_delay_seconds,omitempty"`
 }
 
 type CommandConfig struct {
@@ -501,6 +503,9 @@ func validateCLI(cfg *Config, source string) error {
 		}
 		if strings.TrimSpace(cli.Tmux.SessionName) == "" {
 			return fmt.Errorf("%s: cli.tmux.session_name is required", source)
+		}
+		if cli.Tmux.RestartMaxAttempts < 0 || cli.Tmux.RestartDelaySeconds < 0 {
+			return fmt.Errorf("%s: tmux restart_max_attempts/restart_delay_seconds must be >= 0", source)
 		}
 	}
 	return validateOverridePolicy(cli.Runtime.OverridePolicy, cliSupportedOverrides(cli.Driver), source)

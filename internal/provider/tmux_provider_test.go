@@ -26,6 +26,24 @@ func TestTmuxShellCommandUsesPreparedEnvironment(t *testing.T) {
 	}
 }
 
+func TestTmuxShellCommandExpandsConfiguredValues(t *testing.T) {
+	t.Setenv("SN_TEST_HOME", "/tmp/sn-test-home")
+	t.Setenv("SN_TEST_MODEL", "configured-model")
+	cfg := Config{CLI: &CLIConfig{
+		Command: CommandConfig{
+			Binary: "${SN_TEST_HOME}/agent",
+			Args:   []string{"--config", "instructions=${SN_TEST_HOME}/AGENTS.md"},
+			Model:  "${SN_TEST_MODEL}",
+		},
+	}}
+	command := TmuxShellCommand(cfg, nil)
+	for _, expected := range []string{"'/tmp/sn-test-home/agent'", "'instructions=/tmp/sn-test-home/AGENTS.md'", "'configured-model'"} {
+		if !strings.Contains(command, expected) {
+			t.Fatalf("command %q missing %q", command, expected)
+		}
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	if got := ShellQuote("a'b"); got != `'a'"'"'b'` {
 		t.Fatalf("ShellQuote=%q", got)

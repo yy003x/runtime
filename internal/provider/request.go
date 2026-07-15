@@ -42,15 +42,22 @@ type APIRequest struct {
 }
 
 func Prepare(cfg Config, prompt string, overrides map[string]any) (PreparedRequest, error) {
+	return prepare(cfg, prompt, overrides, nil)
+}
+
+func prepare(cfg Config, prompt string, overrides map[string]any, rawCLIArgs []string) (PreparedRequest, error) {
 	requested := cloneStringMap(overrides)
 	if cfg.Type == TypeCLI {
-		request, err := prepareCLI(cfg, prompt, requested)
+		request, err := prepareCLI(cfg, prompt, requested, rawCLIArgs)
 		if err != nil {
 			return PreparedRequest{}, err
 		}
 		return PreparedRequest{CLI: &request}, nil
 	}
 	if cfg.Type == TypeAPI {
+		if len(rawCLIArgs) > 0 {
+			return PreparedRequest{}, fmt.Errorf("profile %s: raw CLI args require a CLI profile", cfg.ID)
+		}
 		request, err := prepareAPI(cfg, prompt, requested)
 		if err != nil {
 			return PreparedRequest{}, err
@@ -58,6 +65,9 @@ func Prepare(cfg Config, prompt string, overrides map[string]any) (PreparedReque
 		return PreparedRequest{API: &request}, nil
 	}
 	if cfg.Type == TypeNative {
+		if len(rawCLIArgs) > 0 {
+			return PreparedRequest{}, fmt.Errorf("profile %s: raw CLI args require a CLI profile", cfg.ID)
+		}
 		request, err := prepareNative(cfg, requested)
 		if err != nil {
 			return PreparedRequest{}, err
@@ -89,31 +99,32 @@ func prepareNative(cfg Config, overrides map[string]any) (NativeRequest, error) 
 	return NativeRequest{ProfileID: cfg.ID, RequestedOverrides: cloneStringMap(overrides), EffectiveOptions: effective}, nil
 }
 
-func prepareCLI(cfg Config, prompt string, overrides map[string]any) (CLIRequest, error) {
+func prepareCLI(cfg Config, prompt string, overrides map[string]any, rawCLIArgs []string) (CLIRequest, error) {
 	if cfg.CLI == nil {
 		return CLIRequest{}, fmt.Errorf("profile %s: missing cli config", cfg.ID)
 	}
 	cli := cfg.CLI
 	driver := cli.Driver
 	if driver == "" {
-		driver = inferDriver(cli.Command.Binary)
+		driver = inferDriver(expandConfiguredBinary(cli.Command.Binary))
 	}
 	allowed := allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy)
-	args, model, effective, err := applyCLIOverrides(driver, cli.Command.Args, cli.Command.Model, overrides, allowed)
+	args, model, effective, err := applyCLIOverrides(driver, expandConfiguredArgs(cli.Command.Args), ExpandEnv(cli.Command.Model), overrides, allowed)
 	if err != nil {
 		return CLIRequest{}, fmt.Errorf("profile %s: %w", cfg.ID, err)
 	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	args = append(args, cli.Runtime.ManagedArgs...)
-	argv := append([]string{expandHome(cli.Command.Binary)}, args...)
+	args = append(args, rawCLIArgs...)
+	args = append(args, expandConfiguredArgs(cli.Runtime.ManagedArgs)...)
+	argv := append([]string{expandConfiguredBinary(cli.Command.Binary)}, args...)
 	stdin := ""
 	switch cli.Runtime.PromptDelivery {
 	case "stdin":
 		stdin = prompt
 	case "arg":
-		argv = append(argv, expandPromptArgs(cli.Runtime.PromptArgs, prompt)...)
+		argv = append(argv, expandPromptArgs(expandConfiguredArgs(cli.Runtime.PromptArgs), prompt)...)
 	case "none", "paste":
 	default:
 		return CLIRequest{}, fmt.Errorf("unknown prompt_delivery %q", cli.Runtime.PromptDelivery)
@@ -133,12 +144,19 @@ func PrepareInteractiveCLI(cfg Config, rawArgs []string) (CLIRequest, error) {
 	if cfg.Type != TypeCLI || cfg.CLI == nil || cfg.CLI.Executor != ExecutorCommand {
 		return CLIRequest{}, fmt.Errorf("profile %s is not an interactive command profile", cfg.ID)
 	}
+	return prepareUnmanagedCLI(cfg, rawArgs)
+}
+
+func prepareUnmanagedCLI(cfg Config, rawArgs []string) (CLIRequest, error) {
+	if cfg.Type != TypeCLI || cfg.CLI == nil {
+		return CLIRequest{}, fmt.Errorf("profile %s is not a CLI profile", cfg.ID)
+	}
 	cli := cfg.CLI
 	driver := cli.Driver
 	if driver == "" {
-		driver = inferDriver(cli.Command.Binary)
+		driver = inferDriver(expandConfiguredBinary(cli.Command.Binary))
 	}
-	args, model, effective, err := applyCLIOverrides(driver, cli.Command.Args, cli.Command.Model, nil, allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy))
+	args, model, effective, err := applyCLIOverrides(driver, expandConfiguredArgs(cli.Command.Args), ExpandEnv(cli.Command.Model), nil, allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy))
 	if err != nil {
 		return CLIRequest{}, fmt.Errorf("profile %s: %w", cfg.ID, err)
 	}
@@ -148,7 +166,7 @@ func PrepareInteractiveCLI(cfg Config, rawArgs []string) (CLIRequest, error) {
 	args = append(args, rawArgs...)
 	effective["driver"] = driver
 	return CLIRequest{
-		ProfileID: cfg.ID, Driver: driver, Argv: append([]string{expandHome(cli.Command.Binary)}, args...),
+		ProfileID: cfg.ID, Driver: driver, Argv: append([]string{expandConfiguredBinary(cli.Command.Binary)}, args...),
 		RequestedOverrides: map[string]any{}, EffectiveOptions: effective,
 	}, nil
 }
@@ -595,6 +613,18 @@ func expandHome(path string) string {
 		}
 	}
 	return path
+}
+
+func expandConfiguredBinary(value string) string {
+	return expandHome(ExpandEnv(value))
+}
+
+func expandConfiguredArgs(values []string) []string {
+	expanded := make([]string, len(values))
+	for index, value := range values {
+		expanded[index] = ExpandEnv(value)
+	}
+	return expanded
 }
 
 var osUserHomeDir = os.UserHomeDir

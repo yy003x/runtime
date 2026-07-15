@@ -35,12 +35,16 @@ type ExecutionEnvironment struct {
 }
 
 type TmuxStartRequest struct {
-	ProcessID string               `json:"process_id"`
-	Session   string               `json:"session"`
-	CWD       string               `json:"cwd"`
-	Command   string               `json:"command"`
-	Depends   []Dependency         `json:"depends,omitempty"`
-	Execution ExecutionEnvironment `json:"execution,omitempty"`
+	ProcessID           string               `json:"process_id"`
+	Session             string               `json:"session"`
+	CWD                 string               `json:"cwd"`
+	Command             string               `json:"command"`
+	LogFile             string               `json:"log_file,omitempty"`
+	ExitFile            string               `json:"exit_file,omitempty"`
+	RestartMaxAttempts  int                  `json:"restart_max_attempts,omitempty"`
+	RestartDelaySeconds float64              `json:"restart_delay_seconds,omitempty"`
+	Depends             []Dependency         `json:"depends,omitempty"`
+	Execution           ExecutionEnvironment `json:"execution,omitempty"`
 }
 
 type Request struct {

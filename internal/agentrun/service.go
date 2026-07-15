@@ -166,7 +166,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if err != nil {
 		return RunSummary{}, err
 	}
-	if _, err := selectedProvider.Prepare(ctx, profile, provider.Request{Overrides: overrides}); err != nil {
+	if _, err := selectedProvider.Prepare(ctx, profile, provider.Request{Overrides: overrides, RawCLIArgs: options.RawCLIArgs}); err != nil {
 		return RunSummary{}, err
 	}
 	runID := options.RunID
@@ -197,7 +197,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
 		ProjectID: projectID, RunType: runType, RunID: runID, Caller: options.Caller,
 		ProviderProfile: profile.ID, Provider: profile.Transport(), CWD: cwd,
-		PromptFile: promptFile, DeadlineSeconds: options.DeadlineSeconds,
+		PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), DeadlineSeconds: options.DeadlineSeconds,
 		ResultFile: paths.ResultFile, ResultSchema: options.ResultSchema, ExecutionMode: mode,
 		ProviderOverrides: overrides, AllowedActions: append([]string(nil), options.AllowedActions...),
 		ForbiddenActions: append([]string(nil), options.ForbiddenActions...), CreatedAt: now, UpdatedAt: now,
@@ -246,6 +246,7 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	}
 	providerRequest := provider.Request{
 		Prompt:       providerPrompt,
+		RawCLIArgs:   append([]string(nil), options.RawCLIArgs...),
 		Overrides:    overrides,
 		CWD:          cwd,
 		Environment:  extraEnv,

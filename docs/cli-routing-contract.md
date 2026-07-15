@@ -1,0 +1,94 @@
+# sn-cli 路由契约
+
+本文是 `sn-cli` 命令语法、profile 分流与参数边界的规范源。入口实现、帮助文案、README 和测试不得与本文冲突。
+
+## 1. 统一语法
+
+```text
+sn-cli <namespace> <action> [named-options...] [prompt...] [-- raw-cli-args...]
+sn-cli <profile> [prompt...] [-- raw-cli-args...]
+```
+
+- `prompt` 是唯一允许不带 key 的业务数据，多个 positional token 以空格连接。引号只是 shell 的分组语法，不属于 `sn-cli` 协议。
+- config 统一使用 `-c/--config`。
+- lifecycle ID 统一使用 `--run-id` 或 `--loop-id`，不接受 positional ID。
+- prompt 文件只使用 `--prompt-file`，不存在 `--prompt`。
+- `--` 之后的全部参数只属于目标 CLI，`sn-cli` 不再解析。
+- 旧 `prompt` 命令、`prune` 命令、`--profile`、下划线参数和旧 positional ID 均无兼容入口。
+
+prompt 来源为 positional、`--prompt-file`、stdin 三选一；同时提供多个来源必须报错。session 可以不提供 prompt，此时只启动交互 CLI。
+
+## 2. 顶层解析优先级
+
+第一个参数按以下顺序解析：
+
+1. `-h`、`--help` 等全局 flag。
+2. `help`、`version`、`profiles`、`config`、`doctor`、`daemon`、`task`、`turn`、`loop`、`capabilities`、`tools`、`session`、`command`、`clean`、`update` 等内建命令。
+3. 从 `~/.sn/configs/*.json` 解析 config ID、alias 或 preset ID。
+4. 均未命中时返回 `unknown command`，不得猜测 Provider 或静默降级。
+
+config ID、alias 和 preset ID 不得与内建命令重名，配置加载阶段必须拒绝冲突。
+
+## 3. Command Profile 分流
+
+当 config 是 `type=cli` 且 `cli.executor=command` 时，只检查第一个 profile 参数：
+
+| 调用形式 | 路由 | 参数处理 | Artifact |
+| --- | --- | --- | --- |
+| `sn-cli <profile>` | direct interactive | 无额外参数 | 无 |
+| `sn-cli <profile> -x ...` | direct passthrough | 参数直接传给目标 CLI | 无 |
+| `sn-cli <profile> --long ...` | direct passthrough | 参数直接传给目标 CLI | 无 |
+| `sn-cli <profile> -- ...` | direct passthrough | 移除 `--` 后原样传递 | 无 |
+| `sn-cli <profile> <text> ...` | managed prompt | 普通文本由 AgentRun 解析 | 有 |
+| `stdin | sn-cli <profile>` | managed prompt | stdin 由 AgentRun 解析 | 有 |
+
+direct 调用只使用 `cli.command.args`、model 和 env，不加入 `managed_args`。managed 调用的目标 argv 顺序固定为：
+
+```text
+binary + command.args + model + raw-cli-args + managed_args
+```
+
+Provider 差异必须由 config 表达，不得在入口硬编码 `cx -> exec` 或 `cc -> -p`。
+
+```bash
+sn-cli cx
+sn-cli cc
+sn-cli cx "hi"
+printf 'hi' | sn-cli cx
+sn-cli cx --help
+sn-cli cx -- exec "hi"
+sn-cli cx "hi" -- --skip-git-repo-check
+```
+
+`sn-cli cx exec "hi"` 表示 managed prompt `exec hi`。原生 Codex `exec` 必须写为 `sn-cli cx -- exec "hi"`。
+
+## 4. Namespace 契约
+
+```bash
+sn-cli task run -c cx "hi"
+sn-cli task status --run-id <id>
+sn-cli loop status --loop-id <id>
+
+sn-cli session start -c cx "hi" -- --no-alt-screen
+sn-cli session list
+sn-cli session send --run-id <id> "继续"
+sn-cli session logs --run-id <id> --tail 200
+sn-cli session stop --run-id <id>
+
+sn-cli clean
+sn-cli clean --apply
+```
+
+`session start` 必须显式提供 `-c/--config`。它复用同一份 command config 启动 tmux 交互 CLI，不读取单独的 `tcx/tcc` 配置。启动成功表示 pane 已稳定；存在首个 prompt 时，还要求粘贴和 Enter 成功并记录 `prompt.submitted`，不表示模型任务已完成。
+
+## 5. 变更门禁
+
+修改顶层命令、参数名称、`--` 语义、prompt 来源或 direct/managed/session 边界时，必须在同一变更中：
+
+1. 更新本文并说明不兼容影响。
+2. 更新 CLI 路由、parser 和 artifact 测试。
+3. 更新 `sn-cli --help` 与 README。
+4. 同步更新 `docs/integration-arch.md`。
+5. 运行 `go test ./...`、`go vet ./...` 和 `make sn-cli-test`。
+
+只修改实现而不更新契约和测试，视为未完成。

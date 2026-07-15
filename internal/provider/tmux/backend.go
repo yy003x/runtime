@@ -33,6 +33,13 @@ type SendOptions struct {
 	Stabilize bool
 }
 
+type StartOptions struct {
+	LogFile             string
+	ExitFile            string
+	RestartMaxAttempts  int
+	RestartDelaySeconds float64
+}
+
 func New(config Config) *Backend {
 	if config.PollInterval <= 0 {
 		config.PollInterval = 100 * time.Millisecond
@@ -47,6 +54,10 @@ func New(config Config) *Backend {
 }
 
 func (b *Backend) StartShell(ctx context.Context, runID, cwd, command string) (string, error) {
+	return b.StartShellWithOptions(ctx, runID, cwd, command, StartOptions{})
+}
+
+func (b *Backend) StartShellWithOptions(ctx context.Context, runID, cwd, command string, options StartOptions) (string, error) {
 	if b.config.Daemon == nil {
 		return "", fmt.Errorf("daemon client is required")
 	}
@@ -61,6 +72,8 @@ func (b *Backend) StartShell(ctx context.Context, runID, cwd, command string) (s
 	session := sanitizeName(base + "-" + suffix)
 	started, err := b.config.Daemon.StartTmux(ctx, daemon.TmuxStartRequest{
 		ProcessID: runID, Session: session, CWD: cwd, Command: command,
+		LogFile: options.LogFile, ExitFile: options.ExitFile,
+		RestartMaxAttempts: options.RestartMaxAttempts, RestartDelaySeconds: options.RestartDelaySeconds,
 		Depends: b.config.Depends, Execution: b.config.Execution,
 	})
 	if err != nil {

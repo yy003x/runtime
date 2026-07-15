@@ -43,8 +43,6 @@ func Main(args []string) int {
 		return exit(runDaemonCommand(cfg, args[1:]))
 	case "task", "turn":
 		return exit(runTaskCommand(cfg, args[0], args[1:]))
-	case "prompt":
-		return exit(runManagedPrompt(cfg, args[1:]))
 	case "loop":
 		return exit(runLoopCommand(cfg, args[1:]))
 	case "capabilities":
@@ -55,14 +53,14 @@ func Main(args []string) int {
 		return exit(runRuntimeSession(cfg, args[1:]))
 	case "command":
 		return exit(runCommandCommand(cfg, args[1:]))
-	case "prune":
-		return exit(runPruneCommand(cfg, args[1:]))
+	case "clean":
+		return exit(runCleanCommand(cfg, args[1:]))
 	case "update", "upgrade":
 		return exit(runUpdate(cfg, args[1:]))
 	default:
 		if profile, ok := resolveProfile(cfg.Home, args[0]); ok {
 			if profile.Type == provider.TypeCLI && profile.CLI != nil && profile.CLI.Executor == provider.ExecutorCommand {
-				code, runErr := runInteractiveProfile(cfg, profile, args[1:])
+				code, runErr := runCommandProfile(cfg, profile, args)
 				if runErr != nil {
 					return fail(runErr)
 				}
@@ -73,6 +71,30 @@ func Main(args []string) int {
 		return fail(fmt.Errorf("unknown command %q", args[0]))
 	}
 	return 0
+}
+
+func runCommandProfile(cfg *config.Config, profile provider.Config, invocationArgs []string) (int, error) {
+	if len(invocationArgs) == 0 {
+		return 1, fmt.Errorf("profile invocation is required")
+	}
+	managed, rawArgs := routeCommandProfileArgs(invocationArgs[1:])
+	if !managed && len(invocationArgs) == 1 && stdinHasPrompt() {
+		managed = true
+	}
+	if managed {
+		return 0, runProfile(cfg, invocationArgs)
+	}
+	return runInteractiveProfile(cfg, profile, rawArgs)
+}
+
+func routeCommandProfileArgs(rawArgs []string) (bool, []string) {
+	if len(rawArgs) == 0 {
+		return false, nil
+	}
+	if rawArgs[0] == "--" {
+		return false, rawArgs[1:]
+	}
+	return !strings.HasPrefix(rawArgs[0], "-"), rawArgs
 }
 
 func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs []string) (int, error) {
@@ -92,49 +114,6 @@ func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs 
 		return 1, nil
 	}
 	return result.ExitCode, nil
-}
-
-func runManagedPrompt(cfg *config.Config, args []string) error {
-	profile := ""
-	remaining := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--":
-			remaining = append(remaining, args[i:]...)
-			i = len(args)
-		case "-e", "--profile":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("%s requires value", args[i-1])
-			}
-			profile = args[i]
-		default:
-			remaining = append(remaining, args[i])
-		}
-	}
-	if profile == "" {
-		return fmt.Errorf("prompt requires -e <profile>")
-	}
-	invocationArgs := append([]string{profile}, remaining...)
-	invocation, err := parseProfileInvocation(invocationArgs)
-	if err != nil {
-		return err
-	}
-	if invocation.Prompt == "" && invocation.PromptFile == "" {
-		info, statErr := os.Stdin.Stat()
-		if statErr != nil || info.Mode()&os.ModeCharDevice != 0 {
-			return fmt.Errorf("prompt is required")
-		}
-		data, readErr := io.ReadAll(os.Stdin)
-		if readErr != nil {
-			return readErr
-		}
-		if strings.TrimSpace(string(data)) == "" {
-			return fmt.Errorf("prompt is required")
-		}
-		invocationArgs = append(invocationArgs, "--", string(data))
-	}
-	return runProfile(cfg, invocationArgs)
 }
 
 func printProviders(root string) error {
@@ -158,6 +137,9 @@ func runProfile(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := applyStdinPrompt(&invocation.Prompt, invocation.PromptFile); err != nil {
+		return err
+	}
 
 	cwd, _ := os.Getwd()
 	overrides := cloneAnyMap(invocation.ProviderOverrides)
@@ -175,7 +157,7 @@ func runProfile(cfg *config.Config, args []string) error {
 		RunType: agentrun.RunTask, RunID: invocation.RunID, Profile: invocation.Profile,
 		Prompt: invocation.Prompt, PromptFile: invocation.PromptFile, CWD: cwd, Caller: invocation.SessionID,
 		ExecutionMode: invocation.Mode, DeadlineSeconds: invocation.Timeout,
-		ProviderOverrides: overrides, Force: invocation.Force,
+		ProviderOverrides: overrides, RawCLIArgs: invocation.RawCLIArgs, Force: invocation.Force,
 	})
 	if result.RunID != "" {
 		if contract, readErr := service.ReadResult(agentrun.RunTask, result.RunID); readErr == nil && contract.Summary != "" {
@@ -190,6 +172,7 @@ type profileInvocation struct {
 	Profile           string
 	Prompt            string
 	PromptFile        string
+	RawCLIArgs        []string
 	Images            []string
 	SessionID         string
 	RunID             string
@@ -209,7 +192,7 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 	var promptParts []string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--session", "--session-id", "--session_id":
+		case "--session-id":
 			i++
 			if i >= len(args) {
 				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
@@ -233,7 +216,7 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 				return profileInvocation{}, fmt.Errorf("--model requires value")
 			}
 			invocation.Model = args[i]
-		case "--reasoning-effort", "--codex-reasoning-effort":
+		case "--reasoning-effort":
 			i++
 			if i >= len(args) {
 				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
@@ -259,7 +242,7 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 			}
 		case "--force":
 			invocation.Force = true
-		case "--prompt-file", "--prompt_file":
+		case "--prompt-file":
 			i++
 			if i >= len(args) {
 				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
@@ -272,9 +255,12 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 			}
 			invocation.Images = append(invocation.Images, args[i])
 		case "--":
-			promptParts = append(promptParts, args[i+1:]...)
+			invocation.RawCLIArgs = append(invocation.RawCLIArgs, args[i+1:]...)
 			i = len(args)
 		default:
+			if strings.HasPrefix(args[i], "-") {
+				return profileInvocation{}, fmt.Errorf("unknown profile option: %s; put target CLI args after --", args[i])
+			}
 			promptParts = append(promptParts, args[i])
 		}
 	}
@@ -283,6 +269,30 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 		return profileInvocation{}, fmt.Errorf("inline prompt and --prompt-file cannot be used together")
 	}
 	return invocation, nil
+}
+
+func stdinHasPrompt() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice == 0
+}
+
+func applyStdinPrompt(prompt *string, promptFile string) error {
+	if !stdinHasPrompt() {
+		return nil
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read stdin prompt: %w", err)
+	}
+	stdinPrompt := strings.TrimSpace(string(data))
+	if stdinPrompt == "" {
+		return nil
+	}
+	if strings.TrimSpace(*prompt) != "" || strings.TrimSpace(promptFile) != "" {
+		return fmt.Errorf("positional prompt, --prompt-file, and stdin are mutually exclusive")
+	}
+	*prompt = stdinPrompt
+	return nil
 }
 
 func runUpdate(cfg *config.Config, args []string) error {
@@ -372,15 +382,19 @@ func printHelp() {
 	fmt.Println(`sn-cli - Go Agent Runtime
 
 Usage:
-  sn-cli cx [args...]
-  sn-cli cc [args...]
-  sn-cli prompt -e <profile> [prompt...]
-  sn-cli task run|status|logs|watch|block|continue|patch-resume|stop|cancel
-  sn-cli turn run|status|logs|cancel
-  sn-cli loop run|start|step|status|logs|cancel
-  sn-cli session start|status|logs|send|interrupt|stop|attach
-  sn-cli command start|status|logs|watch|interrupt|stop|attach
-  sn-cli prune [--apply]
+  sn-cli <profile>
+  sn-cli <profile> [prompt...] [-- raw-cli-args...]
+  sn-cli task run -c <config> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli task status|logs|watch|block|continue|patch-resume|stop|cancel --run-id <id>
+  sn-cli turn run -c <config> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli loop run|start [options]
+  sn-cli loop step|status|logs|cancel --loop-id <id>
+  sn-cli session start -c <config> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli session list
+  sn-cli session status|logs|watch|send|interrupt|stop|attach --run-id <id>
+  sn-cli command start -c <config> [options] -- <command> [args...]
+  sn-cli command status|logs|watch|interrupt|stop|attach --run-id <id>
+  sn-cli clean [--apply]
   sn-cli capabilities skills|tools|memory
   sn-cli profiles
   sn-cli config choices|validate

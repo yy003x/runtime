@@ -129,29 +129,33 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 
 ## CLI 使用
 
-### 交互命令
+### Profile 入口
 
-command CLI profile 默认启动原生交互程序，参数原样传给目标命令，不创建 managed run artifact：
+command CLI profile 根据第一个 profile 参数分流。无参数时启动原生交互程序；`-` 开头的参数直接透传；普通文本或 stdin 作为 managed prompt：
 
 ```bash
-sn-cli cx
-sn-cli cx --help
-sn-cli cx --version
-sn-cli cc
+sn-cli cx                         # Codex interactive
+sn-cli cc                         # Claude interactive
+sn-cli cx "分析当前仓库"           # managed，自动使用 cx.json 的 exec
+sn-cli cc "分析当前仓库"           # managed，自动使用 cc.json 的 -p
+printf '分析当前仓库' | sn-cli cx   # stdin managed prompt
+sn-cli cx --help                  # 原生 flag 透传
+sn-cli cc -p "分析当前仓库"        # 原生 Claude print mode
+sn-cli cx -- exec "分析当前仓库"   # -- 后强制原生透传
+sn-cli cx "分析当前仓库" -- --skip-git-repo-check
 ```
 
-`cx` 启动正常 Codex TUI，`cc` 启动正常 Claude Code。profile 的 common args 和 model 仍然生效，`managed_args` 不会进入交互命令。
+direct 调用不创建 run artifact，也不加入 `managed_args`。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定 Codex/Claude 的实际调用方式。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
 
-### Managed prompt
+### Managed task
 
-需要 AgentRun lifecycle、结果文件和审计产物时，显式使用 `prompt` 或 `task run`：
+`task/turn` 提供完整 lifecycle。config 统一使用 `-c/--config`，prompt 可以来自 positional、`--prompt-file` 或 stdin，三者互斥：
 
 ```bash
-sn-cli prompt -e cx "分析当前仓库"
-printf '分析当前仓库' | sn-cli prompt -e cx
-
-sn-cli task run --profile fake --mode capture "hello"
-sn-cli task run --profile cx "处理任务"
+sn-cli task run -c fake --mode capture "hello"
+sn-cli task run -c cx "处理任务"
+sn-cli task run -c cx --prompt-file task.md
+printf '处理任务' | sn-cli task run -c cx
 ```
 
 API/native profile 仍通过 prompt 驱动：
@@ -166,30 +170,40 @@ sn-cli native-fake "hello"
 ```bash
 sn-cli profiles
 sn-cli config choices
-sn-cli config validate --profile fake
+sn-cli config validate -c fake
 sn-cli doctor
 
-sn-cli task status <run_id>
-sn-cli task logs <run_id>
-sn-cli task watch <run_id>
-sn-cli task cancel <run_id>
+sn-cli task status --run-id <id>
+sn-cli task logs --run-id <id> --tail 200
+sn-cli task watch --run-id <id>
+sn-cli task cancel --run-id <id>
 
-sn-cli turn run --profile native-fake "继续任务"
-sn-cli task block <run_id> --reason "等待输入"
-sn-cli task continue <run_id>
-sn-cli task patch-resume <run_id> --patch '{"operation":"append","messages":[{"role":"user","content":"继续"}]}'
+sn-cli turn run -c native-fake "继续任务"
+sn-cli task block --run-id <id> --reason "等待输入"
+sn-cli task continue --run-id <id>
+sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages":[{"role":"user","content":"继续"}]}'
 
-sn-cli loop run --input "执行计划" --actions '[{"type":"respond","content":"完成"}]'
+sn-cli loop run --input "执行计划" --actions-json '[{"type":"respond","content":"完成"}]'
+sn-cli loop status --loop-id <id>
 
-sn-cli session start --profile tcx
-sn-cli session send <run_id> --text "继续"
-sn-cli session attach <run_id>
-sn-cli session stop <run_id>
+sn-cli session start -c cx "分析当前仓库"
+sn-cli session start -c cx --prompt-file task.md
+sn-cli session start -c cx "分析当前仓库" -- --no-alt-screen
+sn-cli session list
+sn-cli session send --run-id <id> "继续"
+sn-cli session logs --run-id <id> --tail 200
+sn-cli session attach --run-id <id>
+sn-cli session stop --run-id <id>
 
-sn-cli command start --profile tcx -- printf 'hello'
-sn-cli command status <run_id>
-sn-cli command stop <run_id>
+sn-cli command start -c cx -- printf 'hello'
+sn-cli command status --run-id <id>
+sn-cli command stop --run-id <id>
+
+sn-cli clean
+sn-cli clean --apply
 ```
+
+`session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
 
 ### Capabilities
 

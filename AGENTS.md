@@ -16,4 +16,6 @@
 
 ## Project Rules
 
-本项目不再声明额外的项目级协作限制；遵循用户级 `AGENTS.md` 约定和用户在当前任务中的明确指令。
+遵循用户级 `AGENTS.md` 约定和用户在当前任务中的明确指令。
+
+修改 `sn-cli` 顶层命令、profile 分流、`--` 语义或 direct/managed 边界前，必须先读取 `docs/cli-routing-contract.md`。实现、测试、`sn-cli --help`、README 和架构文档必须按该契约的变更门禁同步更新，不得只修改其中一处。

@@ -17,7 +17,7 @@ type tmuxProvider struct{}
 func (tmuxProvider) Kind() string { return ExecutorTmux }
 
 func (tmuxProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
-	prepared, err := Prepare(cfg, req.Prompt, req.Overrides)
+	prepared, err := prepare(cfg, req.Prompt, req.Overrides, req.RawCLIArgs)
 	if err != nil {
 		return PreparedRequest{}, err
 	}
@@ -138,14 +138,57 @@ func daemonExecution(cfg Config) (daemon.ExecutionEnvironment, error) {
 
 func TmuxShellCommand(cfg Config, extra map[string]string) string {
 	command := cfg.CLI.Command
-	argv := []string{command.Binary}
-	for _, arg := range command.Args {
-		argv = append(argv, ExpandEnv(arg))
-	}
+	argv := append([]string{expandConfiguredBinary(command.Binary)}, expandConfiguredArgs(command.Args)...)
 	if command.Model != "" {
-		argv = append(argv, "--model", command.Model)
+		argv = append(argv, "--model", ExpandEnv(command.Model))
 	}
 	return tmuxShellCommandArgv(cfg, argv, extra)
+}
+
+func TmuxShellCommandWithRawArgs(cfg Config, rawArgs []string, extra map[string]string) (string, error) {
+	request, err := prepareUnmanagedCLI(cfg, rawArgs)
+	if err != nil {
+		return "", err
+	}
+	return tmuxShellCommandArgv(cfg, request.Argv, extra), nil
+}
+
+func AsTmuxSessionProfile(cfg Config) (Config, error) {
+	if cfg.Type != TypeCLI || cfg.CLI == nil {
+		return Config{}, fmt.Errorf("session requires a CLI profile, got %s", cfg.Type)
+	}
+	cli := *cfg.CLI
+	runtime := cli.Runtime
+	runtime.PromptDelivery = "paste"
+	runtime.PromptArgs = nil
+	runtime.ManagedArgs = nil
+	runtime.ResultContract = "optional"
+	cli.Executor = ExecutorTmux
+	cli.Runtime = runtime
+	if cli.Tmux == nil {
+		cli.Tmux = &TmuxConfig{
+			SessionName:                "sn-agent",
+			PasteBracketed:             true,
+			PollIntervalSeconds:        0.1,
+			PromptStableTimeoutSeconds: 10,
+			SessionWaitReady:           true,
+			SessionReadyTimeoutSeconds: 30,
+			SessionReadySettleSeconds:  0.5,
+			RestartMaxAttempts:         5,
+			RestartDelaySeconds:        3,
+		}
+	} else {
+		tmux := *cli.Tmux
+		if tmux.RestartMaxAttempts <= 0 {
+			tmux.RestartMaxAttempts = 5
+		}
+		if tmux.RestartDelaySeconds <= 0 {
+			tmux.RestartDelaySeconds = 3
+		}
+		cli.Tmux = &tmux
+	}
+	cfg.CLI = &cli
+	return cfg, nil
 }
 
 func TmuxCommandEnv(cfg Config, command string) string {

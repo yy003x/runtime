@@ -32,7 +32,7 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 		return SessionSummary{}, fmt.Errorf("command argv is required")
 	}
 	if options.Profile == "" {
-		options.Profile = "tcx"
+		return SessionSummary{}, fmt.Errorf("command config is required")
 	}
 	profiles, err := s.Profiles()
 	if err != nil {
@@ -42,8 +42,9 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 	if !ok {
 		return SessionSummary{}, fmt.Errorf("unknown provider profile: %s", options.Profile)
 	}
-	if profile.Transport() != provider.ExecutorTmux {
-		return SessionSummary{}, fmt.Errorf("command 只支持 tmux profile，得到 %s", profile.Transport())
+	profile, err = provider.AsTmuxSessionProfile(profile)
+	if err != nil {
+		return SessionSummary{}, err
 	}
 	if options.ProjectID == "" {
 		options.ProjectID = s.DefaultProject

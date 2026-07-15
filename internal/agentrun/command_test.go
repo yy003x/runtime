@@ -52,6 +52,78 @@ func TestCommandLifecycleWithTmux(t *testing.T) {
 	}
 }
 
+func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "session.sh")
+	writeExecutable(t, script, "#!/bin/sh\nprintf 'argv:%s\\n' \"$*\"\nwhile IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done\n")
+	profile := `{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":"` + script + `","args":["base"],"model":""},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"],"result_contract":"optional"}}}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "shell.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := New(root)
+	startAgentRunTestDaemon(t, service)
+	started, err := service.StartSessionWithOptions(context.Background(), SessionOptions{
+		Profile: "shell", CWD: root, Prompt: "hello", RawCLIArgs: []string{"raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = service.SessionStop(context.Background(), started.RunID) })
+	if submitted, _ := started.Status["prompt_submitted"].(bool); !submitted {
+		t.Fatalf("status=%#v", started.Status)
+	}
+	var logs Logs
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		logs, err = service.SessionLogs(context.Background(), started.RunID, 50)
+		if err == nil && strings.Contains(logs.Content, "reply:hello") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil || !strings.Contains(logs.Content, "argv:base raw") || !strings.Contains(logs.Content, "reply:hello") || strings.Contains(logs.Content, "managed") {
+		t.Fatalf("logs=%q err=%v", logs.Content, err)
+	}
+	events, err := service.store.ReadEvents(mustSessionPaths(t, service, started.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSubmitted := false
+	for _, event := range events {
+		if event.Type == "prompt.submitted" {
+			foundSubmitted = true
+		}
+	}
+	if !foundSubmitted {
+		t.Fatalf("events=%#v", events)
+	}
+	listed, err := service.SessionList(context.Background())
+	if err != nil || len(listed) != 1 || listed[0].RunID != started.RunID {
+		t.Fatalf("sessions=%#v err=%v", listed, err)
+	}
+	if _, err := service.SessionStop(context.Background(), started.RunID); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := service.SessionLogs(context.Background(), started.RunID, 50)
+	if err != nil || !strings.Contains(persisted.Content, "reply:hello") {
+		t.Fatalf("persisted logs=%q err=%v", persisted.Content, err)
+	}
+}
+
+func mustSessionPaths(t *testing.T, service *Service, runID string) Paths {
+	t.Helper()
+	paths, err := RunPaths(service.RunsDir, RunSession, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
+}
+
 func TestTmuxTaskRequiresDoneFileAndResult(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")

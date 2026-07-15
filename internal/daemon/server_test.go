@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -79,6 +80,51 @@ func TestDaemonTmuxRegistrySurvivesRestart(t *testing.T) {
 		t.Fatalf("cleaned status=%#v err=%v", status, err)
 	}
 	stop(true)
+}
+
+func TestTmuxSupervisionRestartsAndPersistsLog(t *testing.T) {
+	requireTmux(t)
+	daemonDir, err := os.MkdirTemp("/tmp", "agent-runtime-supervision-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
+	root := t.TempDir()
+	config := Config{Home: root, Dir: daemonDir, Version: "supervision-test", IdleTimeout: time.Minute}
+	client, stop := startTestServer(t, config)
+	defer stop(true)
+	countFile := filepath.Join(root, "attempts")
+	logFile := filepath.Join(root, "output.log")
+	exitFile := filepath.Join(root, "session-exit")
+	command := fmt.Sprintf("n=0; [ ! -f %s ] || n=$(cat %s); n=$((n+1)); echo $n > %s; echo attempt:$n; if [ $n -lt 3 ]; then exit 7; fi; exit 0", shellQuote(countFile), shellQuote(countFile), shellQuote(countFile))
+	session, err := client.StartTmux(context.Background(), TmuxStartRequest{
+		ProcessID: "session/supervised", Session: "daemon-supervision-test", CWD: root, Command: command,
+		LogFile: logFile, ExitFile: exitFile, RestartMaxAttempts: 5, RestartDelaySeconds: 0.05,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		alive, hasErr := client.HasTmux(context.Background(), "session/supervised", session)
+		if hasErr == nil && !alive {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, expected := range []string{"attempt:1", "attempt:2", "attempt:3", "restarting attempt 2/5"} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("log=%q missing %q", content, expected)
+		}
+	}
+	exitData, err := os.ReadFile(exitFile)
+	if err != nil || strings.TrimSpace(string(exitData)) != "0 3" {
+		t.Fatalf("exit=%q err=%v", exitData, err)
+	}
 }
 
 func TestExecutionEnvironmentIsExplicit(t *testing.T) {

@@ -21,7 +21,7 @@ type nativeProvider struct{}
 func (nativeProvider) Kind() string { return TypeNative }
 
 func (nativeProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
-	prepared, err := Prepare(cfg, req.Prompt, req.Overrides)
+	prepared, err := prepare(cfg, req.Prompt, req.Overrides, req.RawCLIArgs)
 	if err != nil {
 		return PreparedRequest{}, err
 	}

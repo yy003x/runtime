@@ -3,7 +3,10 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,10 +31,35 @@ func (s *Server) startTmux(ctx context.Context, request *TmuxStartRequest) Respo
 		s.releaseDependencies(request.ProcessID)
 		return Response{Error: err.Error()}
 	}
-	output, err := commandContext(ctx, "new-session", "-d", "-s", request.Session, "-c", request.CWD, command).CombinedOutput()
+	if request.RestartMaxAttempts > 0 || request.ExitFile != "" {
+		command = supervisedTmuxCommand(command, request.RestartMaxAttempts, request.RestartDelaySeconds, request.ExitFile)
+	}
+	initialCommand := command
+	if request.LogFile != "" {
+		initialCommand = "while :; do sleep 3600; done"
+	}
+	output, err := commandContext(ctx, "new-session", "-d", "-s", request.Session, "-c", request.CWD, initialCommand).CombinedOutput()
 	if err != nil {
 		s.releaseDependencies(request.ProcessID)
 		return Response{Error: fmt.Sprintf("tmux new-session: %v: %s", err, strings.TrimSpace(string(output)))}
+	}
+	if request.LogFile != "" {
+		if err := os.MkdirAll(filepath.Dir(request.LogFile), 0o700); err != nil {
+			_ = commandContext(context.Background(), "kill-session", "-t", request.Session).Run()
+			s.releaseDependencies(request.ProcessID)
+			return Response{Error: fmt.Sprintf("create tmux log directory: %v", err)}
+		}
+		pipeCommand := "cat >> " + shellQuote(request.LogFile)
+		if pipeOutput, pipeErr := commandContext(ctx, "pipe-pane", "-o", "-t", request.Session, pipeCommand).CombinedOutput(); pipeErr != nil {
+			_ = commandContext(context.Background(), "kill-session", "-t", request.Session).Run()
+			s.releaseDependencies(request.ProcessID)
+			return Response{Error: fmt.Sprintf("tmux pipe-pane: %v: %s", pipeErr, strings.TrimSpace(string(pipeOutput)))}
+		}
+		if respawnOutput, respawnErr := commandContext(ctx, "respawn-pane", "-k", "-t", request.Session, "-c", request.CWD, command).CombinedOutput(); respawnErr != nil {
+			_ = commandContext(context.Background(), "kill-session", "-t", request.Session).Run()
+			s.releaseDependencies(request.ProcessID)
+			return Response{Error: fmt.Sprintf("tmux respawn-pane: %v: %s", respawnErr, strings.TrimSpace(string(respawnOutput)))}
+		}
 	}
 	process := managedProcess{ProcessStatus: ProcessStatus{
 		ID: request.ProcessID, Kind: "tmux", Session: request.Session, Alive: true,
@@ -49,6 +77,24 @@ func (s *Server) startTmux(ctx context.Context, request *TmuxStartRequest) Respo
 		return Response{Error: err.Error()}
 	}
 	return Response{OK: true, Session: request.Session, Alive: true}
+}
+
+func supervisedTmuxCommand(command string, maxAttempts int, delaySeconds float64, exitFile string) string {
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	if delaySeconds < 0 {
+		delaySeconds = 0
+	}
+	delay := strconv.FormatFloat(delaySeconds, 'f', -1, 64)
+	writeExit := ""
+	if exitFile != "" {
+		writeExit = fmt.Sprintf("printf '%%s %%s\\n' \"$exit_code\" \"$attempt\" > %s; ", shellQuote(exitFile))
+	}
+	return fmt.Sprintf(
+		"attempt=1; exit_code=0; while :; do ( %s ); exit_code=$?; if [ \"$exit_code\" -eq 0 ] || [ \"$attempt\" -ge %d ]; then break; fi; printf '\\r\\n[sn-runtime] process exited with status %%s; restarting attempt %%s/%d\\r\\n' \"$exit_code\" \"$((attempt+1))\"; attempt=$((attempt+1)); sleep %s; done; %sexit \"$exit_code\"",
+		command, maxAttempts, maxAttempts, delay, writeExit,
+	)
 }
 
 func (s *Server) hasTmux(ctx context.Context, processID, session string) (bool, error) {

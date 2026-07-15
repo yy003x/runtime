@@ -44,6 +44,17 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
 	}
 }
 
+func TestReservedCommandsReflectCurrentCLI(t *testing.T) {
+	if _, ok := ReservedCommands["clean"]; !ok {
+		t.Fatal("clean must be reserved")
+	}
+	for _, removed := range []string{"prompt", "prune"} {
+		if _, ok := ReservedCommands[removed]; ok {
+			t.Fatalf("removed command %q is still reserved", removed)
+		}
+	}
+}
+
 func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
 	dir := t.TempDir()
 	writeConfig(t, dir, "api.json", `{

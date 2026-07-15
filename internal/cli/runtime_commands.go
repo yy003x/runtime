@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -133,7 +134,13 @@ func runConfigCommand(cfg *config.Config, args []string) error {
 		return printJSON(map[string]any{"ok": true, "only_valid": !includeAll, "choices": choices})
 	case "validate":
 		name := optionValue(args[1:], "--name")
-		profileID := optionValue(args[1:], "--profile")
+		if containsArg(args[1:], "--profile") {
+			return fmt.Errorf("unknown config validate option: --profile; use -c/--config")
+		}
+		profileID := optionValue(args[1:], "-c")
+		if profileID == "" {
+			profileID = optionValue(args[1:], "--config")
+		}
 		providerType := optionValue(args[1:], "--provider")
 		live := containsArg(args[1:], "--live")
 		var results []map[string]any
@@ -257,66 +264,76 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := applyStdinPrompt(&options.Prompt, options.PromptFile); err != nil {
+			return err
+		}
 		result, runErr := service.Run(context.Background(), options)
 		_ = printJSON(result)
 		return runErr
 	case "status":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s status <run_id>", command)
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		status, err := service.Status(runType, args[1])
+		status, err := service.Status(runType, runID)
 		if err != nil {
 			return err
 		}
 		return printJSON(status)
 	case "logs":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s logs <run_id>", command)
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		logs, err := service.Logs(runType, args[1], intOption(args[2:], "--tail", 120))
+		logs, err := service.Logs(runType, runID, intOption(args[1:], "--tail", 120))
 		if err != nil {
 			return err
 		}
 		return printJSON(logs)
 	case "watch":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s watch <run_id>", command)
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--seconds": true, "--poll-seconds": true, "--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		return watchRun(service, runType, args[1], args[2:])
+		return watchRun(service, runType, runID, args[1:])
 	case "cancel":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s cancel <run_id>", command)
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.Cancel(runType, args[1])
+		result, err := service.Cancel(runType, runID)
 		_ = printJSON(result)
 		return err
 	case "block", "stop":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s %s <run_id> [--reason <text>]", command, args[0])
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--reason": true}, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.ControlNative(runType, args[1], args[0], optionValue(args[2:], "--reason"))
+		result, err := service.ControlNative(runType, runID, args[0], optionValue(args[1:], "--reason"))
 		_ = printJSON(result)
 		return err
 	case "continue":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s continue <run_id>", command)
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.ResumeNative(context.Background(), runType, args[1], nil)
+		result, err := service.ResumeNative(context.Background(), runType, runID, nil)
 		_ = printJSON(result)
 		return err
 	case "patch-resume":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: %s patch-resume <run_id> --patch <json>", command)
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--patch": true}, nil)
+		if err != nil {
+			return err
 		}
 		var patch provider.NativePatch
-		value := optionValue(args[2:], "--patch")
+		value := optionValue(args[1:], "--patch")
 		if value == "" {
 			return fmt.Errorf("--patch is required")
 		}
 		if err := json.Unmarshal([]byte(value), &patch); err != nil {
 			return fmt.Errorf("decode native patch: %w", err)
 		}
-		result, err := service.ResumeNative(context.Background(), runType, args[1], &patch)
+		result, err := service.ResumeNative(context.Background(), runType, runID, &patch)
 		_ = printJSON(result)
 		return err
 	default:
@@ -329,10 +346,10 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 	var promptParts []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--profile":
+		case "-c", "--config":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--profile requires value")
+				return options, fmt.Errorf("%s requires value", args[i-1])
 			}
 			options.Profile = args[i]
 		case "--project":
@@ -353,7 +370,7 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 				return options, fmt.Errorf("--cwd requires value")
 			}
 			options.CWD = args[i]
-		case "--prompt-file", "--prompt_file":
+		case "--prompt-file":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("%s requires value", args[i-1])
@@ -365,7 +382,7 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 				return options, fmt.Errorf("--mode requires value")
 			}
 			options.ExecutionMode = args[i]
-		case "--deadline", "--deadline-seconds", "--timeout":
+		case "--deadline-seconds":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("%s requires value", args[i-1])
@@ -387,7 +404,7 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 				return options, fmt.Errorf("--model requires value")
 			}
 			options.ProviderOverrides["model"] = args[i]
-		case "--reasoning-effort", "--codex-reasoning-effort":
+		case "--reasoning-effort":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("%s requires value", args[i-1])
@@ -427,11 +444,23 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 		case "--force":
 			options.Force = true
 		case "--json":
+		case "--":
+			options.RawCLIArgs = append(options.RawCLIArgs, args[i+1:]...)
+			i = len(args)
 		default:
+			if strings.HasPrefix(args[i], "-") {
+				return options, fmt.Errorf("unknown %s run option: %s", runType, args[i])
+			}
 			promptParts = append(promptParts, args[i])
 		}
 	}
 	options.Prompt = strings.TrimSpace(strings.Join(promptParts, " "))
+	if options.Profile == "" {
+		return options, fmt.Errorf("%s run requires -c/--config", runType)
+	}
+	if options.Prompt != "" && strings.TrimSpace(options.PromptFile) != "" {
+		return options, fmt.Errorf("positional prompt and --prompt-file are mutually exclusive")
+	}
 	return options, nil
 }
 
@@ -457,94 +486,260 @@ func watchRun(service *agentrun.Service, runType, runID string, args []string) e
 
 func runRuntimeSession(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: session start|status|logs|send|interrupt|stop|attach")
+		return fmt.Errorf("usage: session start|list|status|logs|watch|send|interrupt|stop|attach")
 	}
 	service := agentrun.New(cfg.Home)
 	ctx := context.Background()
 	switch args[0] {
 	case "start":
-		profile := optionValue(args[1:], "--profile")
-		if profile == "" {
-			profile = "tcx"
+		options, err := parseSessionStartOptions(args[1:])
+		if err != nil {
+			return err
 		}
-		cwd := optionValue(args[1:], "--cwd")
-		result, err := service.StartSessionWithOptions(ctx, agentrun.SessionOptions{
-			Profile: profile, ProjectID: optionValue(args[1:], "--project"), CWD: cwd,
-			RunID: optionValue(args[1:], "--run-id"), AllowedActions: repeatOption(args[1:], "--allowed-action"),
-			ForbiddenActions: repeatOption(args[1:], "--forbidden-action"), Force: containsArg(args[1:], "--force"),
-		})
+		if err := applyStdinPrompt(&options.Prompt, options.PromptFile); err != nil {
+			return err
+		}
+		result, err := service.StartSessionWithOptions(ctx, options)
 		_ = printJSON(result)
 		return err
-	case "status":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session status <run_id>")
+	case "list":
+		if len(args) != 1 {
+			return fmt.Errorf("session list does not accept arguments")
 		}
-		result, err := service.SessionStatus(ctx, args[1])
+		result, err := service.SessionList(ctx)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"sessions": result})
+	case "status":
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
+		}
+		result, err := service.SessionStatus(ctx, runID)
 		if err != nil {
 			return err
 		}
 		return printJSON(result)
 	case "logs":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session logs <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.SessionLogs(ctx, args[1], intOption(args[2:], "--tail", 120))
+		result, err := service.SessionLogs(ctx, runID, intOption(args[1:], "--tail", 120))
 		if err != nil {
 			return err
 		}
 		return printJSON(result)
 	case "watch":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session watch <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--seconds": true, "--poll-seconds": true, "--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		return watchSession(service, args[1], args[2:])
+		return watchSession(service, runID, args[1:])
 	case "send":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session send <run_id> --text <text>")
+		runID, textValue, promptFile, submit, err := parseSessionSendOptions(args[1:])
+		if err != nil {
+			return err
 		}
-		submit := !containsArg(args[2:], "--no-submit")
-		textValue := optionValue(args[2:], "--text")
-		if textValue == "" {
-			textArgs := make([]string, 0, len(args)-2)
-			for _, arg := range args[2:] {
-				if arg != "--no-submit" {
-					textArgs = append(textArgs, arg)
-				}
+		if err := applyStdinPrompt(&textValue, promptFile); err != nil {
+			return err
+		}
+		if promptFile != "" {
+			resolved, _, resolveErr := resolvePromptForCLI(promptFile)
+			if resolveErr != nil {
+				return resolveErr
 			}
-			textValue = strings.Join(textArgs, " ")
+			textValue = resolved
 		}
 		if strings.TrimSpace(textValue) == "" {
-			return fmt.Errorf("session send text is required")
+			return fmt.Errorf("session send prompt is required")
 		}
-		result, err := service.SessionSend(ctx, args[1], textValue, submit)
+		result, err := service.SessionSend(ctx, runID, textValue, submit)
 		if err != nil {
 			return err
 		}
 		return printJSON(result)
 	case "interrupt":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session interrupt <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.SessionInterrupt(ctx, args[1])
+		result, err := service.SessionInterrupt(ctx, runID)
 		if err != nil {
 			return err
 		}
 		return printJSON(result)
 	case "stop":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session stop <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.SessionStop(ctx, args[1])
+		result, err := service.SessionStop(ctx, runID)
 		_ = printJSON(result)
 		return err
 	case "attach":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: session attach <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		return service.SessionAttach(ctx, args[1])
+		return service.SessionAttach(ctx, runID)
 	default:
 		return fmt.Errorf("unknown session command: %s", args[0])
 	}
+}
+
+func parseSessionStartOptions(args []string) (agentrun.SessionOptions, error) {
+	options := agentrun.SessionOptions{}
+	var promptParts []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-c", "--config":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("%s requires value", args[i-1])
+			}
+			options.Profile = args[i]
+		case "--project":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--project requires value")
+			}
+			options.ProjectID = args[i]
+		case "--cwd":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--cwd requires value")
+			}
+			options.CWD = args[i]
+		case "--run-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--run-id requires value")
+			}
+			options.RunID = args[i]
+		case "--prompt-file":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--prompt-file requires value")
+			}
+			options.PromptFile = args[i]
+		case "--allowed-action":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--allowed-action requires value")
+			}
+			options.AllowedActions = append(options.AllowedActions, args[i])
+		case "--forbidden-action":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--forbidden-action requires value")
+			}
+			options.ForbiddenActions = append(options.ForbiddenActions, args[i])
+		case "--force":
+			options.Force = true
+		case "--":
+			options.RawCLIArgs = append(options.RawCLIArgs, args[i+1:]...)
+			i = len(args)
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return options, fmt.Errorf("unknown session start option: %s", args[i])
+			}
+			promptParts = append(promptParts, args[i])
+		}
+	}
+	if options.Profile == "" {
+		return options, fmt.Errorf("session start requires -c/--config")
+	}
+	options.Prompt = strings.TrimSpace(strings.Join(promptParts, " "))
+	if options.Prompt != "" && strings.TrimSpace(options.PromptFile) != "" {
+		return options, fmt.Errorf("positional prompt and --prompt-file are mutually exclusive")
+	}
+	return options, nil
+}
+
+func parseRequiredID(args []string, idOption string, valueOptions, boolOptions map[string]bool) (string, error) {
+	id := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == idOption {
+			i++
+			if i >= len(args) {
+				return "", fmt.Errorf("%s requires value", idOption)
+			}
+			id = args[i]
+			continue
+		}
+		if valueOptions[args[i]] {
+			i++
+			if i >= len(args) {
+				return "", fmt.Errorf("%s requires value", args[i-1])
+			}
+			continue
+		}
+		if boolOptions[args[i]] {
+			continue
+		}
+		return "", fmt.Errorf("unknown option: %s", args[i])
+	}
+	if id == "" {
+		return "", fmt.Errorf("%s is required", idOption)
+	}
+	return id, nil
+}
+
+func parseSessionSendOptions(args []string) (runID, prompt, promptFile string, submit bool, err error) {
+	submit = true
+	var promptParts []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--run-id":
+			i++
+			if i >= len(args) {
+				return "", "", "", false, fmt.Errorf("--run-id requires value")
+			}
+			runID = args[i]
+		case "--prompt-file":
+			i++
+			if i >= len(args) {
+				return "", "", "", false, fmt.Errorf("--prompt-file requires value")
+			}
+			promptFile = args[i]
+		case "--no-submit":
+			submit = false
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", "", "", false, fmt.Errorf("unknown session send option: %s", args[i])
+			}
+			promptParts = append(promptParts, args[i])
+		}
+	}
+	if runID == "" {
+		return "", "", "", false, fmt.Errorf("--run-id is required")
+	}
+	prompt = strings.TrimSpace(strings.Join(promptParts, " "))
+	if prompt != "" && strings.TrimSpace(promptFile) != "" {
+		return "", "", "", false, fmt.Errorf("positional prompt and --prompt-file are mutually exclusive")
+	}
+	return runID, prompt, promptFile, submit, nil
+}
+
+func resolvePromptForCLI(path string) (string, string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", err
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", err
+	}
+	data, err := os.ReadFile(absolute)
+	if err != nil {
+		return "", "", fmt.Errorf("read prompt file: %w", err)
+	}
+	return string(data), absolute, nil
 }
 
 func runLoopCommand(cfg *config.Config, args []string) error {
@@ -567,35 +762,39 @@ func runLoopCommand(cfg *config.Config, args []string) error {
 		_ = printJSON(status)
 		return err
 	case "step":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: loop step <loop_id>")
+		loopID, err := parseRequiredID(args[1:], "--loop-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		status, err := service.LoopStep(context.Background(), args[1])
+		status, err := service.LoopStep(context.Background(), loopID)
 		_ = printJSON(status)
 		return err
 	case "status":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: loop status <loop_id>")
+		loopID, err := parseRequiredID(args[1:], "--loop-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		status, err := service.LoopStatus(args[1])
+		status, err := service.LoopStatus(loopID)
 		if err != nil {
 			return err
 		}
 		return printJSON(status)
 	case "logs":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: loop logs <loop_id>")
+		loopID, err := parseRequiredID(args[1:], "--loop-id", map[string]bool{"--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		logs, err := service.LoopLogs(args[1], intOption(args[2:], "--tail", 120))
+		logs, err := service.LoopLogs(loopID, intOption(args[1:], "--tail", 120))
 		if err != nil {
 			return err
 		}
 		return printJSON(logs)
 	case "cancel":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: loop cancel <loop_id>")
+		loopID, err := parseRequiredID(args[1:], "--loop-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		status, err := service.LoopCancel(args[1])
+		status, err := service.LoopCancel(loopID)
 		_ = printJSON(status)
 		return err
 	default:
@@ -639,64 +838,70 @@ func runCommandCommand(cfg *config.Config, args []string) error {
 		_ = printJSON(result)
 		return err
 	case "status":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: command status <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.CommandStatus(ctx, args[1])
+		result, err := service.CommandStatus(ctx, runID)
 		if err != nil {
 			return err
 		}
 		return printJSON(result)
 	case "logs":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: command logs <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.CommandLogs(ctx, args[1], intOption(args[2:], "--tail", 120))
+		result, err := service.CommandLogs(ctx, runID, intOption(args[1:], "--tail", 120))
 		if err != nil {
 			return err
 		}
 		return printJSON(result)
 	case "watch":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: command watch <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--seconds": true, "--poll-seconds": true, "--tail": true}, nil)
+		if err != nil {
+			return err
 		}
-		return watchCommand(service, args[1], args[2:])
+		return watchCommand(service, runID, args[1:])
 	case "interrupt":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: command interrupt <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.CommandInterrupt(ctx, args[1])
+		result, err := service.CommandInterrupt(ctx, runID)
 		_ = printJSON(result)
 		return err
 	case "stop":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: command stop <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		result, err := service.CommandStop(ctx, args[1])
+		result, err := service.CommandStop(ctx, runID)
 		_ = printJSON(result)
 		return err
 	case "attach":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: command attach <run_id>")
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
 		}
-		return service.CommandAttach(ctx, args[1])
+		return service.CommandAttach(ctx, runID)
 	default:
 		return fmt.Errorf("unknown command lifecycle action: %s", args[0])
 	}
 }
 
 func parseCommandOptions(args []string) (agentrun.CommandOptions, error) {
-	options := agentrun.CommandOptions{Profile: "tcx", Label: "command"}
+	options := agentrun.CommandOptions{Label: "command"}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--" {
 			options.Argv = append(options.Argv, args[i+1:]...)
 			break
 		}
 		switch args[i] {
-		case "--profile":
+		case "-c", "--config":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--profile requires value")
+				return options, fmt.Errorf("%s requires value", args[i-1])
 			}
 			options.Profile = args[i]
 		case "--project":
@@ -739,7 +944,7 @@ func parseCommandOptions(args []string) (agentrun.CommandOptions, error) {
 				return options, err
 			}
 			options.Input = string(data)
-		case "--deadline-seconds", "--deadline", "--timeout":
+		case "--deadline-seconds":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("%s requires value", args[i-1])
@@ -752,8 +957,11 @@ func parseCommandOptions(args []string) (agentrun.CommandOptions, error) {
 		case "--force":
 			options.Force = true
 		default:
-			options.Argv = append(options.Argv, args[i])
+			return options, fmt.Errorf("unknown command start option: %s", args[i])
 		}
+	}
+	if options.Profile == "" {
+		return options, fmt.Errorf("command start requires -c/--config")
 	}
 	if len(options.Argv) == 0 {
 		return options, fmt.Errorf("command argv is required; use -- <command> [args...]")
@@ -781,10 +989,10 @@ func watchCommand(service *agentrun.Service, runID string, args []string) error 
 	}
 }
 
-func runPruneCommand(cfg *config.Config, args []string) error {
+func runCleanCommand(cfg *config.Config, args []string) error {
 	for _, arg := range args {
 		if arg != "--apply" && arg != "--json" {
-			return fmt.Errorf("unknown prune argument: %s", arg)
+			return fmt.Errorf("unknown clean argument: %s", arg)
 		}
 	}
 	result, err := agentrun.New(cfg.Home).Prune(!containsArg(args, "--apply"))
@@ -822,7 +1030,7 @@ func parseLoopOptions(args []string) (agentrun.LoopStartOptions, error) {
 			if err := json.Unmarshal(data, &options.Actions); err != nil {
 				return options, err
 			}
-		case "--actions", "--actions-json":
+		case "--actions-json":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("--actions-json requires value")
@@ -830,10 +1038,10 @@ func parseLoopOptions(args []string) (agentrun.LoopStartOptions, error) {
 			if err := json.Unmarshal([]byte(args[i]), &options.Actions); err != nil {
 				return options, err
 			}
-		case "--planner-profile":
+		case "--planner-config":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--planner-profile requires value")
+				return options, fmt.Errorf("--planner-config requires value")
 			}
 			options.PlannerProfile = args[i]
 		case "--max-steps":
@@ -852,7 +1060,7 @@ func parseLoopOptions(args []string) (agentrun.LoopStartOptions, error) {
 				return options, fmt.Errorf("--result-schema requires value")
 			}
 			options.ResultSchema = args[i]
-		case "--deadline-seconds", "--deadline", "--timeout":
+		case "--deadline-seconds":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("%s requires value", args[i-1])
@@ -895,6 +1103,9 @@ func parseLoopOptions(args []string) (agentrun.LoopStartOptions, error) {
 		case "--force":
 			options.Force = true
 		default:
+			if strings.HasPrefix(args[i], "-") {
+				return options, fmt.Errorf("unknown loop option: %s", args[i])
+			}
 			if options.Input == "" {
 				options.Input = args[i]
 			} else {
@@ -1049,7 +1260,13 @@ func runCapabilitySkills(cfg *config.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		profile := optionValue(args[1:], "--profile")
+		if containsArg(args[1:], "--profile") {
+			return fmt.Errorf("unknown skill run option: --profile; use -c/--config")
+		}
+		profile := optionValue(args[1:], "-c")
+		if profile == "" {
+			profile = optionValue(args[1:], "--config")
+		}
 		if profile == "" {
 			profile = skill.DefaultProfile
 		}
