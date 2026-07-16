@@ -3,6 +3,8 @@ package capability
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -33,6 +35,13 @@ func TestToolSchemaRejectsWrongAndExtraArguments(t *testing.T) {
 	}
 	if err := validateSchema(schema, map[string]any{"name": "ok"}, "tool.args"); err != nil {
 		t.Fatal(err)
+	}
+	integerSchema := map[string]any{"type": "integer"}
+	if err := validateSchema(integerSchema, float64(3), "tool.count"); err != nil {
+		t.Fatalf("JSON integer was rejected: %v", err)
+	}
+	if err := validateSchema(integerSchema, 3.5, "tool.count"); err == nil {
+		t.Fatal("fractional JSON number was accepted as integer")
 	}
 }
 
@@ -66,6 +75,44 @@ func TestSkillRouteRenderAndMemory(t *testing.T) {
 	if len(memory.Recall("runtime", "fact", 5)) != 1 {
 		t.Fatal("memory recall failed")
 	}
+	if _, err := manager.Get("review"); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Doctor()["loaded"] != 1 {
+		t.Fatalf("doctor=%#v", manager.Doctor())
+	}
+	if len(memory.Sources()) != 1 {
+		t.Fatalf("sources=%#v", memory.Sources())
+	}
+	if err := memory.Forget([]string{"1"}); err != nil || len(memory.Recall("runtime", "fact", 5)) != 0 {
+		t.Fatalf("forget err=%v", err)
+	}
+}
+
+func TestToolManagerRegistersLocalToolAndReportsErrors(t *testing.T) {
+	dir := t.TempDir()
+	tool := `name: local
+description: local tool
+kind: external
+schema:
+  type: object
+  required: [value]
+`
+	if err := os.WriteFile(filepath.Join(dir, "local.tool.yaml"), []byte(tool), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewToolManager()
+	manager.RegisterDir(dir)
+	manager.RegisterDir(filepath.Join(dir, "missing"))
+	if len(manager.Schemas()) != 4 {
+		t.Fatalf("schemas=%#v", manager.Schemas())
+	}
+	if manager.Doctor()["loaded"] != 4 {
+		t.Fatalf("doctor=%#v", manager.Doctor())
+	}
+	if _, err := manager.DescribeExternal("local", map[string]any{}, nil, nil); err == nil {
+		t.Fatal("missing required argument was accepted")
+	}
 }
 
 func TestWorkspaceManagerIsolatesRunPaths(t *testing.T) {
@@ -88,5 +135,39 @@ func TestWorkspaceManagerIsolatesRunPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("workspace still exists: %v", err)
+	}
+}
+
+func TestMemoryConcurrentWritersDoNotLoseItems(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.json")
+	left, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = 20
+	var wait sync.WaitGroup
+	for index := 0; index < count; index++ {
+		for side, memory := range []*Memory{left, right} {
+			wait.Add(1)
+			go func(side, index int, memory *Memory) {
+				defer wait.Done()
+				id := strconv.Itoa(side) + "-" + strconv.Itoa(index)
+				if err := memory.Write([]MemoryItem{{ID: id, Type: "fact", Content: "shared", Source: "test"}}); err != nil {
+					t.Errorf("Write: %v", err)
+				}
+			}(side, index, memory)
+		}
+	}
+	wait.Wait()
+	reopened, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items := reopened.Recall("shared", "fact", count*2); len(items) != count*2 {
+		t.Fatalf("items=%d, want %d", len(items), count*2)
 	}
 }

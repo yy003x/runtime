@@ -22,8 +22,8 @@ func RunPaths(runsDir, runType, runID string) (Paths, error) {
 	if !validRunType(runType) {
 		return Paths{}, fmt.Errorf("未知 run_type: %s", runType)
 	}
-	if strings.TrimSpace(runID) == "" || filepath.Base(runID) != runID || strings.Contains(runID, "..") {
-		return Paths{}, fmt.Errorf("invalid run_id: %q", runID)
+	if err := validateRunID(runID); err != nil {
+		return Paths{}, err
 	}
 	runDir := filepath.Join(runsDir, runType, dateFromRunID(runID), runID)
 	return Paths{
@@ -35,6 +35,22 @@ func RunPaths(runsDir, runType, runID string) (Paths, error) {
 		ResultFile:  filepath.Join(runDir, "result.json"),
 		DoneFile:    filepath.Join(runDir, "done"),
 	}, nil
+}
+
+func validateRunID(runID string) error {
+	if strings.TrimSpace(runID) != runID || runID == "" || len(runID) > 128 || runID == "." || runID == ".." {
+		return fmt.Errorf("invalid run_id: %q", runID)
+	}
+	if filepath.Base(runID) != runID || strings.ContainsAny(runID, `/\\`) || strings.Contains(runID, "..") {
+		return fmt.Errorf("invalid run_id: %q", runID)
+	}
+	for index, value := range []byte(runID) {
+		valid := value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '-' || value == '_' || value == '.'
+		if !valid || index == 0 && !(value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9') {
+			return fmt.Errorf("invalid run_id: %q", runID)
+		}
+	}
+	return nil
 }
 
 func (p Paths) Ensure() error {

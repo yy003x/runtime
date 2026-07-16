@@ -3,9 +3,11 @@ package agentrun
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -150,6 +152,137 @@ func TestRunTimeoutIsClassified(t *testing.T) {
 	if time.Since(started) > 4*time.Second {
 		t.Fatalf("timeout took too long: %s", time.Since(started))
 	}
+}
+
+func TestEnsureProviderStatusInitializesNilMap(t *testing.T) {
+	status := Status{}
+	values := ensureProviderStatus(&status)
+	values["alive"] = false
+	if status.ProviderStatus == nil {
+		t.Fatal("provider status map was not initialized")
+	}
+	if alive, ok := status.ProviderStatus["alive"].(bool); !ok || alive {
+		t.Fatalf("provider status=%#v", status.ProviderStatus)
+	}
+}
+
+func TestRunRejectsConflictingIdempotentRequest(t *testing.T) {
+	root := t.TempDir()
+	writeNativeProfile(t, root, "native", 0)
+	service := New(root)
+	runID := "task-20260716-160000-idempotent"
+	first, err := service.Run(context.Background(), RunOptions{RunID: runID, Profile: "native", Prompt: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused, err := service.Run(context.Background(), RunOptions{RunID: runID, Profile: "native", Prompt: "first"})
+	if err != nil || !reused.Idempotent || reused.RunID != first.RunID {
+		t.Fatalf("reused=%#v err=%v", reused, err)
+	}
+	if _, err := service.Run(context.Background(), RunOptions{RunID: runID, Profile: "native", Prompt: "different"}); err == nil || !strings.Contains(err.Error(), "idempotency conflict") {
+		t.Fatalf("conflicting request err=%v", err)
+	}
+}
+
+func TestRunHonorsMaxConcurrencyAcrossServices(t *testing.T) {
+	root := t.TempDir()
+	writeNativeProfile(t, root, "slow", 350)
+	if err := os.WriteFile(filepath.Join(root, "configs", "runtime.yaml"), []byte("default_project: _default\ndefault_profile: slow\nmax_concurrency: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	firstService, secondService := New(root), New(root)
+	done := make(chan error, 1)
+	go func() {
+		_, err := firstService.Run(context.Background(), RunOptions{RunID: "task-20260716-160001-first", Profile: "slow", Prompt: "first"})
+		done <- err
+	}()
+	waitForState(t, firstService, RunTask, "task-20260716-160001-first", StateRunning)
+	if _, err := secondService.Run(context.Background(), RunOptions{RunID: "task-20260716-160002-second", Profile: "slow", Prompt: "second"}); err == nil || !strings.Contains(err.Error(), "max_concurrency") {
+		t.Fatalf("second run err=%v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondService.Run(context.Background(), RunOptions{RunID: "task-20260716-160003-third", Profile: "slow", Prompt: "third"}); err != nil {
+		t.Fatalf("slot was not released: %v", err)
+	}
+}
+
+func TestStoreConcurrentEventsHaveUniqueSequence(t *testing.T) {
+	root := t.TempDir()
+	paths, err := RunPaths(filepath.Join(root, "runs"), RunTask, "task-20260716-160004-events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{RunID: "task-20260716-160004-events", RunType: RunTask}
+	const count = 40
+	var wait sync.WaitGroup
+	for index := 0; index < count; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			store := Store{}
+			if err := store.Event(paths, request, "test", map[string]any{"index": index}); err != nil {
+				t.Errorf("Event: %v", err)
+			}
+		}(index)
+	}
+	wait.Wait()
+	events, err := (&Store{}).ReadEvents(paths)
+	if err != nil || len(events) != count {
+		t.Fatalf("events=%d err=%v", len(events), err)
+	}
+	for index, event := range events {
+		if event.Sequence != index+1 {
+			t.Fatalf("event[%d].sequence=%d", index, event.Sequence)
+		}
+	}
+}
+
+func TestStoreDoesNotOverwriteCancelledStatus(t *testing.T) {
+	paths, err := RunPaths(t.TempDir(), RunTask, "task-20260716-160005-status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{RunID: "task-20260716-160005-status", RunType: RunTask}
+	store := Store{}
+	if _, err := store.WriteStatus(paths, request, StateCancelled, "interrupted", "cancelled", nil); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.WriteStatus(paths, request, StateDone, "", "late completion", nil)
+	if err != nil || status.State != StateCancelled {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
+func writeNativeProfile(t *testing.T, root, id string, latencyMilliseconds int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["ok"],"done_after":1,"latency_milliseconds":%d}}}`, latencyMilliseconds)
+	if err := os.WriteFile(filepath.Join(root, "configs", id+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForState(t *testing.T, service *Service, runType, runID, state string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := service.Status(runType, runID)
+		if err == nil && status.State == state {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("run %s did not reach state %s", runID, state)
 }
 
 func writeProfile(t *testing.T, root, id, script, contract string) {

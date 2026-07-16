@@ -64,6 +64,7 @@
 
 - 提供 `/healthz` 和 `/v1/runs` HTTP adapter。
 - 将执行、状态、日志、结果和控制请求委托给 `agentrun.Service`。
+- 默认仅监听 loopback；非 loopback 必须配置 Bearer Token，并限制请求体、header、读写超时和文件路径输入。
 - 不保存独立 agent、session、memory 或 lifecycle。
 
 ### 2.2 AgentRun
@@ -105,9 +106,9 @@ type Provider interface {
 
 - `cliProvider`：managed command CLI，支持 typed overrides、stdin/arg/none 和实时输出。
 - interactive command：使用相同 profile common args 和环境，但直接连接终端，不创建 AgentRun。
-- `apiProvider`：OpenAI-compatible、Anthropic-compatible、stream 和 mock。
+- `apiProvider`：OpenAI-compatible、Anthropic-compatible、stream 和 mock；`api.runtime.enabled=true` 时复用进程内 Agent loop，增加 tool call、MCP、skill、memory 与本地 context 生命周期。
 - `tmuxProvider`：通过 daemon RPC 管理 tmux、paste、capture、稳定检测及 `result + done`。
-- `nativeProvider`：进程内 LLM loop、persona、snapshot、block/continue/patch-resume/stop/cancel。
+- `nativeProvider`：进程内 LLM loop、persona、snapshot、block/continue/patch-resume/stop/cancel、finish reason、token usage 和授权 tool-call 回路。
 
 ### 2.4 Executor 与 Daemon
 
@@ -166,11 +167,21 @@ direct command 不解析 runtime task flags；首个 `--` 仅作为 sn-cli 强�
 
 CLI 参数契约统一为 `sn-cli <namespace> <action> [named options] [prompt] [-- raw-cli-args]`。config 只使用 `-c/--config`，lifecycle ID 只使用 `--run-id`/`--loop-id`，prompt 来源 positional、`--prompt-file`、stdin 三选一。旧 `prompt`/`prune` 命令及旧参数不保留兼容。
 
-session 运行时将 command config 包装为 tmux config，保留 binary、common args、model、env 和 preset 结果，移除一次性执行专用 `managed_args`。首个 prompt 只有在 tmux buffer 粘贴和 Enter 成功后才记录 `prompt.submitted`；这表示提交成功，不表示模型完成。session 的 pane 输出持续写入 `output.log`，CLI 非零退出时最多尝试 5 次、间隔 3 秒，显式 stop 直接终止 tmux，不触发重启。
+session 运行时将 command config 包装为 tmux config，保留 binary、common args、model、env 和 preset 结果，移除一次性执行专用 `managed_args`。自动包装时 tmux session 基础名固定为 `sn-agent`，禁止回退到旧的 `mz-cli-agent` 命名空间。首个 prompt 只有在 tmux buffer 粘贴和 Enter 成功后才记录 `prompt.submitted`；这表示提交成功，不表示模型完成。session 的 pane 输出持续写入 `output.log`，CLI 非零退出时最多尝试 5 次、间隔 3 秒，显式 stop 直接终止 tmux，不触发重启。
 
 command 子进程环境由同一套 provider 逻辑生成，direct、managed 和 session 不允许各自实现。顺序固定为：继承当前环境、`env_unset` 删除、`env_passthrough` 显式传递、`env` 覆盖、AgentRun runtime env 注入。profile preset 可以用 `env_unset_append` 追加清理项。该规则用于切换 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等多账号目录，也用于消除父进程中的认证变量冲突；secret 值仍不得写入 profile。
 
+基础 `cx`/`cc` 继承父进程账号与认证环境；发行模板中的 `cx-aip`/`cc-aip` 承担固定账号目录或 endpoint 的显式选择。Provider JSON 使用严格字段解码，根对象、嵌套对象和 preset 中的未知字段均拒绝加载，避免拼写错误静默失效。
+
 `config validate` 只暴露最终配置目录与已生效的认证变量名称，不暴露变量值；Claude 同时生效 `ANTHROPIC_API_KEY` 和 `ANTHROPIC_AUTH_TOKEN` 时返回 warning，具体保留哪一种认证由本地 profile 决定。
+
+native 的 OpenAI-compatible adapter 与 direct API 一致使用 `/chat/completions`，Anthropic-compatible adapter 使用 `/messages` 并避免 base URL 已含 `/v1` 时重复拼接。两者共享 tool、tool result、finish reason 和 token usage 模型。没有 tool call 的响应结束本次运行；tool call 结果写回 snapshot 上下文后进入下一轮；未在 `allowed_actions` 中授权、命中 `forbidden_actions` 或属于 external kind 的工具不会执行。`max_rounds` 耗尽是明确失败，不是成功完成。
+
+API profile 默认保持 one-shot 兼容。启用 `api.runtime` 后直接使用同一套进程内 Agent 状态机，OpenAI Chat Completions 的 `tool_calls` 和 Anthropic Messages 的 `tool_use/tool_result` 会统一映射到内部消息模型。API Agent context 持久化为 `context-snapshot.json`，支持 block/continue/patch-resume/stop/cancel；native 继续使用 `native-snapshot.json`。
+
+API Agent capability 装配顺序：加载 profile system prompt；从 `configs/skills` 显式加载或自动路由 skill；从 `state/memory.json` 召回相关本地记忆；装配本地 function、memory 和 MCP 工具；最后按 `allowed_actions`/`forbidden_actions` 过滤后发送模型。memory 的读、写、删除分别使用 `memory.read`、`memory.write`、`memory.delete` 权限。
+
+MCP client 当前支持官方 stdio transport，使用单行 UTF-8 JSON-RPC 2.0，按 `initialize → notifications/initialized → tools/list → tools/call` 生命周期运行，并处理 `tools/list` 分页。模型侧工具名规范化为 `mcp__<server>__<tool>`；可以精确授权工具，也可以使用 `mcp.<server>` 或 `mcp` 扩大范围。server annotation 不作为可信授权依据，`forbidden_actions` 始终优先。
 
 ## 4. 目录契约
 
@@ -308,6 +319,9 @@ configs/
 | `result.json` | AgentRun/Provider contract | 结构化最终结果 |
 | `done` | tmux Provider | tmux managed task 空完成标记 |
 | `native-snapshot.json` | native Provider | native loop snapshot |
+| `context-snapshot.json` | API Agent Provider | API Agent 多轮消息、tool result、token usage 与可恢复上下文 |
+
+native snapshot 额外保存每轮 message/tool message、累计 input/output tokens 和最后的 finish reason。tool 参数、结果及错误仅落在当前 run 目录，不写入 profile；provider status 和事件只记录工具名、状态与计数，不记录凭据。
 
 tmux managed task 成功条件：
 
@@ -343,11 +357,13 @@ HTTP 只暴露 run API：
 - `GET /v1/runs/{type}/{id}/status|logs|result`
 - `POST /v1/runs/{type}/{id}/cancel|block|stop|continue|patch-resume`
 
+`sn-server` 默认地址为 `127.0.0.1:8080`。非 loopback 地址必须通过 `SN_SERVER_TOKEN` 开启 Bearer 鉴权；`/healthz` 保持无鉴权以供存活探针使用。HTTP adapter 的 JSON body 上限默认为 1 MiB，拒绝未知字段和非 JSON 写请求，并限制 `prompt_file` 只能引用 `cwd` 内的相对路径。
+
 Capability：
 
 - memory：write、recall、forget、sources，持久化到 `state/memory.json`。
 - skills：list、route、run、run-auto，从 `configs/skills` 加载。
-- tools：schema、call、external description 和 capability guard，从 `configs/tools` 加载。
+- tools：schema、call、external description、MCP stdio 和 capability guard，从 `configs/tools` 与 `api.runtime.mcp_servers` 加载。
 - workspace：受 root 边界约束的文件访问能力。
 
 ## 9. 迁移完成状态
@@ -368,6 +384,10 @@ Capability：
 | 类别 | 命令/检查 | 覆盖点 |
 | --- | --- | --- |
 | 全仓测试 | `go test ./...` | 所有 Go package |
+| 串行回归 | `make test-serial` | 文件锁、artifact 与生命周期顺序 |
+| 并行重复 | `go test ./... -count=5` | tmux、daemon、run 并发稳定性 |
+| Race | `make test-race` | AgentRun、memory、native/API agent、HTTP 关键并发路径 |
+| 覆盖率 | `make coverage COVERAGE_MIN=65.0` | 全仓 atomic coverage 门禁 |
 | 静态检查 | `go vet ./...` | Go 静态问题 |
 | CLI 回归 | `make sn-cli-test` | AgentRun、Provider、executor、daemon、capability、HTTP、CLI |
 | 构建 | `make sn-cli-build && make build` | `sn-cli` 与 `sn-server` |
@@ -393,6 +413,8 @@ Capability：
 8. Provider 配置不保存 secret。
 9. tmux managed task 成功判定使用 `result.json + done`；session start 成功判定使用 pane ready 和可选的 `prompt.submitted`。
 10. 安装后的 CLI 不依赖源码、Go 或 Git。
+11. API one-shot 与 API Agent Runtime 共用 profile schema 和协议 adapter；是否进入 Agent loop 只由 `api.runtime.enabled` 决定。
+12. MCP、memory 和本地 function tool 在未明确授权时不会暴露给模型；删除 memory 需要独立权限。
 
 ## 12. 完成标准
 
@@ -411,3 +433,5 @@ Capability：
 - [x] self-update 不依赖源码 checkout。
 - [x] `cmd/sn-cli` 与 `cmd/sn-server` 是唯一对外入口。
 - [x] CLI、HTTP、native、tmux 使用同一套 artifacts。
+- [x] API Provider 支持 OpenAI/Anthropic Agent tool call、MCP、skill、memory 和本地 context 生命周期。
+- [x] CI 覆盖构建、vet、串并行测试、race 与覆盖率门禁。

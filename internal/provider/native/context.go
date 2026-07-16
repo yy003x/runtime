@@ -1,6 +1,9 @@
 package native
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type ContextManager struct{}
 
@@ -8,11 +11,14 @@ func (ContextManager) BuildPrompt(value Context, budget int) ([]Message, error) 
 	if budget <= 0 {
 		return nil, fmt.Errorf("invalid token budget: %d", budget)
 	}
-	base := append([]Message(nil), value.SystemInstructions...)
+	base := cloneMessages(value.SystemInstructions)
 	for _, message := range value.Messages {
 		if message.Pinned {
 			base = append(base, message)
 		}
+	}
+	if estimate(base) > budget {
+		return nil, fmt.Errorf("pinned context exceeds token budget: %d", budget)
 	}
 	recent := make([]Message, 0, len(value.Messages))
 	for index := len(value.Messages) - 1; index >= 0; index-- {
@@ -22,6 +28,9 @@ func (ContextManager) BuildPrompt(value Context, budget int) ([]Message, error) 
 		}
 		candidate := append(append(append([]Message(nil), base...), message), recent...)
 		if estimate(candidate) > budget {
+			if len(recent) == 0 {
+				return nil, fmt.Errorf("latest context message exceeds token budget: %d", budget)
+			}
 			break
 		}
 		recent = append([]Message{message}, recent...)
@@ -31,19 +40,19 @@ func (ContextManager) BuildPrompt(value Context, budget int) ([]Message, error) 
 
 func (ContextManager) ApplyPatch(value Context, patch ContextPatch) (Context, error) {
 	next := Context{
-		SystemInstructions: append([]Message(nil), value.SystemInstructions...),
-		Messages:           append([]Message(nil), value.Messages...),
+		SystemInstructions: cloneMessages(value.SystemInstructions),
+		Messages:           cloneMessages(value.Messages),
 	}
 	switch patch.Operation {
 	case PatchAppend:
-		next.SystemInstructions = append(next.SystemInstructions, patch.SystemInstructions...)
-		next.Messages = append(next.Messages, patch.Messages...)
+		next.SystemInstructions = append(next.SystemInstructions, cloneMessages(patch.SystemInstructions)...)
+		next.Messages = append(next.Messages, cloneMessages(patch.Messages)...)
 	case PatchReplace:
 		if patch.SystemInstructions != nil {
-			next.SystemInstructions = append([]Message(nil), patch.SystemInstructions...)
+			next.SystemInstructions = cloneMessages(patch.SystemInstructions)
 		}
 		if patch.Messages != nil {
-			next.Messages = append([]Message(nil), patch.Messages...)
+			next.Messages = cloneMessages(patch.Messages)
 		}
 	default:
 		return Context{}, fmt.Errorf("unsupported patch operation: %s", patch.Operation)
@@ -55,6 +64,10 @@ func estimate(messages []Message) int {
 	total := 0
 	for _, message := range messages {
 		total += 4 + len(message.Content)/4
+		for _, call := range message.ToolCalls {
+			encoded, _ := json.Marshal(call.Arguments)
+			total += 8 + (len(call.Name)+len(encoded))/4
+		}
 	}
 	return total
 }

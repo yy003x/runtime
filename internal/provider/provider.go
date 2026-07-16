@@ -34,6 +34,11 @@ type Request struct {
 	OutputLog    string
 	SnapshotFile string
 	PersonaDir   string
+	SkillDir     string
+	ToolDir      string
+	MemoryFile   string
+	Allowed      []string
+	Forbidden    []string
 	NativeResume bool
 	NativePatch  *NativePatch
 }
@@ -186,6 +191,9 @@ func (apiProvider) Execute(ctx context.Context, prepared PreparedRequest, sink S
 		return Result{ExitCode: 1}, fmt.Errorf("profile %s: missing prepared api request", prepared.Config.ID)
 	}
 	sink = ensureSink(sink)
+	if prepared.Config.API != nil && prepared.Config.API.Runtime != nil && prepared.Config.API.Runtime.Enabled {
+		return executeAPIRuntime(ctx, prepared, sink)
+	}
 	if err := sink.StatusPatch(StatusPatch{Message: "api running", Values: map[string]any{"protocol": prepared.API.Protocol}}); err != nil {
 		return Result{ExitCode: 1}, err
 	}

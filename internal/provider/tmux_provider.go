@@ -14,6 +14,8 @@ import (
 
 type tmuxProvider struct{}
 
+const DefaultTmuxSessionName = "sn-agent"
+
 func (tmuxProvider) Kind() string { return ExecutorTmux }
 
 func (tmuxProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
@@ -166,9 +168,10 @@ func AsTmuxSessionProfile(cfg Config) (Config, error) {
 	cli.Executor = ExecutorTmux
 	cli.Runtime = runtime
 	if cli.Tmux == nil {
+		pasteBracketed := cli.Driver == "codex" || cli.Driver == "claude"
 		cli.Tmux = &TmuxConfig{
-			SessionName:                "sn-agent",
-			PasteBracketed:             true,
+			SessionName:                DefaultTmuxSessionName,
+			PasteBracketed:             pasteBracketed,
 			PollIntervalSeconds:        0.1,
 			PromptStableTimeoutSeconds: 10,
 			SessionWaitReady:           true,

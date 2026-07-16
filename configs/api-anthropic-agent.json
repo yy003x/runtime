@@ -1,0 +1,31 @@
+{
+  "type": "api",
+  "label": "OpenRouter GLM-5.1 Agent (Anthropic)",
+  "timeout_seconds": 300,
+  "api": {
+    "protocol": "anthropic",
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "z-ai/glm-5.1",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "auth": {
+      "header": "Authorization",
+      "prefix": "Bearer "
+    },
+    "headers": {
+      "HTTP-Referer": "http://localhost",
+      "X-OpenRouter-Title": "runtime-api-agent"
+    },
+    "runtime": {
+      "enabled": true,
+      "system_prompt": "你是运行在 sn-runtime 内的 Agent。仅调用本次请求明确授权的工具，并在完成后直接给出最终结果。",
+      "max_rounds": 10,
+      "token_budget": 128000,
+      "llm_timeout_seconds": 120,
+      "auto_route_skills": true,
+      "memory": {
+        "enabled": true,
+        "top_k": 5
+      }
+    }
+  }
+}

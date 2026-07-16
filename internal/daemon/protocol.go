@@ -41,6 +41,7 @@ type TmuxStartRequest struct {
 	Command             string               `json:"command"`
 	LogFile             string               `json:"log_file,omitempty"`
 	ExitFile            string               `json:"exit_file,omitempty"`
+	ReadyFile           string               `json:"ready_file,omitempty"`
 	RestartMaxAttempts  int                  `json:"restart_max_attempts,omitempty"`
 	RestartDelaySeconds float64              `json:"restart_delay_seconds,omitempty"`
 	Depends             []Dependency         `json:"depends,omitempty"`

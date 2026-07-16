@@ -1,7 +1,14 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +33,140 @@ func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
 	if !reflect.DeepEqual(options.RawCLIArgs, []string{"--search"}) {
 		t.Fatalf("raw_cli_args=%#v", options.RawCLIArgs)
 	}
+}
+
+func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	for _, dir := range []string{"configs", "configs/skills/review", "configs/tools"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile := `{"type":"native","label":"Native Mock","native":{"system_prompt":"test","max_rounds":2,"mock":{"responses":["ok"],"done_after":1}}}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "native-mock.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shellProfile := `{"type":"cli","label":"Shell","cli":{"driver":"generic","executor":"command","command":{"binary":"/bin/sh","args":["-c","printf 'ready\\n'; while IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done"],"model":""},"runtime":{"prompt_delivery":"stdin","result_contract":"optional"}}}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "shell.json"), []byte(shellProfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skill := "name: review\ndescription: review code\nkeywords: [review]\ndefault_profile: native-mock\nprompt_template: 'Review {{input}}'\n"
+	if err := os.WriteFile(filepath.Join(home, "configs", "skills", "review", "skill.yaml"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commands := [][]string{
+		{}, {"--help"}, {"version"}, {"profiles"}, {"providers"},
+		{"config", "choices"}, {"config", "validate", "-c", "native-mock"}, {"doctor"},
+		{"capabilities", "tools", "schemas"}, {"tools", "call", "echo", "--args", `{"value":"ok"}`},
+		{"capabilities", "skills", "list"}, {"capabilities", "skills", "route", "--query", "review this"},
+		{"capabilities", "memory", "write", "fact-1", "runtime fact", "--source", "test"},
+		{"capabilities", "memory", "recall", "runtime"}, {"capabilities", "memory", "sources"},
+		{"capabilities", "memory", "forget", "fact-1"}, {"clean"},
+		{"update", "--dry-run", "--version", "v1.2.3"},
+		{"task", "run", "-c", "native-mock", "--run-id", "task-20260716-170000-clitest", "hello"},
+		{"task", "status", "--run-id", "task-20260716-170000-clitest"},
+		{"task", "logs", "--run-id", "task-20260716-170000-clitest", "--tail", "5"},
+		{"task", "watch", "--run-id", "task-20260716-170000-clitest", "--seconds", "1", "--poll-seconds", "0.01"},
+		{"native-mock", "--run-id", "task-20260716-170001-profile", "hello"},
+		{"capabilities", "skills", "run", "review", "--input", "main.go", "--run-id", "task-20260716-170002-skill"},
+		{"loop", "run", "--loop-id", "loop-20260716-170003-cli", "--input", "hello", "--actions-json", `[{"type":"respond","content":"done"}]`},
+		{"loop", "status", "--loop-id", "loop-20260716-170003-cli"},
+		{"loop", "logs", "--loop-id", "loop-20260716-170003-cli", "--tail", "5"},
+	}
+	for _, command := range commands {
+		code, output := captureMain(t, command)
+		if code != 0 {
+			t.Fatalf("Main(%q) code=%d output=%q", command, code, output)
+		}
+	}
+	if _, err := exec.LookPath("tmux"); err == nil {
+		service := agentrun.New(home)
+		daemonContext, cancelDaemon := context.WithCancel(context.Background())
+		daemonDone := make(chan error, 1)
+		server := daemon.NewServer(service.DaemonConfig())
+		go func() { daemonDone <- server.Run(daemonContext) }()
+		for deadline := time.Now().Add(3 * time.Second); ; {
+			if _, statusErr := service.DaemonClient().Status(context.Background()); statusErr == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("CLI test daemon did not start")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Cleanup(func() {
+			_, _ = service.SessionStop(context.Background(), "session-20260716-170010-cli")
+			_, _ = service.CommandStop(context.Background(), "command-20260716-170011-cli")
+			cancelDaemon()
+			select {
+			case <-daemonDone:
+			case <-time.After(time.Second):
+			}
+		})
+		tmuxCommands := [][]string{
+			{"daemon", "status"}, {"doctor", "daemon", "--json"},
+			{"session", "start", "-c", "shell", "--run-id", "session-20260716-170010-cli"},
+			{"session", "status", "--run-id", "session-20260716-170010-cli"},
+			{"session", "list"},
+			{"session", "send", "--run-id", "session-20260716-170010-cli", "hello"},
+			{"session", "logs", "--run-id", "session-20260716-170010-cli", "--tail", "10"},
+			{"session", "stop", "--run-id", "session-20260716-170010-cli"},
+			{"session", "watch", "--run-id", "session-20260716-170010-cli", "--seconds", "1", "--poll-seconds", "0.01"},
+			{"command", "start", "-c", "shell", "--run-id", "command-20260716-170011-cli", "--", "/bin/sh", "-c", "printf command-ok"},
+			{"command", "status", "--run-id", "command-20260716-170011-cli"},
+			{"command", "logs", "--run-id", "command-20260716-170011-cli", "--tail", "10"},
+			{"command", "watch", "--run-id", "command-20260716-170011-cli", "--seconds", "1", "--poll-seconds", "0.01"},
+		}
+		for _, command := range tmuxCommands {
+			code, output := captureMain(t, command)
+			if code != 0 {
+				t.Fatalf("Main(%q) code=%d output=%q", command, code, output)
+			}
+		}
+	}
+	if code, output := captureMain(t, []string{"unknown-command"}); code != 1 || !strings.Contains(output, "unknown command") {
+		t.Fatalf("unknown code=%d output=%q", code, output)
+	}
+	invalidCommands := [][]string{
+		{"config"}, {"config", "unknown"}, {"capabilities"}, {"capabilities", "unknown"},
+		{"tools", "unknown"}, {"capabilities", "skills"}, {"capabilities", "skills", "unknown"},
+		{"capabilities", "memory", "unknown"}, {"task"}, {"task", "unknown"},
+		{"task", "run", "hello"}, {"task", "status"}, {"loop"}, {"loop", "unknown"},
+		{"loop", "step"}, {"session"}, {"session", "unknown"}, {"session", "list", "extra"},
+		{"session", "send"}, {"command"}, {"command", "unknown"}, {"command", "start", "-c", "shell"},
+		{"clean", "--unknown"}, {"update", "--unknown"},
+	}
+	for _, command := range invalidCommands {
+		if code, output := captureMain(t, command); code != 1 || !strings.Contains(output, "error:") {
+			t.Fatalf("Main(%q) code=%d output=%q", command, code, output)
+		}
+	}
+	if code, output := captureMain(t, []string{"update", "--help"}); code != 0 || !strings.Contains(output, "sn-cli update") {
+		t.Fatalf("update help code=%d output=%q", code, output)
+	}
+}
+
+func captureMain(t *testing.T, args []string) (int, string) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = writer, writer
+	code := Main(args)
+	os.Stdout, os.Stderr = stdout, stderr
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	return code, string(data)
 }
 
 func TestCLIEnvironmentDiagnosticsReportHomesAndAuthConflict(t *testing.T) {
@@ -151,5 +292,41 @@ func TestDaemonRestartRejectsActiveRuntimeState(t *testing.T) {
 	status.UptimeSeconds = int64(time.Second.Seconds())
 	if err := ensureDaemonRestartSafe(status); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateNativeProfileDistinguishesDependencyAndCredentialFailures(t *testing.T) {
+	nativeProfile := provider.Config{ID: "native", Type: provider.TypeNative, Native: &provider.NativeConfig{ModelProfile: "api"}}
+	result := validateProfile(nativeProfile, map[string]provider.Config{"native": nativeProfile}, false)
+	if result["message"] != "native model_profile 不存在: api" {
+		t.Fatalf("result=%#v", result)
+	}
+	apiProfile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{APIKeyEnv: "NATIVE_TEST_KEY"}}
+	result = validateProfile(nativeProfile, map[string]provider.Config{"native": nativeProfile, "api": apiProfile}, false)
+	if result["message"] != "native model_profile 凭据缺失: NATIVE_TEST_KEY" {
+		t.Fatalf("result=%#v", result)
+	}
+	t.Setenv("NATIVE_TEST_KEY", "secret")
+	result = validateProfile(nativeProfile, map[string]provider.Config{"native": nativeProfile, "api": apiProfile}, false)
+	if result["ok"] != true {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestValidateAPIAgentRuntimeReportsCapabilitiesAndMissingMCPCommand(t *testing.T) {
+	profile := provider.Config{ID: "api-agent", Type: provider.TypeAPI, API: &provider.APIConfig{
+		Mock: true, Runtime: &provider.APIRuntimeConfig{
+			Enabled: true, AutoRouteSkills: true, Skills: []string{"review"}, Memory: &provider.APIMemoryConfig{Enabled: true},
+			MCPServers: []provider.MCPServerConfig{{Name: "fixture", Command: "/definitely/missing/mcp-server"}},
+		},
+	}}
+	result := validateProfile(profile, map[string]provider.Config{"api-agent": profile}, false)
+	if result["ok"] == true || !strings.Contains(fmt.Sprint(result["message"]), "MCP server fixture 命令不可用") {
+		t.Fatalf("result=%#v", result)
+	}
+	profile.API.Runtime.MCPServers[0].Command = "/bin/sh"
+	result = validateProfile(profile, map[string]provider.Config{"api-agent": profile}, false)
+	if result["ok"] != true || result["agent_runtime"] != true || result["memory_enabled"] != true {
+		t.Fatalf("result=%#v", result)
 	}
 }

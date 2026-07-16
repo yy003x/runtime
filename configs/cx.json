@@ -7,15 +7,24 @@
     "command": {
       "binary": "codex",
       "args": [],
-      "model": "gpt-5.6-sol",
-      "env": {
-        "CODEX_HOME": "${HOME}/.codex-aip"
-      }
+      "model": "gpt-5.6-sol"
     },
     "runtime": {
       "prompt_delivery": "stdin",
       "managed_args": ["exec"],
       "result_contract": "required"
+    }
+  },
+  "presets": {
+    "cx-aip": {
+      "label": "GPT-5.6 Sol（AIP 账号目录）",
+      "cli": {
+        "command": {
+          "env": {
+            "CODEX_HOME": "${HOME}/.codex-aip"
+          }
+        }
+      }
     }
   }
 }

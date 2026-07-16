@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -21,15 +22,15 @@ const (
 )
 
 var ReservedCommands = map[string]struct{}{
-	"doctor": {}, "profiles": {}, "config": {}, "capabilities": {},
+	"doctor": {}, "profiles": {}, "providers": {}, "config": {}, "capabilities": {},
 	"skills": {}, "tools": {}, "memory": {}, "task": {}, "turn": {},
 	"loop": {}, "session": {}, "command": {}, "clean": {}, "run": {},
 	"status": {}, "logs": {}, "watch": {}, "cancel": {}, "start": {},
 	"step": {}, "send": {}, "interrupt": {}, "block": {}, "continue": {},
 	"patch-resume": {}, "stop": {}, "attach": {},
 	"choices": {}, "validate": {}, "help": {}, "version": {}, "list": {},
-	"completion": {},
-	"daemon":     {},
+	"completion": {}, "update": {}, "upgrade": {},
+	"daemon": {},
 }
 
 type Config struct {
@@ -136,6 +137,37 @@ type APIConfig struct {
 	Mock           bool              `json:"mock,omitempty"`
 	ResultContract string            `json:"result_contract,omitempty"`
 	OverridePolicy OverridePolicy    `json:"override_policy,omitempty"`
+	Runtime        *APIRuntimeConfig `json:"runtime,omitempty"`
+}
+
+// APIRuntimeConfig turns a one-shot API profile into an in-process Agent
+// runtime while preserving the existing API request mode when it is absent.
+type APIRuntimeConfig struct {
+	Enabled           bool              `json:"enabled,omitempty"`
+	SystemPrompt      string            `json:"system_prompt,omitempty"`
+	MaxRounds         int               `json:"max_rounds,omitempty"`
+	TokenBudget       int               `json:"token_budget,omitempty"`
+	LLMTimeoutSeconds float64           `json:"llm_timeout_seconds,omitempty"`
+	AutoRouteSkills   bool              `json:"auto_route_skills,omitempty"`
+	Skills            []string          `json:"skills,omitempty"`
+	Memory            *APIMemoryConfig  `json:"memory,omitempty"`
+	MCPServers        []MCPServerConfig `json:"mcp_servers,omitempty"`
+}
+
+type APIMemoryConfig struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	TopK    int    `json:"top_k,omitempty"`
+	Type    string `json:"type,omitempty"`
+}
+
+type MCPServerConfig struct {
+	Name           string            `json:"name"`
+	Transport      string            `json:"transport,omitempty"`
+	Command        string            `json:"command"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	EnvPassthrough []string          `json:"env_passthrough,omitempty"`
+	TimeoutSeconds float64           `json:"timeout_seconds,omitempty"`
 }
 
 type AuthConfig struct {
@@ -356,7 +388,9 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 		return Config{}, fmt.Errorf("%s: marshal normalized provider: %w", source, err)
 	}
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("%s: parse provider: %w", source, err)
 	}
 	cfg.ID = id
@@ -536,7 +570,94 @@ func validateAPI(cfg *Config, source string) error {
 	if err := validateResultContract(api.ResultContract, source); err != nil {
 		return err
 	}
+	if err := validateAPIRuntime(api, source); err != nil {
+		return err
+	}
 	return validateOverridePolicy(api.OverridePolicy, apiSupportedOverrides(api.Protocol), source)
+}
+
+func validateAPIRuntime(api *APIConfig, source string) error {
+	runtime := api.Runtime
+	if runtime == nil {
+		return nil
+	}
+	if runtime.MaxRounds < 0 || runtime.TokenBudget < 0 || runtime.LLMTimeoutSeconds < 0 {
+		return fmt.Errorf("%s: api.runtime max_rounds/token_budget/llm_timeout_seconds 必须 >= 0", source)
+	}
+	if runtime.Memory != nil && runtime.Memory.TopK < 0 {
+		return fmt.Errorf("%s: api.runtime.memory.top_k 必须 >= 0", source)
+	}
+	if runtime.Enabled && api.Stream {
+		return fmt.Errorf("%s: api.runtime.enabled=true 暂不支持 api.stream=true", source)
+	}
+	seenSkills := make(map[string]struct{}, len(runtime.Skills))
+	for index, name := range runtime.Skills {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fmt.Errorf("%s: api.runtime.skills[%d] 不能为空", source, index)
+		}
+		if _, exists := seenSkills[name]; exists {
+			return fmt.Errorf("%s: api.runtime.skills 重复包含 %q", source, name)
+		}
+		seenSkills[name] = struct{}{}
+	}
+	seenServers := make(map[string]struct{}, len(runtime.MCPServers))
+	if len(runtime.MCPServers) > 32 {
+		return fmt.Errorf("%s: api.runtime.mcp_servers 最多支持 32 个 server", source)
+	}
+	for index := range runtime.MCPServers {
+		server := &runtime.MCPServers[index]
+		server.Name = strings.TrimSpace(server.Name)
+		server.Command = strings.TrimSpace(server.Command)
+		if server.Transport == "" {
+			server.Transport = "stdio"
+		}
+		if !validRuntimeName(server.Name) {
+			return fmt.Errorf("%s: api.runtime.mcp_servers[%d].name 必须只含字母、数字、_ 或 -", source, index)
+		}
+		if _, exists := seenServers[server.Name]; exists {
+			return fmt.Errorf("%s: api.runtime.mcp_servers 重复包含 %q", source, server.Name)
+		}
+		seenServers[server.Name] = struct{}{}
+		if server.Transport != "stdio" {
+			return fmt.Errorf("%s: api.runtime.mcp_servers[%d].transport 目前仅支持 stdio", source, index)
+		}
+		if server.Command == "" {
+			return fmt.Errorf("%s: api.runtime.mcp_servers[%d].command is required", source, index)
+		}
+		if server.TimeoutSeconds < 0 {
+			return fmt.Errorf("%s: api.runtime.mcp_servers[%d].timeout_seconds 必须 >= 0", source, index)
+		}
+		for name := range server.Env {
+			if !validEnvironmentName(name) {
+				return fmt.Errorf("%s: api.runtime.mcp_servers[%d].env key %q 必须是环境变量名", source, index, name)
+			}
+		}
+		seenEnv := make(map[string]struct{}, len(server.EnvPassthrough))
+		for envIndex, name := range server.EnvPassthrough {
+			if !validEnvironmentName(name) {
+				return fmt.Errorf("%s: api.runtime.mcp_servers[%d].env_passthrough[%d] 必须是环境变量名", source, index, envIndex)
+			}
+			if _, exists := seenEnv[name]; exists {
+				return fmt.Errorf("%s: api.runtime.mcp_servers[%d].env_passthrough 重复包含 %q", source, index, name)
+			}
+			seenEnv[name] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validRuntimeName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateOverridePolicy(policy OverridePolicy, supported map[string]struct{}, source string) error {

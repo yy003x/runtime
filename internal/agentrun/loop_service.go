@@ -19,6 +19,7 @@ type LoopPaths struct {
 	StatusFile  string
 	EventsFile  string
 	OutputLog   string
+	ResultFile  string
 }
 
 type LoopStartOptions struct {
@@ -38,21 +39,22 @@ type LoopStartOptions struct {
 }
 
 type LoopRequest struct {
-	SchemaVersion   int       `json:"schema_version"`
-	LoopID          string    `json:"loop_id"`
-	ProjectID       string    `json:"project_id"`
-	Input           string    `json:"input"`
-	InputFile       string    `json:"input_file"`
-	Actions         []Action  `json:"actions,omitempty"`
-	PlannerProfile  string    `json:"planner_profile,omitempty"`
-	MaxSteps        int       `json:"max_steps"`
-	Capabilities    []string  `json:"capabilities"`
-	Forbidden       []string  `json:"forbidden_actions"`
-	CWD             string    `json:"cwd"`
-	ResultSchema    string    `json:"result_schema"`
-	DeadlineSeconds int       `json:"deadline_seconds"`
-	RuntimeVersion  string    `json:"runtime_version"`
-	CreatedAt       time.Time `json:"created_at"`
+	SchemaVersion      int       `json:"schema_version"`
+	LoopID             string    `json:"loop_id"`
+	ProjectID          string    `json:"project_id"`
+	Input              string    `json:"input"`
+	InputFile          string    `json:"input_file"`
+	Actions            []Action  `json:"actions,omitempty"`
+	PlannerProfile     string    `json:"planner_profile,omitempty"`
+	MaxSteps           int       `json:"max_steps"`
+	Capabilities       []string  `json:"capabilities"`
+	Forbidden          []string  `json:"forbidden_actions"`
+	CWD                string    `json:"cwd"`
+	ResultSchema       string    `json:"result_schema"`
+	DeadlineSeconds    int       `json:"deadline_seconds"`
+	RuntimeVersion     string    `json:"runtime_version"`
+	RequestFingerprint string    `json:"request_fingerprint,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 type Observation struct {
@@ -77,7 +79,7 @@ type PersistentLoopStatus struct {
 	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
-const LoopOutcomeDone = "done"
+const LoopOutcomeDone = OutcomeSucceeded
 
 type LoopLogsResult struct {
 	LoopID    string           `json:"loop_id"`
@@ -113,38 +115,68 @@ func (s *Service) LoopStart(options LoopStartOptions) (PersistentLoopStatus, err
 	if options.LoopID == "" {
 		options.LoopID = newRunID("loop")
 	}
-	paths := s.loopPaths(options.LoopID)
-	if !options.Force {
-		var existing PersistentLoopStatus
-		if err := readJSON(paths.StatusFile, &existing); err == nil {
-			return existing, nil
-		}
+	if err := validateRunID(options.LoopID); err != nil {
+		return PersistentLoopStatus{}, err
 	}
 	cwd, err := resolveCWD(options.CWD)
 	if err != nil {
 		return PersistentLoopStatus{}, err
 	}
-	if err := os.MkdirAll(paths.LoopDir, 0o700); err != nil {
-		return PersistentLoopStatus{}, err
-	}
-	if options.Force {
-		for _, path := range []string{paths.RequestFile, paths.StatusFile, paths.EventsFile, paths.OutputLog} {
-			_ = os.Remove(path)
-		}
-	}
+	now := time.Now().UTC()
 	request := LoopRequest{SchemaVersion: 1, LoopID: options.LoopID, ProjectID: options.ProjectID,
 		Input: input, InputFile: options.InputFile, Actions: options.Actions, PlannerProfile: options.PlannerProfile,
 		MaxSteps: options.MaxSteps, Capabilities: options.Capabilities, Forbidden: options.Forbidden,
 		CWD: cwd, ResultSchema: options.ResultSchema, DeadlineSeconds: options.DeadlineSeconds,
-		RuntimeVersion: s.RuntimeVersion, CreatedAt: time.Now().UTC()}
-	if err := writeJSONAtomic(paths.RequestFile, request); err != nil {
+		RuntimeVersion: s.RuntimeVersion, CreatedAt: now}
+	request.RequestFingerprint, err = fingerprintValue(struct {
+		LoopID, ProjectID, Input, InputFile, PlannerProfile, CWD, ResultSchema string
+		Actions                                                                []Action
+		MaxSteps, DeadlineSeconds                                              int
+		Capabilities, Forbidden                                                []string
+	}{
+		LoopID: request.LoopID, ProjectID: request.ProjectID, Input: request.Input, InputFile: request.InputFile,
+		PlannerProfile: request.PlannerProfile, CWD: request.CWD, ResultSchema: request.ResultSchema,
+		Actions: request.Actions, MaxSteps: request.MaxSteps, DeadlineSeconds: request.DeadlineSeconds,
+		Capabilities: request.Capabilities, Forbidden: request.Forbidden,
+	})
+	if err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	runLock, err := s.acquireRunLock(context.Background(), options.LoopID)
+	if err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	defer runLock.release()
+	paths := s.loopPaths(options.LoopID)
+	if !options.Force {
+		var existingRequest LoopRequest
+		var existingStatus PersistentLoopStatus
+		requestErr := readLoopJSON(paths.RequestFile, &existingRequest)
+		statusErr := readLoopJSON(paths.StatusFile, &existingStatus)
+		if !(os.IsNotExist(requestErr) && os.IsNotExist(statusErr)) {
+			if requestErr == nil && statusErr == nil && existingRequest.RequestFingerprint != "" && existingRequest.RequestFingerprint == request.RequestFingerprint {
+				normalizeLoopStatus(&existingStatus)
+				return existingStatus, nil
+			}
+			return existingStatus, fmt.Errorf("idempotency conflict for loop_id %s", options.LoopID)
+		}
+	}
+	if err := os.MkdirAll(paths.LoopDir, 0o700); err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	if options.Force {
+		for _, path := range []string{paths.RequestFile, paths.StatusFile, paths.EventsFile, paths.OutputLog, paths.ResultFile} {
+			_ = os.Remove(path)
+		}
+	}
+	if err := writeLoopJSON(paths.RequestFile, request); err != nil {
 		return PersistentLoopStatus{}, err
 	}
 	status := PersistentLoopStatus{SchemaVersion: 1, LoopID: options.LoopID, ProjectID: options.ProjectID,
 		State: StateRunning, Phase: PhasePlanning, MaxSteps: options.MaxSteps,
 		Observations: []Observation{}, Message: "loop started", UpdatedAt: time.Now().UTC()}
 	status.Transitions = []LoopTransition{{Phase: PhasePlanning, At: status.UpdatedAt}}
-	if err := writeJSONAtomic(paths.StatusFile, status); err != nil {
+	if err := writeLoopJSON(paths.StatusFile, status); err != nil {
 		return PersistentLoopStatus{}, err
 	}
 	s.registerLoop(paths, request, StateRunning)
@@ -167,15 +199,24 @@ func (s *Service) LoopRun(ctx context.Context, options LoopStartOptions) (Persis
 }
 
 func (s *Service) LoopStep(ctx context.Context, loopID string) (PersistentLoopStatus, error) {
+	if err := validateRunID(loopID); err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	runLock, err := s.acquireRunLock(ctx, loopID)
+	if err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	defer runLock.release()
 	paths := s.loopPaths(loopID)
 	var request LoopRequest
 	var status PersistentLoopStatus
-	if err := readJSON(paths.RequestFile, &request); err != nil {
+	if err := readLoopJSON(paths.RequestFile, &request); err != nil {
 		return status, fmt.Errorf("loop 不存在: %s", loopID)
 	}
-	if err := readJSON(paths.StatusFile, &status); err != nil {
+	if err := readLoopJSON(paths.StatusFile, &status); err != nil {
 		return status, fmt.Errorf("loop 不存在: %s", loopID)
 	}
+	normalizeLoopStatus(&status)
 	if status.Outcome != "" {
 		return status, nil
 	}
@@ -185,6 +226,9 @@ func (s *Service) LoopStep(ctx context.Context, loopID string) (PersistentLoopSt
 	if status.Step >= status.MaxSteps {
 		return s.finishLoop(paths, status, OutcomeFailed, "loop 达到 max_steps")
 	}
+	if request.DeadlineSeconds > 0 && time.Now().After(request.CreatedAt.Add(time.Duration(request.DeadlineSeconds)*time.Second)) {
+		return s.finishLoop(paths, status, OutcomeFailed, "loop deadline exceeded")
+	}
 	status = updateLoop(paths, status, PhasePlanning, "planning")
 	action, err := s.nextLoopAction(ctx, request, status)
 	if err != nil {
@@ -193,6 +237,10 @@ func (s *Service) LoopStep(ctx context.Context, loopID string) (PersistentLoopSt
 	}
 	status.ActionCursor++
 	_ = appendLoopEvent(paths, loopID, "planner.action", map[string]any{"type": action.Type})
+	if err := authorizeLoopAction(request, action); err != nil {
+		_ = appendLoopEvent(paths, loopID, "action.denied", map[string]any{"type": action.Type, "error": err.Error()})
+		return s.finishLoop(paths, status, OutcomeBlocked, "blocked: "+err.Error())
+	}
 	if action.Type == "respond" {
 		status.Output = action.Content
 		_ = appendText(paths.OutputLog, action.Content+"\n")
@@ -219,20 +267,27 @@ func (s *Service) LoopStep(ctx context.Context, loopID string) (PersistentLoopSt
 
 func (s *Service) LoopStatus(loopID string) (PersistentLoopStatus, error) {
 	var status PersistentLoopStatus
-	if err := readJSON(s.loopPaths(loopID).StatusFile, &status); err != nil {
+	if err := validateRunID(loopID); err != nil {
+		return status, err
+	}
+	if err := readLoopJSON(s.loopPaths(loopID).StatusFile, &status); err != nil {
 		return status, fmt.Errorf("loop 不存在: %s", loopID)
 	}
+	normalizeLoopStatus(&status)
 	return status, nil
 }
 
 func (s *Service) LoopLogs(loopID string, tail int) (LoopLogsResult, error) {
+	if err := validateRunID(loopID); err != nil {
+		return LoopLogsResult{}, err
+	}
 	paths := s.loopPaths(loopID)
 	content, err := os.ReadFile(paths.OutputLog)
 	if err != nil && !os.IsNotExist(err) {
 		return LoopLogsResult{}, err
 	}
 	var request LoopRequest
-	if err := readJSON(paths.RequestFile, &request); err != nil {
+	if err := readLoopJSON(paths.RequestFile, &request); err != nil {
 		return LoopLogsResult{}, fmt.Errorf("loop 不存在: %s", loopID)
 	}
 	if tail <= 0 {
@@ -243,16 +298,19 @@ func (s *Service) LoopLogs(loopID string, tail int) (LoopLogsResult, error) {
 		lines = lines[len(lines)-tail:]
 	}
 	events := []map[string]any{}
-	if file, openErr := os.Open(paths.EventsFile); openErr == nil {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			var event map[string]any
-			if json.Unmarshal(scanner.Bytes(), &event) == nil {
-				events = append(events, event)
+	_ = withAdvisoryFileLock(paths.EventsFile+".lock", func() error {
+		if file, openErr := os.Open(paths.EventsFile); openErr == nil {
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				var event map[string]any
+				if json.Unmarshal(scanner.Bytes(), &event) == nil {
+					events = append(events, event)
+				}
 			}
+			_ = file.Close()
 		}
-		_ = file.Close()
-	}
+		return nil
+	})
 	if len(events) > tail {
 		events = events[len(events)-tail:]
 	}
@@ -260,11 +318,25 @@ func (s *Service) LoopLogs(loopID string, tail int) (LoopLogsResult, error) {
 }
 
 func (s *Service) LoopCancel(loopID string) (PersistentLoopStatus, error) {
-	status, err := s.LoopStatus(loopID)
+	if err := validateRunID(loopID); err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	runLock, err := s.acquireRunLock(context.Background(), loopID)
+	if err != nil {
+		return PersistentLoopStatus{}, err
+	}
+	defer runLock.release()
+	paths := s.loopPaths(loopID)
+	var status PersistentLoopStatus
+	err = readLoopJSON(paths.StatusFile, &status)
 	if err != nil {
 		return status, err
 	}
-	return s.finishLoop(s.loopPaths(loopID), status, OutcomeCancelled, "cancelled")
+	normalizeLoopStatus(&status)
+	if status.Outcome != "" {
+		return status, nil
+	}
+	return s.finishLoop(paths, status, OutcomeCancelled, "cancelled")
 }
 
 func (s *Service) nextLoopAction(ctx context.Context, request LoopRequest, status PersistentLoopStatus) (Action, error) {
@@ -334,7 +406,21 @@ func (s *Service) finishLoop(paths LoopPaths, status PersistentLoopStatus, outco
 	}
 	status.UpdatedAt = time.Now().UTC()
 	status.Transitions = append(status.Transitions, LoopTransition{Phase: PhaseTerminal, Outcome: outcome, At: status.UpdatedAt})
-	err := writeJSONAtomic(paths.StatusFile, status)
+	summaryText := strings.TrimSpace(fmt.Sprint(status.Output))
+	if status.Output == nil || summaryText == "" || summaryText == "<nil>" {
+		summaryText = message
+	}
+	errors := []map[string]any{}
+	if outcome != OutcomeSucceeded {
+		errors = append(errors, map[string]any{"message": message, "outcome": outcome})
+	}
+	result := Result{SchemaVersion: 1, RunID: status.LoopID, Outcome: outcome, Summary: summaryText,
+		Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}}, Errors: errors,
+		Validation: Validation{Commands: []string{}, Passed: outcome == OutcomeSucceeded}}
+	if err := writeLoopJSON(paths.ResultFile, result); err != nil {
+		return status, err
+	}
+	err := writeLoopJSON(paths.StatusFile, status)
 	s.updateLoopRegistry(paths, status)
 	_ = appendLoopEvent(paths, status.LoopID, "loop.finished", map[string]any{"outcome": outcome})
 	return status, err
@@ -343,32 +429,81 @@ func (s *Service) finishLoop(paths LoopPaths, status PersistentLoopStatus, outco
 func updateLoop(paths LoopPaths, status PersistentLoopStatus, phase, message string) PersistentLoopStatus {
 	status.Phase, status.Message, status.UpdatedAt = phase, message, time.Now().UTC()
 	status.Transitions = append(status.Transitions, LoopTransition{Phase: phase, At: status.UpdatedAt})
-	_ = writeJSONAtomic(paths.StatusFile, status)
+	_ = writeLoopJSON(paths.StatusFile, status)
 	_ = appendLoopEvent(paths, status.LoopID, "loop.phase", map[string]any{"phase": phase})
 	return status
 }
 
 func (s *Service) loopPaths(loopID string) LoopPaths {
 	dir := filepath.Join(s.RunsDir, "loop", dateFromRunID(loopID), loopID)
-	return LoopPaths{LoopDir: dir, RequestFile: filepath.Join(dir, "request.json"), StatusFile: filepath.Join(dir, "status.json"), EventsFile: filepath.Join(dir, "events.jsonl"), OutputLog: filepath.Join(dir, "output.log")}
+	return LoopPaths{LoopDir: dir, RequestFile: filepath.Join(dir, "request.json"), StatusFile: filepath.Join(dir, "status.json"), EventsFile: filepath.Join(dir, "events.jsonl"), OutputLog: filepath.Join(dir, "output.log"), ResultFile: filepath.Join(dir, "result.json")}
 }
 
 func appendLoopEvent(paths LoopPaths, loopID, eventType string, data map[string]any) error {
-	sequence := 1
-	if file, err := os.Open(paths.EventsFile); err == nil {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			sequence++
+	return withAdvisoryFileLock(paths.EventsFile+".lock", func() error {
+		sequence := 1
+		if file, err := os.Open(paths.EventsFile); err == nil {
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				sequence++
+			}
+			_ = file.Close()
 		}
-		_ = file.Close()
+		record := map[string]any{"schema_version": 1, "event_id": randomID(16), "loop_id": loopID, "type": eventType, "ts": time.Now().UTC(), "seq": sequence, "data": data}
+		file, err := os.OpenFile(paths.EventsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		return json.NewEncoder(file).Encode(record)
+	})
+}
+
+func readLoopJSON(path string, value any) error {
+	return withAdvisoryFileLock(path+".lock", func() error { return readJSON(path, value) })
+}
+
+func writeLoopJSON(path string, value any) error {
+	return withAdvisoryFileLock(path+".lock", func() error { return writeJSONAtomic(path, value) })
+}
+
+func normalizeLoopStatus(status *PersistentLoopStatus) {
+	if status.Outcome == "done" {
+		status.Outcome = OutcomeSucceeded
 	}
-	record := map[string]any{"schema_version": 1, "event_id": randomID(16), "loop_id": loopID, "type": eventType, "ts": time.Now().UTC(), "seq": sequence, "data": data}
-	file, err := os.OpenFile(paths.EventsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
+	for index := range status.Transitions {
+		if status.Transitions[index].Outcome == "done" {
+			status.Transitions[index].Outcome = OutcomeSucceeded
+		}
 	}
-	defer file.Close()
-	return json.NewEncoder(file).Encode(record)
+}
+
+func authorizeLoopAction(request LoopRequest, action Action) error {
+	if containsString(request.Forbidden, action.Type) {
+		return fmt.Errorf("动作被 forbidden_actions 禁止: %s", action.Type)
+	}
+	if action.Type == "tool" && containsString(request.Forbidden, action.Name) {
+		return fmt.Errorf("动作被 forbidden_actions 禁止: %s", action.Name)
+	}
+	if action.Type == "run_agent" {
+		const capabilityName = "agent.run"
+		if containsString(request.Forbidden, capabilityName) {
+			return fmt.Errorf("动作被 forbidden_actions 禁止: %s", capabilityName)
+		}
+		if !containsString(request.Capabilities, capabilityName) {
+			return fmt.Errorf("缺少 capability: %s", capabilityName)
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func appendText(path, text string) error {

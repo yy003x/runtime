@@ -206,6 +206,9 @@ func prepareAPI(cfg Config, prompt string, overrides map[string]any) (APIRequest
 		copyOption(payload, effective, "max_tokens", "temperature")
 	}
 	stream := boolValue(effective["stream"])
+	if api.Runtime != nil && api.Runtime.Enabled && stream {
+		return APIRequest{}, fmt.Errorf("profile %s: API agent runtime does not support stream=true", cfg.ID)
+	}
 	if stream {
 		payload["stream"] = true
 	}

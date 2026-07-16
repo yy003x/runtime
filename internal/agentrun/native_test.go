@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,41 @@ func TestNativeProviderPatchResumeUsesSameRun(t *testing.T) {
 	}
 }
 
+func TestAPIAgentProviderPersistsAndPatchResumesLocalContext(t *testing.T) {
+	root := apiAgentTestRoot(t, `{
+  "type":"api",
+  "api":{
+    "protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNUSED_API_AGENT_KEY","mock":true,
+    "runtime":{"enabled":true,"max_rounds":2,"llm_timeout_seconds":1}
+  }
+}`)
+	service := New(root)
+	run, err := service.Run(context.Background(), RunOptions{Profile: "api-agent-test", Prompt: "fail first", ExecutionMode: ModeManaged})
+	if err != nil || run.State != StateBlocked {
+		t.Fatalf("run=%#v err=%v", run, err)
+	}
+	contextFile := filepath.Join(run.RunDir, "context-snapshot.json")
+	if _, err := os.Stat(contextFile); err != nil {
+		t.Fatalf("context snapshot: %v", err)
+	}
+	patch := provider.NativePatch{Operation: "append", Messages: []provider.NativeMessage{{Role: "user", Content: "continue"}}}
+	resumed, err := service.ResumeNative(context.Background(), RunTask, run.RunID, &patch)
+	if err != nil || resumed.State != StateDone || resumed.RunID != run.RunID {
+		t.Fatalf("resumed=%#v err=%v", resumed, err)
+	}
+	result, err := service.ReadResult(RunTask, run.RunID)
+	if err != nil || !strings.Contains(result.Summary, "agent runtime") {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(result.Artifacts) != 2 || result.Artifacts[1]["type"] != "context_snapshot" {
+		t.Fatalf("artifacts=%#v", result.Artifacts)
+	}
+	status, err := service.Status(RunTask, run.RunID)
+	if err != nil || status.ProviderStatus["kind"] != "api-agent" || status.ProviderStatus["context_file"] != contextFile {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
 func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
 	root := nativeTestRoot(t, `{
   "type":"native",
@@ -88,6 +124,18 @@ func nativeTestRoot(t *testing.T, profile string) string {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func apiAgentTestRoot(t *testing.T, profile string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "configs", "api-agent-test.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root

@@ -29,6 +29,8 @@ prompt 来源为 positional、`--prompt-file`、stdin 三选一；同时提供�
 
 config ID、alias 和 preset ID 不得与内建命令重名，配置加载阶段必须拒绝冲突。
 
+`providers` 是 `profiles` 的 legacy alias，`upgrade` 是 `update` 的 legacy alias。二者继续可用并与正式命令一同列入保留字，但新文档和脚本只使用正式命令。除这两个明确登记的别名外，不新增隐式兼容入口。
+
 ## 3. Command Profile 分流
 
 当 config 是 `type=cli` 且 `cli.executor=command` 时，只检查第一个 profile 参数：

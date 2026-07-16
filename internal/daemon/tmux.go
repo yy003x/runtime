@@ -31,6 +31,10 @@ func (s *Server) startTmux(ctx context.Context, request *TmuxStartRequest) Respo
 		s.releaseDependencies(request.ProcessID)
 		return Response{Error: err.Error()}
 	}
+	if request.ReadyFile != "" {
+		_ = os.Remove(request.ReadyFile)
+		command = fmt.Sprintf("stty sane 2>/dev/null || :; : > %s || exit 125; %s", shellQuote(request.ReadyFile), command)
+	}
 	if request.RestartMaxAttempts > 0 || request.ExitFile != "" {
 		command = supervisedTmuxCommand(command, request.RestartMaxAttempts, request.RestartDelaySeconds, request.ExitFile)
 	}
@@ -92,8 +96,8 @@ func supervisedTmuxCommand(command string, maxAttempts int, delaySeconds float64
 		writeExit = fmt.Sprintf("printf '%%s %%s\\n' \"$exit_code\" \"$attempt\" > %s; ", shellQuote(exitFile))
 	}
 	return fmt.Sprintf(
-		"attempt=1; exit_code=0; while :; do ( %s ); exit_code=$?; if [ \"$exit_code\" -eq 0 ] || [ \"$attempt\" -ge %d ]; then break; fi; printf '\\r\\n[sn-runtime] process exited with status %%s; restarting attempt %%s/%d\\r\\n' \"$exit_code\" \"$((attempt+1))\"; attempt=$((attempt+1)); sleep %s; done; %sexit \"$exit_code\"",
-		command, maxAttempts, maxAttempts, delay, writeExit,
+		"attempt=1; exit_code=0; while :; do /bin/sh -c %s; exit_code=$?; if [ \"$exit_code\" -eq 0 ] || [ \"$attempt\" -ge %d ]; then break; fi; printf '\\r\\n[sn-runtime] process exited with status %%s; restarting attempt %%s/%d\\r\\n' \"$exit_code\" \"$((attempt+1))\"; attempt=$((attempt+1)); sleep %s; done; %sexit \"$exit_code\"",
+		shellQuote(command), maxAttempts, maxAttempts, delay, writeExit,
 	)
 }
 
@@ -135,8 +139,19 @@ func (s *Server) sendTmux(ctx context.Context, processID, session, value string,
 		return fmt.Errorf("tmux paste-buffer: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	if submit {
-		if output, err := commandContext(ctx, "send-keys", "-t", session, "Enter").CombinedOutput(); err != nil {
-			return fmt.Errorf("tmux send Enter: %w: %s", err, strings.TrimSpace(string(output)))
+		timer := time.NewTimer(30 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		submitByte := "0a"
+		if bracketed {
+			submitByte = "0d"
+		}
+		if output, err := commandContext(ctx, "send-keys", "-H", "-t", session, submitByte).CombinedOutput(); err != nil {
+			return fmt.Errorf("tmux submit: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 	}
 	return nil

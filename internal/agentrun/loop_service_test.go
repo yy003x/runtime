@@ -2,6 +2,9 @@ package agentrun
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +29,13 @@ func TestPersistentLoopStartStepStatusAndCancel(t *testing.T) {
 	if err != nil || loaded.Outcome != LoopOutcomeDone {
 		t.Fatalf("loaded=%#v err=%v", loaded, err)
 	}
+	var result Result
+	if err := readJSON(service.loopPaths(status.LoopID).ResultFile, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.RunID != status.LoopID || result.Outcome != OutcomeSucceeded || result.Summary != "done" {
+		t.Fatalf("result=%#v", result)
+	}
 
 	other, err := service.LoopStart(LoopStartOptions{Input: "cancel", Actions: []Action{{Type: "respond", Content: "unused"}}})
 	if err != nil {
@@ -34,5 +44,54 @@ func TestPersistentLoopStartStepStatusAndCancel(t *testing.T) {
 	cancelled, err := service.LoopCancel(other.LoopID)
 	if err != nil || cancelled.Outcome != OutcomeCancelled {
 		t.Fatalf("cancelled=%#v err=%v", cancelled, err)
+	}
+}
+
+func TestLoopRunAgentRequiresAllowedCapability(t *testing.T) {
+	service := New(t.TempDir())
+	status, err := service.LoopStart(LoopStartOptions{
+		Input: "run", Capabilities: []string{"agent.run"}, Forbidden: []string{"agent.run"},
+		Actions: []Action{{Type: "run_agent", Request: map[string]any{"profile": "x", "prompt": "p"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = service.LoopStep(context.Background(), status.LoopID)
+	if err != nil || status.Outcome != OutcomeBlocked || !strings.Contains(status.Message, "blocked") {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
+func TestLoopIDIsIdempotentOnlyForSameRequest(t *testing.T) {
+	service := New(t.TempDir())
+	options := LoopStartOptions{LoopID: "loop-20260716-160007-idempotent", Input: "same", Actions: []Action{{Type: "respond", Content: "ok"}}}
+	first, err := service.LoopStart(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.LoopStart(options)
+	if err != nil || second.LoopID != first.LoopID {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	options.Input = "different"
+	if _, err := service.LoopStart(options); err == nil || !strings.Contains(err.Error(), "idempotency conflict") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLoopStatusNormalizesLegacyDoneOutcome(t *testing.T) {
+	service := New(t.TempDir())
+	loopID := "loop-20260716-160008-legacy"
+	paths := service.loopPaths(loopID)
+	if err := os.MkdirAll(filepath.Dir(paths.StatusFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := PersistentLoopStatus{SchemaVersion: 1, LoopID: loopID, State: StateDone, Outcome: "done"}
+	if err := writeJSONAtomic(paths.StatusFile, legacy); err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.LoopStatus(loopID)
+	if err != nil || status.Outcome != OutcomeSucceeded {
+		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }

@@ -13,13 +13,20 @@ GOCACHE ?= /tmp/go-build
 GOMODCACHE ?= /tmp/go-mod
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
-.PHONY: help tidy fmt test build run dev check clean install release sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install release sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+
+COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
+COVERAGE_MIN ?= 65.0
 
 help:
 	@echo "Available targets:"
 	@echo "  make tidy              - sync go modules"
 	@echo "  make fmt               - format go files"
+	@echo "  make fmt-check         - verify Go formatting without modifying files"
 	@echo "  make test              - run unit tests"
+	@echo "  make test-serial       - run unit tests serially"
+	@echo "  make test-race         - run key race tests"
+	@echo "  make coverage          - enforce repository coverage threshold"
 	@echo "  make build             - build server binary"
 	@echo "  make sn-cli-build      - build sn-cli binary"
 	@echo "  make install           - build and install sn-cli into ~/.sn"
@@ -37,8 +44,22 @@ tidy:
 fmt:
 	$(GO_ENV) $(GO) fmt ./...
 
+fmt-check:
+	@files="$$(gofmt -l $$(find cmd internal test -name '*.go' -type f))"; if [ -n "$$files" ]; then echo "Go files require formatting:"; echo "$$files"; exit 1; fi
+
 test:
 	$(GO_ENV) $(GO) test ./...
+
+test-serial:
+	$(GO_ENV) $(GO) test -p 1 ./... -count=1
+
+test-race:
+	$(GO_ENV) $(GO) test -race ./internal/agentrun ./internal/capability ./internal/provider ./internal/provider/native ./internal/mcp ./internal/transport -run 'Native|APIRuntime|MCP|Loop|Memory|Concurrent|Idempotent|HTTP' -count=1
+
+coverage:
+	$(GO_ENV) $(GO) test ./... -covermode=atomic -coverprofile="$(COVERAGE_PROFILE)" -count=1
+	@total="$$($(GO_ENV) $(GO) tool cover -func="$(COVERAGE_PROFILE)" | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}')"; \
+	awk -v total="$$total" -v minimum="$(COVERAGE_MIN)" 'BEGIN { printf "total coverage: %.1f%% (minimum %.1f%%)\n", total, minimum; if (total + 0 < minimum + 0) exit 1 }'
 
 build:
 	mkdir -p bin
@@ -82,7 +103,7 @@ dev:
 		sleep 1; \
 	done
 
-check: fmt test
+check: fmt-check test
 
 release:
 	rm -rf dist

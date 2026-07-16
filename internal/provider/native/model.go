@@ -22,14 +22,28 @@ const (
 )
 
 var (
-	ErrInvalidTransition = errors.New("invalid native state transition")
-	ErrUpstream          = errors.New("native llm upstream error")
+	ErrInvalidTransition = errors.New("invalid agent state transition")
+	ErrUpstream          = errors.New("agent llm upstream error")
 )
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Pinned  bool   `json:"pinned,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	Pinned     bool       `json:"pinned,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+}
+
+type Tool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type ToolCall struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
 }
 
 type Context struct {
@@ -62,26 +76,34 @@ type Event struct {
 }
 
 type Snapshot struct {
-	RunID     string    `json:"run_id"`
-	State     State     `json:"state"`
-	Round     int       `json:"round"`
-	MaxRounds int       `json:"max_rounds"`
-	LastError string    `json:"last_error,omitempty"`
-	Context   Context   `json:"context"`
-	Events    []Event   `json:"events"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RunID            string    `json:"run_id"`
+	State            State     `json:"state"`
+	Round            int       `json:"round"`
+	MaxRounds        int       `json:"max_rounds"`
+	InputTokens      int       `json:"input_tokens,omitempty"`
+	OutputTokens     int       `json:"output_tokens,omitempty"`
+	LastFinishReason string    `json:"last_finish_reason,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+	Context          Context   `json:"context"`
+	Events           []Event   `json:"events"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type Request struct {
 	RunID    string
 	Round    int
 	Messages []Message
+	Tools    []Tool
 }
 
 type Response struct {
-	Message Message
-	Done    bool
+	Message      Message
+	ToolCalls    []ToolCall
+	FinishReason string
+	Done         bool
+	InputTokens  int
+	OutputTokens int
 }
 
 type Client interface {
@@ -92,14 +114,49 @@ type Config struct {
 	MaxRounds   int
 	TokenBudget int
 	LLMTimeout  time.Duration
+	Tools       []Tool
+	Executor    ToolExecutor
+}
+
+type ToolExecutor interface {
+	Execute(context.Context, ToolCall) (any, error)
+}
+
+type ToolExecutorFunc func(context.Context, ToolCall) (any, error)
+
+func (function ToolExecutorFunc) Execute(ctx context.Context, call ToolCall) (any, error) {
+	return function(ctx, call)
 }
 
 func CloneSnapshot(source Snapshot) Snapshot {
 	clone := source
-	clone.Context.SystemInstructions = append([]Message(nil), source.Context.SystemInstructions...)
-	clone.Context.Messages = append([]Message(nil), source.Context.Messages...)
+	clone.Context.SystemInstructions = cloneMessages(source.Context.SystemInstructions)
+	clone.Context.Messages = cloneMessages(source.Context.Messages)
 	clone.Events = append([]Event(nil), source.Events...)
 	return clone
+}
+
+func cloneMessages(source []Message) []Message {
+	cloned := append([]Message(nil), source...)
+	for index := range cloned {
+		cloned[index].ToolCalls = append([]ToolCall(nil), source[index].ToolCalls...)
+		for callIndex := range cloned[index].ToolCalls {
+			arguments := source[index].ToolCalls[callIndex].Arguments
+			cloned[index].ToolCalls[callIndex].Arguments = cloneArguments(arguments)
+		}
+	}
+	return cloned
+}
+
+func cloneArguments(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func ValidateTransition(from, to State) error {

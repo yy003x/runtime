@@ -38,7 +38,7 @@ func runRuntimeDoctor(cfg *config.Config, args []string) error {
 	items := make(map[string]any, len(profiles))
 	ok := true
 	for id, profile := range profiles {
-		validation := validateProfile(profile, false)
+		validation := validateProfile(profile, profiles, false)
 		items[id] = validation
 		if valid, _ := validation["ok"].(bool); !valid {
 			ok = false
@@ -121,7 +121,7 @@ func runConfigCommand(cfg *config.Config, args []string) error {
 		includeAll := containsArg(args[1:], "--all")
 		var choices []map[string]any
 		for _, profile := range profiles {
-			validation := validateProfile(profile, false)
+			validation := validateProfile(profile, profiles, false)
 			valid, _ := validation["ok"].(bool)
 			if !includeAll && !valid {
 				continue
@@ -155,7 +155,7 @@ func runConfigCommand(cfg *config.Config, args []string) error {
 			if providerType != "" && profile.Transport() != providerType && profile.Type != providerType {
 				continue
 			}
-			result := validateProfile(profile, live)
+			result := validateProfile(profile, profiles, live)
 			results = append(results, result)
 			if valid, _ := result["ok"].(bool); !valid {
 				allOK = false
@@ -182,7 +182,7 @@ func profileHasName(profile provider.Config, name string) bool {
 	return false
 }
 
-func validateProfile(profile provider.Config, live bool) map[string]any {
+func validateProfile(profile provider.Config, profiles map[string]provider.Config, live bool) map[string]any {
 	result := map[string]any{"profile": profile.ID, "provider_type": profile.Type, "transport": profile.Transport(), "ok": false}
 	if message := validateExecutionEnvironment(profile); message != "" {
 		result["message"] = message
@@ -193,10 +193,28 @@ func validateProfile(profile provider.Config, live bool) map[string]any {
 			result["ok"], result["message"] = true, "native mock profile 可用"
 			return result
 		}
-		result["ok"], result["message"] = true, "native profile 配置有效；model_profile 在执行时解析"
+		modelProfile, exists := provider.Resolve(profiles, profile.Native.ModelProfile)
+		if !exists {
+			result["message"] = "native model_profile 不存在: " + profile.Native.ModelProfile
+			return result
+		}
+		if modelProfile.Type != provider.TypeAPI || modelProfile.API == nil {
+			result["message"] = "native model_profile 必须引用 API profile: " + modelProfile.ID
+			return result
+		}
+		result["model_profile"] = modelProfile.ID
+		if os.Getenv(modelProfile.API.APIKeyEnv) == "" {
+			result["message"] = "native model_profile 凭据缺失: " + modelProfile.API.APIKeyEnv
+			return result
+		}
+		result["ok"], result["message"] = true, "native profile 与 model_profile 凭据有效；doctor 不发起付费网络请求"
 		return result
 	}
 	if profile.Type == provider.TypeAPI {
+		if message := validateAPIRuntimeEnvironment(profile, result); message != "" {
+			result["message"] = message
+			return result
+		}
 		if profile.API.Mock {
 			result["ok"], result["message"] = true, "mock API profile 可用"
 			return result
@@ -229,6 +247,30 @@ func validateProfile(profile provider.Config, live bool) map[string]any {
 	}
 	result["ok"], result["message"] = true, "命令可用"
 	return result
+}
+
+func validateAPIRuntimeEnvironment(profile provider.Config, result map[string]any) string {
+	if profile.API == nil || profile.API.Runtime == nil || !profile.API.Runtime.Enabled {
+		return ""
+	}
+	runtime := profile.API.Runtime
+	result["agent_runtime"] = true
+	result["context"] = "local snapshot"
+	result["memory_enabled"] = runtime.Memory != nil && runtime.Memory.Enabled
+	result["skills"] = append([]string{}, runtime.Skills...)
+	result["auto_route_skills"] = runtime.AutoRouteSkills
+	servers := make([]string, 0, len(runtime.MCPServers))
+	for _, server := range runtime.MCPServers {
+		servers = append(servers, server.Name)
+		command := provider.ExpandEnv(server.Command)
+		if _, err := exec.LookPath(command); err != nil {
+			if info, statErr := os.Stat(command); statErr != nil || info.IsDir() {
+				return fmt.Sprintf("MCP server %s 命令不可用: %s", server.Name, command)
+			}
+		}
+	}
+	result["mcp_servers"] = servers
+	return ""
 }
 
 func addCLIEnvironmentDiagnostics(profile provider.Config, result map[string]any) {

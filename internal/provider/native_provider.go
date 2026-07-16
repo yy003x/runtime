@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-runtime/internal/capability"
 	"agent-runtime/internal/llm"
 	"agent-runtime/internal/llm/anthropic"
 	"agent-runtime/internal/llm/openai"
@@ -46,6 +47,7 @@ func (nativeProvider) Execute(ctx context.Context, prepared PreparedRequest, sin
 	maxRounds := intValue(prepared.Native.EffectiveOptions["max_rounds"], config.MaxRounds)
 	tokenBudget := intValue(prepared.Native.EffectiveOptions["token_budget"], config.TokenBudget)
 	llmTimeout := durationSeconds(prepared.Native.EffectiveOptions["llm_timeout_seconds"], config.LLMTimeoutSeconds)
+	tools, toolExecutor := buildNativeToolRuntime(prepared.Request)
 	store := nativeengine.NewFileStore(prepared.Request.SnapshotFile)
 	lastEvent := 0
 	var sinkErr error
@@ -56,11 +58,13 @@ func (nativeProvider) Execute(ctx context.Context, prepared PreparedRequest, sin
 		}
 	}
 	engine := nativeengine.NewEngine(store, client, nativeengine.Config{
-		MaxRounds: maxRounds, TokenBudget: tokenBudget, LLMTimeout: llmTimeout,
+		MaxRounds: maxRounds, TokenBudget: tokenBudget, LLMTimeout: llmTimeout, Tools: tools, Executor: toolExecutor,
 	}, func(snapshot nativeengine.Snapshot) {
 		values := map[string]any{
 			"kind": TypeNative, "phase": string(snapshot.State), "native_state": string(snapshot.State),
 			"round": snapshot.Round, "max_rounds": snapshot.MaxRounds, "snapshot_file": prepared.Request.SnapshotFile,
+			"input_tokens": snapshot.InputTokens, "output_tokens": snapshot.OutputTokens,
+			"finish_reason": snapshot.LastFinishReason,
 		}
 		if snapshot.LastError != "" {
 			values["block_reason"] = snapshot.LastError
@@ -94,7 +98,10 @@ func (nativeProvider) Execute(ctx context.Context, prepared PreparedRequest, sin
 	result := Result{
 		Stdout: nativeengine.FinalText(snapshot), FinalText: nativeengine.FinalText(snapshot),
 		ExitCode: 0, State: string(snapshot.State),
-		Detail: map[string]any{"native_state": snapshot.State, "round": snapshot.Round, "snapshot_file": prepared.Request.SnapshotFile},
+		Detail: map[string]any{
+			"native_state": snapshot.State, "round": snapshot.Round, "snapshot_file": prepared.Request.SnapshotFile,
+			"input_tokens": snapshot.InputTokens, "output_tokens": snapshot.OutputTokens, "finish_reason": snapshot.LastFinishReason,
+		},
 	}
 	if result.Stdout != "" {
 		result.Stdout += "\n"
@@ -159,12 +166,19 @@ func buildNativeClient(prepared PreparedRequest) (nativeengine.Client, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	headers := make(map[string]string, len(profile.API.Headers))
+	for name, value := range profile.API.Headers {
+		headers[name] = ExpandEnv(value)
+	}
+	clientOptions := llm.HTTPOptions{
+		Headers: headers, AuthHeader: profile.API.Auth.Header, AuthPrefix: profile.API.Auth.Prefix,
+	}
 	var runtimeClient llm.Client
 	switch profile.API.Protocol {
 	case "openai":
-		runtimeClient = openai.NewClient(profile.API.BaseURL, key, client)
+		runtimeClient = openai.NewClientWithOptions(profile.API.BaseURL, key, client, clientOptions)
 	case "anthropic":
-		runtimeClient = anthropic.NewClient(profile.API.BaseURL, key, client)
+		runtimeClient = anthropic.NewClientWithOptions(profile.API.BaseURL, key, client, clientOptions)
 	default:
 		return nil, fmt.Errorf("profile %s: unsupported native API protocol %q", profile.ID, profile.API.Protocol)
 	}
@@ -172,8 +186,10 @@ func buildNativeClient(prepared PreparedRequest) (nativeengine.Client, error) {
 }
 
 type nativeClientAdapter struct {
-	client llm.Client
-	model  string
+	client          llm.Client
+	model           string
+	temperature     float64
+	maxOutputTokens int
 }
 
 func (a nativeClientAdapter) Generate(ctx context.Context, request nativeengine.Request) (nativeengine.Response, error) {
@@ -184,15 +200,85 @@ func (a nativeClientAdapter) Generate(ctx context.Context, request nativeengine.
 			system = append(system, message.Content)
 			continue
 		}
-		messages = append(messages, llm.Message{Role: message.Role, Content: message.Content})
+		converted := llm.Message{Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID}
+		for _, call := range message.ToolCalls {
+			converted.ToolCalls = append(converted.ToolCalls, llm.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
+		}
+		messages = append(messages, converted)
+	}
+	tools := make([]llm.Tool, 0, len(request.Tools))
+	for _, tool := range request.Tools {
+		tools = append(tools, llm.Tool{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
+	}
+	maxOutputTokens := a.maxOutputTokens
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = 2048
 	}
 	response, err := a.client.Generate(ctx, llm.Request{
-		Model: a.model, System: strings.Join(system, "\n\n"), Messages: messages, MaxOutputTokens: 2048,
+		Model: a.model, System: strings.Join(system, "\n\n"), Messages: messages, Tools: tools,
+		Temperature: a.temperature, MaxOutputTokens: maxOutputTokens,
 	})
 	if err != nil {
 		return nativeengine.Response{}, fmt.Errorf("%w: %v", nativeengine.ErrUpstream, err)
 	}
-	return nativeengine.Response{Message: nativeengine.Message{Role: "assistant", Content: response.OutputText}}, nil
+	toolCalls := make([]nativeengine.ToolCall, 0, len(response.ToolCalls))
+	for _, call := range response.ToolCalls {
+		toolCalls = append(toolCalls, nativeengine.ToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
+	}
+	return nativeengine.Response{
+		Message: nativeengine.Message{Role: "assistant", Content: response.OutputText}, ToolCalls: toolCalls,
+		FinishReason: response.FinishReason, Done: response.Done,
+		InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
+	}, nil
+}
+
+func buildNativeToolRuntime(request Request) ([]nativeengine.Tool, nativeengine.ToolExecutor) {
+	manager := capability.NewToolManager()
+	if request.ToolDir != "" {
+		if info, err := os.Stat(request.ToolDir); err == nil && info.IsDir() {
+			manager.RegisterDir(request.ToolDir)
+		}
+	}
+	available := make(map[string]capability.Tool)
+	var tools []nativeengine.Tool
+	for _, tool := range manager.Schemas() {
+		if tool.Kind == "external" || !nativeToolAllowed(tool, request.Allowed, request.Forbidden) {
+			continue
+		}
+		available[tool.Name] = tool
+		tools = append(tools, nativeengine.Tool{Name: tool.Name, Description: tool.Description, Parameters: tool.Schema})
+	}
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	executor := nativeengine.ToolExecutorFunc(func(_ context.Context, call nativeengine.ToolCall) (any, error) {
+		tool, ok := available[call.Name]
+		if !ok {
+			return nil, fmt.Errorf("native tool is not authorized: %s", call.Name)
+		}
+		capabilities := append([]string(nil), request.Allowed...)
+		if containsAction(request.Allowed, tool.Name) && tool.Capability != "" && !containsAction(capabilities, tool.Capability) {
+			capabilities = append(capabilities, tool.Capability)
+		}
+		return manager.Call(call.Name, call.Arguments, capabilities, request.Forbidden)
+	})
+	return tools, executor
+}
+
+func nativeToolAllowed(tool capability.Tool, allowed, forbidden []string) bool {
+	if containsAction(forbidden, "*") || containsAction(forbidden, tool.Name) || (tool.Capability != "" && containsAction(forbidden, tool.Capability)) {
+		return false
+	}
+	return containsAction(allowed, "*") || containsAction(allowed, tool.Name) || (tool.Capability != "" && containsAction(allowed, tool.Capability))
+}
+
+func containsAction(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func convertNativePatch(patch NativePatch) nativeengine.ContextPatch {
@@ -222,7 +308,7 @@ func ControlNative(snapshotFile, action, reason string) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"native_state": snapshot.State, "round": snapshot.Round, "snapshot_file": snapshotFile}, nil
+	return map[string]any{"native_state": snapshot.State, "agent_state": snapshot.State, "round": snapshot.Round, "snapshot_file": snapshotFile}, nil
 }
 
 func ReadNativeSnapshot(snapshotFile string) (map[string]any, error) {
@@ -230,5 +316,9 @@ func ReadNativeSnapshot(snapshotFile string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"native_state": snapshot.State, "round": snapshot.Round, "max_rounds": snapshot.MaxRounds, "last_error": snapshot.LastError}, nil
+	return map[string]any{
+		"native_state": snapshot.State, "round": snapshot.Round, "max_rounds": snapshot.MaxRounds,
+		"input_tokens": snapshot.InputTokens, "output_tokens": snapshot.OutputTokens,
+		"finish_reason": snapshot.LastFinishReason, "last_error": snapshot.LastError,
+	}, nil
 }

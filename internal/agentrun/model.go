@@ -56,6 +56,7 @@ type Request struct {
 	ProviderOverrides       map[string]any `json:"provider_overrides"`
 	AllowedActions          []string       `json:"allowed_actions"`
 	ForbiddenActions        []string       `json:"forbidden_actions"`
+	RequestFingerprint      string         `json:"request_fingerprint,omitempty"`
 	CreatedAt               time.Time      `json:"created_at"`
 	UpdatedAt               time.Time      `json:"updated_at"`
 }

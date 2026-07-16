@@ -7,20 +7,28 @@
     "command": {
       "binary": "claude",
       "args": [],
-      "model": "opus",
-      "env": {
-        "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip",
-        "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn",
-        "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY"
-      },
-      "env_unset": [
-        "ANTHROPIC_AUTH_TOKEN"
-      ]
+      "model": "opus"
     },
     "runtime": {
       "prompt_delivery": "stdin",
       "managed_args": ["-p"],
       "result_contract": "required"
+    }
+  },
+  "presets": {
+    "cc-aip": {
+      "label": "Claude Opus（AIP 账号目录）",
+      "cli": {
+        "command": {
+          "env": {
+            "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip",
+            "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn"
+          },
+          "env_unset_append": [
+            "ANTHROPIC_AUTH_TOKEN"
+          ]
+        }
+      }
     }
   }
 }

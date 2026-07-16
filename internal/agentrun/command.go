@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -63,8 +64,29 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 	if err != nil {
 		return SessionSummary{}, err
 	}
+	runLock, err := s.acquireRunLock(ctx, options.RunID)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	defer runLock.release()
+	now := time.Now().UTC()
+	request := Request{
+		SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
+		ProjectID: options.ProjectID, RunType: RunCommand, RunID: options.RunID,
+		ProviderProfile: profile.ID, Provider: provider.ExecutorTmux, CWD: cwd,
+		DeadlineSeconds: options.DeadlineSeconds, ResultFile: paths.ResultFile, ExecutionMode: ModeCapture,
+		ProviderOverrides: map[string]any{"argv": append([]string(nil), options.Argv...), "label": options.Label},
+		AllowedActions:    []string{}, ForbiddenActions: []string{}, CreatedAt: now, UpdatedAt: now,
+	}
+	request.RequestFingerprint, err = fingerprintRequest(request, options.Input, profile)
+	if err != nil {
+		return SessionSummary{}, err
+	}
 	if !options.Force {
-		if _, err := s.store.ReadStatus(paths); err == nil {
+		if _, found, existingErr := s.existingRun(paths, request); found {
+			if existingErr != nil {
+				return SessionSummary{}, existingErr
+			}
 			existing, statusErr := s.CommandStatus(ctx, options.RunID)
 			existing.Idempotent = true
 			return existing, statusErr
@@ -76,15 +98,6 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 	if options.Force {
 		s.resetRun(paths)
 	}
-	now := time.Now().UTC()
-	request := Request{
-		SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
-		ProjectID: options.ProjectID, RunType: RunCommand, RunID: options.RunID,
-		ProviderProfile: profile.ID, Provider: provider.ExecutorTmux, CWD: cwd,
-		DeadlineSeconds: options.DeadlineSeconds, ResultFile: paths.ResultFile, ExecutionMode: ModeCapture,
-		ProviderOverrides: map[string]any{"argv": append([]string(nil), options.Argv...), "label": options.Label},
-		AllowedActions:    []string{}, ForbiddenActions: []string{}, CreatedAt: now, UpdatedAt: now,
-	}
 	if err := s.store.WriteRequest(paths, request); err != nil {
 		return SessionSummary{}, err
 	}
@@ -95,13 +108,17 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 		commandParts = append(commandParts, provider.ShellQuote(arg))
 	}
 	command := provider.TmuxCommandEnv(profile, strings.Join(commandParts, " "))
-	command += "; rc=$?; printf '\n" + commandExitMarker + "%s\n' \"$rc\"; while :; do sleep 3600; done"
+	if options.DeadlineSeconds > 0 {
+		command = commandWithDeadline(command, options.DeadlineSeconds, commandTimeoutFile(paths))
+	}
 	backend, err := provider.NewTmuxBackend(profile, s.DaemonClient())
 	if err != nil {
 		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
 		return SessionSummary{}, err
 	}
-	session, err := backend.StartShell(ctx, options.RunID, cwd, command)
+	session, err := backend.StartShellWithOptions(ctx, options.RunID, cwd, command, providertmux.StartOptions{
+		LogFile: paths.OutputLog, ExitFile: commandExitFile(paths), RestartMaxAttempts: 1,
+	})
 	if err != nil {
 		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
 		return SessionSummary{}, err
@@ -130,33 +147,58 @@ func (s *Service) CommandStatus(ctx context.Context, runID string) (SessionSumma
 	if err != nil {
 		return SessionSummary{}, err
 	}
-	session, _ := status.ProviderStatus["tmux_session"].(string)
+	providerStatus := ensureProviderStatus(&status)
+	session, _ := providerStatus["tmux_session"].(string)
 	alive, daemonErr := s.DaemonClient().HasTmux(ctx, runID, session)
 	if daemonErr != nil {
 		return SessionSummary{}, daemonErr
 	}
+	if terminalStateValue(status.State) {
+		if alive {
+			_ = s.DaemonClient().KillTmux(context.Background(), runID, session)
+			alive = false
+		}
+		return tmuxSummary(paths, status, session, alive), nil
+	}
+	if code, _, found := readSessionExit(commandExitFile(paths)); found {
+		state, reason, message := StateDone, "", "command exited"
+		deadlineExceeded := fileExists(commandTimeoutFile(paths)) || code == 124
+		if deadlineExceeded {
+			state, reason, message = StateFailed, "timeout", "command deadline exceeded"
+		} else if code != 0 {
+			state, reason = StateFailed, "exited"
+		}
+		if alive {
+			_ = s.DaemonClient().KillTmux(context.Background(), runID, session)
+			alive = false
+		}
+		providerStatus["returncode"] = code
+		providerStatus["alive"] = false
+		providerStatus["deadline_exceeded"] = deadlineExceeded
+		status, err = s.store.WriteStatus(paths, request, state, reason, message, providerStatus)
+		s.updateRegistry(paths, status)
+		_ = s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": code, "deadline_exceeded": deadlineExceeded})
+		return tmuxSummary(paths, status, session, false), err
+	}
 	content := ""
 	if alive {
 		content, _ = s.DaemonClient().CaptureTmux(ctx, runID, session, 500)
-		_ = os.WriteFile(paths.OutputLog, []byte(content), 0o644)
-	}
-	if terminalStateValue(status.State) {
-		return tmuxSummary(paths, status, session, alive), nil
 	}
 	if code, found := commandExitCode(content); found {
 		state, reason := StateDone, ""
 		if code != 0 {
 			state, reason = StateFailed, "exited"
 		}
-		status.ProviderStatus["returncode"] = code
-		status.ProviderStatus["alive"] = alive
-		status, err = s.store.WriteStatus(paths, request, state, reason, "command exited", status.ProviderStatus)
+		providerStatus["returncode"] = code
+		providerStatus["alive"] = false
+		_ = s.DaemonClient().KillTmux(context.Background(), runID, session)
+		status, err = s.store.WriteStatus(paths, request, state, reason, "command exited", providerStatus)
 		s.updateRegistry(paths, status)
 		_ = s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": code})
-		return tmuxSummary(paths, status, session, alive), err
+		return tmuxSummary(paths, status, session, false), err
 	}
 	if !alive {
-		status, err = s.store.WriteStatus(paths, request, StateFailed, "orphaned", "tmux command disappeared", status.ProviderStatus)
+		status, err = s.store.WriteStatus(paths, request, StateFailed, "orphaned", "tmux command disappeared", providerStatus)
 		s.updateRegistry(paths, status)
 	}
 	return tmuxSummary(paths, status, session, alive), err
@@ -169,11 +211,10 @@ func (s *Service) CommandLogs(ctx context.Context, runID string, tail int) (Logs
 	}
 	paths, _ := RunPaths(s.RunsDir, RunCommand, runID)
 	content, _ := os.ReadFile(paths.OutputLog)
-	if summary.Alive {
+	if len(content) == 0 && summary.Alive {
 		if live, captureErr := s.DaemonClient().CaptureTmux(ctx, runID, summary.Session, tail); captureErr == nil {
 			if strings.TrimSpace(live) != "" {
 				content = []byte(live)
-				_ = os.WriteFile(paths.OutputLog, content, 0o644)
 			}
 		}
 	}
@@ -230,6 +271,27 @@ func commandExitCode(content string) (int, bool) {
 	}
 	code, err := strconv.Atoi(matches[len(matches)-1][1])
 	return code, err == nil
+}
+
+func commandExitFile(paths Paths) string {
+	return filepath.Join(paths.RunDir, "command-exit")
+}
+
+func commandTimeoutFile(paths Paths) string {
+	return filepath.Join(paths.RunDir, "command-timeout")
+}
+
+func commandWithDeadline(command string, seconds int, timeoutFile string) string {
+	quotedTimeoutFile := provider.ShellQuote(timeoutFile)
+	return fmt.Sprintf(
+		"timeout_file=%s; rm -f \"$timeout_file\"; ( %s ) & command_pid=$!; ( sleep %d; if kill -0 \"$command_pid\" 2>/dev/null; then : > \"$timeout_file\"; kill -TERM \"$command_pid\" 2>/dev/null || :; sleep 2; kill -KILL \"$command_pid\" 2>/dev/null || :; fi ) & watchdog_pid=$!; wait \"$command_pid\"; rc=$?; kill \"$watchdog_pid\" 2>/dev/null || :; wait \"$watchdog_pid\" 2>/dev/null || :; if [ -f \"$timeout_file\" ]; then exit 124; fi; exit \"$rc\"",
+		quotedTimeoutFile, command, seconds,
+	)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func tmuxSummary(paths Paths, status Status, session string, alive bool) SessionSummary {

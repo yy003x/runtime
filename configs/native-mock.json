@@ -1,0 +1,17 @@
+{
+  "type": "native",
+  "label": "Native Agent（本地 Mock）",
+  "timeout_seconds": 30,
+  "native": {
+    "system_prompt": "你是用于验证 Agent Runtime 契约的本地 Native Mock。",
+    "max_rounds": 2,
+    "token_budget": 8000,
+    "llm_timeout_seconds": 5,
+    "mock": {
+      "responses": [
+        "native mock ok"
+      ],
+      "done_after": 1
+    }
+  }
+}

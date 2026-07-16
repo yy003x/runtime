@@ -74,11 +74,28 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	if err != nil {
 		return SessionSummary{}, err
 	}
+	runLock, err := s.acquireRunLock(ctx, options.RunID)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	defer runLock.release()
+	now := time.Now().UTC()
+	request := Request{SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
+		ProjectID: options.ProjectID, RunType: RunSession, RunID: options.RunID, ProviderProfile: profile.ID,
+		Provider: provider.ExecutorTmux, CWD: resolvedCWD, PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), ResultFile: paths.ResultFile,
+		ExecutionMode: ModeManaged, ProviderOverrides: map[string]any{}, AllowedActions: append([]string(nil), options.AllowedActions...), ForbiddenActions: append([]string(nil), options.ForbiddenActions...), CreatedAt: now, UpdatedAt: now}
+	request.RequestFingerprint, err = fingerprintRequest(request, prompt, profile)
+	if err != nil {
+		return SessionSummary{}, err
+	}
 	if !options.Force {
-		if status, err := s.store.ReadStatus(paths); err == nil {
-			session, _ := status.ProviderStatus["tmux_session"].(string)
-			alive, _ := s.DaemonClient().HasTmux(ctx, options.RunID, session)
-			return SessionSummary{RunID: options.RunID, ProjectID: options.ProjectID, State: status.State, RunDir: paths.RunDir, Session: session, Attach: "tmux attach-session -t " + session, Alive: alive, Idempotent: true, Status: status.ProviderStatus}, nil
+		if _, found, existingErr := s.existingRun(paths, request); found {
+			if existingErr != nil {
+				return SessionSummary{}, existingErr
+			}
+			existing, statusErr := s.SessionStatus(ctx, options.RunID)
+			existing.Idempotent = true
+			return existing, statusErr
 		}
 	}
 	if err := paths.Ensure(); err != nil {
@@ -87,11 +104,6 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	if options.Force {
 		s.resetRun(paths)
 	}
-	now := time.Now().UTC()
-	request := Request{SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
-		ProjectID: options.ProjectID, RunType: RunSession, RunID: options.RunID, ProviderProfile: profile.ID,
-		Provider: provider.ExecutorTmux, CWD: resolvedCWD, PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), ResultFile: paths.ResultFile,
-		ExecutionMode: ModeManaged, ProviderOverrides: map[string]any{}, AllowedActions: append([]string(nil), options.AllowedActions...), ForbiddenActions: append([]string(nil), options.ForbiddenActions...), CreatedAt: now, UpdatedAt: now}
 	if err := s.store.WriteRequest(paths, request); err != nil {
 		return SessionSummary{}, err
 	}
@@ -110,6 +122,7 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	tmuxConfig := profile.CLI.Tmux
 	session, err := backend.StartShellWithOptions(ctx, options.RunID, resolvedCWD, command, providertmux.StartOptions{
 		LogFile: paths.OutputLog, ExitFile: sessionExitFile(paths),
+		WaitForOutput:      true,
 		RestartMaxAttempts: tmuxConfig.RestartMaxAttempts, RestartDelaySeconds: tmuxConfig.RestartDelaySeconds,
 	})
 	if err != nil {
@@ -150,12 +163,13 @@ func (s *Service) SessionStatus(ctx context.Context, runID string) (SessionSumma
 	if err != nil {
 		return SessionSummary{}, fmt.Errorf("session 不存在: %s", runID)
 	}
-	session, _ := status.ProviderStatus["tmux_session"].(string)
+	providerStatus := ensureProviderStatus(&status)
+	session, _ := providerStatus["tmux_session"].(string)
 	alive, daemonErr := s.DaemonClient().HasTmux(ctx, runID, session)
 	if daemonErr != nil {
 		return SessionSummary{}, daemonErr
 	}
-	status.ProviderStatus["alive"] = alive
+	providerStatus["alive"] = alive
 	if !alive && status.State == StateRunning {
 		if code, attempts, ok := readSessionExit(sessionExitFile(paths)); ok {
 			state, reason := StateDone, ""
@@ -163,11 +177,16 @@ func (s *Service) SessionStatus(ctx context.Context, runID string) (SessionSumma
 				state, reason = StateFailed, "provider_exit"
 			}
 			request, _ := s.store.ReadRequest(paths)
-			status.ProviderStatus["returncode"] = code
-			status.ProviderStatus["attempts"] = attempts
-			status, daemonErr = s.store.WriteStatus(paths, request, state, reason, "session process exited", status.ProviderStatus)
+			providerStatus["returncode"] = code
+			providerStatus["attempts"] = attempts
+			status, daemonErr = s.store.WriteStatus(paths, request, state, reason, "session process exited", providerStatus)
 			s.updateRegistry(paths, status)
 			_ = s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": code, "attempts": attempts})
+		} else {
+			request, _ := s.store.ReadRequest(paths)
+			status, daemonErr = s.store.WriteStatus(paths, request, StateFailed, "orphaned", "tmux session disappeared without exit marker", providerStatus)
+			s.updateRegistry(paths, status)
+			_ = s.store.Event(paths, request, "provider.disappeared", map[string]any{"tmux_session": session})
 		}
 	}
 	return SessionSummary{RunID: runID, ProjectID: status.ProjectID, State: status.State, RunDir: paths.RunDir, Session: session, Attach: "tmux attach-session -t " + session, Alive: alive, Status: status.ProviderStatus}, daemonErr

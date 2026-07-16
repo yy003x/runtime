@@ -410,6 +410,10 @@ Usage:
   sn-cli update [--check|--dry-run|--version VERSION]
   sn-cli version
 
+Legacy aliases:
+  providers -> profiles
+  upgrade -> update
+
 Installed binary: ~/.sn/bin/sn-cli
 Configuration:    ~/.sn/configs`)
 }

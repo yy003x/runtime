@@ -156,6 +156,15 @@ func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 	}
 }
 
+func TestPrintHelpDocumentsLegacyAliases(t *testing.T) {
+	stdout := captureStdout(t, printHelp)
+	for _, text := range []string{"providers -> profiles", "upgrade -> update"} {
+		if !strings.Contains(stdout, text) {
+			t.Fatalf("help missing %q:\n%s", text, stdout)
+		}
+	}
+}
+
 func TestInteractiveProfilePassesRawArgsWithoutRunArtifacts(t *testing.T) {
 	home := t.TempDir()
 	output := filepath.Join(home, "argv.txt")

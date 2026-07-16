@@ -48,13 +48,33 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
 }
 
 func TestReservedCommandsReflectCurrentCLI(t *testing.T) {
-	if _, ok := ReservedCommands["clean"]; !ok {
-		t.Fatal("clean must be reserved")
+	for _, command := range []string{"clean", "update", "profiles", "providers", "upgrade"} {
+		if _, ok := ReservedCommands[command]; !ok {
+			t.Fatalf("%s must be reserved", command)
+		}
 	}
 	for _, removed := range []string{"prompt", "prune"} {
 		if _, ok := ReservedCommands[removed]; ok {
 			t.Fatalf("removed command %q is still reserved", removed)
 		}
+	}
+}
+
+func TestLoadDirRejectsUnknownKeysAtEveryLevel(t *testing.T) {
+	tests := map[string]string{
+		"root":    `{"type":"api","typo":true,"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K"}}`,
+		"api":     `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","modle":"typo"}}`,
+		"command": `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","unknown":1},"runtime":{}}}`,
+		"preset":  `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}},"presets":{"child":{"cli":{"runtime":{"unknown":true}}}}}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeConfig(t, dir, "bad.json", body)
+			if _, err := LoadDir(dir); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
 
@@ -91,6 +111,49 @@ func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
 	}
 	if profiles["native"].Transport() != "native" || profiles["native"].ResultContract() != "none" {
 		t.Fatalf("native=%#v", profiles["native"])
+	}
+}
+
+func TestLoadDirAcceptsAPIAgentRuntime(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "api-agent.json", `{
+  "type":"api",
+  "api":{
+    "protocol":"anthropic","base_url":"https://example.test","model":"claude-test","api_key_env":"TEST_API_KEY",
+    "runtime":{
+      "enabled":true,"system_prompt":"system","max_rounds":4,"token_budget":32000,"llm_timeout_seconds":10,
+      "auto_route_skills":true,"skills":["review"],"memory":{"enabled":true,"top_k":3,"type":"fact"},
+      "mcp_servers":[{"name":"local","command":"fixture","args":["serve"],"env_passthrough":["MCP_FIXTURE"]}]
+    }
+  }
+}`)
+	profiles, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := profiles["api-agent"].API.Runtime
+	if runtime == nil || !runtime.Enabled || runtime.MCPServers[0].Transport != "stdio" || runtime.Memory.TopK != 3 {
+		t.Fatalf("runtime=%#v", runtime)
+	}
+}
+
+func TestLoadDirRejectsInvalidAPIAgentRuntime(t *testing.T) {
+	tests := map[string]string{
+		"stream":          `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","stream":true,"runtime":{"enabled":true}}}`,
+		"transport":       `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"mcp_servers":[{"name":"one","transport":"http","command":"x"}]}}}`,
+		"server-name":     `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"mcp_servers":[{"name":"bad name","command":"x"}]}}}`,
+		"memory-top-k":    `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"memory":{"enabled":true,"top_k":-1}}}}`,
+		"duplicate-skill": `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"skills":["x","x"]}}}`,
+		"unknown":         `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"unknown":1}}}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeConfig(t, dir, "bad.json", body)
+			if _, err := LoadDir(dir); err == nil {
+				t.Fatal("LoadDir returned nil error")
+			}
+		})
 	}
 }
 

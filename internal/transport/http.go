@@ -1,8 +1,14 @@
 package transport
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"agent-runtime/internal/agentrun"
@@ -10,8 +16,17 @@ import (
 )
 
 type HTTPHandler struct {
-	mux *http.ServeMux
-	svc *agentrun.Service
+	mux         *http.ServeMux
+	svc         *agentrun.Service
+	bearerToken string
+	maxBody     int64
+}
+
+const defaultMaxBodyBytes int64 = 1 << 20
+
+type HTTPOptions struct {
+	BearerToken  string
+	MaxBodyBytes int64
 }
 
 type RunRequest struct {
@@ -25,6 +40,8 @@ type RunRequest struct {
 	ExecutionMode     string         `json:"execution_mode,omitempty"`
 	DeadlineSeconds   int            `json:"deadline_seconds,omitempty"`
 	ProviderOverrides map[string]any `json:"provider_overrides,omitempty"`
+	AllowedActions    []string       `json:"allowed_actions,omitempty"`
+	ForbiddenActions  []string       `json:"forbidden_actions,omitempty"`
 }
 
 type ControlRequest struct {
@@ -33,12 +50,28 @@ type ControlRequest struct {
 }
 
 func NewHTTPHandler(service *agentrun.Service) *HTTPHandler {
-	handler := &HTTPHandler{mux: http.NewServeMux(), svc: service}
+	return NewHTTPHandlerWithOptions(service, HTTPOptions{})
+}
+
+func NewHTTPHandlerWithOptions(service *agentrun.Service, options HTTPOptions) *HTTPHandler {
+	maxBody := options.MaxBodyBytes
+	if maxBody <= 0 {
+		maxBody = defaultMaxBodyBytes
+	}
+	handler := &HTTPHandler{
+		mux: http.NewServeMux(), svc: service,
+		bearerToken: strings.TrimSpace(options.BearerToken), maxBody: maxBody,
+	}
 	handler.routes()
 	return handler
 }
 
 func (h *HTTPHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if h.bearerToken != "" && request.URL.Path != "/healthz" && !validBearerToken(request.Header.Get("Authorization"), h.bearerToken) {
+		writer.Header().Set("WWW-Authenticate", `Bearer realm="sn-server"`)
+		writeJSON(writer, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
 	h.mux.ServeHTTP(writer, request)
 }
 
@@ -53,15 +86,24 @@ func (h *HTTPHandler) handleHealth(writer http.ResponseWriter, _ *http.Request) 
 }
 
 func (h *HTTPHandler) handleRun(writer http.ResponseWriter, request *http.Request) {
+	if !hasJSONContentType(request) {
+		writeJSON(writer, http.StatusUnsupportedMediaType, errorResponse{Error: "Content-Type must be application/json"})
+		return
+	}
 	var input RunRequest
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "invalid JSON body"})
+	if err := h.decodeJSON(writer, request, &input, false); err != nil {
+		handleDecodeError(writer, err)
+		return
+	}
+	if err := validateRunRequest(input); err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
 		return
 	}
 	summary, err := h.svc.Run(request.Context(), agentrun.RunOptions{
 		RunID: input.RunID, RunType: input.RunType, Profile: input.Profile, ProjectID: input.ProjectID,
 		CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile, ExecutionMode: input.ExecutionMode,
 		DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
+		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions,
 	})
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})
@@ -91,8 +133,12 @@ func (h *HTTPHandler) handleRunByID(writer http.ResponseWriter, request *http.Re
 	}
 	var input ControlRequest
 	if request.ContentLength != 0 {
-		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "invalid JSON body"})
+		if !hasJSONContentType(request) {
+			writeJSON(writer, http.StatusUnsupportedMediaType, errorResponse{Error: "Content-Type must be application/json"})
+			return
+		}
+		if err := h.decodeJSON(writer, request, &input, true); err != nil {
+			handleDecodeError(writer, err)
 			return
 		}
 	}
@@ -120,6 +166,112 @@ func (h *HTTPHandler) handleRunByID(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(writer, http.StatusOK, summary)
+}
+
+func (h *HTTPHandler) decodeJSON(writer http.ResponseWriter, request *http.Request, output any, allowEmpty bool) error {
+	request.Body = http.MaxBytesReader(writer, request.Body, h.maxBody)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		if allowEmpty && errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("JSON body must contain one object")
+		}
+		return err
+	}
+	return nil
+}
+
+func handleDecodeError(writer http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeJSON(writer, http.StatusRequestEntityTooLarge, errorResponse{Error: "request body too large"})
+		return
+	}
+	writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "invalid JSON body"})
+}
+
+func hasJSONContentType(request *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	return err == nil && mediaType == "application/json"
+}
+
+func validBearerToken(header, token string) bool {
+	prefix, value, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(prefix, "Bearer") {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(value)), []byte(token)) == 1
+}
+
+func validateRunRequest(input RunRequest) error {
+	if input.DeadlineSeconds < 0 || input.DeadlineSeconds > 24*60*60 {
+		return fmt.Errorf("deadline_seconds must be between 0 and 86400")
+	}
+	if strings.ContainsRune(input.CWD, '\x00') || strings.ContainsRune(input.PromptFile, '\x00') {
+		return fmt.Errorf("cwd and prompt_file must not contain NUL")
+	}
+	if err := validateActions(input.AllowedActions, "allowed_actions"); err != nil {
+		return err
+	}
+	if err := validateActions(input.ForbiddenActions, "forbidden_actions"); err != nil {
+		return err
+	}
+	if input.CWD != "" && !filepath.IsAbs(input.CWD) {
+		return fmt.Errorf("cwd must be an absolute path")
+	}
+	if input.PromptFile != "" {
+		if filepath.IsAbs(input.PromptFile) {
+			return fmt.Errorf("prompt_file must be relative to cwd")
+		}
+		clean := filepath.Clean(input.PromptFile)
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.Contains(input.PromptFile, `\\`) {
+			return fmt.Errorf("prompt_file must stay within cwd")
+		}
+		cwd := input.CWD
+		if cwd == "" {
+			var err error
+			cwd, err = filepath.Abs(".")
+			if err != nil {
+				return fmt.Errorf("resolve cwd: %w", err)
+			}
+		}
+		resolvedCWD, err := filepath.EvalSymlinks(cwd)
+		if err != nil {
+			return fmt.Errorf("resolve cwd: %w", err)
+		}
+		resolvedPrompt, err := filepath.EvalSymlinks(filepath.Join(cwd, clean))
+		if err != nil {
+			return fmt.Errorf("resolve prompt_file: %w", err)
+		}
+		relative, err := filepath.Rel(resolvedCWD, resolvedPrompt)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("prompt_file must stay within cwd")
+		}
+	}
+	return nil
+}
+
+func validateActions(values []string, field string) error {
+	if len(values) > 256 {
+		return fmt.Errorf("%s supports at most 256 entries", field)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for index, value := range values {
+		if strings.TrimSpace(value) != value || value == "" || len(value) > 256 || strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("%s[%d] is invalid", field, index)
+		}
+		if _, exists := seen[value]; exists {
+			return fmt.Errorf("%s contains duplicate %q", field, value)
+		}
+		seen[value] = struct{}{}
+	}
+	return nil
 }
 
 func (h *HTTPHandler) handleRead(writer http.ResponseWriter, runType, runID, action string) {

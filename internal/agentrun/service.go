@@ -178,27 +178,25 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if err != nil {
 		return RunSummary{}, err
 	}
+	runLock, err := s.acquireRunLock(ctx, runID)
+	if err != nil {
+		return RunSummary{}, err
+	}
+	defer runLock.release()
 	projectID := options.ProjectID
 	if projectID == "" {
 		projectID = s.DefaultProject
 	}
-	if options.RunID != "" && !options.Force {
-		if status, err := s.store.ReadStatus(paths); err == nil {
-			return summary(paths, status, true), nil
-		}
-	}
-	if err := paths.Ensure(); err != nil {
-		return RunSummary{}, err
-	}
-	if options.Force {
-		s.resetRun(paths)
+	timeout := options.DeadlineSeconds
+	if timeout == 0 {
+		timeout = profile.TimeoutSeconds
 	}
 	now := time.Now().UTC()
 	request := Request{
 		SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
 		ProjectID: projectID, RunType: runType, RunID: runID, Caller: options.Caller,
 		ProviderProfile: profile.ID, Provider: profile.Transport(), CWD: cwd,
-		PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), DeadlineSeconds: options.DeadlineSeconds,
+		PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), DeadlineSeconds: timeout,
 		ResultFile: paths.ResultFile, ResultSchema: options.ResultSchema, ExecutionMode: mode,
 		ProviderOverrides: overrides, AllowedActions: append([]string(nil), options.AllowedActions...),
 		ForbiddenActions: append([]string(nil), options.ForbiddenActions...), CreatedAt: now, UpdatedAt: now,
@@ -212,6 +210,26 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if effort, ok := overrides["reasoning_effort"].(string); ok {
 		request.ReasoningEffortOverride = effort
 	}
+	request.RequestFingerprint, err = fingerprintRequest(request, prompt, profile)
+	if err != nil {
+		return RunSummary{}, err
+	}
+	if !options.Force {
+		if existing, found, existingErr := s.existingRun(paths, request); found {
+			return existing, existingErr
+		}
+	}
+	concurrencySlot, err := s.acquireConcurrencySlot()
+	if err != nil {
+		return RunSummary{}, err
+	}
+	defer concurrencySlot.release()
+	if err := paths.Ensure(); err != nil {
+		return RunSummary{}, err
+	}
+	if options.Force {
+		s.resetRun(paths)
+	}
 	if err := s.store.WriteRequest(paths, request); err != nil {
 		return RunSummary{}, err
 	}
@@ -219,10 +237,6 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	s.register(paths, request, StatePending)
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StatePending})
 
-	timeout := options.DeadlineSeconds
-	if timeout == 0 {
-		timeout = profile.TimeoutSeconds
-	}
 	runCtx := ctx
 	cancel := func() {}
 	if timeout > 0 {
@@ -245,6 +259,10 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		"AGENTRUN_RUN_DIR":      paths.RunDir,
 		"AGENTRUN_RUN_ID":       request.RunID,
 	}
+	snapshotFile := filepath.Join(paths.RunDir, "native-snapshot.json")
+	if profile.Type == provider.TypeAPI && profile.API != nil && profile.API.Runtime != nil && profile.API.Runtime.Enabled {
+		snapshotFile = filepath.Join(paths.RunDir, "context-snapshot.json")
+	}
 	providerRequest := provider.Request{
 		Prompt:       providerPrompt,
 		RawCLIArgs:   append([]string(nil), options.RawCLIArgs...),
@@ -259,8 +277,13 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		ResultFile:   paths.ResultFile,
 		DoneFile:     paths.DoneFile,
 		OutputLog:    paths.OutputLog,
-		SnapshotFile: filepath.Join(paths.RunDir, "native-snapshot.json"),
+		SnapshotFile: snapshotFile,
 		PersonaDir:   s.PersonaDir,
+		SkillDir:     s.paths.SkillsDir,
+		ToolDir:      s.paths.ToolsDir,
+		MemoryFile:   s.paths.MemoryFile,
+		Allowed:      append([]string(nil), request.AllowedActions...),
+		Forbidden:    append([]string(nil), request.ForbiddenActions...),
 	}
 	prepared, err := selectedProvider.Prepare(runCtx, profile, providerRequest)
 	if err != nil {
@@ -274,6 +297,10 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if prepared.API != nil {
 		providerStatus["protocol"] = prepared.API.Protocol
 		providerStatus["effective_options"] = prepared.API.EffectiveOptions
+		if profile.API.Runtime != nil && profile.API.Runtime.Enabled {
+			providerStatus["kind"] = "api-agent"
+			providerStatus["context_file"] = providerRequest.SnapshotFile
+		}
 	}
 	if prepared.Native != nil {
 		providerStatus["kind"] = provider.TypeNative
@@ -329,6 +356,8 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		artifacts := []map[string]any{{"type": "log", "path": paths.OutputLog}}
 		if prepared.Native != nil {
 			artifacts = append(artifacts, map[string]any{"type": "native_snapshot", "path": filepath.Join(paths.RunDir, "native-snapshot.json")})
+		} else if profile.Type == provider.TypeAPI && profile.API != nil && profile.API.Runtime != nil && profile.API.Runtime.Enabled {
+			artifacts = append(artifacts, map[string]any{"type": "context_snapshot", "path": filepath.Join(paths.RunDir, "context-snapshot.json")})
 		}
 		result := Result{SchemaVersion: 1, RunID: runID, Outcome: OutcomeSucceeded, Summary: text,
 			Artifacts: artifacts, Errors: []map[string]any{}, Validation: Validation{Commands: []string{}, Passed: true}}
@@ -408,29 +437,41 @@ func (s *Service) Cancel(runType, runID string) (RunSummary, error) {
 	if err != nil {
 		return RunSummary{}, err
 	}
+	providerStatus := ensureProviderStatus(&status)
 	if status.State == StateDone || status.State == StateFailed || status.State == StateBlocked || status.State == StateCancelled {
 		return summary(paths, status, true), nil
 	}
 	if request.Provider == provider.ExecutorTmux {
-		session, _ := status.ProviderStatus["tmux_session"].(string)
+		session, _ := providerStatus["tmux_session"].(string)
 		_ = s.DaemonClient().KillTmux(context.Background(), runID, session)
-	} else if request.Provider == provider.TypeNative {
-		detail, controlErr := provider.ControlNative(filepath.Join(paths.RunDir, "native-snapshot.json"), "cancel", "cancelled by user")
+	} else if request.Provider == provider.TypeNative || request.Provider == provider.TypeAPI && providerStatus["kind"] == "api-agent" {
+		snapshotFile := filepath.Join(paths.RunDir, "native-snapshot.json")
+		if request.Provider == provider.TypeAPI {
+			snapshotFile = filepath.Join(paths.RunDir, "context-snapshot.json")
+		}
+		detail, controlErr := provider.ControlNative(snapshotFile, "cancel", "cancelled by user")
 		if controlErr != nil {
 			return RunSummary{}, controlErr
 		}
 		for key, value := range detail {
-			status.ProviderStatus[key] = value
+			providerStatus[key] = value
 		}
 	} else {
-		if pgid := numberValue(status.ProviderStatus["pgid"]); pgid > 0 {
+		if pgid := numberValue(providerStatus["pgid"]); pgid > 0 {
 			_ = syscall.Kill(-pgid, syscall.SIGINT)
 		}
 	}
-	status, err = s.store.WriteStatus(paths, request, StateCancelled, "interrupted", "cancelled", status.ProviderStatus)
+	status, err = s.store.WriteStatus(paths, request, StateCancelled, "interrupted", "cancelled", providerStatus)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "provider.cancelled", map[string]any{"transport": request.Provider})
 	return summary(paths, status, false), err
+}
+
+func ensureProviderStatus(status *Status) map[string]any {
+	if status.ProviderStatus == nil {
+		status.ProviderStatus = map[string]any{}
+	}
+	return status.ProviderStatus
 }
 
 func numberValue(value any) int {
@@ -480,7 +521,7 @@ func (s *Service) cancelled(paths Paths, request Request, providerStatus map[str
 
 func (s *Service) blocked(paths Paths, request Request, providerStatus map[string]any, reason string) (RunSummary, error) {
 	if strings.TrimSpace(reason) == "" {
-		reason = "native provider is waiting for human input"
+		reason = "agent provider is waiting for human input"
 	}
 	status, err := s.store.WriteStatus(paths, request, StateBlocked, reason, reason, providerStatus)
 	s.updateRegistry(paths, status)
@@ -494,7 +535,12 @@ func (s *Service) resetRun(paths Paths) {
 			_ = s.DaemonClient().KillTmux(context.Background(), "", session)
 		}
 	}
-	for _, path := range []string{paths.RequestFile, paths.StatusFile, paths.EventsFile, paths.OutputLog, paths.ResultFile, paths.DoneFile, filepath.Join(paths.RunDir, "native-snapshot.json"), filepath.Join(paths.RunDir, "native-snapshot.json.control")} {
+	for _, path := range []string{
+		paths.RequestFile, paths.StatusFile, paths.EventsFile, paths.OutputLog, paths.ResultFile, paths.DoneFile,
+		filepath.Join(paths.RunDir, "native-snapshot.json"), filepath.Join(paths.RunDir, "native-snapshot.json.control"),
+		filepath.Join(paths.RunDir, "context-snapshot.json"), filepath.Join(paths.RunDir, "context-snapshot.json.control"),
+		commandExitFile(paths), commandTimeoutFile(paths), sessionExitFile(paths),
+	} {
 		_ = os.Remove(path)
 	}
 }

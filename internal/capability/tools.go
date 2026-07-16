@@ -2,6 +2,7 @@ package capability
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -206,9 +207,13 @@ func matchesSchemaType(expected any, value any) bool {
 		_, ok := value.(string)
 		return ok
 	case "integer":
-		switch value.(type) {
+		switch typed := value.(type) {
 		case int, int32, int64:
 			return true
+		case float64:
+			return !math.IsNaN(typed) && !math.IsInf(typed, 0) && math.Trunc(typed) == typed
+		case float32:
+			return !float32IsSpecial(typed) && math.Trunc(float64(typed)) == float64(typed)
 		}
 		return false
 	case "number":
@@ -225,6 +230,10 @@ func matchesSchemaType(expected any, value any) bool {
 	default:
 		return true
 	}
+}
+
+func float32IsSpecial(value float32) bool {
+	return math.IsNaN(float64(value)) || math.IsInf(float64(value), 0)
 }
 
 func schemaStrings(value any) []string {

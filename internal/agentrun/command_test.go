@@ -52,6 +52,73 @@ func TestCommandLifecycleWithTmux(t *testing.T) {
 	}
 }
 
+func TestCommandDeadlineStopsAndCleansTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-deadline","session_ready_settle_seconds":0.05},"runtime":{"prompt_delivery":"paste","result_contract":"optional"}}}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-test.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := New(root)
+	startAgentRunTestDaemon(t, service)
+	started, err := service.StartCommand(context.Background(), CommandOptions{
+		Profile: "tmux-test", CWD: root, DeadlineSeconds: 1, Argv: []string{"sh", "-c", "printf start; sleep 10"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status SessionSummary
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		status, err = service.CommandStatus(context.Background(), started.RunID)
+		if err != nil || terminalStateValue(status.State) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil || status.State != StateFailed || status.Alive || status.Status["returncode"] != float64(124) && status.Status["returncode"] != 124 {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+	if reason, _ := status.Status["deadline_exceeded"].(bool); !reason {
+		t.Fatalf("deadline flag missing: %#v", status.Status)
+	}
+	logs, err := service.CommandLogs(context.Background(), started.RunID, 20)
+	if err != nil || !strings.Contains(logs.Content, "start") {
+		t.Fatalf("logs=%q err=%v", logs.Content, err)
+	}
+}
+
+func TestSessionStatusMarksMissingSessionOrphaned(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	service := New(t.TempDir())
+	startAgentRunTestDaemon(t, service)
+	runID := "session-20260716-160006-orphaned"
+	paths, err := RunPaths(service.RunsDir, RunSession, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{RunID: runID, RunType: RunSession, ProjectID: "test"}
+	if err := service.store.WriteRequest(paths, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.store.WriteStatus(paths, request, StateRunning, "", "running", map[string]any{"tmux_session": "missing-session"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SessionStatus(context.Background(), runID)
+	if err != nil || status.State != StateFailed || status.Alive {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
 func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -87,7 +154,9 @@ func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil || !strings.Contains(logs.Content, "argv:base raw") || !strings.Contains(logs.Content, "reply:hello") || strings.Contains(logs.Content, "managed") {
-		t.Fatalf("logs=%q err=%v", logs.Content, err)
+		live, captureErr := service.DaemonClient().CaptureTmux(context.Background(), started.RunID, started.Session, 100)
+		raw, _ := os.ReadFile(filepath.Join(started.RunDir, "output.log"))
+		t.Fatalf("logs=%q raw=%q live=%q logs_err=%v capture_err=%v", logs.Content, raw, live, err, captureErr)
 	}
 	events, err := service.store.ReadEvents(mustSessionPaths(t, service, started.RunID))
 	if err != nil {

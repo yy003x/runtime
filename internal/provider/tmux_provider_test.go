@@ -58,3 +58,23 @@ func TestShellQuote(t *testing.T) {
 		t.Fatalf("ShellQuote=%q", got)
 	}
 }
+
+func TestTmuxSessionProfileUsesSnAgentNamespace(t *testing.T) {
+	cfg, err := AsTmuxSessionProfile(Config{Type: TypeCLI, CLI: &CLIConfig{Driver: "generic"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CLI.Tmux.SessionName != DefaultTmuxSessionName {
+		t.Fatalf("session_name=%q, want %q", cfg.CLI.Tmux.SessionName, DefaultTmuxSessionName)
+	}
+	if strings.Contains(cfg.CLI.Tmux.SessionName, "mz-cli-agent") {
+		t.Fatalf("session_name must not use legacy namespace: %q", cfg.CLI.Tmux.SessionName)
+	}
+	if cfg.CLI.Tmux.PasteBracketed {
+		t.Fatal("generic CLI must use line-oriented paste by default")
+	}
+	codex, err := AsTmuxSessionProfile(Config{Type: TypeCLI, CLI: &CLIConfig{Driver: "codex"}})
+	if err != nil || !codex.CLI.Tmux.PasteBracketed {
+		t.Fatalf("codex tmux=%#v err=%v", codex.CLI.Tmux, err)
+	}
+}

@@ -161,8 +161,8 @@ printf '处理任务' | sn-cli task run -c cx
 API/native profile 仍通过 prompt 驱动：
 
 ```bash
-sn-cli fake "hello"
-sn-cli native-fake "hello"
+sn-cli bo "hello"
+sn-cli native-mock "hello"
 ```
 
 ### 生命周期
@@ -203,7 +203,7 @@ sn-cli clean
 sn-cli clean --apply
 ```
 
-`session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
+`session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。自动包装的 tmux session 使用 `sn-agent` 命名空间，不使用旧的 `mz-cli-agent`；session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
 
 ### Capabilities
 
@@ -246,6 +246,65 @@ sn-cli update --version v1.0.0
 - `type=cli`、`executor=command|tmux`：Codex、Claude 和 generic CLI。
 - `type=api`：OpenAI-compatible、Anthropic-compatible 和 mock。
 - `type=native`：进程内多轮 agent loop、snapshot、block、continue、patch-resume、stop、cancel。
+
+`type=api` 默认保持兼容的一次请求/一次响应模式；配置 `api.runtime.enabled=true` 后，同一个 API profile 会使用进程内 Agent loop，支持多轮 `tool_calls`、MCP、skill、memory 和本地 context snapshot。发行模板提供：
+
+- `api-openai-agent`：OpenAI Chat Completions 协议。
+- `api-anthropic-agent`：Anthropic Messages 协议。
+
+两种协议共享相同的 Agent 状态机、权限门禁和运行产物，不需要再套一层 `type=native`。示例：
+
+```bash
+sn-cli task run -c api-openai-agent --allowed-action echo "调用 echo 后总结"
+sn-cli task run -c api-anthropic-agent --allowed-action memory.read "结合本地记忆回答"
+sn-cli task run -c api-openai-agent --allowed-action memory.write "把确认后的事实写入 memory"
+```
+
+API Agent 的本地上下文写入当前 run 的 `context-snapshot.json`，可沿用公共生命周期继续或修补：
+
+```bash
+sn-cli task continue --run-id <id>
+sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages":[{"role":"user","content":"补充上下文后继续"}]}'
+```
+
+`api.runtime` 配置示例：
+
+```json
+{
+  "enabled": true,
+  "system_prompt": "仅调用本次运行明确授权的工具。",
+  "max_rounds": 10,
+  "token_budget": 128000,
+  "llm_timeout_seconds": 120,
+  "auto_route_skills": true,
+  "skills": ["review"],
+  "memory": {"enabled": true, "top_k": 5},
+  "mcp_servers": [
+    {
+      "name": "workspace",
+      "transport": "stdio",
+      "command": "my-mcp-server",
+      "args": ["--stdio"],
+      "env_passthrough": ["MCP_ACCESS_TOKEN"],
+      "timeout_seconds": 30
+    }
+  ]
+}
+```
+
+MCP 当前实现 stdio transport：完成 `initialize` / `notifications/initialized` 协商，分页调用 `tools/list`，再通过 `tools/call` 执行。远端工具以 `mcp__<server>__<tool>` 暴露。建议按具体工具授权；`--allowed-action mcp.<server>` 会授权该 server 的全部工具，`--allowed-action mcp` 会授权全部已配置 MCP server。`--forbidden-action` 优先，`*` 可用于全部拒绝。MCP 子进程默认只继承基础运行环境和 `env_passthrough` 中显式列出的变量。
+
+memory 工具的授权边界为 `memory.read`、`memory.write`、`memory.delete`；其中删除必须单独授权。skill 从 `~/.sn/configs/skills` 加载，可显式列出或按关键词自动路由。启用 memory 后，相关本地记忆会注入首轮 system context；写入仍持久化到 `~/.sn/state/memory.json`。
+
+发行配置包含 `native-agent`（引用 `oro` OpenAI-compatible API profile）和无需凭据、不会访问网络的 `native-mock`。真实 native adapter 使用 OpenAI-compatible Chat Completions 或 Anthropic Messages 协议，持久化 finish reason 与 token usage；模型无 tool call 时完成，有 tool call 时执行结果会作为 tool message 回填下一轮。达到 `max_rounds` 仍未完成会失败，不再误报成功。
+
+native 默认不向模型暴露任何工具。仅 `--allowed-action <tool-name|capability>` 明确授权的本地 function tool 会进入请求，`--forbidden-action` 优先级更高；external tool 不会由 native 进程内执行。例如：
+
+```bash
+sn-cli task run -c native-agent --allowed-action echo "调用 echo 后总结结果"
+```
+
+外部 CLI provider 无法在进程内硬拦截模型自己的工具系统，其 `allowed_actions` / `forbidden_actions` 仅作为运行请求审计字段；loop 与 native 的本地 action 边界会强制执行。
 
 command profile 可区分 common args 与 managed-only args：
 
@@ -298,6 +357,8 @@ command profile 的子进程环境按以下顺序生成，direct、managed 和 t
 
 Claude profile 使用同样方式设置 `CLAUDE_CONFIG_DIR`。当 `ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_API_KEY` 同时存在时，应按实际认证方式在对应 preset 中用 `env_unset_append` 删除其中一个，避免改变默认账号或计费来源。
 
+发行模板已提供 `cx-aip` 和 `cc-aip` preset。基础 `cx`/`cc` 不写固定账号目录、API endpoint 或密钥值；`cc-aip` 只固定账号目录和 endpoint，API Key 仍从父进程环境继承。Provider JSON 对未知字段采用严格校验，字段拼写错误会在 `profiles` 或 `config validate` 阶段直接失败。
+
 切换后可先执行 `sn-cli config validate -c cx` 或 `sn-cli config validate -c cc`。输出会显示实际生效的配置目录和认证环境变量名称，但不会输出 secret 值；Claude 认证变量冲突会出现在 `warnings`。
 
 `depends`、audit proxy、PATH shim 和 DYLD 注入按 profile 显式启用。secret 只能引用环境变量名，不应写入配置、日志或 result。
@@ -311,7 +372,7 @@ managed run 位于：
 ~/.sn/runs/loop/<YYYY-MM-DD>/<loop_id>/
 ```
 
-标准文件包括 `request.json`、`status.json`、`events.jsonl`、`output.log` 和 `result.json`。tmux managed task 还使用空 `done` 文件，native Provider 使用 `native-snapshot.json`。
+标准文件包括 `request.json`、`status.json`、`events.jsonl`、`output.log` 和 `result.json`。tmux managed task 还使用空 `done` 文件，native Provider 使用 `native-snapshot.json`，API Agent Runtime 使用 `context-snapshot.json`。
 
 tmux managed task 只有在合法 `result.json` 和空 `done` 同时存在时才算完成。stdout、pane 静默或单独完成标记都不能替代该契约。
 
@@ -329,12 +390,21 @@ make build
 ./bin/sn-server
 ```
 
-默认监听 `:8080`，可通过 `HTTP_ADDR` 修改。server 与 CLI 读取同一个 `SN_CLI_HOME`：
+默认只监听 `127.0.0.1:8080`，可通过 `HTTP_ADDR` 修改。监听非 loopback 地址时必须设置 `SN_SERVER_TOKEN`，请求使用 `Authorization: Bearer <token>`；配置 token 后，本机请求同样需要鉴权。`GET /healthz` 始终不鉴权。server 还限制请求体、header 和读写超时；HTTP 的 `cwd` 必须是绝对路径，`prompt_file` 必须是 `cwd` 内的相对路径。
+
+```bash
+HTTP_ADDR=0.0.0.0:8080 SN_SERVER_TOKEN='<从安全配置注入>' ./bin/sn-server
+curl -H "Authorization: Bearer $SN_SERVER_TOKEN" http://127.0.0.1:8080/v1/runs/task/<run_id>/status
+```
+
+server 与 CLI 读取同一个 `SN_CLI_HOME`：
 
 - `GET /healthz`
 - `POST /v1/runs`
 - `GET /v1/runs/{run_type}/{run_id}/status|logs|result`
 - `POST /v1/runs/{run_type}/{run_id}/cancel|block|stop|continue|patch-resume`
+
+`POST /v1/runs` 支持 `allowed_actions` 和 `forbidden_actions` 数组，HTTP 发起的 API Agent run 与 CLI 使用同一工具授权规则。
 
 ## 构建与验证
 
@@ -346,7 +416,12 @@ make release
 go test ./...
 go vet ./...
 make sn-cli-test
+make test-serial
+make test-race
+make coverage COVERAGE_MIN=65.0
 git diff --check
 ```
+
+仓库 CI 在 push/pull request 上执行格式检查、双入口构建、vet、串行/并行测试、关键 race 和 65% 全仓覆盖率门禁。协议与工具回路测试使用本地 fixture，不调用真实或付费 API。
 
 `make release` 生成 darwin/linux、arm64/amd64 的 `sn-cli-<os>-<arch>.tar.gz`、`sn-server-<os>-<arch>` 和 `checksums.txt`。推送 `v*` tag 后，GitHub Actions 执行测试并发布这些资产。

@@ -17,7 +17,9 @@ type Store struct {
 }
 
 func (s *Store) WriteRequest(paths Paths, request Request) error {
-	return writeJSONAtomic(paths.RequestFile, request)
+	return withAdvisoryFileLock(paths.RequestFile+".lock", func() error {
+		return writeJSONAtomic(paths.RequestFile, request)
+	})
 }
 
 func (s *Store) WriteStatus(paths Paths, request Request, state, failureReason, message string, providerStatus map[string]any) (Status, error) {
@@ -30,23 +32,45 @@ func (s *Store) WriteStatus(paths Paths, request Request, state, failureReason, 
 	if status.ProviderStatus == nil {
 		status.ProviderStatus = map[string]any{}
 	}
-	return status, writeJSONAtomic(paths.StatusFile, status)
+	err := withAdvisoryFileLock(paths.StatusFile+".lock", func() error {
+		var existing Status
+		if err := readJSON(paths.StatusFile, &existing); err == nil && immutableTerminalState(existing.State) && existing.State != state {
+			status = existing
+			return nil
+		}
+		return writeJSONAtomic(paths.StatusFile, status)
+	})
+	return status, err
 }
 
 func (s *Store) ReadStatus(paths Paths) (Status, error) {
 	var status Status
-	err := readJSON(paths.StatusFile, &status)
+	err := withAdvisoryFileLock(paths.StatusFile+".lock", func() error {
+		return readJSON(paths.StatusFile, &status)
+	})
 	return status, err
 }
 
 func (s *Store) ReadRequest(paths Paths) (Request, error) {
 	var request Request
-	err := readJSON(paths.RequestFile, &request)
+	err := withAdvisoryFileLock(paths.RequestFile+".lock", func() error {
+		return readJSON(paths.RequestFile, &request)
+	})
 	return request, err
 }
 
 func (s *Store) ReadEvents(paths Paths) ([]Event, error) {
-	file, err := os.Open(paths.EventsFile)
+	var events []Event
+	err := withAdvisoryFileLock(paths.EventsFile+".lock", func() error {
+		var readErr error
+		events, readErr = readEventsUnlocked(paths.EventsFile)
+		return readErr
+	})
+	return events, err
+}
+
+func readEventsUnlocked(path string) ([]Event, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []Event{}, nil
@@ -68,12 +92,16 @@ func (s *Store) ReadEvents(paths Paths) ([]Event, error) {
 }
 
 func (s *Store) WriteResult(paths Paths, result Result) error {
-	return writeJSONAtomic(paths.ResultFile, result)
+	return withAdvisoryFileLock(paths.ResultFile+".lock", func() error {
+		return writeJSONAtomic(paths.ResultFile, result)
+	})
 }
 
 func (s *Store) ReadResult(paths Paths) (Result, error) {
 	var result Result
-	err := readJSON(paths.ResultFile, &result)
+	err := withAdvisoryFileLock(paths.ResultFile+".lock", func() error {
+		return readJSON(paths.ResultFile, &result)
+	})
 	return result, err
 }
 
@@ -135,25 +163,27 @@ func validBuiltinResult(raw map[string]any, runID string) bool {
 func (s *Store) Event(paths Paths, request Request, eventType string, data map[string]any) error {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
-	sequence := 1
-	if file, err := os.Open(paths.EventsFile); err == nil {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			sequence++
+	return withAdvisoryFileLock(paths.EventsFile+".lock", func() error {
+		sequence := 1
+		if file, err := os.Open(paths.EventsFile); err == nil {
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				sequence++
+			}
+			_ = file.Close()
 		}
-		_ = file.Close()
-	}
-	record := Event{
-		SchemaVersion: 1, EventID: randomID(16), RunID: request.RunID,
-		RunType: request.RunType, Type: eventType, Timestamp: time.Now().UTC(),
-		Sequence: sequence, Data: data,
-	}
-	file, err := os.OpenFile(paths.EventsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open events: %w", err)
-	}
-	defer file.Close()
-	return json.NewEncoder(file).Encode(record)
+		record := Event{
+			SchemaVersion: 1, EventID: randomID(16), RunID: request.RunID,
+			RunType: request.RunType, Type: eventType, Timestamp: time.Now().UTC(),
+			Sequence: sequence, Data: data,
+		}
+		file, err := os.OpenFile(paths.EventsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open events: %w", err)
+		}
+		defer file.Close()
+		return json.NewEncoder(file).Encode(record)
+	})
 }
 
 func writeJSONAtomic(path string, value any) error {
@@ -197,4 +227,8 @@ func randomID(bytesCount int) string {
 
 func validOutcome(value string) bool {
 	return value == OutcomeSucceeded || value == OutcomeFailed || value == OutcomeBlocked || value == OutcomePartial || value == OutcomeCancelled
+}
+
+func immutableTerminalState(state string) bool {
+	return state == StateDone || state == StateFailed || state == StateCancelled
 }

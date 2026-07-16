@@ -2,8 +2,10 @@ package native
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -32,7 +34,7 @@ func NewEngine(store *FileStore, client Client, config Config, observer Observer
 
 func (e *Engine) Start(ctx context.Context, runID string, initial Context) (Snapshot, error) {
 	if _, err := e.store.Load(); err == nil {
-		return Snapshot{}, fmt.Errorf("native run already exists: %s", runID)
+		return Snapshot{}, fmt.Errorf("agent run already exists: %s", runID)
 	}
 	now := time.Now().UTC()
 	snapshot := Snapshot{
@@ -77,10 +79,11 @@ func (e *Engine) Resume(ctx context.Context, patch *ContextPatch) (Snapshot, err
 func (e *Engine) loop(ctx context.Context, snapshot Snapshot) (Snapshot, error) {
 	for snapshot.State == StateRunning {
 		if snapshot.Round >= snapshot.MaxRounds {
-			if err := e.transition(&snapshot, StateCompleted, "completed", "max rounds reached", ""); err != nil {
-				return snapshot, err
+			err := fmt.Errorf("agent max rounds exceeded: %d", snapshot.MaxRounds)
+			if transitionErr := e.transition(&snapshot, StateFailed, "max_rounds_exceeded", "max rounds exceeded", err.Error()); transitionErr != nil {
+				return snapshot, transitionErr
 			}
-			break
+			return snapshot, err
 		}
 		messages, err := e.contexts.BuildPrompt(snapshot.Context, e.config.TokenBudget)
 		if err != nil {
@@ -90,7 +93,9 @@ func (e *Engine) loop(ctx context.Context, snapshot Snapshot) (Snapshot, error) 
 		if err := e.transition(&snapshot, StateWaitingLLM, "llm_request_started", "llm request started", ""); err != nil {
 			return snapshot, err
 		}
-		response, control, callErr := e.generate(ctx, Request{RunID: snapshot.RunID, Round: snapshot.Round, Messages: messages})
+		response, control, callErr := e.generate(ctx, Request{
+			RunID: snapshot.RunID, Round: snapshot.Round, Messages: messages, Tools: append([]Tool(nil), e.config.Tools...),
+		})
 		if control != nil {
 			if err := e.applyControl(&snapshot, *control); err != nil {
 				return snapshot, err
@@ -113,21 +118,90 @@ func (e *Engine) loop(ctx context.Context, snapshot Snapshot) (Snapshot, error) 
 			}
 			break
 		}
+		response.Message.Role = "assistant"
+		response.Message.ToolCalls = append([]ToolCall(nil), response.ToolCalls...)
 		snapshot.Context.Messages = append(snapshot.Context.Messages, response.Message)
 		snapshot.Round++
+		snapshot.InputTokens += response.InputTokens
+		snapshot.OutputTokens += response.OutputTokens
+		snapshot.LastFinishReason = response.FinishReason
 		snapshot.LastError = ""
-		e.appendEvent(&snapshot, "llm_request_ended", StateWaitingLLM, StateRunning, "llm request completed", "")
-		if response.Done || snapshot.Round >= snapshot.MaxRounds {
+		message := "llm request completed"
+		if response.FinishReason != "" {
+			message += ": " + response.FinishReason
+		}
+		if err := e.transition(&snapshot, StateRunning, "llm_request_ended", message, ""); err != nil {
+			return snapshot, err
+		}
+		if len(response.ToolCalls) > 0 {
+			if err := e.executeTools(ctx, &snapshot, response.ToolCalls); err != nil {
+				return snapshot, err
+			}
+			if snapshot.State != StateRunning {
+				break
+			}
+			continue
+		}
+		if response.Done {
 			if err := e.transition(&snapshot, StateCompleted, "completed", "run completed", ""); err != nil {
 				return snapshot, err
 			}
 			break
 		}
-		if err := e.transition(&snapshot, StateRunning, "state_transition", "next round scheduled", ""); err != nil {
+		e.appendEvent(&snapshot, "round_continued", StateRunning, StateRunning, "next round scheduled", "")
+		if err := e.save(snapshot); err != nil {
 			return snapshot, err
 		}
 	}
 	return CloneSnapshot(snapshot), nil
+}
+
+func (e *Engine) executeTools(ctx context.Context, snapshot *Snapshot, calls []ToolCall) error {
+	for _, call := range calls {
+		if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
+			reason := "tool call requires id and name"
+			return e.transition(snapshot, StateBlocked, "tool_call_blocked", reason, reason)
+		}
+		e.appendEvent(snapshot, "tool_call_started", StateRunning, StateRunning, call.Name, "")
+		if err := e.save(*snapshot); err != nil {
+			return err
+		}
+		if e.config.Executor == nil {
+			reason := fmt.Sprintf("tool execution is not configured: %s", call.Name)
+			return e.transition(snapshot, StateBlocked, "tool_call_blocked", call.Name, reason)
+		}
+		output, err := e.config.Executor.Execute(ctx, call)
+		if ctx.Err() != nil {
+			_ = e.transition(snapshot, StateCancelled, "cancelled", "run context cancelled", ctx.Err().Error())
+			return ctx.Err()
+		}
+		if err != nil {
+			return e.transition(snapshot, StateBlocked, "tool_call_blocked", call.Name, err.Error())
+		}
+		content, err := encodeToolOutput(output)
+		if err != nil {
+			return e.transition(snapshot, StateBlocked, "tool_call_blocked", call.Name, err.Error())
+		}
+		snapshot.Context.Messages = append(snapshot.Context.Messages, Message{
+			Role: "tool", Content: content, ToolCallID: call.ID,
+		})
+		e.appendEvent(snapshot, "tool_call_ended", StateRunning, StateRunning, call.Name, "")
+		if err := e.save(*snapshot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func encodeToolOutput(output any) (string, error) {
+	if text, ok := output.(string); ok {
+		return text, nil
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("encode tool output: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func (e *Engine) generate(ctx context.Context, request Request) (Response, *Control, error) {

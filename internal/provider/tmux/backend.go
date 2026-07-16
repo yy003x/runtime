@@ -36,6 +36,7 @@ type SendOptions struct {
 type StartOptions struct {
 	LogFile             string
 	ExitFile            string
+	WaitForOutput       bool
 	RestartMaxAttempts  int
 	RestartDelaySeconds float64
 }
@@ -70,33 +71,75 @@ func (b *Backend) StartShellWithOptions(ctx context.Context, runID, cwd, command
 		suffix = suffix[len(suffix)-12:]
 	}
 	session := sanitizeName(base + "-" + suffix)
+	ready, err := os.CreateTemp("", "sn-runtime-tmux-ready-*")
+	if err != nil {
+		return "", fmt.Errorf("create tmux ready marker: %w", err)
+	}
+	readyFile := ready.Name()
+	if closeErr := ready.Close(); closeErr != nil {
+		_ = os.Remove(readyFile)
+		return "", fmt.Errorf("close tmux ready marker: %w", closeErr)
+	}
+	_ = os.Remove(readyFile)
+	defer os.Remove(readyFile)
 	started, err := b.config.Daemon.StartTmux(ctx, daemon.TmuxStartRequest{
 		ProcessID: runID, Session: session, CWD: cwd, Command: command,
-		LogFile: options.LogFile, ExitFile: options.ExitFile,
+		LogFile: options.LogFile, ExitFile: options.ExitFile, ReadyFile: readyFile,
 		RestartMaxAttempts: options.RestartMaxAttempts, RestartDelaySeconds: options.RestartDelaySeconds,
 		Depends: b.config.Depends, Execution: b.config.Execution,
 	})
 	if err != nil {
 		return "", err
 	}
-	if err := b.waitReady(ctx, started); err != nil {
+	if err := b.waitReadyFile(ctx, readyFile); err != nil {
+		if options.ExitFile != "" {
+			if _, exitErr := os.Stat(options.ExitFile); exitErr == nil {
+				return started, nil
+			}
+		}
+		_ = b.Kill(context.Background(), started)
+		return "", err
+	}
+	if err := b.waitReady(ctx, started, options.WaitForOutput); err != nil {
+		if options.ExitFile != "" {
+			if _, exitErr := os.Stat(options.ExitFile); exitErr == nil {
+				return started, nil
+			}
+		}
 		_ = b.Kill(context.Background(), started)
 		return "", err
 	}
 	return started, nil
 }
 
+func (b *Backend) waitReadyFile(ctx context.Context, path string) error {
+	deadline := time.Now().Add(b.config.ReadyTimeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(b.config.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("tmux process did not signal readiness: %s", path)
+}
+
 func (b *Backend) Send(ctx context.Context, session, text string, options SendOptions) error {
 	if options.Submit {
 		if options.Stabilize && b.config.StableTimeout > 0 {
-			_ = b.waitStable(ctx, session, b.config.StableTimeout, b.config.ReadySettle)
+			_ = b.waitStable(ctx, session, b.config.StableTimeout, b.config.ReadySettle, false)
 		}
 	}
 	return b.config.Daemon.SendTmux(ctx, "", session, text, options.Submit, options.Bracketed)
 }
 
-func (b *Backend) waitReady(ctx context.Context, session string) error {
-	if b.waitStable(ctx, session, b.config.ReadyTimeout, b.config.ReadySettle) {
+func (b *Backend) waitReady(ctx context.Context, session string, waitForOutput bool) error {
+	if b.waitStable(ctx, session, b.config.ReadyTimeout, b.config.ReadySettle, waitForOutput) {
 		return nil
 	}
 	if ctx.Err() != nil {
@@ -105,21 +148,41 @@ func (b *Backend) waitReady(ctx context.Context, session string) error {
 	return fmt.Errorf("tmux session did not become ready: %s", session)
 }
 
-func (b *Backend) waitStable(ctx context.Context, session string, timeout, settle time.Duration) bool {
+func (b *Backend) waitStable(ctx context.Context, session string, timeout, settle time.Duration, waitForOutput bool) bool {
 	deadline := time.Now().Add(timeout)
+	startedAt := time.Now()
 	lastOutput := ""
 	stableSince := time.Now()
+	seenOutput := false
+	noOutputDelay := 500 * time.Millisecond
+	if waitForOutput {
+		noOutputDelay = timeout / 2
+		if noOutputDelay > 8*time.Second {
+			noOutputDelay = 8 * time.Second
+		}
+		if noOutputDelay < 500*time.Millisecond {
+			noOutputDelay = 500 * time.Millisecond
+		}
+	}
+	if settle > noOutputDelay {
+		noOutputDelay = settle
+	}
 	for time.Now().Before(deadline) {
 		alive, err := b.HasSession(ctx, session)
 		if ctx.Err() != nil || err != nil || !alive {
 			return false
 		}
 		output, err := b.Capture(ctx, session, 200)
-		if err == nil && output != lastOutput {
-			lastOutput = output
-			stableSince = time.Now()
+		if err == nil {
+			if strings.TrimSpace(output) != "" {
+				seenOutput = true
+			}
+			if output != lastOutput {
+				lastOutput = output
+				stableSince = time.Now()
+			}
 		}
-		if time.Since(stableSince) >= settle {
+		if time.Since(stableSince) >= settle && (seenOutput || time.Since(startedAt) >= noOutputDelay) {
 			return true
 		}
 		timer := time.NewTimer(b.config.PollInterval)
