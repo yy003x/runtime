@@ -290,7 +290,7 @@ func redactURLSecrets(value string) string {
 	query := parsed.Query()
 	changed := hadUser
 	for name := range query {
-		if sensitiveCommandName(name) {
+		if sensitiveCommandName(name) || oneOfString(strings.ToLower(name), "access", "key", "api-key", "apikey", "auth", "signature", "sig") {
 			query.Set(name, "[REDACTED]")
 			changed = true
 		}
@@ -300,6 +300,15 @@ func redactURLSecrets(value string) string {
 		return parsed.String()
 	}
 	return value
+}
+
+func oneOfString(value string, allowed ...string) bool {
+	for _, item := range allowed {
+		if value == item {
+			return true
+		}
+	}
+	return false
 }
 
 func shellJoin(argv []string) string {
@@ -510,6 +519,9 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 		}
 		if err := applyStdinPrompt(&options.Prompt, options.PromptFile); err != nil {
 			return err
+		}
+		if runType == agentrun.RunTurn && options.SessionID == "" {
+			return fmt.Errorf("turn run requires --session-id")
 		}
 		options.Caller = "cli." + command
 		result, runErr := service.Run(context.Background(), options)
@@ -759,13 +771,34 @@ func watchRun(service *agentrun.Service, runType, runID string, args []string) e
 
 func runRuntimeSession(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: session start|list|status|logs|watch|send|interrupt|stop|attach")
+		return fmt.Errorf("usage: session run|exec|start|list|status|logs|watch|send|interrupt|stop|attach")
 	}
 	service := agentrun.New(cfg.Home)
 	ctx := context.Background()
 	switch args[0] {
 	case "history":
 		return runSessionHistory(cfg, args[1:])
+	case "run":
+		options, err := parseRunOptions(agentrun.RunTask, args[1:])
+		if err != nil {
+			return err
+		}
+		if err := applyStdinPrompt(&options.Prompt, options.PromptFile); err != nil {
+			return err
+		}
+		options.Caller = "cli.session"
+		options.CreateSession = true
+		if options.RecordMode == agentrun.RecordOff {
+			return fmt.Errorf("session run does not allow --record-mode off; use task run for a Run without Session")
+		}
+		if options.Retention == "" {
+			options.Retention = agentrun.RetentionEphemeral
+		}
+		result, runErr := service.Run(ctx, options)
+		_ = printJSON(result)
+		return runErr
+	case "exec":
+		return runDirectSession(cfg, service, args[1:])
 	case "start":
 		options, err := parseSessionStartOptions(args[1:])
 		if err != nil {
@@ -864,11 +897,91 @@ func runRuntimeSession(cfg *config.Config, args []string) error {
 	}
 }
 
+func runDirectSession(_ *config.Config, service *agentrun.Service, args []string) error {
+	profileID, projectID, cwd, sessionID, recordMode, retention := "", "", "", "", "", ""
+	var rawArgs []string
+	for index := 0; index < len(args); index++ {
+		if args[index] == "--" {
+			rawArgs = append(rawArgs, args[index+1:]...)
+			break
+		}
+		var target *string
+		switch args[index] {
+		case "-c", "--config":
+			target = &profileID
+		case "--project":
+			target = &projectID
+		case "--cwd":
+			target = &cwd
+		case "--session-id":
+			target = &sessionID
+		case "--record-mode":
+			target = &recordMode
+		case "--retention":
+			target = &retention
+		default:
+			return fmt.Errorf("unknown session exec option: %s; native CLI args must follow --", args[index])
+		}
+		index++
+		if index >= len(args) {
+			return fmt.Errorf("%s requires value", args[index-1])
+		}
+		*target = args[index]
+	}
+	if profileID == "" {
+		return fmt.Errorf("session exec requires -c/--config")
+	}
+	profiles, err := service.Profiles()
+	if err != nil {
+		return err
+	}
+	profile, ok := provider.Resolve(profiles, profileID)
+	if !ok {
+		return fmt.Errorf("unknown provider profile: %s", profileID)
+	}
+	prepared, err := provider.PrepareInteractiveCLI(profile, rawArgs)
+	if err != nil {
+		return err
+	}
+	if cwd == "" {
+		cwd, err = os.Getwd()
+	} else {
+		cwd, err = filepath.Abs(cwd)
+	}
+	if err != nil {
+		return err
+	}
+	if info, statErr := os.Stat(cwd); statErr != nil || !info.IsDir() {
+		return fmt.Errorf("cwd 不存在或不是目录: %s", cwd)
+	}
+	decision, err := agentrun.DecideRecordPolicy("cli.session", agentrun.RunTask, agentrun.ExecutionCLIDirect, sessionID, recordMode, retention)
+	if err != nil {
+		return err
+	}
+	manager := agentrun.NewSessionManager(service)
+	session, execution, err := manager.BeginDirectExecutionInSession(profile, sessionID, projectID, cwd, len(rawArgs), decision)
+	if err != nil {
+		return err
+	}
+	result, runErr := provider.ExecuteCLIInteractive(context.Background(), profile, prepared, cwd, service.DaemonClient())
+	if completeErr := manager.CompleteDirectExecution(session.SessionID, execution, result.ExitCode, runErr); completeErr != nil && runErr == nil {
+		runErr = completeErr
+	}
+	if runErr != nil {
+		return runErr
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("direct CLI exited with code %d", result.ExitCode)
+	}
+	return printJSON(map[string]any{"ok": true, "session_id": session.SessionID, "execution_id": execution.ExecutionID, "capture_quality": decision.CaptureQuality})
+}
+
 func runSessionHistory(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: history create|list|show|messages|events|configure|delete|export|import|rebuild")
 	}
-	store := agentrun.NewSessionManager(agentrun.New(cfg.Home)).Store()
+	service := agentrun.New(cfg.Home)
+	store := agentrun.NewSessionManager(service).Store()
 	switch args[0] {
 	case "create":
 		if err := validateValueOptions(args[1:], map[string]bool{
@@ -883,6 +996,10 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 		}
 		service := agentrun.New(cfg.Home)
 		manager := agentrun.NewSessionManager(service)
+		runtimeName, profileName, err := validateSessionRuntimeProfile(service, optionValue(args[1:], "--runtime"), optionValue(args[1:], "--profile"))
+		if err != nil {
+			return err
+		}
 		decision, err := agentrun.DecideRecordPolicy("cli.history", agentrun.RunTurn, agentrun.ExecutionAPI,
 			optionValue(args[1:], "--session-id"), optionValue(args[1:], "--record-mode"), optionValue(args[1:], "--retention"))
 		if err != nil {
@@ -893,8 +1010,8 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		if runtimeName, profile := optionValue(args[1:], "--runtime"), optionValue(args[1:], "--profile"); runtimeName != "" || profile != "" {
-			record, err = store.ConfigureSession(record.SessionID, runtimeName, profile)
+		if runtimeName != "" || profileName != "" {
+			record, err = store.ConfigureSession(record.SessionID, runtimeName, profileName)
 			if err != nil {
 				return err
 			}
@@ -912,6 +1029,9 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 		}); err != nil {
 			return err
 		}
+		if _, err := service.SessionList(context.Background()); err != nil {
+			return err
+		}
 		filter := agentrun.SessionFilter{
 			ProjectID: optionValue(args[1:], "--project"), State: optionValue(args[1:], "--state"),
 			Retention: optionValue(args[1:], "--retention"), Tags: repeatOption(args[1:], "--tag"),
@@ -925,6 +1045,9 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 	case "show":
 		sessionID, err := parseRequiredID(args[1:], "--session-id", nil, nil)
 		if err != nil {
+			return err
+		}
+		if err := service.ReconcileSession(context.Background(), sessionID); err != nil {
 			return err
 		}
 		value, err := store.View(sessionID)
@@ -966,13 +1089,36 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 		}
 		return printJSON(map[string]any{"ok": true, "session_id": sessionID, "output": output})
 	case "configure":
-		sessionID, err := parseRequiredID(args[1:], "--session-id", map[string]bool{"--runtime": true, "--profile": true}, nil)
+		sessionID, err := parseRequiredID(args[1:], "--session-id", map[string]bool{
+			"--runtime": true, "--profile": true, "--record-mode": true, "--retention": true,
+		}, nil)
 		if err != nil {
 			return err
 		}
-		record, err := store.ConfigureSession(sessionID, optionValue(args[1:], "--runtime"), optionValue(args[1:], "--profile"))
+		runtimeValue, profileValue := optionValue(args[1:], "--runtime"), optionValue(args[1:], "--profile")
+		recordMode, retention := optionValue(args[1:], "--record-mode"), optionValue(args[1:], "--retention")
+		if runtimeValue == "" && profileValue == "" && recordMode == "" && retention == "" {
+			return fmt.Errorf("history configure requires runtime/profile or record-mode/retention")
+		}
+		runtimeName, profileName, err := validateSessionRuntimeProfile(service, runtimeValue, profileValue)
 		if err != nil {
 			return err
+		}
+		record, err := store.Get(sessionID)
+		if err != nil {
+			return err
+		}
+		if runtimeName != "" || profileName != "" {
+			record, err = store.ConfigureSession(sessionID, runtimeName, profileName)
+			if err != nil {
+				return err
+			}
+		}
+		if recordMode != "" || retention != "" {
+			record, err = store.ConfigurePolicy(sessionID, recordMode, retention)
+			if err != nil {
+				return err
+			}
 		}
 		return printJSON(record)
 	case "delete":
@@ -1018,6 +1164,36 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 	default:
 		return fmt.Errorf("unknown history command: %s", args[0])
 	}
+}
+
+func validateSessionRuntimeProfile(service *agentrun.Service, runtimeName, profileName string) (string, string, error) {
+	if runtimeName != "" && runtimeName != "api" && runtimeName != "cli" && runtimeName != "tmux" {
+		return "", "", fmt.Errorf("runtime must be api|cli|tmux")
+	}
+	if profileName == "" {
+		return runtimeName, profileName, nil
+	}
+	profiles, err := service.Profiles()
+	if err != nil {
+		return "", "", err
+	}
+	profile, ok := provider.Resolve(profiles, profileName)
+	if !ok {
+		return "", "", fmt.Errorf("unknown provider profile: %s", profileName)
+	}
+	expected := "api"
+	if profile.Type == provider.TypeCLI {
+		expected = "cli"
+		if profile.Transport() == provider.ExecutorTmux {
+			expected = "tmux"
+		}
+	}
+	if runtimeName == "" {
+		runtimeName = expected
+	} else if runtimeName != expected {
+		return "", "", fmt.Errorf("runtime does not match provider profile")
+	}
+	return runtimeName, profile.ID, nil
 }
 
 func parseSessionStartOptions(args []string) (agentrun.SessionOptions, error) {
@@ -1525,6 +1701,12 @@ func parseLoopOptions(args []string) (agentrun.LoopStartOptions, error) {
 				return options, fmt.Errorf("--forbidden-action requires value")
 			}
 			options.Forbidden = append(options.Forbidden, args[i])
+		case "--session-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--session-id requires value")
+			}
+			options.SessionID = args[i]
 		case "--project":
 			i++
 			if i >= len(args) {
@@ -1716,11 +1898,11 @@ func runCapabilitySkills(cfg *config.Config, args []string) error {
 		service := agentrun.New(cfg.Home)
 		run, runErr := service.Run(context.Background(), agentrun.RunOptions{
 			RunType: agentrun.RunTask, Profile: profile, ProjectID: optionValue(args[1:], "--project"),
-			RunID: optionValue(args[1:], "--run-id"), CWD: optionValue(args[1:], "--cwd"), Prompt: prompt,
+			RunID: optionValue(args[1:], "--run-id"), SessionID: optionValue(args[1:], "--session-id"), CWD: optionValue(args[1:], "--cwd"), Prompt: prompt,
 			ExecutionMode: agentrun.ModeManaged, ResultSchema: optionValue(args[1:], "--result-schema"),
 			DeadlineSeconds: intOption(args[1:], "--deadline-seconds", 0),
 			AllowedActions:  repeatOption(args[1:], "--allowed-action"), ForbiddenActions: repeatOption(args[1:], "--forbidden-action"),
-			Force: containsArg(args[1:], "--force"),
+			Force: containsArg(args[1:], "--force"), Caller: "cli.skill:" + skill.Name,
 		})
 		_ = printJSON(run)
 		return runErr
@@ -1735,6 +1917,17 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 		command = args[0]
 	}
 	path := optionValue(args, "--memory-file")
+	candidatePath := cfg.Paths.MemoryCandidatesFile
+	sessionID := optionValue(args, "--session-id")
+	defaultScope := "global"
+	if sessionID != "" {
+		defaultScope = "session"
+		manager := agentrun.NewSessionManager(agentrun.New(cfg.Home))
+		if _, err := manager.Store().Get(sessionID); err != nil {
+			return err
+		}
+		path, candidatePath = manager.MemoryPaths(sessionID)
+	}
 	if path == "" && command != "demo" {
 		path = cfg.Paths.MemoryFile
 	}
@@ -1744,7 +1937,7 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 	}
 	switch command {
 	case "candidates":
-		candidates, err := capability.OpenMemory(cfg.Paths.MemoryCandidatesFile)
+		candidates, err := capability.OpenMemory(candidatePath)
 		if err != nil {
 			return err
 		}
@@ -1753,7 +1946,7 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: memory promote <candidate-id...>")
 		}
-		candidates, err := capability.OpenMemory(cfg.Paths.MemoryCandidatesFile)
+		candidates, err := capability.OpenMemory(candidatePath)
 		if err != nil {
 			return err
 		}
@@ -1769,6 +1962,7 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 			if _, ok := requested[item.ID]; ok {
 				now := time.Now().UTC()
 				item.PromotedAt = &now
+				item.Status = "working"
 				promoted = append(promoted, item)
 			}
 		}
@@ -1812,7 +2006,8 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 		if len(args) < 3 {
 			return fmt.Errorf("usage: memory write <id> <content>")
 		}
-		err := memory.Write([]capability.MemoryItem{{ID: args[1], Type: optionDefault(args[3:], "--type", "fact"), Content: args[2], Source: optionValue(args[3:], "--source")}})
+		err := memory.Write([]capability.MemoryItem{{ID: args[1], Type: optionDefault(args[3:], "--type", "fact"), Content: args[2],
+			Source: optionValue(args[3:], "--source"), SessionID: sessionID, Scope: optionDefault(args[3:], "--scope", defaultScope), Status: "working"}})
 		if err != nil {
 			return err
 		}

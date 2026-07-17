@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -41,16 +42,24 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 		kind = "api-agent"
 	}
 	providerStatus["kind"] = kind
-	_, _ = s.store.WriteStatus(paths, request, StateRunning, "", "agent resuming", providerStatus)
-	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": profile.Type})
-	if err := NewSessionManager(s).ResumeRun(request); err != nil {
-		return RunSummary{}, fmt.Errorf("resume session history: %w", err)
+	runningStatus, err := s.store.WriteStatus(paths, request, StateRunning, "", "agent resuming", providerStatus)
+	if err != nil {
+		return s.fail(paths, request, providerStatus, "status_sync_failed", err)
 	}
+	s.updateRegistry(paths, runningStatus)
+	if err := s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": profile.Type}); err != nil {
+		return s.fail(paths, request, providerStatus, "event_sync_failed", err)
+	}
+	if err := NewSessionManager(s).ResumeRun(request); err != nil {
+		return s.fail(paths, request, providerStatus, "history_sync_failed", fmt.Errorf("resume session history: %w", err))
+	}
+	manager := NewSessionManager(s)
+	memoryFile, candidateFile := manager.MemoryPaths(request.SessionID)
 	prepared, err := selected.Prepare(ctx, profile, provider.Request{
 		Overrides: request.ProviderOverrides, CWD: request.CWD, HTTPClient: s.HTTPClient, Profiles: profiles,
 		RunID: runID, SnapshotFile: snapshotFile,
-		PersonaDir: s.PersonaDir, SkillDir: s.paths.SkillsDir, ToolDir: s.paths.ToolsDir, MemoryFile: s.paths.MemoryFile,
-		MemoryCandidateFile: s.paths.MemoryCandidatesFile, SessionID: request.SessionID, TurnID: request.TurnID,
+		PersonaDir: s.PersonaDir, SkillDir: s.paths.SkillsDir, ToolDir: s.paths.ToolsDir, MemoryFile: memoryFile,
+		MemoryCandidateFile: candidateFile, SessionID: request.SessionID, TurnID: request.TurnID,
 		Allowed: append([]string(nil), request.AllowedActions...), Forbidden: append([]string(nil), request.ForbiddenActions...),
 		NativeResume: true, NativePatch: patch,
 	})
@@ -60,7 +69,7 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 	sink := &runProviderSink{service: s, paths: paths, request: request, status: providerStatus}
 	result, err := selected.Execute(ctx, prepared, sink)
 	if writeErr := writeOutputLog(paths.OutputLog, prepared, result); writeErr != nil {
-		return RunSummary{}, writeErr
+		return s.fail(paths, request, providerStatus, "output_sync_failed", writeErr)
 	}
 	if ctx.Err() != nil {
 		return s.cancelled(paths, request, providerStatus, ctx.Err())
@@ -78,7 +87,17 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 		return s.cancelled(paths, request, providerStatus, context.Canceled)
 	}
 	providerStatus["returncode"] = result.ExitCode
-	_, _ = s.store.WriteStatus(paths, request, StateResultPending, "", "validating result", providerStatus)
+	if err := s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": result.ExitCode, "execution_mode": request.ExecutionMode}); err != nil {
+		return s.fail(paths, request, providerStatus, "event_sync_failed", err)
+	}
+	resultPendingStatus, err := s.store.WriteStatus(paths, request, StateResultPending, "", "validating result", providerStatus)
+	if err != nil {
+		return s.fail(paths, request, providerStatus, "status_sync_failed", err)
+	}
+	s.updateRegistry(paths, resultPendingStatus)
+	if err := s.store.Event(paths, request, "status.changed", map[string]any{"state": StateResultPending}); err != nil {
+		return s.fail(paths, request, providerStatus, "event_sync_failed", err)
+	}
 	text := strings.TrimSpace(result.FinalText)
 	if text == "" {
 		text = captureSummary(result.Stdout)
@@ -91,9 +110,11 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 		Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}, {"type": snapshotType, "path": snapshotFile}},
 		Errors:    []map[string]any{}, Validation: Validation{Commands: []string{}, Passed: true}}
 	if err := s.store.WriteResult(paths, contract); err != nil {
-		return RunSummary{}, err
+		return s.fail(paths, request, providerStatus, "result_sync_failed", err)
 	}
-	_ = s.store.Event(paths, request, "result.synthesized", map[string]any{"execution_mode": request.ExecutionMode, "summary_chars": len(text)})
+	if err := s.store.Event(paths, request, "result.synthesized", map[string]any{"execution_mode": request.ExecutionMode, "summary_chars": len(text)}); err != nil {
+		return s.fail(paths, request, providerStatus, "event_sync_failed", err)
+	}
 	return s.markDone(paths, request, providerStatus)
 }
 
@@ -123,9 +144,9 @@ func (s *Service) ControlNative(runType, runID, action, reason string) (RunSumma
 	}
 	status, err = s.store.WriteStatus(paths, request, state, failureReason, action, providerStatus)
 	s.updateRegistry(paths, status)
-	_ = s.store.Event(paths, request, "provider."+action, map[string]any{"transport": profile.Type, "reason": reason})
-	_ = NewSessionManager(s).CompleteRun(request, state, failureReason, failureReason)
-	return summary(paths, status, false), err
+	eventErr := s.store.Event(paths, request, "provider."+action, map[string]any{"transport": profile.Type, "reason": reason})
+	historyErr := NewSessionManager(s).CompleteRun(request, state, failureReason, failureReason)
+	return summary(paths, status, false), errors.Join(err, eventErr, historyErr)
 }
 
 func (s *Service) nativeRun(runType, runID string) (Paths, Request, Status, provider.Config, map[string]provider.Config, error) {

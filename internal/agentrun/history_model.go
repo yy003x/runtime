@@ -32,6 +32,13 @@ const (
 
 const TurnStateSubmitted = "submitted"
 
+const (
+	SessionStateIdle     = "idle"
+	SessionStateActive   = "active"
+	SessionStateBlocked  = "blocked"
+	SessionStateArchived = "archived"
+)
+
 type SessionRecord struct {
 	SchemaVersion  int       `json:"schema_version"`
 	SessionID      string    `json:"session_id"`
@@ -61,6 +68,11 @@ type TurnRecord struct {
 	SessionID       string     `json:"session_id"`
 	Sequence        int        `json:"sequence"`
 	State           string     `json:"state"`
+	Runtime         string     `json:"runtime,omitempty"`
+	Provider        string     `json:"provider,omitempty"`
+	Profile         string     `json:"profile,omitempty"`
+	Model           string     `json:"model,omitempty"`
+	RecordMode      string     `json:"record_mode"`
 	InputMessageID  string     `json:"input_message_id,omitempty"`
 	OutputMessageID string     `json:"output_message_id,omitempty"`
 	ContextManifest string     `json:"context_manifest,omitempty"`
@@ -89,20 +101,21 @@ type RunAttemptRecord struct {
 }
 
 type ExecutionRecord struct {
-	SchemaVersion  int       `json:"schema_version"`
-	ExecutionID    string    `json:"execution_id"`
-	SessionID      string    `json:"session_id"`
-	Kind           string    `json:"kind"`
-	Profile        string    `json:"profile,omitempty"`
-	Provider       string    `json:"provider,omitempty"`
-	State          string    `json:"state"`
-	CaptureQuality string    `json:"capture_quality"`
-	TmuxSession    string    `json:"tmux_session,omitempty"`
-	RunIDs         []string  `json:"run_ids,omitempty"`
-	TurnIDs        []string  `json:"turn_ids,omitempty"`
-	StartedAt      time.Time `json:"started_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	CompletedAt    time.Time `json:"completed_at,omitempty"`
+	SchemaVersion  int        `json:"schema_version"`
+	ExecutionID    string     `json:"execution_id"`
+	SessionID      string     `json:"session_id"`
+	Kind           string     `json:"kind"`
+	Profile        string     `json:"profile,omitempty"`
+	Provider       string     `json:"provider,omitempty"`
+	State          string     `json:"state"`
+	CaptureQuality string     `json:"capture_quality"`
+	TmuxSession    string     `json:"tmux_session,omitempty"`
+	RunIDs         []string   `json:"run_ids,omitempty"`
+	TurnIDs        []string   `json:"turn_ids,omitempty"`
+	ResultRef      *ResultRef `json:"result_ref,omitempty"`
+	StartedAt      time.Time  `json:"started_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	CompletedAt    time.Time  `json:"completed_at,omitempty"`
 }
 
 type SessionMessage struct {
@@ -225,7 +238,13 @@ type RecordDecision struct {
 }
 
 type SessionImport struct {
-	Session  SessionRecord    `json:"session"`
-	Messages []SessionMessage `json:"messages,omitempty"`
-	Events   []SessionEvent   `json:"events,omitempty"`
+	SchemaVersion    int                        `json:"schema_version,omitempty"`
+	ExportedAt       time.Time                  `json:"exported_at,omitempty"`
+	Session          SessionRecord              `json:"session"`
+	Turns            []TurnRecord               `json:"turns,omitempty"`
+	Attempts         []RunAttemptRecord         `json:"attempts,omitempty"`
+	Executions       []ExecutionRecord          `json:"executions,omitempty"`
+	ContextManifests map[string]ContextManifest `json:"context_manifests,omitempty"`
+	Messages         []SessionMessage           `json:"messages,omitempty"`
+	Events           []SessionEvent             `json:"events,omitempty"`
 }

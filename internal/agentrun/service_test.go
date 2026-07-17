@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-runtime/internal/provider"
 )
 
 func TestManagedRunRequiresAndAcceptsResultContract(t *testing.T) {
@@ -31,6 +33,71 @@ printf 'stdout is only a log\n'
 	contract, err := service.store.ReadResult(mustPaths(t, service, result))
 	if err != nil || contract.Summary != "managed ok" {
 		t.Fatalf("result=%#v err=%v", contract, err)
+	}
+}
+
+func TestOrdinaryRunDoesNotCreateLogicalSession(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "capture.sh")
+	writeExecutable(t, script, "#!/bin/sh\nprintf 'ok\\n'\n")
+	writeProfile(t, root, "capture", script, "optional")
+	service := New(root)
+	run, err := service.Run(context.Background(), RunOptions{Profile: "capture", Prompt: "hello", ExecutionMode: ModeCapture})
+	if err != nil || run.SessionID != "" || run.TurnID != "" {
+		t.Fatalf("run=%#v err=%v", run, err)
+	}
+	values, err := NewSessionManager(service).Store().List(SessionFilter{})
+	if err != nil || len(values) != 0 {
+		t.Fatalf("implicit sessions=%#v err=%v", values, err)
+	}
+}
+
+func TestExistingSessionRejectsTurnRetentionOverride(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "capture.sh")
+	writeExecutable(t, script, "#!/bin/sh\nprintf 'ok\\n'\n")
+	writeProfile(t, root, "capture", script, "optional")
+	service := New(root)
+	session, err := NewSessionManager(service).EnsureSession("session-20260717-210000-retention", service.DefaultProject, root, "retention",
+		RecordDecision{RecordMode: RecordFull, Retention: RetentionStandard, CaptureQuality: CaptureStructured})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background(), RunOptions{Profile: "capture", Prompt: "hello", ExecutionMode: ModeCapture,
+		SessionID: session.SessionID, Retention: RetentionPinned}); err == nil || !strings.Contains(err.Error(), "Session-level") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSessionContextCrossesProvidersAndFreezesTurnProfile(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "capture.sh")
+	writeExecutable(t, script, "#!/bin/sh\nprintf 'cli answer\\n'\n")
+	writeProfile(t, root, "capture", script, "optional")
+	if err := os.WriteFile(filepath.Join(root, "configs", "native.json"), []byte(`{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["native answer"],"done_after":1}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := New(root)
+	first, err := service.Run(context.Background(), RunOptions{RunID: "task-20260717-140000-cli", Profile: "capture",
+		Prompt: "first question", ExecutionMode: ModeCapture, CreateSession: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Run(context.Background(), RunOptions{RunID: "turn-20260717-140001-native", RunType: RunTurn,
+		Profile: "native", Prompt: "second question", SessionID: first.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.ReadFile(filepath.Join(second.RunDir, "native-snapshot.json"))
+	if err != nil || !strings.Contains(string(snapshot), "first question") || !strings.Contains(string(snapshot), "cli answer") || !strings.Contains(string(snapshot), "second question") {
+		t.Fatalf("snapshot=%s err=%v", snapshot, err)
+	}
+	view, err := NewSessionManager(service).Store().View(first.SessionID)
+	if err != nil || len(view.Turns) != 2 {
+		t.Fatalf("view=%#v err=%v", view, err)
+	}
+	if view.Turns[0].Profile != "capture" || view.Turns[1].Profile != "native" || view.Turns[1].Provider != provider.TypeNative || view.Turns[1].ResultRef == nil {
+		t.Fatalf("turn identity=%#v", view.Turns)
 	}
 }
 
@@ -88,7 +155,7 @@ printf '%s|%s|%s|%s\n' "$AGENTRUN_SESSION_ID" "$AGENTRUN_TURN_ID" "$SN_RUNTIME_C
 	sessionID := "session-20260717-130000-context"
 	result, err := service.Run(context.Background(), RunOptions{
 		RunID: "turn-20260717-130000-context", RunType: RunTurn, SessionID: sessionID,
-		Profile: "context", Prompt: "hello", ExecutionMode: ModeCapture,
+		Profile: "context", Prompt: "hello", ExecutionMode: ModeCapture, CreateSession: true,
 	})
 	if err != nil || result.State != StateDone {
 		t.Fatalf("result=%#v err=%v", result, err)

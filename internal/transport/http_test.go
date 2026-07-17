@@ -45,6 +45,13 @@ func TestHTTPRunUsesAgentRunArtifacts(t *testing.T) {
 	if len(persisted.AllowedActions) != 1 || persisted.AllowedActions[0] != "echo" || len(persisted.ForbiddenActions) != 1 {
 		t.Fatalf("persisted request=%#v", persisted)
 	}
+	if persisted.SessionID != "" || persisted.RecordMode != agentrun.RecordOff {
+		t.Fatalf("ordinary HTTP Run created an implicit Session: %#v", persisted)
+	}
+	sessions, err := agentrun.NewSessionManager(agentrun.New(root)).Store().List(agentrun.SessionFilter{})
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("implicit sessions=%#v err=%v", sessions, err)
+	}
 
 	resultResponse := httptest.NewRecorder()
 	handler.ServeHTTP(resultResponse, httptest.NewRequest(http.MethodGet, "/v1/runs/task/task-20260714-000000-httpnative/result", nil))
@@ -97,13 +104,17 @@ func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
 	if !strings.Contains(create.Body.String(), `"runtime":"api"`) || !strings.Contains(create.Body.String(), `"profile":"native-test"`) || !strings.Contains(create.Body.String(), `"workbench"`) {
 		t.Fatalf("create body=%s", create.Body.String())
 	}
-	turnBody := bytes.NewBufferString(`{"run_id":"turn-20260717-130001-http","profile":"native-test","prompt":"hello"}`)
+	turnBody := bytes.NewBufferString(`{"run_id":"turn-20260717-130001-http","prompt":"hello","memory":[{"id":"project-fact","content":"workbench project memory","source":"workbench"}]}`)
 	turn := httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/v1/sessions/session-20260717-130000-http/turns", turnBody)
 	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(turn, request)
 	if turn.Code != http.StatusCreated {
 		t.Fatalf("turn status=%d body=%s", turn.Code, turn.Body.String())
+	}
+	snapshot, err := os.ReadFile(filepath.Join(root, "runs", "turn", "2026-07-17", "turn-20260717-130001-http", "native-snapshot.json"))
+	if err != nil || !bytes.Contains(snapshot, []byte("workbench project memory")) {
+		t.Fatalf("injected memory snapshot=%s err=%v", snapshot, err)
 	}
 	for _, path := range []string{
 		"/v1/sessions?tag=workbench", "/v1/sessions/session-20260717-130000-http",

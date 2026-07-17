@@ -31,21 +31,22 @@ type HTTPOptions struct {
 }
 
 type RunRequest struct {
-	RunID             string         `json:"run_id,omitempty"`
-	RunType           string         `json:"run_type,omitempty"`
-	Profile           string         `json:"profile"`
-	ProjectID         string         `json:"project_id,omitempty"`
-	CWD               string         `json:"cwd,omitempty"`
-	Prompt            string         `json:"prompt"`
-	PromptFile        string         `json:"prompt_file,omitempty"`
-	ExecutionMode     string         `json:"execution_mode,omitempty"`
-	DeadlineSeconds   int            `json:"deadline_seconds,omitempty"`
-	ProviderOverrides map[string]any `json:"provider_overrides,omitempty"`
-	AllowedActions    []string       `json:"allowed_actions,omitempty"`
-	ForbiddenActions  []string       `json:"forbidden_actions,omitempty"`
-	SessionID         string         `json:"session_id,omitempty"`
-	RecordMode        string         `json:"record_mode,omitempty"`
-	Retention         string         `json:"retention,omitempty"`
+	RunID             string                    `json:"run_id,omitempty"`
+	RunType           string                    `json:"run_type,omitempty"`
+	Profile           string                    `json:"profile"`
+	ProjectID         string                    `json:"project_id,omitempty"`
+	CWD               string                    `json:"cwd,omitempty"`
+	Prompt            string                    `json:"prompt"`
+	PromptFile        string                    `json:"prompt_file,omitempty"`
+	ExecutionMode     string                    `json:"execution_mode,omitempty"`
+	DeadlineSeconds   int                       `json:"deadline_seconds,omitempty"`
+	ProviderOverrides map[string]any            `json:"provider_overrides,omitempty"`
+	AllowedActions    []string                  `json:"allowed_actions,omitempty"`
+	ForbiddenActions  []string                  `json:"forbidden_actions,omitempty"`
+	SessionID         string                    `json:"session_id,omitempty"`
+	RecordMode        string                    `json:"record_mode,omitempty"`
+	Retention         string                    `json:"retention,omitempty"`
+	Memory            []provider.InjectedMemory `json:"memory,omitempty"`
 }
 
 type ControlRequest struct {
@@ -102,6 +103,10 @@ func (h *HTTPHandler) routes() {
 func (h *HTTPHandler) handleSessions(writer http.ResponseWriter, request *http.Request) {
 	manager := agentrun.NewSessionManager(h.svc)
 	if request.Method == http.MethodGet {
+		if _, err := h.svc.SessionList(request.Context()); err != nil {
+			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
 		limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
 		values, err := manager.Store().List(agentrun.SessionFilter{
 			ProjectID: request.URL.Query().Get("project_id"), State: request.URL.Query().Get("state"),
@@ -134,6 +139,31 @@ func (h *HTTPHandler) handleSessions(writer http.ResponseWriter, request *http.R
 	if err := agentrun.ValidateSessionTags(input.Tags); err != nil {
 		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
 		return
+	}
+	if input.Runtime != "" && input.Runtime != "api" && input.Runtime != "cli" && input.Runtime != "tmux" {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "runtime must be api|cli|tmux"})
+		return
+	}
+	if input.Profile != "" {
+		profiles, loadErr := h.svc.Profiles()
+		profile, ok := provider.Resolve(profiles, input.Profile)
+		if loadErr != nil || !ok {
+			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "unknown provider profile: " + input.Profile})
+			return
+		}
+		expected := "api"
+		if profile.Type == provider.TypeCLI {
+			expected = "cli"
+			if profile.Transport() == provider.ExecutorTmux {
+				expected = "tmux"
+			}
+		}
+		if input.Runtime == "" {
+			input.Runtime = expected
+		} else if input.Runtime != expected {
+			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "runtime does not match provider profile"})
+			return
+		}
 	}
 	decision, err := agentrun.DecideRecordPolicy("http", agentrun.RunTurn, agentrun.ExecutionAPI, input.SessionID, input.RecordMode, input.Retention)
 	if err != nil {
@@ -183,6 +213,10 @@ func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *htt
 		limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
 		switch action {
 		case "show":
+			if err := h.svc.ReconcileSession(request.Context(), sessionID); err != nil {
+				writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+				return
+			}
 			value, err := store.View(sessionID)
 			writeReadResult(writer, value, err)
 		case "messages":
@@ -224,11 +258,18 @@ func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *htt
 	if input.CWD == "" {
 		input.CWD = existing.CWD
 	}
+	if input.Profile == "" {
+		input.Profile = existing.Profile
+	}
+	if input.Profile == "" {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "profile is required because the Session has no default profile"})
+		return
+	}
 	summary, err := h.svc.Run(request.Context(), agentrun.RunOptions{RunID: input.RunID, RunType: agentrun.RunTurn,
 		Profile: input.Profile, ProjectID: input.ProjectID, CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile,
 		ExecutionMode: input.ExecutionMode, DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
 		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions, SessionID: sessionID,
-		RecordMode: input.RecordMode, Retention: input.Retention, Caller: "http"})
+		RecordMode: input.RecordMode, Retention: input.Retention, InjectedMemory: input.Memory, Caller: "http"})
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})
 		return
@@ -259,7 +300,7 @@ func (h *HTTPHandler) handleRun(writer http.ResponseWriter, request *http.Reques
 		CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile, ExecutionMode: input.ExecutionMode,
 		DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
 		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions,
-		SessionID: input.SessionID, RecordMode: input.RecordMode, Retention: input.Retention, Caller: "http",
+		SessionID: input.SessionID, RecordMode: input.RecordMode, Retention: input.Retention, InjectedMemory: input.Memory, Caller: "http",
 	})
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})

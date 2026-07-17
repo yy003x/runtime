@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -170,7 +171,11 @@ func (s *Store) Event(paths Paths, request Request, eventType string, data map[s
 			for scanner.Scan() {
 				sequence++
 			}
-			_ = file.Close()
+			scanErr := scanner.Err()
+			closeErr := file.Close()
+			if scanErr != nil || closeErr != nil {
+				return errors.Join(scanErr, closeErr)
+			}
 		}
 		record := Event{
 			SchemaVersion: 1, EventID: randomID(16), RunID: request.RunID,

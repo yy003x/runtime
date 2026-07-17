@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestToolGuardrailAndExternalDescription(t *testing.T) {
@@ -169,5 +170,24 @@ func TestMemoryConcurrentWritersDoNotLoseItems(t *testing.T) {
 	}
 	if items := reopened.Recall("shared", "fact", count*2); len(items) != count*2 {
 		t.Fatalf("items=%d, want %d", len(items), count*2)
+	}
+}
+
+func TestMemoryRecallSkipsExpiredItems(t *testing.T) {
+	memory, err := OpenMemory(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := time.Now().UTC().Add(-time.Minute)
+	active := time.Now().UTC().Add(time.Minute)
+	if err := memory.Write([]MemoryItem{
+		{ID: "expired", Type: "fact", Content: "runtime context", ExpiresAt: &expired},
+		{ID: "active", Type: "fact", Content: "runtime context", ExpiresAt: &active},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items := memory.Recall("runtime", "fact", 5)
+	if len(items) != 1 || items[0].ID != "active" {
+		t.Fatalf("items=%#v", items)
 	}
 }

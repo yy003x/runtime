@@ -41,7 +41,7 @@ func TestNativeProviderPatchResumeUsesSameRun(t *testing.T) {
   "native":{"system_prompt":"test","max_rounds":1,"llm_timeout_seconds":0.03,"mock":{"responses":["recovered"],"done_after":1}}
 }`)
 	service := New(root)
-	run, err := service.Run(context.Background(), RunOptions{Profile: "native-test", Prompt: "timeout", ExecutionMode: ModeManaged})
+	run, err := service.Run(context.Background(), RunOptions{Profile: "native-test", Prompt: "timeout", ExecutionMode: ModeManaged, CreateSession: true})
 	if err != nil || run.State != StateBlocked {
 		t.Fatalf("run=%#v err=%v", run, err)
 	}
@@ -55,7 +55,7 @@ func TestNativeProviderPatchResumeUsesSameRun(t *testing.T) {
 		t.Fatalf("result=%#v", result)
 	}
 	view, err := NewSessionManager(service).Store().View(run.SessionID)
-	if err != nil || view.Session.State != StateDone || len(view.Attempts) != 1 || view.Attempts[0].State != StateDone {
+	if err != nil || view.Session.State != SessionStateIdle || len(view.Attempts) != 1 || view.Attempts[0].State != StateDone {
 		t.Fatalf("history=%#v err=%v", view, err)
 	}
 	resumedEvents := 0
@@ -116,7 +116,7 @@ func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		run, err := service.Run(context.Background(), RunOptions{RunID: "task-20260714-000000-nativecancel", Profile: "native-test", Prompt: "hello", ExecutionMode: ModeManaged})
+		run, err := service.Run(context.Background(), RunOptions{RunID: "task-20260714-000000-nativecancel", Profile: "native-test", Prompt: "hello", ExecutionMode: ModeManaged, CreateSession: true})
 		done <- outcome{run: run, err: err}
 	}()
 	waitRunState(t, service, RunTask, "task-20260714-000000-nativecancel", StateRunning)
@@ -129,7 +129,7 @@ func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
 		t.Fatalf("finished=%#v err=%v", finished.run, finished.err)
 	}
 	view, err := NewSessionManager(service).Store().View(cancelled.SessionID)
-	if err != nil || view.Session.State != StateCancelled || len(view.Attempts) != 1 || view.Attempts[0].State != StateCancelled {
+	if err != nil || view.Session.State != SessionStateIdle || len(view.Attempts) != 1 || view.Attempts[0].State != StateCancelled {
 		t.Fatalf("cancel history=%#v err=%v", view, err)
 	}
 }

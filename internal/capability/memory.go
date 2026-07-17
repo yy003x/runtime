@@ -19,6 +19,11 @@ type MemoryItem struct {
 	SessionID  string     `json:"session_id,omitempty"`
 	TurnID     string     `json:"turn_id,omitempty"`
 	RunID      string     `json:"run_id,omitempty"`
+	Scope      string     `json:"scope,omitempty"`
+	ProjectID  string     `json:"project_id,omitempty"`
+	Status     string     `json:"status,omitempty"`
+	Confidence float64    `json:"confidence,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	PromotedAt *time.Time `json:"promoted_at,omitempty"`
 }
@@ -79,12 +84,14 @@ func (m *Memory) Recall(query, kind string, topK int) []MemoryItem {
 		score int
 	}
 	var matches []scoredItem
-	var fallback []MemoryItem
+	now := time.Now().UTC()
 	for _, item := range m.items {
 		if kind != "" && item.Type != kind {
 			continue
 		}
-		fallback = append(fallback, item)
+		if item.ExpiresAt != nil && !item.ExpiresAt.After(now) {
+			continue
+		}
 		content := strings.ToLower(item.Content)
 		score := 0
 		if lower == "" || strings.Contains(content, lower) {
@@ -108,10 +115,6 @@ func (m *Memory) Recall(query, kind string, topK int) []MemoryItem {
 	out := make([]MemoryItem, 0, len(matches))
 	for _, match := range matches {
 		out = append(out, match.item)
-	}
-	if len(out) == 0 {
-		out = fallback
-		sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	}
 	if len(out) > topK {
 		out = out[:topK]

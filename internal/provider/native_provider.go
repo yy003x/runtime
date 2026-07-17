@@ -138,7 +138,20 @@ func nativeInitialContext(ctx context.Context, prepared PreparedRequest) (native
 		}
 		systemPrompt = persona.RenderSystem(loaded)
 	}
-	initial := nativeengine.Context{Messages: []nativeengine.Message{{Role: "user", Content: prepared.Request.Prompt}}}
+	if memory := injectedMemorySection(prepared.Request.InjectedMemory); memory != "" {
+		if systemPrompt != "" {
+			systemPrompt += "\n\n"
+		}
+		systemPrompt += memory
+	}
+	messages := make([]nativeengine.Message, 0, len(prepared.Request.Messages)+1)
+	for _, message := range prepared.Request.Messages {
+		if message.Role == "user" || message.Role == "assistant" {
+			messages = append(messages, nativeengine.Message{Role: message.Role, Content: message.Content})
+		}
+	}
+	messages = append(messages, nativeengine.Message{Role: "user", Content: prepared.Request.Prompt})
+	initial := nativeengine.Context{Messages: messages}
 	if systemPrompt != "" {
 		initial.SystemInstructions = []nativeengine.Message{{Role: "system", Content: systemPrompt, Pinned: true}}
 	}

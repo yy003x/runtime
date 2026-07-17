@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,6 +130,33 @@ func TestSessionStoreMetadataModeDoesNotPersistPromptOrOutput(t *testing.T) {
 	if err != nil || len(messages) != 0 {
 		t.Fatalf("messages=%#v err=%v", messages, err)
 	}
+	record, err := store.Get(sessionID)
+	if err != nil || record.Title != "" || record.Summary != "" {
+		t.Fatalf("metadata session leaked prompt/output into title or summary: %#v err=%v", record, err)
+	}
+}
+
+func TestTurnMetadataOverrideDoesNotLeakIntoFullSession(t *testing.T) {
+	store := newTestSessionStore(t)
+	sessionID := "session-20260717-120003-turnmeta"
+	if _, err := store.Create(SessionRecord{SessionID: sessionID, RecordMode: RecordFull, Title: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	turnID := "turn-20260717-120003-turnmeta"
+	if _, err := store.AddTurn(sessionID, TurnRecord{TurnID: turnID, RecordMode: RecordMetadata}, "secret prompt", ContextManifest{}); err != nil {
+		t.Fatal(err)
+	}
+	runID := "task-20260717-120003-turnmeta"
+	if err := store.AddAttempt(sessionID, RunAttemptRecord{RunID: runID, TurnID: turnID, ExecutionID: "execution-turnmeta"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "secret output", nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.View(sessionID)
+	if err != nil || len(view.Messages) != 0 || view.Session.Title != "kept" || view.Session.Summary != "" || view.Turns[0].RecordMode != RecordMetadata {
+		t.Fatalf("metadata override leaked content: %#v err=%v", view, err)
+	}
 }
 
 func TestSessionStoreRecursivelyRedactsSensitiveEventMetadata(t *testing.T) {
@@ -204,7 +232,7 @@ func TestSessionStoreBlockedRunCanResumeWithoutDuplicateCompletion(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Session.State != StateRunning || view.Attempts[0].State != StateRunning || !view.Attempts[0].CompletedAt.IsZero() {
+	if view.Session.State != SessionStateActive || view.Attempts[0].State != StateRunning || !view.Attempts[0].CompletedAt.IsZero() {
 		t.Fatalf("view=%#v", view)
 	}
 	blockedEvents := 0
@@ -222,6 +250,9 @@ func TestDecideRecordPolicy(t *testing.T) {
 	direct, err := DecideRecordPolicy("cli.profile", RunTask, ExecutionCLIDirect, "", "", "")
 	if err != nil || direct.RecordMode != RecordMetadata || direct.CaptureQuality != CaptureMetadataOnly {
 		t.Fatalf("direct=%#v err=%v", direct, err)
+	}
+	if _, err := DecideRecordPolicy("cli.session", RunTask, ExecutionCLIDirect, "session-explicit", RecordFull, RetentionStandard); err == nil {
+		t.Fatal("direct CLI full recording must be rejected because no transcript is captured")
 	}
 	oneShot, err := DecideRecordPolicy("cli.task", RunTask, ExecutionCLIManaged, "", "", "")
 	if err != nil || oneShot.Retention != RetentionEphemeral {
@@ -251,12 +282,12 @@ func TestDirectExecutionCreatesMetadataOnlySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Messages) != 0 || view.Session.State != StateDone || len(view.Executions) != 1 || view.Executions[0].State != StateDone {
+	if len(view.Messages) != 0 || view.Session.State != SessionStateIdle || len(view.Executions) != 1 || view.Executions[0].State != StateDone {
 		t.Fatalf("view=%#v", view)
 	}
 }
 
-func TestServiceImportsLegacyDurableMemoryOnce(t *testing.T) {
+func TestServiceDoesNotAutoImportLegacyGlobalMemory(t *testing.T) {
 	home := t.TempDir()
 	legacy := filepath.Join(home, "state", "memory.json")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
@@ -267,12 +298,8 @@ func TestServiceImportsLegacyDurableMemoryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(home)
-	data, err := os.ReadFile(service.paths.MemoryFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != string(legacyData) {
-		t.Fatalf("memory import=%s", data)
+	if _, err := os.Stat(service.paths.MemoryFile); !os.IsNotExist(err) {
+		t.Fatalf("legacy global memory was imported: %v", err)
 	}
 }
 
@@ -312,10 +339,80 @@ func TestSessionStoreImportsLegacyMessagesAndEvents(t *testing.T) {
 		t.Fatalf("record=%#v", record)
 	}
 	view, err := store.View(sessionID)
-	if err != nil || len(view.Messages) != 2 || len(view.Events) != 2 {
+	if err != nil || len(view.Messages) != 2 || len(view.Events) != 1 {
 		t.Fatalf("view=%#v err=%v", view, err)
 	}
 	if _, err := store.Import(SessionImport{Session: SessionRecord{SessionID: sessionID}}); err == nil {
 		t.Fatal("duplicate import was accepted")
+	}
+}
+
+func TestSessionStoreExportImportRoundTrip(t *testing.T) {
+	store := newTestSessionStore(t)
+	sessionID := "session-20260717-150000-export"
+	turnID := "turn-20260717-150000-export"
+	runID := "turn-20260717-150001-export"
+	executionID := "execution-20260717-150000-export"
+	if _, err := store.Create(SessionRecord{SessionID: sessionID, RecordMode: RecordFull}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddTurn(sessionID, TurnRecord{TurnID: turnID, Profile: "one"}, "hello", ContextManifest{SessionID: sessionID, TurnID: turnID, Profile: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddAttempt(sessionID, RunAttemptRecord{RunID: runID, RunType: RunTurn, TurnID: turnID, ExecutionID: executionID, Profile: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertExecution(sessionID, ExecutionRecord{ExecutionID: executionID, Kind: ExecutionAPI, State: StateDone}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "world", &ResultRef{RunID: runID, RunType: RunTurn, ResultFile: "/tmp/result.json"}); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "session.json")
+	if err := store.Export(sessionID, output); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input SessionImport
+	if err := json.Unmarshal(data, &input); err != nil {
+		t.Fatal(err)
+	}
+	input.Session.SessionID = "session-20260717-150002-import"
+	imported, err := store.Import(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.View(imported.SessionID)
+	if err != nil || len(view.Turns) != 1 || len(view.Attempts) != 1 || len(view.Executions) != 1 || len(view.Messages) != 2 {
+		t.Fatalf("round trip view=%#v err=%v", view, err)
+	}
+	if view.Turns[0].ContextManifest == "" {
+		t.Fatalf("context manifest was not restored: %#v", view.Turns[0])
+	}
+}
+
+func TestSessionStoreConfiguresPolicyWithoutClearingProfile(t *testing.T) {
+	store := NewSessionStore(filepath.Join(t.TempDir(), "sessions"), filepath.Join(t.TempDir(), "history"), filepath.Join(t.TempDir(), "state"))
+	sessionID := "session-20260717-220000-policy"
+	if _, err := store.Create(SessionRecord{SessionID: sessionID, Runtime: "api", Profile: "openai",
+		RecordMode: RecordFull, Retention: RetentionStandard}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConfigureSession(sessionID, "cli", ""); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.ConfigurePolicy(sessionID, RecordMetadata, RetentionPinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Runtime != "cli" || record.Profile != "openai" || record.RecordMode != RecordMetadata || record.Retention != RetentionPinned {
+		t.Fatalf("record=%#v", record)
+	}
+	events, err := store.Events(sessionID, 0, 100)
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != "session.policy_configured" {
+		t.Fatalf("events=%#v err=%v", events, err)
 	}
 }

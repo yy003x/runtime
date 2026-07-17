@@ -178,6 +178,14 @@ func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
 	if _, err := service.SessionStop(context.Background(), started.RunID); err != nil {
 		t.Fatal(err)
 	}
+	result, err := service.ReadResult(RunSession, started.RunID)
+	if err != nil || result.ResultKind != "execution_summary" || result.CaptureQuality != CaptureTranscriptOnly {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	view, err := NewSessionManager(service).Store().View(started.RunID)
+	if err != nil || len(view.Executions) != 1 || view.Executions[0].ResultRef == nil || view.Executions[0].ResultRef.RunID != started.RunID {
+		t.Fatalf("view=%#v err=%v", view, err)
+	}
 	persisted, err := service.SessionLogs(context.Background(), started.RunID, 50)
 	if err != nil || !strings.Contains(persisted.Content, "reply:hello") {
 		t.Fatalf("persisted logs=%q err=%v", persisted.Content, err)

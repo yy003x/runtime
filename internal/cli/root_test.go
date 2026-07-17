@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/cli/config"
 	"agent-runtime/internal/provider"
 )
@@ -158,7 +159,7 @@ func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 
 func TestPrintHelpDocumentsLegacyAliases(t *testing.T) {
 	stdout := captureStdout(t, printHelp)
-	for _, text := range []string{"providers -> profiles", "upgrade -> update"} {
+	for _, text := range []string{"providers -> profiles", "upgrade -> update", "turn run -c <config> --session-id <id>", "loop run|start [--session-id <id>]"} {
 		if !strings.Contains(stdout, text) {
 			t.Fatalf("help missing %q:\n%s", text, stdout)
 		}
@@ -187,6 +188,10 @@ func TestInteractiveProfilePassesRawArgsWithoutRunArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "runs")); !os.IsNotExist(err) {
 		t.Fatalf("interactive invocation created managed runs: %v", err)
+	}
+	values, err := agentrun.NewSessionManager(agentrun.New(home)).Store().List(agentrun.SessionFilter{})
+	if err != nil || len(values) != 0 {
+		t.Fatalf("raw direct invocation created logical sessions: %#v err=%v", values, err)
 	}
 }
 

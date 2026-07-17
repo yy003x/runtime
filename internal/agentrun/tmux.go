@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,6 +77,9 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	if err != nil {
 		return SessionSummary{}, err
 	}
+	if decision.RecordMode == RecordOff {
+		return SessionSummary{}, fmt.Errorf("session start does not allow record_mode=off")
+	}
 	paths, err := RunPaths(s.RunsDir, RunSession, options.RunID)
 	if err != nil {
 		return SessionSummary{}, err
@@ -106,6 +110,11 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 			return existing, statusErr
 		}
 	}
+	if options.Force {
+		if _, statErr := os.Stat(paths.RequestFile); statErr == nil {
+			return SessionSummary{}, fmt.Errorf("cannot --force an existing tmux Session; use a new --run-id to preserve execution history")
+		}
+	}
 	if err := paths.Ensure(); err != nil {
 		return SessionSummary{}, err
 	}
@@ -127,17 +136,27 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	if err := s.store.WriteRequest(paths, request); err != nil {
 		return SessionSummary{}, err
 	}
-	_, _ = s.store.WriteStatus(paths, request, StatePending, "", "queued", nil)
-	s.register(paths, request, StatePending)
+	pendingStatus, err := s.store.WriteStatus(paths, request, StatePending, "", "queued", nil)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	s.register(paths, request, pendingStatus.State)
+	failBeforeStart := func(cause error, reason string) error {
+		failedStatus, statusErr := s.store.WriteStatus(paths, request, StateFailed, reason, cause.Error(), nil)
+		if statusErr == nil {
+			s.updateRegistry(paths, failedStatus)
+		}
+		eventErr := s.store.Event(paths, request, "status.changed", map[string]any{"state": StateFailed, "failure_reason": reason})
+		finalizeErr := s.finalizeTmuxRun(paths, request, StateFailed, reason, "")
+		return errors.Join(cause, statusErr, eventErr, finalizeErr)
+	}
 	backend, err := provider.NewTmuxBackend(profile, s.DaemonClient())
 	if err != nil {
-		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
-		return SessionSummary{}, err
+		return SessionSummary{}, failBeforeStart(err, "provider_error")
 	}
 	command, err := provider.TmuxShellCommandWithRawArgs(profile, options.RawCLIArgs, nil)
 	if err != nil {
-		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
-		return SessionSummary{}, err
+		return SessionSummary{}, failBeforeStart(err, "provider_error")
 	}
 	tmuxConfig := profile.CLI.Tmux
 	session, err := backend.StartShellWithOptions(ctx, options.RunID, resolvedCWD, command, providertmux.StartOptions{
@@ -146,26 +165,42 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 		RestartMaxAttempts: tmuxConfig.RestartMaxAttempts, RestartDelaySeconds: tmuxConfig.RestartDelaySeconds,
 	})
 	if err != nil {
-		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
-		return SessionSummary{}, err
+		return SessionSummary{}, failBeforeStart(err, "provider_error")
 	}
 	providerStatus := map[string]any{"tmux_session": session, "alive": true}
-	_ = manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+	failStartedSession := func(cause error, reason string) error {
+		killErr := s.DaemonClient().KillTmux(context.Background(), options.RunID, session)
+		failedStatus, statusErr := s.store.WriteStatus(paths, request, StateFailed, reason, cause.Error(), providerStatus)
+		if statusErr == nil {
+			s.updateRegistry(paths, failedStatus)
+		}
+		eventErr := s.store.Event(paths, request, "status.changed", map[string]any{"state": StateFailed, "failure_reason": reason})
+		finalizeErr := s.finalizeTmuxRun(paths, request, StateFailed, reason, session)
+		return errors.Join(cause, killErr, statusErr, eventErr, finalizeErr)
+	}
+	if err := manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
 		Kind: ExecutionTmux, Profile: profile.ID, Provider: provider.ExecutorTmux, State: StateRunning,
-		CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}})
-	_ = manager.Store().AppendEvent(request.SessionID, SessionEvent{ExecutionID: request.ExecutionID, RunID: request.RunID,
-		Type: "execution.started", Data: map[string]any{"kind": ExecutionTmux, "tmux_session": session}})
+		CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}}); err != nil {
+		return SessionSummary{}, failStartedSession(err, "history_sync_failed")
+	}
+	if err := manager.Store().AppendEvent(request.SessionID, SessionEvent{ExecutionID: request.ExecutionID, RunID: request.RunID,
+		Type: "execution.started", Data: map[string]any{"kind": ExecutionTmux, "tmux_session": session}}); err != nil {
+		return SessionSummary{}, failStartedSession(err, "history_sync_failed")
+	}
+	if err := manager.Store().UpdateSessionState(request.SessionID, SessionStateActive, ""); err != nil {
+		return SessionSummary{}, failStartedSession(err, "history_sync_failed")
+	}
 	status, err := s.store.WriteStatus(paths, request, StateRunning, "", "session running", providerStatus)
-	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": provider.ExecutorTmux})
 	if err != nil {
-		return SessionSummary{}, err
+		return SessionSummary{}, failStartedSession(err, "status_sync_failed")
+	}
+	if err := s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": provider.ExecutorTmux}); err != nil {
+		return SessionSummary{}, failStartedSession(err, "event_sync_failed")
 	}
 	if strings.TrimSpace(prompt) != "" {
 		summary, sendErr := s.SessionSend(ctx, options.RunID, prompt, true)
 		if sendErr != nil {
-			_ = s.DaemonClient().KillTmux(context.Background(), options.RunID, session)
-			_, _ = s.store.WriteStatus(paths, request, StateFailed, "prompt_submit_failed", sendErr.Error(), providerStatus)
-			return summary, sendErr
+			return summary, failStartedSession(sendErr, "prompt_submit_failed")
 		}
 		return summary, nil
 	}
@@ -201,25 +236,27 @@ func (s *Service) SessionStatus(ctx context.Context, runID string) (SessionSumma
 			if code != 0 {
 				state, reason = StateFailed, "provider_exit"
 			}
-			request, _ := s.store.ReadRequest(paths)
+			request, readErr := s.store.ReadRequest(paths)
+			if readErr != nil {
+				return SessionSummary{}, readErr
+			}
 			providerStatus["returncode"] = code
 			providerStatus["attempts"] = attempts
 			status, daemonErr = s.store.WriteStatus(paths, request, state, reason, "session process exited", providerStatus)
 			s.updateRegistry(paths, status)
-			_ = s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": code, "attempts": attempts})
-			_ = NewSessionManager(s).Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
-				Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: state,
-				CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}})
-			_ = NewSessionManager(s).Store().UpdateSessionState(request.SessionID, state, "session process exited")
+			eventErr := s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": code, "attempts": attempts})
+			finalizeErr := s.finalizeTmuxRun(paths, request, state, reason, session)
+			daemonErr = errors.Join(daemonErr, eventErr, finalizeErr)
 		} else {
-			request, _ := s.store.ReadRequest(paths)
+			request, readErr := s.store.ReadRequest(paths)
+			if readErr != nil {
+				return SessionSummary{}, readErr
+			}
 			status, daemonErr = s.store.WriteStatus(paths, request, StateFailed, "orphaned", "tmux session disappeared without exit marker", providerStatus)
 			s.updateRegistry(paths, status)
-			_ = s.store.Event(paths, request, "provider.disappeared", map[string]any{"tmux_session": session})
-			_ = NewSessionManager(s).Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
-				Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: StateFailed,
-				CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}})
-			_ = NewSessionManager(s).Store().UpdateSessionState(request.SessionID, StateFailed, "tmux session disappeared without exit marker")
+			eventErr := s.store.Event(paths, request, "provider.disappeared", map[string]any{"tmux_session": session})
+			finalizeErr := s.finalizeTmuxRun(paths, request, StateFailed, "orphaned", session)
+			daemonErr = errors.Join(daemonErr, eventErr, finalizeErr)
 		}
 	}
 	return SessionSummary{RunID: runID, ProjectID: status.ProjectID, State: status.State, RunDir: paths.RunDir, Session: session, Attach: "tmux attach-session -t " + session, Alive: alive, Status: status.ProviderStatus}, daemonErr
@@ -285,13 +322,17 @@ func (s *Service) SessionSend(ctx context.Context, runID, text string, submit bo
 		if compileErr != nil {
 			return summary, compileErr
 		}
-		if _, addErr := manager.Store().AddTurn(request.SessionID, TurnRecord{TurnID: turnID, CaptureQuality: request.CaptureQuality}, text, manifest); addErr != nil {
+		if _, addErr := manager.Store().AddTurn(request.SessionID, TurnRecord{TurnID: turnID, Runtime: "tmux",
+			Provider: request.Provider, Profile: request.ProviderProfile, Model: requestModel(request, profile),
+			RecordMode: request.RecordMode, CaptureQuality: request.CaptureQuality}, text, manifest); addErr != nil {
 			return summary, addErr
 		}
 	}
 	if err := backend.Send(ctx, summary.Session, text, providertmux.SendOptions{Submit: submit, Bracketed: bracketed, Stabilize: submit}); err != nil {
 		if turnID != "" {
-			_ = manager.Store().CompleteTurn(request.SessionID, turnID, StateFailed, err.Error(), "error")
+			if completeErr := manager.Store().CompleteTurn(request.SessionID, turnID, StateFailed, err.Error(), "error"); completeErr != nil {
+				return summary, errors.Join(err, completeErr)
+			}
 		}
 		return summary, err
 	}
@@ -313,11 +354,17 @@ func (s *Service) SessionSend(ctx context.Context, runID, text string, submit bo
 		if eventErr := s.store.Event(paths, request, "prompt.submitted", map[string]any{"submitted": true, "turn_id": turnID}); eventErr != nil {
 			return summary, eventErr
 		}
-		transcript, _ := backend.Capture(ctx, summary.Session, 200)
-		_ = manager.Store().CompleteTurn(request.SessionID, turnID, TurnStateSubmitted, transcript, "transcript_snapshot")
-		_ = manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+		if err := manager.Store().CompleteTurn(request.SessionID, turnID, TurnStateSubmitted, "", "transcript_snapshot"); err != nil {
+			return summary, err
+		}
+		if err := manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
 			Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: StateRunning,
-			CaptureQuality: request.CaptureQuality, TmuxSession: summary.Session, RunIDs: []string{request.RunID}, TurnIDs: []string{turnID}})
+			CaptureQuality: request.CaptureQuality, TmuxSession: summary.Session, RunIDs: []string{request.RunID}, TurnIDs: []string{turnID}}); err != nil {
+			return summary, err
+		}
+		if err := manager.Store().UpdateSessionState(request.SessionID, SessionStateActive, ""); err != nil {
+			return summary, err
+		}
 	}
 	return s.SessionStatus(ctx, runID)
 }
@@ -338,24 +385,49 @@ func (s *Service) SessionList(ctx context.Context) ([]SessionSummary, error) {
 		return nil, err
 	}
 	listed := make([]listedSession, 0, len(entries))
+	var reconcileErrors []error
 	for _, entry := range entries {
 		var status Status
 		if err := readJSON(filepath.Join(entry.RunDir, "status.json"), &status); err != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("read tmux session status %s: %w", entry.RunDir, err))
 			continue
 		}
-		session, _ := status.ProviderStatus["tmux_session"].(string)
-		alive, _ := s.DaemonClient().HasTmux(ctx, status.RunID, session)
-		listed = append(listed, listedSession{summary: SessionSummary{
-			RunID: status.RunID, ProjectID: status.ProjectID, State: status.State, RunDir: entry.RunDir,
-			Session: session, Attach: "tmux attach-session -t " + session, Alive: alive, Status: status.ProviderStatus,
-		}, updatedAt: entry.UpdatedAt})
+		current, statusErr := s.SessionStatus(ctx, status.RunID)
+		if statusErr != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("reconcile tmux session %s: %w", status.RunID, statusErr))
+			continue
+		}
+		listed = append(listed, listedSession{summary: current, updatedAt: entry.UpdatedAt})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].updatedAt.After(listed[j].updatedAt) })
 	result := make([]SessionSummary, len(listed))
 	for i := range listed {
 		result[i] = listed[i].summary
 	}
-	return result, nil
+	return result, errors.Join(reconcileErrors...)
+}
+
+// ReconcileSession 在读取逻辑 Session 前同步同 ID 的 tmux 执行状态。
+// API/CLI managed Session 没有 runs/session artifact，因此会直接跳过。
+func (s *Service) ReconcileSession(ctx context.Context, sessionID string) error {
+	paths, err := RunPaths(s.RunsDir, RunSession, sessionID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(paths.RequestFile); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	request, err := s.store.ReadRequest(paths)
+	if err != nil {
+		return err
+	}
+	if request.ExecutionKind != ExecutionTmux && request.Provider != provider.ExecutorTmux {
+		return nil
+	}
+	_, err = s.SessionStatus(ctx, sessionID)
+	return err
 }
 
 func (s *Service) SessionLogs(ctx context.Context, runID string, tail int) (Logs, error) {
@@ -373,7 +445,10 @@ func (s *Service) SessionLogs(ctx context.Context, runID string, tail int) (Logs
 			content = []byte(live)
 		}
 	}
-	events, _ := s.store.ReadEvents(paths)
+	events, eventErr := s.store.ReadEvents(paths)
+	if eventErr != nil {
+		return Logs{}, eventErr
+	}
 	return Logs{RunID: runID, Content: tailLines(string(content), tail), Events: events}, nil
 }
 
@@ -400,22 +475,68 @@ func (s *Service) SessionStop(ctx context.Context, runID string) (SessionSummary
 	}
 	if !terminalStateValue(summary.State) {
 		paths, _ := RunPaths(s.RunsDir, RunSession, runID)
-		request, _ := s.store.ReadRequest(paths)
+		request, readErr := s.store.ReadRequest(paths)
+		if readErr != nil {
+			return summary, readErr
+		}
 		status, writeErr := s.store.WriteStatus(paths, request, StateCancelled, "interrupted", "session stopped", summary.Status)
 		if writeErr != nil {
 			return summary, writeErr
 		}
 		s.updateRegistry(paths, status)
 		summary.State = status.State
-		_ = NewSessionManager(s).Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
-			Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: StateCancelled,
-			CaptureQuality: request.CaptureQuality, TmuxSession: summary.Session, RunIDs: []string{request.RunID}})
-		_ = NewSessionManager(s).Store().AppendEvent(request.SessionID, SessionEvent{ExecutionID: request.ExecutionID,
-			RunID: request.RunID, Type: "execution.cancelled", Data: map[string]any{"tmux_session": summary.Session}})
-		_ = NewSessionManager(s).Store().UpdateSessionState(request.SessionID, StateCancelled, "session stopped")
+		if eventErr := NewSessionManager(s).Store().AppendEvent(request.SessionID, SessionEvent{ExecutionID: request.ExecutionID,
+			RunID: request.RunID, Type: "execution.cancelled", Data: map[string]any{"tmux_session": summary.Session}}); eventErr != nil {
+			return summary, eventErr
+		}
+		if finalizeErr := s.finalizeTmuxRun(paths, request, StateCancelled, "interrupted", summary.Session); finalizeErr != nil {
+			return summary, finalizeErr
+		}
 	}
 	summary.Alive = false
 	return summary, nil
+}
+
+func (s *Service) finalizeTmuxRun(paths Paths, request Request, state, reason, tmuxSession string) error {
+	outcome := OutcomeSucceeded
+	summary := "tmux 执行容器已退出；transcript 仅作为日志 artifact，不代表结构化 assistant final。"
+	if tmuxSession == "" {
+		summary = "tmux 执行未能启动；未产生结构化 assistant final。"
+	}
+	errors := []map[string]any{}
+	if state != StateDone {
+		outcome = OutcomeFailed
+		if state == StateCancelled {
+			outcome = OutcomeCancelled
+		}
+		errors = append(errors, map[string]any{"reason": reason})
+	}
+	result := Result{SchemaVersion: 1, RunID: request.RunID, Outcome: outcome, Summary: summary,
+		ResultKind: "execution_summary", CaptureQuality: CaptureTranscriptOnly,
+		Artifacts: []map[string]any{{"type": "transcript_log", "path": paths.OutputLog}}, Errors: errors,
+		Validation: Validation{Commands: []string{}, Passed: state == StateDone}}
+	if err := s.store.WriteResult(paths, result); err != nil {
+		return err
+	}
+	digest, _ := digestFile(paths.ResultFile)
+	ref := &ResultRef{RunID: request.RunID, RunType: RunSession, ResultFile: paths.ResultFile, ResultDigest: digest}
+	if request.SessionID == "" || request.ExecutionID == "" {
+		return s.store.Event(paths, request, "result.synthesized", map[string]any{
+			"result_kind": "execution_summary", "capture_quality": CaptureTranscriptOnly,
+		})
+	}
+	manager := NewSessionManager(s)
+	if err := manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+		Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: state,
+		CaptureQuality: request.CaptureQuality, TmuxSession: tmuxSession, RunIDs: []string{request.RunID}, ResultRef: ref}); err != nil {
+		return err
+	}
+	if err := manager.Store().UpdateSessionState(request.SessionID, SessionStateIdle, summary); err != nil {
+		return err
+	}
+	return s.store.Event(paths, request, "result.synthesized", map[string]any{
+		"result_kind": "execution_summary", "capture_quality": CaptureTranscriptOnly,
+	})
 }
 
 func (s *Service) SessionAttach(ctx context.Context, runID string) error {

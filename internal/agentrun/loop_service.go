@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ type LoopPaths struct {
 type LoopStartOptions struct {
 	LoopID          string
 	ProjectID       string
+	SessionID       string
 	Input           string
 	InputFile       string
 	Actions         []Action
@@ -42,6 +44,7 @@ type LoopRequest struct {
 	SchemaVersion      int       `json:"schema_version"`
 	LoopID             string    `json:"loop_id"`
 	ProjectID          string    `json:"project_id"`
+	SessionID          string    `json:"session_id,omitempty"`
 	Input              string    `json:"input"`
 	InputFile          string    `json:"input_file"`
 	Actions            []Action  `json:"actions,omitempty"`
@@ -112,6 +115,15 @@ func (s *Service) LoopStart(options LoopStartOptions) (PersistentLoopStatus, err
 	if options.ProjectID == "" {
 		options.ProjectID = s.DefaultProject
 	}
+	if options.SessionID != "" {
+		session, err := NewSessionManager(s).Store().Get(options.SessionID)
+		if err != nil {
+			return PersistentLoopStatus{}, fmt.Errorf("loop session does not exist: %s", options.SessionID)
+		}
+		if session.ProjectID != "" && session.ProjectID != options.ProjectID {
+			return PersistentLoopStatus{}, fmt.Errorf("session %s belongs to project %s", options.SessionID, session.ProjectID)
+		}
+	}
 	if options.LoopID == "" {
 		options.LoopID = newRunID("loop")
 	}
@@ -124,17 +136,18 @@ func (s *Service) LoopStart(options LoopStartOptions) (PersistentLoopStatus, err
 	}
 	now := time.Now().UTC()
 	request := LoopRequest{SchemaVersion: 1, LoopID: options.LoopID, ProjectID: options.ProjectID,
-		Input: input, InputFile: options.InputFile, Actions: options.Actions, PlannerProfile: options.PlannerProfile,
+		SessionID: options.SessionID,
+		Input:     input, InputFile: options.InputFile, Actions: options.Actions, PlannerProfile: options.PlannerProfile,
 		MaxSteps: options.MaxSteps, Capabilities: options.Capabilities, Forbidden: options.Forbidden,
 		CWD: cwd, ResultSchema: options.ResultSchema, DeadlineSeconds: options.DeadlineSeconds,
 		RuntimeVersion: s.RuntimeVersion, CreatedAt: now}
 	request.RequestFingerprint, err = fingerprintValue(struct {
-		LoopID, ProjectID, Input, InputFile, PlannerProfile, CWD, ResultSchema string
-		Actions                                                                []Action
-		MaxSteps, DeadlineSeconds                                              int
-		Capabilities, Forbidden                                                []string
+		LoopID, ProjectID, SessionID, Input, InputFile, PlannerProfile, CWD, ResultSchema string
+		Actions                                                                           []Action
+		MaxSteps, DeadlineSeconds                                                         int
+		Capabilities, Forbidden                                                           []string
 	}{
-		LoopID: request.LoopID, ProjectID: request.ProjectID, Input: request.Input, InputFile: request.InputFile,
+		LoopID: request.LoopID, ProjectID: request.ProjectID, SessionID: request.SessionID, Input: request.Input, InputFile: request.InputFile,
 		PlannerProfile: request.PlannerProfile, CWD: request.CWD, ResultSchema: request.ResultSchema,
 		Actions: request.Actions, MaxSteps: request.MaxSteps, DeadlineSeconds: request.DeadlineSeconds,
 		Capabilities: request.Capabilities, Forbidden: request.Forbidden,
@@ -180,8 +193,7 @@ func (s *Service) LoopStart(options LoopStartOptions) (PersistentLoopStatus, err
 		return PersistentLoopStatus{}, err
 	}
 	s.registerLoop(paths, request, StateRunning)
-	_ = appendLoopEvent(paths, options.LoopID, "loop.started", map[string]any{"max_steps": options.MaxSteps})
-	return status, nil
+	return status, appendLoopEvent(paths, options.LoopID, "loop.started", map[string]any{"max_steps": options.MaxSteps})
 }
 
 func (s *Service) LoopRun(ctx context.Context, options LoopStartOptions) (PersistentLoopStatus, error) {
@@ -229,40 +241,61 @@ func (s *Service) LoopStep(ctx context.Context, loopID string) (PersistentLoopSt
 	if request.DeadlineSeconds > 0 && time.Now().After(request.CreatedAt.Add(time.Duration(request.DeadlineSeconds)*time.Second)) {
 		return s.finishLoop(paths, status, OutcomeFailed, "loop deadline exceeded")
 	}
-	status = updateLoop(paths, status, PhasePlanning, "planning")
+	status, err = updateLoop(paths, status, PhasePlanning, "planning")
+	if err != nil {
+		return status, err
+	}
 	action, err := s.nextLoopAction(ctx, request, status)
 	if err != nil {
-		_ = appendLoopEvent(paths, loopID, "planner.invalid", map[string]any{"error": err.Error()})
-		return s.finishLoop(paths, status, OutcomeFailed, "planner invalid")
+		eventErr := appendLoopEvent(paths, loopID, "planner.invalid", map[string]any{"error": err.Error()})
+		finished, finishErr := s.finishLoop(paths, status, OutcomeFailed, "planner invalid")
+		return finished, errors.Join(eventErr, finishErr)
 	}
 	status.ActionCursor++
-	_ = appendLoopEvent(paths, loopID, "planner.action", map[string]any{"type": action.Type})
+	if err := appendLoopEvent(paths, loopID, "planner.action", map[string]any{"type": action.Type}); err != nil {
+		return status, err
+	}
 	if err := authorizeLoopAction(request, action); err != nil {
-		_ = appendLoopEvent(paths, loopID, "action.denied", map[string]any{"type": action.Type, "error": err.Error()})
-		return s.finishLoop(paths, status, OutcomeBlocked, "blocked: "+err.Error())
+		eventErr := appendLoopEvent(paths, loopID, "action.denied", map[string]any{"type": action.Type, "error": err.Error()})
+		finished, finishErr := s.finishLoop(paths, status, OutcomeBlocked, "blocked: "+err.Error())
+		return finished, errors.Join(eventErr, finishErr)
 	}
 	if action.Type == "respond" {
 		status.Output = action.Content
-		_ = appendText(paths.OutputLog, action.Content+"\n")
+		if err := appendText(paths.OutputLog, action.Content+"\n"); err != nil {
+			return status, err
+		}
 		return s.finishLoop(paths, status, LoopOutcomeDone, "respond")
 	}
-	status = updateLoop(paths, status, PhaseExecuting, "executing")
+	status, err = updateLoop(paths, status, PhaseExecuting, "executing")
+	if err != nil {
+		return status, err
+	}
 	execution := s.executeLoopAction(ctx, request, action)
-	encoded, _ := json.Marshal(map[string]any{"action": action, "result": execution})
-	_ = appendText(paths.OutputLog, string(encoded)+"\n")
-	status = updateLoop(paths, status, PhaseObserving, "observing")
+	encoded, err := json.Marshal(map[string]any{"action": action, "result": execution})
+	if err != nil {
+		return status, err
+	}
+	if err := appendText(paths.OutputLog, string(encoded)+"\n"); err != nil {
+		return status, err
+	}
+	status, err = updateLoop(paths, status, PhaseObserving, "observing")
+	if err != nil {
+		return status, err
+	}
 	kind := "progress"
 	if execution.Status != "ok" {
 		kind = "blocked"
 	}
 	status.Observations = append(status.Observations, Observation{Kind: kind, Content: execution.Output})
-	_ = appendLoopEvent(paths, loopID, "observe", map[string]any{"kind": kind})
+	if err := appendLoopEvent(paths, loopID, "observe", map[string]any{"kind": kind}); err != nil {
+		return status, err
+	}
 	if kind == "blocked" {
 		return s.finishLoop(paths, status, OutcomeBlocked, "blocked")
 	}
 	status.Step++
-	status = updateLoop(paths, status, PhasePlanning, "ready")
-	return status, nil
+	return updateLoop(paths, status, PhasePlanning, "ready")
 }
 
 func (s *Service) LoopStatus(loopID string) (PersistentLoopStatus, error) {
@@ -298,19 +331,25 @@ func (s *Service) LoopLogs(loopID string, tail int) (LoopLogsResult, error) {
 		lines = lines[len(lines)-tail:]
 	}
 	events := []map[string]any{}
-	_ = withAdvisoryFileLock(paths.EventsFile+".lock", func() error {
+	if err := withAdvisoryFileLock(paths.EventsFile+".lock", func() error {
 		if file, openErr := os.Open(paths.EventsFile); openErr == nil {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				var event map[string]any
-				if json.Unmarshal(scanner.Bytes(), &event) == nil {
-					events = append(events, event)
+				if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+					_ = file.Close()
+					return err
 				}
+				events = append(events, event)
 			}
-			_ = file.Close()
+			return errors.Join(scanner.Err(), file.Close())
+		} else if !os.IsNotExist(openErr) {
+			return openErr
 		}
 		return nil
-	})
+	}); err != nil {
+		return LoopLogsResult{}, err
+	}
 	if len(events) > tail {
 		events = events[len(events)-tail:]
 	}
@@ -353,7 +392,8 @@ func (s *Service) nextLoopAction(ctx context.Context, request LoopRequest, statu
 	messages, _ := json.Marshal(map[string]any{"input": request.Input, "observations": status.Observations})
 	prompt := "Return exactly one JSON action object with type respond|tool|run_agent. Context:\n" + string(messages)
 	run, err := s.Run(ctx, RunOptions{RunType: RunTask, Profile: request.PlannerProfile, ProjectID: request.ProjectID,
-		CWD: request.CWD, Prompt: prompt, ExecutionMode: ModeCapture, DeadlineSeconds: request.DeadlineSeconds})
+		SessionID: request.SessionID, CWD: request.CWD, Prompt: prompt, ExecutionMode: ModeCapture,
+		DeadlineSeconds: request.DeadlineSeconds, Caller: "loop.planner"})
 	if err != nil {
 		return Action{}, err
 	}
@@ -386,7 +426,8 @@ func (s *Service) executeLoopAction(ctx context.Context, request LoopRequest, ac
 			return ExecutionResult{Status: "error", Output: "run_agent requires profile and prompt"}
 		}
 		run, err := s.Run(ctx, RunOptions{RunType: RunTask, Profile: profile, ProjectID: request.ProjectID,
-			CWD: request.CWD, Prompt: prompt, ExecutionMode: ModeManaged, DeadlineSeconds: request.DeadlineSeconds, ResultSchema: request.ResultSchema})
+			SessionID: request.SessionID, CWD: request.CWD, Prompt: prompt, ExecutionMode: ModeManaged,
+			DeadlineSeconds: request.DeadlineSeconds, ResultSchema: request.ResultSchema, Caller: "loop.run_agent"})
 		if err != nil {
 			return ExecutionResult{Status: "error", Output: err.Error()}
 		}
@@ -410,28 +451,28 @@ func (s *Service) finishLoop(paths LoopPaths, status PersistentLoopStatus, outco
 	if status.Output == nil || summaryText == "" || summaryText == "<nil>" {
 		summaryText = message
 	}
-	errors := []map[string]any{}
+	errorItems := []map[string]any{}
 	if outcome != OutcomeSucceeded {
-		errors = append(errors, map[string]any{"message": message, "outcome": outcome})
+		errorItems = append(errorItems, map[string]any{"message": message, "outcome": outcome})
 	}
 	result := Result{SchemaVersion: 1, RunID: status.LoopID, Outcome: outcome, Summary: summaryText,
-		Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}}, Errors: errors,
+		Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}}, Errors: errorItems,
 		Validation: Validation{Commands: []string{}, Passed: outcome == OutcomeSucceeded}}
 	if err := writeLoopJSON(paths.ResultFile, result); err != nil {
 		return status, err
 	}
 	err := writeLoopJSON(paths.StatusFile, status)
 	s.updateLoopRegistry(paths, status)
-	_ = appendLoopEvent(paths, status.LoopID, "loop.finished", map[string]any{"outcome": outcome})
-	return status, err
+	eventErr := appendLoopEvent(paths, status.LoopID, "loop.finished", map[string]any{"outcome": outcome})
+	return status, errors.Join(err, eventErr)
 }
 
-func updateLoop(paths LoopPaths, status PersistentLoopStatus, phase, message string) PersistentLoopStatus {
+func updateLoop(paths LoopPaths, status PersistentLoopStatus, phase, message string) (PersistentLoopStatus, error) {
 	status.Phase, status.Message, status.UpdatedAt = phase, message, time.Now().UTC()
 	status.Transitions = append(status.Transitions, LoopTransition{Phase: phase, At: status.UpdatedAt})
-	_ = writeLoopJSON(paths.StatusFile, status)
-	_ = appendLoopEvent(paths, status.LoopID, "loop.phase", map[string]any{"phase": phase})
-	return status
+	statusErr := writeLoopJSON(paths.StatusFile, status)
+	eventErr := appendLoopEvent(paths, status.LoopID, "loop.phase", map[string]any{"phase": phase})
+	return status, errors.Join(statusErr, eventErr)
 }
 
 func (s *Service) loopPaths(loopID string) LoopPaths {
@@ -447,7 +488,11 @@ func appendLoopEvent(paths LoopPaths, loopID, eventType string, data map[string]
 			for scanner.Scan() {
 				sequence++
 			}
-			_ = file.Close()
+			scanErr := scanner.Err()
+			closeErr := file.Close()
+			if scanErr != nil || closeErr != nil {
+				return errors.Join(scanErr, closeErr)
+			}
 		}
 		record := map[string]any{"schema_version": 1, "event_id": randomID(16), "loop_id": loopID, "type": eventType, "ts": time.Now().UTC(), "seq": sequence, "data": data}
 		file, err := os.OpenFile(paths.EventsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

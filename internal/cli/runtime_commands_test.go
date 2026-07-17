@@ -14,6 +14,7 @@ import (
 
 	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/capability"
+	"agent-runtime/internal/cli/config"
 	"agent-runtime/internal/daemon"
 	"agent-runtime/internal/provider"
 )
@@ -326,6 +327,29 @@ func TestSessionLifecycleRequiresNamedRunID(t *testing.T) {
 	got, err := parseRequiredID([]string{"--run-id", "session-1"}, "--run-id", nil, nil)
 	if err != nil || got != "session-1" {
 		t.Fatalf("run_id=%q err=%v", got, err)
+	}
+}
+
+func TestTurnRunRequiresExistingSessionBoundary(t *testing.T) {
+	err := runTaskCommand(&config.Config{Home: t.TempDir()}, "turn", []string{"run", "-c", "missing", "hello"})
+	if err == nil || !strings.Contains(err.Error(), "turn run requires --session-id") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSessionExecCreatesMetadataExecutionOnlyWhenExplicit(t *testing.T) {
+	home := t.TempDir()
+	script := filepath.Join(home, "direct.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, home, "direct-session", fmt.Sprintf(`{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":%q,"model":""},"runtime":{"prompt_delivery":"none","result_contract":"optional"}}}`, script))
+	if err := runRuntimeSession(&config.Config{Home: home}, []string{"exec", "-c", "direct-session", "--", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	values, err := agentrun.NewSessionManager(agentrun.New(home)).Store().List(agentrun.SessionFilter{})
+	if err != nil || len(values) != 1 || values[0].RecordMode != agentrun.RecordMetadata || values[0].State != agentrun.SessionStateIdle {
+		t.Fatalf("sessions=%#v err=%v", values, err)
 	}
 }
 

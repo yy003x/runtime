@@ -95,3 +95,26 @@ func TestLoopStatusNormalizesLegacyDoneOutcome(t *testing.T) {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }
+
+func TestLoopRequiresExistingSessionAndPreservesReference(t *testing.T) {
+	service := New(t.TempDir())
+	if _, err := service.LoopStart(LoopStartOptions{SessionID: "session-20260717-180000-missing", Input: "x",
+		Actions: []Action{{Type: "respond", Content: "ok"}}}); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("err=%v", err)
+	}
+	manager := NewSessionManager(service)
+	session, err := manager.EnsureSession("session-20260717-180001-loop", service.DefaultProject, t.TempDir(), "loop",
+		RecordDecision{RecordMode: RecordFull, Retention: RetentionStandard, CaptureQuality: CaptureStructured})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.LoopStart(LoopStartOptions{SessionID: session.SessionID, Input: "x",
+		Actions: []Action{{Type: "respond", Content: "ok"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request LoopRequest
+	if err := readJSON(service.loopPaths(status.LoopID).RequestFile, &request); err != nil || request.SessionID != session.SessionID {
+		t.Fatalf("request=%#v err=%v", request, err)
+	}
+}

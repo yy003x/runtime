@@ -109,18 +109,9 @@ func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs 
 		return 1, err
 	}
 	service := agentrun.New(cfg.Home)
-	manager := agentrun.NewSessionManager(service)
-	session, execution, historyErr := manager.BeginDirectExecution(profile, service.DefaultProject, cwd, len(rawArgs))
-	if historyErr != nil {
-		return 1, historyErr
-	}
 	result, err := provider.ExecuteCLIInteractive(context.Background(), profile, request, cwd, service.DaemonClient())
-	completeErr := manager.CompleteDirectExecution(session.SessionID, execution, result.ExitCode, err)
 	if err != nil {
 		return 1, err
-	}
-	if completeErr != nil {
-		return 1, fmt.Errorf("complete direct session history: %w", completeErr)
 	}
 	if result.ExitCode < 0 {
 		return 1, nil
@@ -419,13 +410,15 @@ Usage:
   sn-cli <profile> [prompt...] [-- raw-cli-args...]
   sn-cli task run -c <config> [options] [prompt...] [-- raw-cli-args...]
   sn-cli task status|logs|watch|block|continue|patch-resume|stop|cancel --run-id <id>
-  sn-cli turn run -c <config> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli loop run|start [options]
+  sn-cli turn run -c <config> --session-id <id> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli loop run|start [--session-id <id>] [options]
   sn-cli loop step|status|logs|cancel --loop-id <id>
+  sn-cli session run -c <config> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli session exec -c <config> [options] [-- raw-cli-args...]
   sn-cli session start -c <config> [options] [prompt...] [-- raw-cli-args...]
   sn-cli session list
   sn-cli session status|logs|watch|send|interrupt|stop|attach --run-id <id>
-  sn-cli history list|show|messages|events|export|rebuild
+  sn-cli history create|list|show|messages|events|configure|delete|export|import|rebuild
   sn-cli command start -c <config> [options] -- <command> [args...]
   sn-cli command status|logs|watch|interrupt|stop|attach --run-id <id>
   sn-cli clean [--apply]

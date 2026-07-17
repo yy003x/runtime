@@ -106,8 +106,9 @@ func (s *SessionStore) Create(record SessionRecord) (SessionRecord, error) {
 		record.UpdatedAt = now
 		record.LastSequence = 1
 		if record.State == "" {
-			record.State = StateRunning
+			record.State = SessionStateIdle
 		}
+		record.State = normalizeSessionState(record.State)
 		if record.RecordMode == "" {
 			record.RecordMode = RecordFull
 		}
@@ -146,7 +147,8 @@ func validateSessionRecord(record SessionRecord) error {
 	if record.CaptureQuality != "" && !oneOf(record.CaptureQuality, CaptureStructured, CaptureParsed, CaptureTranscriptOnly, CaptureMetadataOnly) {
 		return fmt.Errorf("invalid session capture_quality")
 	}
-	if record.State != "" && !oneOf(record.State, StatePending, StateRunning, StateResultPending, StateDone, StateFailed, StateBlocked, StateCancelled, TurnStateSubmitted) {
+	if record.State != "" && !oneOf(record.State, SessionStateIdle, SessionStateActive, SessionStateBlocked, SessionStateArchived,
+		StatePending, StateRunning, StateResultPending, StateDone, StateFailed, StateBlocked, StateCancelled, TurnStateSubmitted) {
 		return fmt.Errorf("invalid session state")
 	}
 	return ValidateSessionTags(record.Tags)
@@ -164,6 +166,7 @@ func (s *SessionStore) Get(sessionID string) (SessionRecord, error) {
 		}
 		return SessionRecord{}, err
 	}
+	record.State = normalizeSessionState(record.State)
 	return record, nil
 }
 
@@ -198,7 +201,8 @@ func (s *SessionStore) AddTurn(sessionID string, turn TurnRecord, input string, 
 		if turn.CaptureQuality == "" {
 			turn.CaptureQuality = record.CaptureQuality
 		}
-		if record.RecordMode == RecordFull && strings.TrimSpace(input) != "" {
+		turn.RecordMode = restrictiveRecordMode(record.RecordMode, turn.RecordMode)
+		if turn.RecordMode == RecordFull && strings.TrimSpace(input) != "" {
 			record.LastSequence++
 			message := SessionMessage{SchemaVersion: SessionSchemaVersion, MessageID: newEntryID("message"), SessionID: sessionID,
 				TurnID: turn.TurnID, Sequence: record.LastSequence, Timestamp: now, Role: "user", Kind: "message", Content: input}
@@ -222,8 +226,8 @@ func (s *SessionStore) AddTurn(sessionID string, turn TurnRecord, input string, 
 		}
 		record.TurnCount++
 		record.LastTurnID = turn.TurnID
-		record.State = StateRunning
-		if strings.TrimSpace(record.Title) == "" && strings.TrimSpace(input) != "" {
+		record.State = SessionStateActive
+		if turn.RecordMode == RecordFull && strings.TrimSpace(record.Title) == "" && strings.TrimSpace(input) != "" {
 			record.Title = truncateHistoryText(input, 120)
 		}
 		record.UpdatedAt = now
@@ -266,6 +270,7 @@ func (s *SessionStore) AddAttempt(sessionID string, attempt RunAttemptRecord) er
 		}
 		record.LastSequence++
 		record.RunCount++
+		record.State = SessionStateActive
 		record.Providers = appendUnique(record.Providers, attempt.Provider)
 		record.UpdatedAt = now
 		if err := appendJSONL(filepath.Join(dir, "events.jsonl"), SessionEvent{SchemaVersion: SessionSchemaVersion,
@@ -305,6 +310,9 @@ func (s *SessionStore) UpsertExecution(sessionID string, execution ExecutionReco
 			}
 			if execution.TmuxSession == "" {
 				execution.TmuxSession = existing.TmuxSession
+			}
+			if execution.ResultRef == nil {
+				execution.ResultRef = existing.ResultRef
 			}
 			execution.RunIDs = appendUnique(existing.RunIDs, execution.RunIDs...)
 			execution.TurnIDs = appendUnique(existing.TurnIDs, execution.TurnIDs...)
@@ -366,7 +374,7 @@ func (s *SessionStore) CompleteRun(sessionID, turnID, runID, state, failureReaso
 		if state == StateDone {
 			turn.WinningRunID, turn.ResultRef = runID, resultRef
 		}
-		if record.RecordMode == RecordFull && strings.TrimSpace(output) != "" {
+		if turn.RecordMode == RecordFull && strings.TrimSpace(output) != "" {
 			record.LastSequence++
 			message := SessionMessage{SchemaVersion: SessionSchemaVersion, MessageID: newEntryID("message"), SessionID: sessionID,
 				TurnID: turnID, Sequence: record.LastSequence, Timestamp: now, Role: "assistant", Kind: "message", Content: output,
@@ -390,8 +398,8 @@ func (s *SessionStore) CompleteRun(sessionID, turnID, runID, state, failureReaso
 			Data: map[string]any{"state": state, "failure_reason": failureReason, "result_ref": resultRef}}); err != nil {
 			return err
 		}
-		record.State, record.UpdatedAt = state, now
-		if state == StateDone && strings.TrimSpace(output) != "" {
+		record.State, record.UpdatedAt = deriveSessionState(dir), now
+		if turn.RecordMode == RecordFull && state == StateDone && strings.TrimSpace(output) != "" {
 			record.Summary = truncateHistoryText(output, 512)
 		}
 		return s.writeSession(dir, record)
@@ -436,7 +444,7 @@ func (s *SessionStore) ResumeRun(sessionID, turnID, runID string) error {
 			return err
 		}
 		record.LastSequence++
-		record.State, record.Summary, record.UpdatedAt = StateRunning, "", now
+		record.State, record.Summary, record.UpdatedAt = SessionStateActive, "", now
 		if err := appendJSONL(filepath.Join(dir, "events.jsonl"), SessionEvent{SchemaVersion: SessionSchemaVersion,
 			EventID: newEntryID("event"), SessionID: sessionID, TurnID: turnID, ExecutionID: attempt.ExecutionID,
 			RunID: runID, Sequence: record.LastSequence, Timestamp: now, Type: "run.resumed"}); err != nil {
@@ -530,10 +538,14 @@ func (s *SessionStore) CompleteTurn(sessionID, turnID, state, output, kind strin
 			return err
 		}
 		now := time.Now().UTC()
-		if record.RecordMode == RecordFull && strings.TrimSpace(output) != "" {
+		if turn.RecordMode == RecordFull && strings.TrimSpace(output) != "" {
+			role := "assistant"
+			if strings.HasPrefix(kind, "transcript") {
+				role = "transcript"
+			}
 			record.LastSequence++
 			message := SessionMessage{SchemaVersion: SessionSchemaVersion, MessageID: newEntryID("message"), SessionID: sessionID,
-				TurnID: turnID, Sequence: record.LastSequence, Timestamp: now, Role: "assistant", Kind: kind,
+				TurnID: turnID, Sequence: record.LastSequence, Timestamp: now, Role: role, Kind: kind,
 				Content: output, Metadata: map[string]any{"capture_quality": turn.CaptureQuality}}
 			turn.OutputMessageID = message.MessageID
 			if err := appendJSONL(filepath.Join(dir, "messages.jsonl"), message); err != nil {
@@ -545,7 +557,7 @@ func (s *SessionStore) CompleteTurn(sessionID, turnID, state, output, kind strin
 			return err
 		}
 		record.LastSequence++
-		record.State, record.UpdatedAt = state, now
+		record.State, record.UpdatedAt = deriveSessionState(dir), now
 		if err := appendJSONL(filepath.Join(dir, "events.jsonl"), SessionEvent{SchemaVersion: SessionSchemaVersion,
 			EventID: newEntryID("event"), SessionID: sessionID, TurnID: turnID, Sequence: record.LastSequence,
 			Timestamp: now, Type: "turn." + state, Data: map[string]any{"capture_quality": turn.CaptureQuality}}); err != nil {
@@ -564,6 +576,9 @@ func (s *SessionStore) CompleteTurn(sessionID, turnID, state, output, kind strin
 }
 
 func (s *SessionStore) UpdateSessionState(sessionID, state, summary string) error {
+	if !oneOf(state, SessionStateIdle, SessionStateActive, SessionStateBlocked, SessionStateArchived) {
+		return fmt.Errorf("invalid session state: %s", state)
+	}
 	dir, err := s.sessionDir(sessionID)
 	if err != nil {
 		return err
@@ -597,23 +612,178 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 	if _, err := s.Get(input.Session.SessionID); err == nil {
 		return SessionRecord{}, fmt.Errorf("session already exists: %s", input.Session.SessionID)
 	}
-	record, err := s.Create(input.Session)
+	record := input.Session
+	record.State = normalizeSessionState(record.State)
+	if err := validateSessionRecord(record); err != nil {
+		return SessionRecord{}, err
+	}
+	if err := validateRunID(record.SessionID); err != nil {
+		return SessionRecord{}, fmt.Errorf("invalid session_id: %w", err)
+	}
+	turnIDs := make(map[string]struct{}, len(input.Turns))
+	for _, turn := range input.Turns {
+		if err := validateRunID(turn.TurnID); err != nil {
+			return SessionRecord{}, fmt.Errorf("invalid imported turn_id: %w", err)
+		}
+		if _, exists := turnIDs[turn.TurnID]; exists {
+			return SessionRecord{}, fmt.Errorf("duplicate imported turn_id: %s", turn.TurnID)
+		}
+		turnIDs[turn.TurnID] = struct{}{}
+	}
+	attemptIDs := make(map[string]struct{}, len(input.Attempts))
+	for _, attempt := range input.Attempts {
+		if err := validateRunID(attempt.RunID); err != nil || validateRunID(attempt.TurnID) != nil {
+			return SessionRecord{}, fmt.Errorf("invalid imported attempt identity")
+		}
+		if _, ok := turnIDs[attempt.TurnID]; !ok {
+			return SessionRecord{}, fmt.Errorf("imported attempt %s references missing turn %s", attempt.RunID, attempt.TurnID)
+		}
+		if _, exists := attemptIDs[attempt.RunID]; exists {
+			return SessionRecord{}, fmt.Errorf("duplicate imported run_id: %s", attempt.RunID)
+		}
+		attemptIDs[attempt.RunID] = struct{}{}
+	}
+	for _, execution := range input.Executions {
+		if err := validateRunID(execution.ExecutionID); err != nil {
+			return SessionRecord{}, fmt.Errorf("invalid imported execution_id: %w", err)
+		}
+	}
+	if err := s.ensure(); err != nil {
+		return SessionRecord{}, err
+	}
+	dir, err := s.sessionDir(record.SessionID)
 	if err != nil {
 		return SessionRecord{}, err
 	}
-	for _, message := range input.Messages {
-		message.Sequence = 0
-		if _, err := s.AppendMessage(record.SessionID, message); err != nil {
-			return SessionRecord{}, err
+	err = withAdvisoryFileLock(s.lockPath(record.SessionID), func() error {
+		if _, statErr := os.Stat(filepath.Join(dir, "session.json")); statErr == nil {
+			return fmt.Errorf("session already exists: %s", record.SessionID)
 		}
-	}
-	for _, event := range input.Events {
-		event.Sequence = 0
-		if err := s.AppendEvent(record.SessionID, event); err != nil {
-			return SessionRecord{}, err
+		completed := false
+		defer func() {
+			if !completed {
+				_ = os.RemoveAll(dir)
+			}
+		}()
+		if err := os.MkdirAll(filepath.Join(dir, "turns"), 0o700); err != nil {
+			return err
 		}
+		if err := os.MkdirAll(filepath.Join(dir, "executions"), 0o700); err != nil {
+			return err
+		}
+		record.SchemaVersion = SessionSchemaVersion
+		record.TurnCount = len(input.Turns)
+		record.RunCount = len(input.Attempts)
+		var lastSequence int64
+		sequences := make(map[int64]struct{}, len(input.Messages)+len(input.Events))
+		for _, message := range input.Messages {
+			if message.Sequence > lastSequence {
+				lastSequence = message.Sequence
+			}
+			if message.Sequence > 0 {
+				if _, exists := sequences[message.Sequence]; exists {
+					return fmt.Errorf("duplicate imported sequence: %d", message.Sequence)
+				}
+				sequences[message.Sequence] = struct{}{}
+			}
+		}
+		for _, event := range input.Events {
+			if event.Sequence > lastSequence {
+				lastSequence = event.Sequence
+			}
+			if event.Sequence > 0 {
+				if _, exists := sequences[event.Sequence]; exists {
+					return fmt.Errorf("duplicate imported sequence: %d", event.Sequence)
+				}
+				sequences[event.Sequence] = struct{}{}
+			}
+		}
+		now := time.Now().UTC()
+		for index := range input.Messages {
+			if input.Messages[index].Sequence <= 0 {
+				lastSequence++
+				input.Messages[index].Sequence = lastSequence
+			}
+			if input.Messages[index].Timestamp.IsZero() {
+				input.Messages[index].Timestamp = now
+			}
+		}
+		for index := range input.Events {
+			if input.Events[index].Sequence <= 0 {
+				lastSequence++
+				input.Events[index].Sequence = lastSequence
+			}
+			if input.Events[index].Timestamp.IsZero() {
+				input.Events[index].Timestamp = now
+			}
+		}
+		record.LastSequence = lastSequence
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = now
+		}
+		if record.UpdatedAt.IsZero() {
+			record.UpdatedAt = now
+		}
+		if err := s.writeSession(dir, record); err != nil {
+			return err
+		}
+		for _, turn := range input.Turns {
+			turn.SchemaVersion, turn.SessionID = SessionSchemaVersion, record.SessionID
+			turnDir := filepath.Join(dir, "turns", turn.TurnID)
+			if err := os.MkdirAll(filepath.Join(turnDir, "attempts"), 0o700); err != nil {
+				return err
+			}
+			if manifest, ok := input.ContextManifests[turn.TurnID]; ok {
+				manifest.SessionID, manifest.TurnID = record.SessionID, turn.TurnID
+				turn.ContextManifest = filepath.Join(turnDir, "context-manifest.json")
+				if err := writeJSONAtomic(turn.ContextManifest, manifest); err != nil {
+					return err
+				}
+			} else {
+				turn.ContextManifest = ""
+			}
+			if err := writeJSONAtomic(filepath.Join(turnDir, "turn.json"), turn); err != nil {
+				return err
+			}
+		}
+		for _, attempt := range input.Attempts {
+			attempt.SchemaVersion, attempt.SessionID = SessionSchemaVersion, record.SessionID
+			path := filepath.Join(dir, "turns", attempt.TurnID, "attempts", attempt.RunID+".json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return err
+			}
+			if err := writeJSONAtomic(path, attempt); err != nil {
+				return err
+			}
+		}
+		for _, execution := range input.Executions {
+			execution.SchemaVersion, execution.SessionID = SessionSchemaVersion, record.SessionID
+			if err := writeJSONAtomic(filepath.Join(dir, "executions", execution.ExecutionID+".json"), execution); err != nil {
+				return err
+			}
+		}
+		for _, message := range input.Messages {
+			message.SchemaVersion, message.SessionID = SessionSchemaVersion, record.SessionID
+			if err := appendJSONL(filepath.Join(dir, "messages.jsonl"), message); err != nil {
+				return err
+			}
+		}
+		for _, event := range input.Events {
+			event.SchemaVersion, event.SessionID = SessionSchemaVersion, record.SessionID
+			if err := appendJSONL(filepath.Join(dir, "events.jsonl"), event); err != nil {
+				return err
+			}
+		}
+		completed = true
+		return nil
+	})
+	if err != nil {
+		return SessionRecord{}, err
 	}
-	return s.Get(record.SessionID)
+	if err := s.updateIndex(record, dir); err != nil {
+		return SessionRecord{}, err
+	}
+	return record, nil
 }
 
 func (s *SessionStore) ConfigureSession(sessionID, runtime, profile string) (SessionRecord, error) {
@@ -628,8 +798,58 @@ func (s *SessionStore) ConfigureSession(sessionID, runtime, profile string) (Ses
 		if readErr != nil {
 			return readErr
 		}
-		record.Runtime, record.Profile = runtime, profile
+		if runtime != "" {
+			record.Runtime = runtime
+		}
+		if profile != "" {
+			record.Profile = profile
+		}
 		record.UpdatedAt = time.Now().UTC()
+		return s.writeSession(dir, record)
+	})
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	return record, s.updateIndex(record, dir)
+}
+
+func (s *SessionStore) ConfigurePolicy(sessionID, recordMode, retention string) (SessionRecord, error) {
+	if recordMode != "" && !oneOf(recordMode, RecordFull, RecordMetadata) {
+		return SessionRecord{}, fmt.Errorf("record_mode must be full|metadata")
+	}
+	if retention != "" && !oneOf(retention, RetentionEphemeral, RetentionStandard, RetentionPinned) {
+		return SessionRecord{}, fmt.Errorf("retention must be ephemeral|standard|pinned")
+	}
+	if recordMode == "" && retention == "" {
+		return SessionRecord{}, fmt.Errorf("record_mode or retention is required")
+	}
+	dir, err := s.sessionDir(sessionID)
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	var record SessionRecord
+	err = withAdvisoryFileLock(s.lockPath(sessionID), func() error {
+		var readErr error
+		record, readErr = s.readSession(dir)
+		if readErr != nil {
+			return readErr
+		}
+		previousMode, previousRetention := record.RecordMode, record.Retention
+		if recordMode != "" {
+			record.RecordMode = recordMode
+		}
+		if retention != "" {
+			record.Retention = retention
+		}
+		now := time.Now().UTC()
+		record.LastSequence++
+		record.UpdatedAt = now
+		if err := appendJSONL(filepath.Join(dir, "events.jsonl"), SessionEvent{SchemaVersion: SessionSchemaVersion,
+			EventID: newEntryID("event"), SessionID: sessionID, Sequence: record.LastSequence, Timestamp: now,
+			Type: "session.policy_configured", Data: map[string]any{"previous_record_mode": previousMode,
+				"record_mode": record.RecordMode, "previous_retention": previousRetention, "retention": record.Retention}}); err != nil {
+			return err
+		}
 		return s.writeSession(dir, record)
 	})
 	if err != nil {
@@ -748,30 +968,49 @@ func (s *SessionStore) View(sessionID string) (SessionView, error) {
 	if err != nil {
 		return SessionView{}, err
 	}
-	dir, _ := s.sessionDir(sessionID)
+	dir, err := s.sessionDir(sessionID)
+	if err != nil {
+		return SessionView{}, err
+	}
 	view := SessionView{Session: record}
-	view.Messages, _ = s.Messages(sessionID, 0, 0)
-	view.Events, _ = s.Events(sessionID, 0, 0)
-	turnFiles, _ := filepath.Glob(filepath.Join(dir, "turns", "*", "turn.json"))
+	if view.Messages, err = s.Messages(sessionID, 0, 0); err != nil {
+		return SessionView{}, err
+	}
+	if view.Events, err = s.Events(sessionID, 0, 0); err != nil {
+		return SessionView{}, err
+	}
+	turnFiles, err := filepath.Glob(filepath.Join(dir, "turns", "*", "turn.json"))
+	if err != nil {
+		return SessionView{}, err
+	}
 	for _, path := range turnFiles {
 		var turn TurnRecord
-		if readJSON(path, &turn) == nil {
-			view.Turns = append(view.Turns, turn)
+		if err := readJSON(path, &turn); err != nil {
+			return SessionView{}, err
 		}
-		attemptFiles, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "attempts", "*.json"))
+		view.Turns = append(view.Turns, turn)
+		attemptFiles, err := filepath.Glob(filepath.Join(filepath.Dir(path), "attempts", "*.json"))
+		if err != nil {
+			return SessionView{}, err
+		}
 		for _, attemptPath := range attemptFiles {
 			var attempt RunAttemptRecord
-			if readJSON(attemptPath, &attempt) == nil {
-				view.Attempts = append(view.Attempts, attempt)
+			if err := readJSON(attemptPath, &attempt); err != nil {
+				return SessionView{}, err
 			}
+			view.Attempts = append(view.Attempts, attempt)
 		}
 	}
-	executionFiles, _ := filepath.Glob(filepath.Join(dir, "executions", "*.json"))
+	executionFiles, err := filepath.Glob(filepath.Join(dir, "executions", "*.json"))
+	if err != nil {
+		return SessionView{}, err
+	}
 	for _, path := range executionFiles {
 		var execution ExecutionRecord
-		if readJSON(path, &execution) == nil {
-			view.Executions = append(view.Executions, execution)
+		if err := readJSON(path, &execution); err != nil {
+			return SessionView{}, err
 		}
+		view.Executions = append(view.Executions, execution)
 	}
 	sort.Slice(view.Turns, func(i, j int) bool { return view.Turns[i].Sequence < view.Turns[j].Sequence })
 	sort.Slice(view.Attempts, func(i, j int) bool { return view.Attempts[i].StartedAt.Before(view.Attempts[j].StartedAt) })
@@ -784,7 +1023,20 @@ func (s *SessionStore) Export(sessionID, outputPath string) error {
 	if err != nil {
 		return err
 	}
-	return writeJSONAtomic(outputPath, map[string]any{"schema_version": SessionSchemaVersion, "exported_at": time.Now().UTC(), "view": view})
+	input := SessionImport{SchemaVersion: SessionSchemaVersion, ExportedAt: time.Now().UTC(), Session: view.Session,
+		Turns: view.Turns, Attempts: view.Attempts, Executions: view.Executions, Messages: view.Messages, Events: view.Events,
+		ContextManifests: map[string]ContextManifest{}}
+	for _, turn := range view.Turns {
+		if turn.ContextManifest == "" {
+			continue
+		}
+		var manifest ContextManifest
+		if err := readJSON(turn.ContextManifest, &manifest); err != nil {
+			return err
+		}
+		input.ContextManifests[turn.TurnID] = manifest
+	}
+	return writeJSONAtomic(outputPath, input)
 }
 
 func (s *SessionStore) readSession(dir string) (SessionRecord, error) {
@@ -852,6 +1104,50 @@ func appendUnique(values []string, additions ...string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func restrictiveRecordMode(sessionMode, requested string) string {
+	if sessionMode == RecordMetadata || requested == RecordMetadata {
+		return RecordMetadata
+	}
+	if sessionMode == RecordOff || requested == RecordOff {
+		return RecordOff
+	}
+	return RecordFull
+}
+
+func deriveSessionState(dir string) string {
+	turnFiles, _ := filepath.Glob(filepath.Join(dir, "turns", "*", "turn.json"))
+	blocked := false
+	for _, path := range turnFiles {
+		var turn TurnRecord
+		if readJSON(path, &turn) != nil {
+			continue
+		}
+		switch turn.State {
+		case StatePending, StateRunning, StateResultPending:
+			return SessionStateActive
+		case StateBlocked:
+			blocked = true
+		}
+	}
+	if blocked {
+		return SessionStateBlocked
+	}
+	return SessionStateIdle
+}
+
+func normalizeSessionState(state string) string {
+	switch state {
+	case "", StateDone, StateFailed, StateCancelled, TurnStateSubmitted:
+		return SessionStateIdle
+	case StatePending, StateRunning, StateResultPending:
+		return SessionStateActive
+	case StateBlocked:
+		return SessionStateBlocked
+	default:
+		return state
+	}
 }
 
 func truncateHistoryText(value string, limit int) string {

@@ -19,7 +19,10 @@ type Provider interface {
 // Request contains execution context owned by agentrun but consumed by a
 // provider implementation.
 type Request struct {
-	Prompt              string
+	Prompt string
+	// Messages 是由 Runtime Session 编译的跨 Provider 规范化历史；当前 Prompt 不包含在内。
+	Messages            []NativeMessage
+	InjectedMemory      []InjectedMemory
 	RawCLIArgs          []string
 	Overrides           map[string]any
 	CWD                 string
@@ -44,6 +47,15 @@ type Request struct {
 	Forbidden           []string
 	NativeResume        bool
 	NativePatch         *NativePatch
+}
+
+// InjectedMemory 是 Workbench/project/global memory 的只读输入快照。
+// Runtime 只消费并记录 digest，不写回其 owner。
+type InjectedMemory struct {
+	ID      string `json:"id"`
+	Type    string `json:"type,omitempty"`
+	Content string `json:"content"`
+	Source  string `json:"source,omitempty"`
 }
 
 type NativeMessage struct {
@@ -186,6 +198,23 @@ func (apiProvider) Prepare(_ context.Context, cfg Config, req Request) (Prepared
 	}
 	prepared.Config = cfg
 	prepared.Request = req
+	if prepared.API != nil && (len(req.Messages) > 0 || len(req.InjectedMemory) > 0) {
+		messages := make([]any, 0, len(req.Messages)+2)
+		if memory := injectedMemorySection(req.InjectedMemory); memory != "" {
+			if prepared.API.Protocol == "anthropic" {
+				prepared.API.Payload["system"] = memory
+			} else {
+				messages = append(messages, map[string]any{"role": "system", "content": memory})
+			}
+		}
+		for _, message := range req.Messages {
+			if message.Role == "user" || message.Role == "assistant" {
+				messages = append(messages, map[string]any{"role": message.Role, "content": message.Content})
+			}
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": req.Prompt})
+		prepared.API.Payload["messages"] = messages
+	}
 	return prepared, nil
 }
 

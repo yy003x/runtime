@@ -27,7 +27,7 @@ func (m *SessionManager) Store() *SessionStore { return m.store }
 
 func (m *SessionManager) EnsureSession(sessionID, projectID, cwd, title string, decision RecordDecision) (SessionRecord, error) {
 	if decision.RecordMode == RecordOff {
-		return SessionRecord{}, nil
+		return SessionRecord{}, fmt.Errorf("cannot create a Session with record_mode=off")
 	}
 	if sessionID == "" {
 		sessionID = newRunID(RunSession)
@@ -37,6 +37,9 @@ func (m *SessionManager) EnsureSession(sessionID, projectID, cwd, title string, 
 			return SessionRecord{}, fmt.Errorf("session %s belongs to project %s", sessionID, existing.ProjectID)
 		}
 		return existing, nil
+	}
+	if decision.RecordMode != RecordFull {
+		title = ""
 	}
 	return m.store.Create(SessionRecord{SessionID: sessionID, ProjectID: projectID, CWD: cwd, Title: truncateHistoryText(title, 120),
 		RecordMode: decision.RecordMode, Retention: decision.Retention, CaptureQuality: decision.CaptureQuality})
@@ -59,7 +62,12 @@ func (m *SessionManager) BeginRun(request Request, prompt string, profile provid
 	}
 	policy, _ := json.Marshal(map[string]any{"allowed_actions": request.AllowedActions, "forbidden_actions": request.ForbiddenActions})
 	manifest.PolicyDigest = digestBytes(policy)
-	if _, err := m.store.AddTurn(request.SessionID, TurnRecord{TurnID: request.TurnID, CaptureQuality: request.CaptureQuality}, prompt, manifest); err != nil {
+	manifest.MemoryReads = append(manifest.MemoryReads, request.MemoryReads...)
+	if _, err := m.store.AddTurn(request.SessionID, TurnRecord{
+		TurnID: request.TurnID, Runtime: sessionRuntimeName(request.ExecutionKind, profile), Provider: request.Provider,
+		Profile: request.ProviderProfile, Model: requestModel(request, profile), RecordMode: request.RecordMode,
+		CaptureQuality: request.CaptureQuality,
+	}, prompt, manifest); err != nil {
 		return err
 	}
 	execution := ExecutionRecord{ExecutionID: request.ExecutionID, Kind: request.ExecutionKind, Profile: request.ProviderProfile,
@@ -86,7 +94,7 @@ func (m *SessionManager) CompleteRun(request Request, state, failureReason, outp
 		return err
 	}
 	execution := ExecutionRecord{ExecutionID: request.ExecutionID, Kind: request.ExecutionKind, Profile: request.ProviderProfile,
-		Provider: request.Provider, State: state, CaptureQuality: request.CaptureQuality, RunIDs: []string{request.RunID}, TurnIDs: []string{request.TurnID}}
+		Provider: request.Provider, State: state, CaptureQuality: request.CaptureQuality, RunIDs: []string{request.RunID}, TurnIDs: []string{request.TurnID}, ResultRef: resultRef}
 	return m.store.UpsertExecution(request.SessionID, execution)
 }
 
@@ -103,18 +111,18 @@ func (m *SessionManager) ResumeRun(request Request) error {
 }
 
 func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile provider.Config, prompt string, allowed, forbidden []string) (ContextManifest, error) {
-	record, _ := m.store.Get(sessionID)
 	manifest := ContextManifest{SchemaVersion: SessionSchemaVersion, SessionID: sessionID, TurnID: turnID,
-		CreatedAt: time.Now().UTC(), CWD: cwd, Profile: profile.ID, MessageRange: SequenceRange{After: 0, To: record.LastSequence}}
-	if messages, err := m.store.Messages(sessionID, 0, 0); err == nil {
-		if len(messages) > 14 {
-			messages = messages[len(messages)-14:]
-		}
+		CreatedAt: time.Now().UTC(), CWD: cwd, Profile: profile.ID, MessageRange: SequenceRange{After: 0, To: 0}}
+	if messages, err := m.contextSessionMessages(sessionID, turnID); err == nil {
 		if len(messages) > 0 {
 			manifest.MessageRange.After = messages[0].Sequence - 1
 			manifest.MessageRange.To = messages[len(messages)-1].Sequence
 		}
-		if encoded, err := json.Marshal(messages); err == nil {
+		normalized := make([]provider.NativeMessage, 0, len(messages))
+		for _, message := range messages {
+			normalized = append(normalized, provider.NativeMessage{Role: message.Role, Content: strings.TrimSpace(message.Content)})
+		}
+		if encoded, err := json.Marshal(normalized); err == nil {
 			manifest.MessageDigest = digestBytes(encoded)
 		}
 	}
@@ -163,7 +171,8 @@ func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile p
 		}
 	}
 	if profile.API != nil && profile.API.Runtime != nil && profile.API.Runtime.Memory != nil && profile.API.Runtime.Memory.Enabled {
-		memory, err := capability.OpenMemory(m.service.paths.MemoryFile)
+		memoryFile, _ := m.MemoryPaths(sessionID)
+		memory, err := capability.OpenMemory(memoryFile)
 		if err == nil {
 			for _, item := range memory.Recall(prompt, "", profile.API.Runtime.Memory.TopK) {
 				manifest.MemoryReads = append(manifest.MemoryReads, ContextMemoryRead{ID: item.ID, Type: item.Type, Digest: digestBytes([]byte(item.Content)), Source: item.Source})
@@ -171,6 +180,55 @@ func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile p
 		}
 	}
 	return manifest, nil
+}
+
+// ContextMessages 返回可跨 Provider 复用的规范化对话消息。
+// transcript、tool event 和当前 Turn 输入不进入下一次模型上下文。
+func (m *SessionManager) ContextMessages(sessionID, excludeTurnID string) ([]provider.NativeMessage, error) {
+	messages, err := m.contextSessionMessages(sessionID, excludeTurnID)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]provider.NativeMessage, 0, len(messages))
+	for _, message := range messages {
+		values = append(values, provider.NativeMessage{Role: message.Role, Content: strings.TrimSpace(message.Content)})
+	}
+	return values, nil
+}
+
+func (m *SessionManager) contextSessionMessages(sessionID, excludeTurnID string) ([]SessionMessage, error) {
+	messages, err := m.store.Messages(sessionID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]SessionMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.TurnID == excludeTurnID || message.Kind != "" && message.Kind != "message" && message.Kind != "legacy_message" {
+			continue
+		}
+		if message.Role != "user" && message.Role != "assistant" || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		values = append(values, message)
+	}
+	if len(values) > 14 {
+		values = values[len(values)-14:]
+	}
+	return values, nil
+}
+
+// MemoryPaths 返回 Session 私有的 Runtime memory 路径。Workbench project/global
+// memory 由调用方筛选后只读注入，Runtime 不直接读写 Workbench 项目目录。
+func (m *SessionManager) MemoryPaths(sessionID string) (durable, candidates string) {
+	if sessionID == "" {
+		return "", ""
+	}
+	dir, err := m.store.sessionDir(sessionID)
+	if err != nil {
+		return "", ""
+	}
+	memoryDir := filepath.Join(dir, "memory")
+	return filepath.Join(memoryDir, "working.json"), filepath.Join(memoryDir, "candidates.json")
 }
 
 func contextToolAllowed(name, capability string, allowed, forbidden []string) bool {
@@ -199,6 +257,9 @@ func DecideRecordPolicy(source, runType, executionKind, explicitSessionID, recor
 	}
 	if executionKind == ExecutionCLIDirect {
 		decision.CaptureQuality = CaptureMetadataOnly
+		if recordMode == RecordFull {
+			return RecordDecision{}, fmt.Errorf("direct CLI does not support record_mode=full; use metadata or tmux transcript mode")
+		}
 		if recordMode == "" {
 			decision.RecordMode = RecordMetadata
 		}
@@ -298,7 +359,16 @@ func (m *SessionManager) BeginDirectExecution(profile provider.Config, projectID
 	if err != nil {
 		return SessionRecord{}, ExecutionRecord{}, err
 	}
-	sessionID := newRunID(RunSession)
+	return m.BeginDirectExecutionInSession(profile, "", projectID, cwd, rawArgCount, decision)
+}
+
+func (m *SessionManager) BeginDirectExecutionInSession(profile provider.Config, sessionID, projectID, cwd string, rawArgCount int, decision RecordDecision) (SessionRecord, ExecutionRecord, error) {
+	if decision.RecordMode == RecordOff {
+		return SessionRecord{}, ExecutionRecord{}, fmt.Errorf("direct Session record_mode cannot be off")
+	}
+	if sessionID == "" {
+		sessionID = newRunID(RunSession)
+	}
 	record, err := m.EnsureSession(sessionID, projectID, cwd, profile.ID+" interactive", decision)
 	if err != nil {
 		return SessionRecord{}, ExecutionRecord{}, err
@@ -307,13 +377,15 @@ func (m *SessionManager) BeginDirectExecution(profile provider.Config, projectID
 	if err != nil {
 		return SessionRecord{}, ExecutionRecord{}, err
 	}
-	execution := ExecutionRecord{ExecutionID: executionIDForRun(sessionID), Kind: ExecutionCLIDirect, Profile: profile.ID,
+	execution := ExecutionRecord{ExecutionID: executionIDForRun(newRunID(RunTask)), Kind: ExecutionCLIDirect, Profile: profile.ID,
 		Provider: profile.Transport(), State: StateRunning, CaptureQuality: decision.CaptureQuality}
 	if err := m.store.UpsertExecution(sessionID, execution); err != nil {
 		return SessionRecord{}, ExecutionRecord{}, err
 	}
-	_ = m.store.AppendEvent(sessionID, SessionEvent{ExecutionID: execution.ExecutionID, Type: "execution.started",
-		Data: map[string]any{"kind": ExecutionCLIDirect, "profile": profile.ID, "raw_arg_count": rawArgCount}})
+	if err := m.store.AppendEvent(sessionID, SessionEvent{ExecutionID: execution.ExecutionID, Type: "execution.started",
+		Data: map[string]any{"kind": ExecutionCLIDirect, "profile": profile.ID, "raw_arg_count": rawArgCount}}); err != nil {
+		return SessionRecord{}, ExecutionRecord{}, err
+	}
 	return record, execution, nil
 }
 
@@ -346,5 +418,21 @@ func (m *SessionManager) CompleteDirectExecution(sessionID string, execution Exe
 		Data: map[string]any{"exit_code": exitCode, "failure_reason": failure}}); err != nil {
 		return err
 	}
-	return m.store.UpdateSessionState(sessionID, state, failure)
+	return m.store.UpdateSessionState(sessionID, SessionStateIdle, failure)
+}
+
+func requestModel(request Request, profile provider.Config) string {
+	if request.ModelOverride != "" {
+		return request.ModelOverride
+	}
+	if profile.API != nil {
+		return profile.API.Model
+	}
+	if profile.CLI != nil {
+		return profile.CLI.Command.Model
+	}
+	if profile.Native != nil {
+		return profile.Native.ModelProfile
+	}
+	return ""
 }

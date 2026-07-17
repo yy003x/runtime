@@ -32,6 +32,10 @@ func (s *SessionStore) loadIndex() (SessionIndex, error) {
 	if index.Sessions == nil {
 		index.Sessions = map[string]SessionIndexEntry{}
 	}
+	for id, entry := range index.Sessions {
+		entry.State = normalizeSessionState(entry.State)
+		index.Sessions[id] = entry
+	}
 	return index, nil
 }
 
@@ -111,6 +115,7 @@ func (s *SessionStore) RebuildIndex() (SessionIndex, error) {
 		if err := readJSON(path, &record); err != nil {
 			return fmt.Errorf("rebuild session index from %s: %w", path, err)
 		}
+		record.State = normalizeSessionState(record.State)
 		dir := filepath.Dir(path)
 		index.Sessions[record.SessionID] = SessionIndexEntry{
 			SessionID: record.SessionID, ProjectID: record.ProjectID, State: record.State, Title: record.Title,

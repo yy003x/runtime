@@ -7,6 +7,7 @@
 Go Runtime 是会话输入、输出、运行关系和上下文清单的唯一 owner：
 
 - `Session` 表示跨 Provider、跨进程、跨多轮的逻辑会话。
+- loop 显式关联既有 Session 后，planner 与 `run_agent` Turn 复用相同 Session；Runtime 在启动阶段校验 Session 存在且 project 一致。
 - `Turn` 表示一次用户输入及其响应生命周期。
 - `RunAttempt` 表示某个 Turn 的一次 Provider 尝试。
 - `Execution` 表示 API、managed CLI、direct TTY 或 tmux 执行容器，可以跨 Turn。
@@ -32,6 +33,7 @@ Execution(API/cli_managed/cli_direct/tmux) 与 Turn 正交关联
 │   ├── session.json
 │   ├── messages.jsonl
 │   ├── events.jsonl
+│   ├── memory/{working.json,candidates.json}
 │   ├── turns/<turn_id>/
 │   │   ├── turn.json
 │   │   ├── context-manifest.json
@@ -49,7 +51,7 @@ Execution(API/cli_managed/cli_direct/tmux) 与 Turn 正交关联
 ├── state/
 │   ├── runs/
 │   └── sessions/locks/
-└── memory/
+└── memory/                         # legacy/manual global capability，不由 Session Agent 自动读取
     ├── durable.json
     └── candidates.json
 ```
@@ -74,6 +76,8 @@ pending | running | result_pending | done | failed | blocked | cancelled
 
 tmux 无法可靠判断模型完成时，Turn 记录为 `submitted`，并标记 `capture_quality=transcript_only`，不得伪装为结构化完成。
 
+Session 独立使用 `idle | active | blocked | archived`，不得把最后一个 Run 的 `done/failed/cancelled` 直接写成 Session 状态；并发 Turn 中任一活动即为 `active`。
+
 ## 4. 记录与保留策略
 
 `SessionPolicy` 在 Runtime service 层统一决策，CLI parser、HTTP handler、Provider 不得各自发明默认值。
@@ -94,11 +98,13 @@ tmux 无法可靠判断模型完成时，Turn 记录为 `submitted`，并标记 
 
 | 入口 | record_mode | retention | capture_quality |
 | --- | --- | --- | --- |
-| HTTP/API | full | standard | structured |
-| 顶层 managed profile | full | standard | structured/parsed |
-| `task run` 且无显式 Session | full | ephemeral | structured/parsed |
-| `turn run` | full | standard | structured/parsed |
-| direct interactive TTY | metadata | standard | metadata_only |
+| 普通 HTTP/API Run | off | - | structured |
+| 顶层 managed profile | off | - | structured/parsed |
+| `task run` 且无显式 Session | off | - | structured/parsed |
+| `session run` | full | ephemeral | structured/parsed |
+| `turn run --session-id` | 继承 Session | 继承 Session | structured/parsed |
+| 顶层 direct interactive TTY | off | - | - |
+| `session exec` direct TTY | metadata | standard | metadata_only |
 | tmux session | full | standard | transcript_only |
 | help/version/config validate | off | - | - |
 
@@ -119,6 +125,8 @@ Session 不复制 `result.json`：
 
 UI 消息正文已经规范化保存在 `sessions/.../messages.jsonl`，因此 run artifact 清理不会让会话列表失去基本展示能力；大对象、日志和业务输出只保存引用。
 
+tmux 退出时也写公共 `result.json`，但固定标记 `result_kind=execution_summary`、`capture_quality=transcript_only`；该结果只描述执行容器，不冒充模型 final answer。
+
 ## 6. ContextCompiler
 
 每个 managed Turn 写入 `context-manifest.json`，记录：
@@ -132,16 +140,20 @@ UI 消息正文已经规范化保存在 `sessions/.../messages.jsonl`，因此 r
 
 manifest 不写 token、secret、cookie、Authorization、完整环境变量或 tool 参数原文。Provider 事件进入 Session history 前再次做敏感 key 脱敏。
 
-managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话，并可读取 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`。这些环境变量是复用入口，不赋予绕过 capability permission 的权限。
+Runtime 从最近 14 条规范化 `user/assistant` 消息编译实际 Provider 输入：API/native 使用结构化 messages，managed CLI 使用带边界标记的历史块。切换 Provider 时重新编译，不复用 Provider 私有 snapshot。
+
+managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话，并可读取 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`、`SN_RUNTIME_MEMORY_INPUT_FILE`。这些环境变量是复用入口，不赋予绕过 capability permission 的权限。
 
 ## 7. Skill、Tool 与 Memory
 
 - API/native runtime 的 tool lifecycle 通过 Provider `Sink.Event` 同步到 Session events。
 - managed CLI/tmux 只能记录 Runtime 已装配的 context manifest 和可观察 transcript；没有 Provider 结构化事件时不推断 tool call。
-- Memory 读取只来自 `memory/durable.json`。
-- API Agent 的 `memory_write` 只写 `memory/candidates.json`，并携带 Session/Turn/Run provenance，返回 `promoted=false`。
-- durable 写入必须显式执行 `sn-cli capabilities memory promote <id...>`。
-- 用户显式执行 `capabilities memory write` 视为人工确认，可直接写 durable。
+- Runtime working memory 只来自当前 Session 的 `memory/working.json`；无显式 Session 的 Run 不自动加载或固化长期 memory。
+- API Agent 的 `memory_write` 只写当前 Session 的 `memory/candidates.json`，ID 由 Runtime 生成，并携带 Session/Turn/Run provenance，返回 `promoted=false`。
+- working 写入必须显式执行 `sn-cli capabilities memory promote --session-id <id> <candidate...>`。
+- memory 条目保留 `source/confidence/expires_at` 等 provenance；已过期条目不会参与 recall。
+- Workbench project/global memory 仍由 Workbench owner 管理，通过 HTTP `memory[]` 只读注入；Runtime 记录 digest 和本次输入快照，不扫描或写回 `ai-workbench/memory`。
+- 用户显式执行 `capabilities memory write --session-id <id>` 视为人工确认，可直接写 Session working memory。
 - `memory.delete` 仍是独立权限。
 
 这避免模型在一次执行中把未经确认的内容直接固化为长期事实。
@@ -154,20 +166,24 @@ sn-cli history list [--project <project>] [--state <state>] [--tag <tag>]
 sn-cli history show --session-id <id>
 sn-cli history messages --session-id <id> [--after-seq N]
 sn-cli history events --session-id <id> [--after-seq N]
-sn-cli history configure --session-id <id> --runtime cli --profile cx
+sn-cli history configure --session-id <id> --runtime cli --profile cx --record-mode full --retention pinned
 sn-cli history export --session-id <id> --output session.json
 sn-cli history import --input session-import.json
 sn-cli history delete --session-id <id>
 sn-cli history rebuild
 
 sn-cli turn run -c cx --session-id <id> "继续"
+sn-cli loop run --session-id <id> --input "协同执行" --planner-config ba --capability agent.run
+sn-cli session run -c cx "一次性会话任务"
+sn-cli session exec -c cx -- --help
 sn-cli session history list
 
-sn-cli capabilities memory candidates
-sn-cli capabilities memory promote candidate-1
+sn-cli capabilities memory candidates --session-id <id>
+sn-cli capabilities memory promote candidate-1 --session-id <id>
 ```
 
 `session list/status/send/...` 继续负责 tmux 活动执行；`history ...` 负责所有 Provider 的逻辑会话。
+`retention` 是 Session 级策略，既有 Session 的 Turn 只能继承，不能在单个 Turn 上覆盖；需要变更时使用 `history configure`。`record_mode` 可以按 Turn 向更严格方向收窄；Session policy 从 metadata 改为 full 只影响后续 Turn，不会补录既有 transcript。
 
 ## 9. HTTP
 
@@ -188,13 +204,13 @@ POST /v1/sessions/{session_id}/turns
 - `wb.task.sn_cli.SnCLIClient` 是 BFF adapter，只调用 `sn-cli`。
 - UI 会话 list/show/message/stop/configure 不直接读取 `~/.sn`。
 - UI 的 profile choices/validate/command preview 同样来自 `sn-cli config choices|validate|command`，避免 Workbench 配置与实际执行 profile 漂移。
-- UI 的一次性 Agent 任务也通过 `sn-cli task run/result` 执行，自动形成 `ephemeral` Session；Python 不再实现第二套 Provider 执行与会话结果回填。
+- UI 不需要会话的一次性 Agent 任务通过 `sn-cli task run/result` 执行，只产生 Run；需要本地会话展示的一次性任务改用 `sn-cli session run`，形成 `ephemeral` Session。
 - UI 的 `/api/runtime/runs` 长任务面板通过带 `workbench-runtime` tag 的 Session 与 `sn-cli task/session` 启动、查询、续轮、日志和停止；对 UI 暴露的 `run_id` 是逻辑 Session ID，实际 attempt ID 作为 `provider_run_id` 返回。
 - Workbench 不再接受 `command` / `provider_env` 直传执行，binary、args 与 env 必须由 `sn-cli` profile/preset 声明并校验，避免 BFF 绕过 Runtime 配置 owner。
 - Workbench 不保留 Session/History 迁移器或双写路径；现行会话只写 Go Runtime。
 - Workbench 的业务 knowledge、outputs、project config 继续由 Workbench owner 管理。
 
-因此不维护两份通用 Runtime：Go 负责 Provider、execution、run、session、history、context 和 memory；Python 只负责 HTTP BFF、UI view model 与 Workbench 业务编排。
+因此不维护两份通用 Runtime：Go 负责 Provider、execution、run、session、history、context 和 Session memory；Python 只负责 HTTP BFF、UI view model、Workbench project/global memory 与业务编排。
 
 ## 11. 已知边界
 

@@ -110,7 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 ├── runs/
 │   └── <task|turn|loop|session|command>/<YYYY-MM-DD>/<run_id>/
 ├── sessions/
-│   └── <YYYY-MM-DD>/<session_id>/{session.json,messages.jsonl,events.jsonl,turns/,executions/}
+│   └── <YYYY-MM-DD>/<session_id>/{session.json,messages.jsonl,events.jsonl,turns/,executions/,memory/}
 ├── history/
 │   ├── index.json
 │   └── trash/
@@ -153,7 +153,7 @@ sn-cli cx -- exec "分析当前仓库"   # -- 后强制原生透传
 sn-cli cx "分析当前仓库" -- --skip-git-repo-check
 ```
 
-direct 调用不创建 run artifact，也不加入 `managed_args`；Runtime 只记录 `metadata_only` Session，不捕获终端正文。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定 Codex/Claude 的实际调用方式。命令 stdout 返回 Provider 的真实 final text，run ID 与 artifact 目录写入 stderr；幂等复用时才回退输出 `result.json.summary`。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
+direct 调用不创建 run artifact、逻辑 Session，也不加入 `managed_args`；需要 metadata Session 时显式使用 `sn-cli session exec -c cx -- ...`，该模式不捕获 transcript，因而拒绝 `record_mode=full`。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定实际调用方式。命令 stdout 返回 Provider 的真实 final text，run ID 与 artifact 目录写入 stderr；幂等复用时才回退输出 `result.json.summary`。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
 
 ### Managed task
 
@@ -164,6 +164,8 @@ sn-cli task run -c fake --mode capture "hello"
 sn-cli task run -c cx "处理任务"
 sn-cli task run -c cx --prompt-file task.md
 printf '处理任务' | sn-cli task run -c cx
+sn-cli session run -c cx "需要保留为 ephemeral Session 的一次性任务"
+sn-cli turn run -c cx --session-id <id> "继续"
 ```
 
 API/native profile 仍通过 prompt 驱动：
@@ -194,6 +196,7 @@ sn-cli task continue --run-id <id>
 sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages":[{"role":"user","content":"继续"}]}'
 
 sn-cli loop run --input "执行计划" --actions-json '[{"type":"respond","content":"完成"}]'
+sn-cli loop run --session-id <id> --input "协同执行计划" --planner-config ba --capability agent.run
 sn-cli loop status --loop-id <id>
 
 sn-cli session start -c cx "分析当前仓库"
@@ -210,7 +213,7 @@ sn-cli history list --project <project>
 sn-cli history show --session-id <id>
 sn-cli history messages --session-id <id> --after-seq 0
 sn-cli history events --session-id <id> --after-seq 0
-sn-cli history configure --session-id <id> --runtime cli --profile cx
+sn-cli history configure --session-id <id> --runtime cli --profile cx --retention pinned
 sn-cli history export --session-id <id> --output session.json
 sn-cli history delete --session-id <id>
 sn-cli history rebuild
@@ -225,18 +228,21 @@ sn-cli clean --apply
 
 `session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。自动包装的 tmux session 使用 `sn-agent` 命名空间，不使用旧的 `mz-cli-agent`；session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
 
+普通 `task run`、顶层 managed profile 和 `POST /v1/runs` 只产生 Run artifact，不隐式创建逻辑 Session；`session run`、`session exec`、`session start`、Session HTTP API 或显式 `--session-id` 才进入 History。
+loop 只有显式传入已存在的 `--session-id` 时，planner 与 `run_agent` 子执行才复用该 Session 的跨 Provider 上下文和 Session memory；缺失或跨 project 的 Session 会在 loop 启动阶段拒绝。
+
 ### Capabilities
 
 ```bash
 sn-cli capabilities skills list
 sn-cli capabilities tools schemas
-sn-cli capabilities memory write note-1 "runtime fact"
-sn-cli capabilities memory recall runtime
-sn-cli capabilities memory candidates
-sn-cli capabilities memory promote candidate-1
+sn-cli capabilities memory write note-1 "runtime fact" --session-id <id>
+sn-cli capabilities memory recall runtime --session-id <id>
+sn-cli capabilities memory candidates --session-id <id>
+sn-cli capabilities memory promote candidate-1 --session-id <id>
 ```
 
-默认路径分别是 `~/.sn/configs/skills`、`~/.sn/configs/tools`、`~/.sn/memory/durable.json` 和 `~/.sn/memory/candidates.json`。API Agent 的 `memory_write` 只生成带 Session/Turn/Run provenance 的 candidate，必须显式 `promote` 才进入 durable；用户手工执行 `memory write` 视为已确认。
+skills/tools 默认位于 `~/.sn/configs`。Agent 自动读取和写入的 Runtime memory 位于当前 Session 的 `memory/{working.json,candidates.json}`；`memory_write` 只生成带 Session/Turn/Run provenance、由 Runtime 分配 ID 的 candidate，必须显式 `promote --session-id` 才进入 working memory。`~/.sn/memory` 只保留 legacy/manual global capability，不被 Session Agent 自动加载。Workbench project/global memory 通过 API `memory[]` 只读注入，Runtime 不扫描或写回 Workbench 目录。
 
 ### Daemon
 
@@ -316,7 +322,7 @@ sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages"
 
 MCP 当前实现 stdio transport：完成 `initialize` / `notifications/initialized` 协商，分页调用 `tools/list`，再通过 `tools/call` 执行。远端工具以 `mcp__<server>__<tool>` 暴露。建议按具体工具授权；`--allowed-action mcp.<server>` 会授权该 server 的全部工具，`--allowed-action mcp` 会授权全部已配置 MCP server。`--forbidden-action` 优先，`*` 可用于全部拒绝。MCP 子进程默认只继承基础运行环境和 `env_passthrough` 中显式列出的变量。
 
-memory 工具的授权边界为 `memory.read`、`memory.write`、`memory.delete`；其中删除必须单独授权。skill 从 `~/.sn/configs/skills` 加载，可显式列出或按关键词自动路由。启用 memory 后，相关 durable memory 会注入首轮 system context；Agent 写入先进入 `~/.sn/memory/candidates.json`，经显式晋升后才写 `durable.json`。
+memory 工具的授权边界为 `memory.read`、`memory.write`、`memory.delete`；其中删除必须单独授权。skill 从 `~/.sn/configs/skills` 加载，可显式列出或按关键词自动路由。启用 memory 且存在显式 Session 时，相关 working memory 会注入首轮 system context；Agent 写入先进入该 Session 的 candidates，经显式晋升后才写 working memory。
 
 发行配置包含 `native-agent`（引用 `oro` OpenAI-compatible API profile）和无需凭据、不会访问网络的 `native-mock`。真实 native adapter 使用 OpenAI-compatible Chat Completions 或 Anthropic Messages 协议，持久化 finish reason 与 token usage；模型无 tool call 时完成，有 tool call 时执行结果会作为 tool message 回填下一轮。达到 `max_rounds` 仍未完成会失败，不再误报成功。
 

@@ -1,6 +1,10 @@
 package agentrun
 
-import "time"
+import (
+	"time"
+
+	"agent-runtime/internal/provider"
+)
 
 const ContractVersion = 1
 
@@ -35,37 +39,38 @@ const (
 )
 
 type Request struct {
-	SchemaVersion           int            `json:"schema_version"`
-	ContractVersion         int            `json:"contract_version"`
-	RuntimeVersion          string         `json:"runtime_version"`
-	ProjectID               string         `json:"project_id"`
-	RunType                 string         `json:"run_type"`
-	RunID                   string         `json:"run_id"`
-	Caller                  string         `json:"caller"`
-	SessionID               string         `json:"session_id,omitempty"`
-	TurnID                  string         `json:"turn_id,omitempty"`
-	ExecutionID             string         `json:"execution_id,omitempty"`
-	ExecutionKind           string         `json:"execution_kind,omitempty"`
-	RecordMode              string         `json:"record_mode,omitempty"`
-	Retention               string         `json:"retention,omitempty"`
-	CaptureQuality          string         `json:"capture_quality,omitempty"`
-	ProviderProfile         string         `json:"provider_profile"`
-	Provider                string         `json:"provider"`
-	CWD                     string         `json:"cwd,omitempty"`
-	PromptFile              string         `json:"prompt_file,omitempty"`
-	RawCLIArgs              []string       `json:"raw_cli_args,omitempty"`
-	DeadlineSeconds         int            `json:"deadline_seconds"`
-	ResultFile              string         `json:"result_file"`
-	ResultSchema            string         `json:"result_schema,omitempty"`
-	ExecutionMode           string         `json:"execution_mode"`
-	ModelOverride           string         `json:"model_override,omitempty"`
-	ReasoningEffortOverride string         `json:"reasoning_effort_override,omitempty"`
-	ProviderOverrides       map[string]any `json:"provider_overrides"`
-	AllowedActions          []string       `json:"allowed_actions"`
-	ForbiddenActions        []string       `json:"forbidden_actions"`
-	RequestFingerprint      string         `json:"request_fingerprint,omitempty"`
-	CreatedAt               time.Time      `json:"created_at"`
-	UpdatedAt               time.Time      `json:"updated_at"`
+	SchemaVersion           int                 `json:"schema_version"`
+	ContractVersion         int                 `json:"contract_version"`
+	RuntimeVersion          string              `json:"runtime_version"`
+	ProjectID               string              `json:"project_id"`
+	RunType                 string              `json:"run_type"`
+	RunID                   string              `json:"run_id"`
+	Caller                  string              `json:"caller"`
+	SessionID               string              `json:"session_id,omitempty"`
+	TurnID                  string              `json:"turn_id,omitempty"`
+	ExecutionID             string              `json:"execution_id,omitempty"`
+	ExecutionKind           string              `json:"execution_kind,omitempty"`
+	RecordMode              string              `json:"record_mode,omitempty"`
+	Retention               string              `json:"retention,omitempty"`
+	CaptureQuality          string              `json:"capture_quality,omitempty"`
+	ProviderProfile         string              `json:"provider_profile"`
+	Provider                string              `json:"provider"`
+	CWD                     string              `json:"cwd,omitempty"`
+	PromptFile              string              `json:"prompt_file,omitempty"`
+	RawCLIArgs              []string            `json:"raw_cli_args,omitempty"`
+	DeadlineSeconds         int                 `json:"deadline_seconds"`
+	ResultFile              string              `json:"result_file"`
+	ResultSchema            string              `json:"result_schema,omitempty"`
+	ExecutionMode           string              `json:"execution_mode"`
+	ModelOverride           string              `json:"model_override,omitempty"`
+	ReasoningEffortOverride string              `json:"reasoning_effort_override,omitempty"`
+	ProviderOverrides       map[string]any      `json:"provider_overrides"`
+	AllowedActions          []string            `json:"allowed_actions"`
+	ForbiddenActions        []string            `json:"forbidden_actions"`
+	MemoryReads             []ContextMemoryRead `json:"memory_reads,omitempty"`
+	RequestFingerprint      string              `json:"request_fingerprint,omitempty"`
+	CreatedAt               time.Time           `json:"created_at"`
+	UpdatedAt               time.Time           `json:"updated_at"`
 }
 
 type Status struct {
@@ -82,13 +87,15 @@ type Status struct {
 }
 
 type Result struct {
-	SchemaVersion int              `json:"schema_version"`
-	RunID         string           `json:"run_id"`
-	Outcome       string           `json:"outcome"`
-	Summary       string           `json:"summary"`
-	Artifacts     []map[string]any `json:"artifacts"`
-	Errors        []map[string]any `json:"errors"`
-	Validation    Validation       `json:"validation"`
+	SchemaVersion  int              `json:"schema_version"`
+	RunID          string           `json:"run_id"`
+	Outcome        string           `json:"outcome"`
+	Summary        string           `json:"summary"`
+	ResultKind     string           `json:"result_kind,omitempty"`
+	CaptureQuality string           `json:"capture_quality,omitempty"`
+	Artifacts      []map[string]any `json:"artifacts"`
+	Errors         []map[string]any `json:"errors"`
+	Validation     Validation       `json:"validation"`
 }
 
 type Validation struct {
@@ -108,12 +115,15 @@ type Event struct {
 }
 
 type RunOptions struct {
-	RunType           string
-	RunID             string
-	Profile           string
-	ProjectID         string
-	Caller            string
-	SessionID         string
+	RunType   string
+	RunID     string
+	Profile   string
+	ProjectID string
+	Caller    string
+	SessionID string
+	// CreateSession 表示调用方显式要求为本次 Run 创建逻辑 Session。
+	// 普通 task/profile/HTTP Run 默认只写 runs artifact，不隐式创建 Session。
+	CreateSession     bool
 	TurnID            string
 	ExecutionID       string
 	ExecutionKind     string
@@ -129,6 +139,7 @@ type RunOptions struct {
 	ProviderOverrides map[string]any
 	AllowedActions    []string
 	ForbiddenActions  []string
+	InjectedMemory    []provider.InjectedMemory
 	Force             bool
 }
 

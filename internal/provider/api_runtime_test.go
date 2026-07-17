@@ -33,7 +33,7 @@ func TestOpenAIAPIRuntimeExecutesToolAndLoadsSkillMemoryContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := memory.Write([]capability.MemoryItem{{ID: "local", Type: "fact", Content: "MEMORY_LOCAL_CONTEXT", Source: "test"}}); err != nil {
+	if err := memory.Write([]capability.MemoryItem{{ID: "local", Type: "fact", Content: "review MEMORY_LOCAL_CONTEXT", Source: "test"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -127,7 +127,7 @@ func TestAPIRuntimeMemoryToolsRespectSeparatePermissions(t *testing.T) {
 	if _, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_write", map[string]any{"id": "new", "content": "new fact"})); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_recall", map[string]any{"query": "new", "top_k": 2})); err != nil || len(output.([]capability.MemoryItem)) != 1 || output.([]capability.MemoryItem)[0].ID != "old" {
+	if output, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_recall", map[string]any{"query": "new", "top_k": 2})); err != nil || len(output.([]capability.MemoryItem)) != 0 {
 		t.Fatalf("durable recall unexpectedly included candidate: recall=%#v err=%v", output, err)
 	}
 	candidates, err := capability.OpenMemory(candidateFile)
@@ -169,6 +169,30 @@ func TestAgentRuntimeResultMapsControlStates(t *testing.T) {
 	failed := agentRuntimeResult(nativeSnapshot("failed", "upstream"), "/tmp/context.json", "context_file")
 	if failed.ExitCode != 1 {
 		t.Fatalf("failed=%#v", failed)
+	}
+}
+
+func TestAPIProviderCompilesSessionHistoryAndInjectedMemoryByProtocol(t *testing.T) {
+	for _, protocol := range []string{"openai", "anthropic"} {
+		t.Run(protocol, func(t *testing.T) {
+			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: "https://example.test/v1", Model: "model", APIKeyEnv: "UNSET"}}
+			prepared, err := (apiProvider{}).Prepare(context.Background(), cfg, Request{Prompt: "current",
+				Messages:       []NativeMessage{{Role: "user", Content: "before"}, {Role: "assistant", Content: "answer"}},
+				InjectedMemory: []InjectedMemory{{ID: "project-1", Content: "project fact", Source: "workbench"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, _ := json.Marshal(prepared.API.Payload)
+			for _, expected := range []string{"before", "answer", "current", "project fact"} {
+				if !strings.Contains(string(encoded), expected) {
+					t.Fatalf("payload=%s missing %q", encoded, expected)
+				}
+			}
+			if protocol == "anthropic" && prepared.API.Payload["system"] == nil {
+				t.Fatalf("anthropic injected memory was not compiled as system: %#v", prepared.API.Payload)
+			}
+		})
 	}
 }
 

@@ -107,7 +107,7 @@ type Provider interface {
 实现边界：
 
 - `cliProvider`：managed command CLI，支持 typed overrides、stdin/arg/none 和实时输出。
-- interactive command：使用相同 profile common args 和环境，直接连接终端；不创建 run artifact，只创建 `metadata_only` 的逻辑 Session/Execution。
+- interactive command：使用相同 profile common args 和环境，直接连接终端；顶层 direct 不创建 run artifact 或逻辑 Session，显式 `session exec` 才创建 `metadata_only` Session/Execution。
 - `apiProvider`：OpenAI-compatible、Anthropic-compatible、stream 和 mock；`api.runtime.enabled=true` 时复用进程内 Agent loop，增加 tool call、MCP、skill、memory 与本地 context 生命周期。
 - `tmuxProvider`：通过 daemon RPC 管理 tmux、paste、capture、稳定检测及 `result + done`。
 - `nativeProvider`：进程内 LLM loop、persona、snapshot、block/continue/patch-resume/stop/cancel、finish reason、token usage 和授权 tool-call 回路。
@@ -156,12 +156,14 @@ command CLI profile 有两类参数：
 
 | 调用 | 执行方式 | Artifact |
 | --- | --- | --- |
-| `sn-cli cx` / `sn-cli cc` | 原生 interactive | 无 run artifact；有 metadata Session |
-| `sn-cli cx --help` / `sn-cli cc -p ...` | 原生 flag passthrough | 无 run artifact；有 metadata Session |
-| `sn-cli cx -- exec ...` | 移除 `--` 后原生 command passthrough | 无 run artifact；有 metadata Session |
+| `sn-cli cx` / `sn-cli cc` | 原生 interactive | 无 run artifact；无逻辑 Session |
+| `sn-cli cx --help` / `sn-cli cc -p ...` | 原生 flag passthrough | 无 run artifact；无逻辑 Session |
+| `sn-cli cx -- exec ...` | 移除 `--` 后原生 command passthrough | 无 run artifact；无逻辑 Session |
+| `sn-cli session exec -c cx -- ...` | 显式 direct Session | metadata Session/Execution |
 | `sn-cli cx "prompt"` / `sn-cli cc "prompt"` | managed AgentRun | 有 |
 | `stdin \| sn-cli cx` | managed AgentRun | 有 |
 | `sn-cli task run -c cx ...` | managed/capture AgentRun | 有 |
+| `sn-cli session run -c cx ...` | managed Run + ephemeral Session | 有 |
 | API/native profile + prompt | AgentRun | 有 |
 | `sn-cli session start -c cx ...` | 同 config 的 tmux session + daemon | 有 |
 
@@ -173,7 +175,7 @@ session 运行时将 command config 包装为 tmux config，保留 binary、comm
 
 command 子进程环境由同一套 provider 逻辑生成，direct、managed 和 session 不允许各自实现。顺序固定为：继承当前环境、`env_unset` 删除、`env_passthrough` 显式传递、`env` 覆盖、AgentRun runtime env 注入。profile preset 可以用 `env_unset_append` 追加清理项。该规则用于切换 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等多账号目录，也用于消除父进程中的认证变量冲突；secret 值仍不得写入 profile。
 
-managed 子进程通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 和 `SN_RUNTIME_CONTEXT_MANIFEST` 关联逻辑会话；skill、tool、durable memory、memory candidates 的 Runtime-owned 路径通过对应 `SN_RUNTIME_*` 环境变量提供给 wrapper/MCP。路径暴露不改变 tool capability 的授权与审计边界。
+managed 子进程通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 和 `SN_RUNTIME_CONTEXT_MANIFEST` 关联逻辑会话；skill、tool、Session working/candidate memory 和外部只读 memory 输入通过对应 `SN_RUNTIME_*` 环境变量提供给 wrapper/MCP。路径暴露不改变 tool capability 的授权与审计边界。
 
 基础 `cx`/`cc` 继承父进程账号与认证环境；发行模板中的 `cx-aip`/`cc-aip` 承担固定账号目录或 endpoint 的显式选择。Provider JSON 使用严格字段解码，根对象、嵌套对象和 preset 中的未知字段均拒绝加载，避免拼写错误静默失效。
 
@@ -183,7 +185,7 @@ native 的 OpenAI-compatible adapter 与 direct API 一致使用 `/chat/completi
 
 API profile 默认保持 one-shot 兼容。启用 `api.runtime` 后直接使用同一套进程内 Agent 状态机，OpenAI Chat Completions 的 `tool_calls` 和 Anthropic Messages 的 `tool_use/tool_result` 会统一映射到内部消息模型。API Agent context 持久化为 `context-snapshot.json`，支持 block/continue/patch-resume/stop/cancel；native 继续使用 `native-snapshot.json`。
 
-API Agent capability 装配顺序：加载 profile system prompt；从 `configs/skills` 显式加载或自动路由 skill；从 `memory/durable.json` 召回相关本地记忆；装配本地 function、memory 和 MCP 工具；最后按 `allowed_actions`/`forbidden_actions` 过滤后发送模型。每个 Turn 同时固化包含 message/skill/tool/memory/config/policy digest 的 `context-manifest.json`。memory 的读、候选写入、删除分别使用 `memory.read`、`memory.write`、`memory.delete` 权限；Agent 写入先进入 candidates，显式 promote 后才进入 durable。
+API Agent capability 装配顺序：加载 profile system prompt；从 `configs/skills` 显式加载或自动路由 skill；召回当前 Session working memory；加入 Workbench/API 只读注入 memory；装配本地 function、memory 和 MCP 工具；最后按 `allowed_actions`/`forbidden_actions` 过滤后发送模型。每个 Turn 固化实际使用的 message/skill/tool/memory/config/policy digest；API/native 使用结构化历史 messages，managed CLI 使用规范化历史块。memory 的读、候选写入、删除分别使用 `memory.read`、`memory.write`、`memory.delete` 权限；Agent 写入先进入当前 Session candidates，显式 promote 后才进入 working memory。
 
 MCP client 当前支持官方 stdio transport，使用单行 UTF-8 JSON-RPC 2.0，按 `initialize → notifications/initialized → tools/list → tools/call` 生命周期运行，并处理 `tools/list` 分页。模型侧工具名规范化为 `mcp__<server>__<tool>`；可以精确授权工具，也可以使用 `mcp.<server>` 或 `mcp` 扩大范围。server annotation 不作为可信授权依据，`forbidden_actions` 始终优先。
 
@@ -196,7 +198,7 @@ MCP client 当前支持官方 stdio transport，使用单行 UTF-8 JSON-RPC 2.0�
 ├── bin/sn-cli
 ├── configs/{runtime.yaml,*.json,personas/,skills/,tools/}
 ├── runs/<run_type>/<date>/<run_id>/
-├── sessions/<date>/<session_id>/
+├── sessions/<date>/<session_id>/{turns/,executions/,memory/}
 ├── history/{index.json,trash/}
 ├── daemon/{runtime.sock,runtime.pid,runtime.token,processes.json,shims/}
 ├── state/{update.json,runs/,sessions/locks/}
@@ -214,7 +216,8 @@ MCP client 当前支持官方 stdio transport，使用单行 UTF-8 JSON-RPC 2.0�
 | runtime settings | AgentRun | `~/.sn/configs/runtime.yaml` |
 | persona | native Provider | `~/.sn/configs/personas` |
 | skills/tools | capability | `~/.sn/configs/skills`、`tools` |
-| durable/candidate memory | capability | `~/.sn/memory/{durable.json,candidates.json}` |
+| Session working/candidate memory | AgentRun/capability | `~/.sn/sessions/<date>/<id>/memory/{working.json,candidates.json}` |
+| legacy/manual global memory | capability | `~/.sn/memory/{durable.json,candidates.json}` |
 | run artifacts | AgentRun | `~/.sn/runs` |
 | session facts | AgentRun | `~/.sn/sessions` |
 | history read model/trash | AgentRun | `~/.sn/history` |
