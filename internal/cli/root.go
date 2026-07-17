@@ -51,6 +51,8 @@ func Main(args []string) int {
 		return exit(runCapabilitiesCommand(cfg, append([]string{"tools"}, args[1:]...)))
 	case "session":
 		return exit(runRuntimeSession(cfg, args[1:]))
+	case "history":
+		return exit(runSessionHistory(cfg, args[1:]))
 	case "command":
 		return exit(runCommandCommand(cfg, args[1:]))
 	case "clean":
@@ -106,9 +108,19 @@ func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs 
 	if err != nil {
 		return 1, err
 	}
-	result, err := provider.ExecuteCLIInteractive(context.Background(), profile, request, cwd, agentrun.New(cfg.Home).DaemonClient())
+	service := agentrun.New(cfg.Home)
+	manager := agentrun.NewSessionManager(service)
+	session, execution, historyErr := manager.BeginDirectExecution(profile, service.DefaultProject, cwd, len(rawArgs))
+	if historyErr != nil {
+		return 1, historyErr
+	}
+	result, err := provider.ExecuteCLIInteractive(context.Background(), profile, request, cwd, service.DaemonClient())
+	completeErr := manager.CompleteDirectExecution(session.SessionID, execution, result.ExitCode, err)
 	if err != nil {
 		return 1, err
+	}
+	if completeErr != nil {
+		return 1, fmt.Errorf("complete direct session history: %w", completeErr)
 	}
 	if result.ExitCode < 0 {
 		return 1, nil
@@ -155,9 +167,10 @@ func runProfile(cfg *config.Config, args []string) error {
 	service := agentrun.New(cfg.Home)
 	result, err := service.Run(context.Background(), agentrun.RunOptions{
 		RunType: agentrun.RunTask, RunID: invocation.RunID, Profile: invocation.Profile,
-		Prompt: invocation.Prompt, PromptFile: invocation.PromptFile, CWD: cwd, Caller: invocation.SessionID,
+		Prompt: invocation.Prompt, PromptFile: invocation.PromptFile, CWD: cwd, Caller: "cli.profile", SessionID: invocation.SessionID,
 		ExecutionMode: invocation.Mode, DeadlineSeconds: invocation.Timeout,
 		ProviderOverrides: overrides, RawCLIArgs: invocation.RawCLIArgs, Force: invocation.Force,
+		RecordMode: invocation.RecordMode, Retention: invocation.Retention,
 	})
 	if result.RunID != "" {
 		finalText := strings.TrimSpace(result.FinalText)
@@ -187,6 +200,8 @@ type profileInvocation struct {
 	ReasoningEffort   string
 	Timeout           int
 	Force             bool
+	RecordMode        string
+	Retention         string
 	ProviderOverrides map[string]any
 }
 
@@ -248,6 +263,18 @@ func parseProfileInvocation(args []string) (profileInvocation, error) {
 			}
 		case "--force":
 			invocation.Force = true
+		case "--record-mode":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--record-mode requires value")
+			}
+			invocation.RecordMode = args[i]
+		case "--retention":
+			i++
+			if i >= len(args) {
+				return profileInvocation{}, fmt.Errorf("--retention requires value")
+			}
+			invocation.Retention = args[i]
 		case "--prompt-file":
 			i++
 			if i >= len(args) {
@@ -398,12 +425,14 @@ Usage:
   sn-cli session start -c <config> [options] [prompt...] [-- raw-cli-args...]
   sn-cli session list
   sn-cli session status|logs|watch|send|interrupt|stop|attach --run-id <id>
+  sn-cli history list|show|messages|events|export|rebuild
   sn-cli command start -c <config> [options] -- <command> [args...]
   sn-cli command status|logs|watch|interrupt|stop|attach --run-id <id>
   sn-cli clean [--apply]
   sn-cli capabilities skills|tools|memory
   sn-cli profiles
   sn-cli config choices|validate
+  sn-cli config command -c <config> [--json]
   sn-cli doctor [--json]
   sn-cli doctor daemon --json
   sn-cli daemon start|status|stop|restart

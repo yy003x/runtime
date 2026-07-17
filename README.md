@@ -6,8 +6,8 @@
 
 ```text
 cmd/sn-cli                 终端入口、交互命令、AgentRun 控制面、自更新
-cmd/sn-server              HTTP /v1/runs adapter
-internal/agentrun          task/turn/loop/session/command 与 artifacts
+cmd/sn-server              HTTP /v1/runs 与 /v1/sessions adapter
+internal/agentrun          Session/Turn/RunAttempt/Execution 与 run artifacts
 internal/provider          CLI/API/tmux/native Provider
 internal/executor          进程执行、流式输出、终端与信号
 internal/daemon            UDS、tmux、depends、proxy/shim
@@ -109,6 +109,11 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 │   └── tools/
 ├── runs/
 │   └── <task|turn|loop|session|command>/<YYYY-MM-DD>/<run_id>/
+├── sessions/
+│   └── <YYYY-MM-DD>/<session_id>/{session.json,messages.jsonl,events.jsonl,turns/,executions/}
+├── history/
+│   ├── index.json
+│   └── trash/
 ├── daemon/
 │   ├── runtime.sock
 │   ├── runtime.pid
@@ -116,9 +121,12 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 │   ├── processes.json
 │   └── shims/
 ├── state/
-│   ├── memory.json
 │   ├── update.json
-│   └── runs/
+│   ├── runs/
+│   └── sessions/locks/
+├── memory/
+│   ├── durable.json
+│   └── candidates.json
 ├── source/sn-runtime/       # 仅网络源码安装模式
 ├── logs/daemon.log
 ├── cache/
@@ -145,7 +153,7 @@ sn-cli cx -- exec "分析当前仓库"   # -- 后强制原生透传
 sn-cli cx "分析当前仓库" -- --skip-git-repo-check
 ```
 
-direct 调用不创建 run artifact，也不加入 `managed_args`。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定 Codex/Claude 的实际调用方式。命令 stdout 返回 Provider 的真实 final text，run ID 与 artifact 目录写入 stderr；幂等复用时才回退输出 `result.json.summary`。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
+direct 调用不创建 run artifact，也不加入 `managed_args`；Runtime 只记录 `metadata_only` Session，不捕获终端正文。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定 Codex/Claude 的实际调用方式。命令 stdout 返回 Provider 的真实 final text，run ID 与 artifact 目录写入 stderr；幂等复用时才回退输出 `result.json.summary`。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
 
 ### Managed task
 
@@ -171,10 +179,12 @@ sn-cli native-mock "hello"
 sn-cli profiles
 sn-cli config choices
 sn-cli config validate -c fake
+sn-cli config command -c cx-spark --json
 sn-cli doctor
 
 sn-cli task status --run-id <id>
 sn-cli task logs --run-id <id> --tail 200
+sn-cli task result --run-id <id>
 sn-cli task watch --run-id <id>
 sn-cli task cancel --run-id <id>
 
@@ -195,6 +205,16 @@ sn-cli session logs --run-id <id> --tail 200
 sn-cli session attach --run-id <id>
 sn-cli session stop --run-id <id>
 
+sn-cli history create --session-id <id> --project <project> --runtime api --profile ba
+sn-cli history list --project <project>
+sn-cli history show --session-id <id>
+sn-cli history messages --session-id <id> --after-seq 0
+sn-cli history events --session-id <id> --after-seq 0
+sn-cli history configure --session-id <id> --runtime cli --profile cx
+sn-cli history export --session-id <id> --output session.json
+sn-cli history delete --session-id <id>
+sn-cli history rebuild
+
 sn-cli command start -c cx -- printf 'hello'
 sn-cli command status --run-id <id>
 sn-cli command stop --run-id <id>
@@ -212,9 +232,11 @@ sn-cli capabilities skills list
 sn-cli capabilities tools schemas
 sn-cli capabilities memory write note-1 "runtime fact"
 sn-cli capabilities memory recall runtime
+sn-cli capabilities memory candidates
+sn-cli capabilities memory promote candidate-1
 ```
 
-默认路径分别是 `~/.sn/configs/skills`、`~/.sn/configs/tools` 和 `~/.sn/state/memory.json`。
+默认路径分别是 `~/.sn/configs/skills`、`~/.sn/configs/tools`、`~/.sn/memory/durable.json` 和 `~/.sn/memory/candidates.json`。API Agent 的 `memory_write` 只生成带 Session/Turn/Run provenance 的 candidate，必须显式 `promote` 才进入 durable；用户手工执行 `memory write` 视为已确认。
 
 ### Daemon
 
@@ -294,7 +316,7 @@ sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages"
 
 MCP 当前实现 stdio transport：完成 `initialize` / `notifications/initialized` 协商，分页调用 `tools/list`，再通过 `tools/call` 执行。远端工具以 `mcp__<server>__<tool>` 暴露。建议按具体工具授权；`--allowed-action mcp.<server>` 会授权该 server 的全部工具，`--allowed-action mcp` 会授权全部已配置 MCP server。`--forbidden-action` 优先，`*` 可用于全部拒绝。MCP 子进程默认只继承基础运行环境和 `env_passthrough` 中显式列出的变量。
 
-memory 工具的授权边界为 `memory.read`、`memory.write`、`memory.delete`；其中删除必须单独授权。skill 从 `~/.sn/configs/skills` 加载，可显式列出或按关键词自动路由。启用 memory 后，相关本地记忆会注入首轮 system context；写入仍持久化到 `~/.sn/state/memory.json`。
+memory 工具的授权边界为 `memory.read`、`memory.write`、`memory.delete`；其中删除必须单独授权。skill 从 `~/.sn/configs/skills` 加载，可显式列出或按关键词自动路由。启用 memory 后，相关 durable memory 会注入首轮 system context；Agent 写入先进入 `~/.sn/memory/candidates.json`，经显式晋升后才写 `durable.json`。
 
 发行配置包含 `native-agent`（引用 `oro` OpenAI-compatible API profile）和无需凭据、不会访问网络的 `native-mock`。真实 native adapter 使用 OpenAI-compatible Chat Completions 或 Anthropic Messages 协议，持久化 finish reason 与 token usage；模型无 tool call 时完成，有 tool call 时执行结果会作为 tool message 回填下一轮。达到 `max_rounds` 仍未完成会失败，不再误报成功。
 
@@ -333,6 +355,8 @@ command profile 的子进程环境按以下顺序生成，direct、managed 和 t
 5. 最后注入 AgentRun 内部变量。
 
 `env`、`env_passthrough` 与 `env_unset` 的冲突会在配置加载阶段报错。默认 `cx`/`cc` 不固定账号目录，会继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。需要不依赖 shell 显式选目录时，可以增加 preset：
+
+managed Provider 还会收到 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID`，以及 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`。这些变量只暴露 Runtime owner 的路径与关联 ID，CLI wrapper/MCP 可以据此复用上下文能力；敏感值不进入 manifest。
 
 ```json
 {
@@ -403,8 +427,14 @@ server 与 CLI 读取同一个 `SN_CLI_HOME`：
 - `POST /v1/runs`
 - `GET /v1/runs/{run_type}/{run_id}/status|logs|result`
 - `POST /v1/runs/{run_type}/{run_id}/cancel|block|stop|continue|patch-resume`
+- `GET|POST /v1/sessions`
+- `GET /v1/sessions/{session_id}`
+- `GET /v1/sessions/{session_id}/messages|events|watch`
+- `POST /v1/sessions/{session_id}/turns`
 
 `POST /v1/runs` 支持 `allowed_actions` 和 `forbidden_actions` 数组，HTTP 发起的 API Agent run 与 CLI 使用同一工具授权规则。
+
+Session/History 的完整数据模型、记录策略、Workbench 边界和迁移契约见 [`docs/SESSION_HISTORY_DESIGN.md`](docs/SESSION_HISTORY_DESIGN.md)。
 
 ## 构建与验证
 

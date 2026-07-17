@@ -109,7 +109,7 @@ func ensureDaemonRestartSafe(status *daemon.Status) error {
 
 func runConfigCommand(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: config choices|validate")
+		return fmt.Errorf("usage: config choices|validate|command")
 	}
 	service := agentrun.New(cfg.Home)
 	profiles, err := service.Profiles()
@@ -165,9 +165,161 @@ func runConfigCommand(cfg *config.Config, args []string) error {
 			allOK = false
 		}
 		return printJSON(map[string]any{"ok": allOK, "validated": len(results), "results": results})
+	case "command":
+		return printConfigCommand(profiles, args[1:])
 	default:
 		return fmt.Errorf("unknown config command: %s", args[0])
 	}
+}
+
+func printConfigCommand(profiles map[string]provider.Config, args []string) error {
+	profileID := ""
+	jsonOutput := false
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "-c", "--config":
+			if index+1 >= len(args) {
+				return fmt.Errorf("config command %s requires a value", args[index])
+			}
+			index++
+			profileID = args[index]
+		case "--json":
+			jsonOutput = true
+		case "--profile":
+			return fmt.Errorf("unknown config command option: --profile; use -c/--config")
+		default:
+			return fmt.Errorf("unknown config command option: %s", args[index])
+		}
+	}
+	if strings.TrimSpace(profileID) == "" {
+		return fmt.Errorf("config command requires -c/--config")
+	}
+	profile, ok := provider.Resolve(profiles, profileID)
+	if !ok {
+		return fmt.Errorf("unknown config %q", profileID)
+	}
+	if profile.Type != provider.TypeCLI || profile.CLI == nil {
+		return fmt.Errorf("config %q is not a CLI profile", profile.ID)
+	}
+	prepared, err := provider.Prepare(profile, "", nil)
+	if err != nil {
+		return err
+	}
+	if prepared.CLI == nil || len(prepared.CLI.Argv) == 0 {
+		return fmt.Errorf("config %q did not resolve a CLI command", profile.ID)
+	}
+	argv := redactCommandArgv(prepared.CLI.Argv)
+	command := shellJoin(argv)
+	if !jsonOutput {
+		fmt.Println(command)
+		return nil
+	}
+	return printJSON(map[string]any{
+		"ok": true, "profile": profile.ID, "provider_type": profile.Type,
+		"transport": profile.Transport(), "argv": argv, "command": command,
+	})
+}
+
+func redactCommandArgv(argv []string) []string {
+	redacted := append([]string(nil), argv...)
+	secretValues := sensitiveEnvironmentValues()
+	redactNext := false
+	for index, value := range redacted {
+		if redactNext {
+			redacted[index] = "[REDACTED]"
+			redactNext = false
+			continue
+		}
+		name, optionValue, hasValue := strings.Cut(value, "=")
+		if (strings.HasPrefix(value, "-") || hasValue) && sensitiveCommandName(name) {
+			if hasValue {
+				redacted[index] = name + "=[REDACTED]"
+			} else {
+				redactNext = true
+			}
+			continue
+		}
+		lower := strings.ToLower(value)
+		if strings.Contains(lower, "authorization:") || strings.Contains(lower, "proxy-authorization:") {
+			redacted[index] = "[REDACTED]"
+			continue
+		}
+		if hasValue {
+			redacted[index] = name + "=" + redactURLSecrets(optionValue)
+		} else {
+			redacted[index] = redactURLSecrets(redacted[index])
+		}
+		for _, secret := range secretValues {
+			redacted[index] = strings.ReplaceAll(redacted[index], secret, "[REDACTED]")
+		}
+	}
+	return redacted
+}
+
+func sensitiveCommandName(value string) bool {
+	name := strings.TrimLeft(strings.ToLower(strings.TrimSpace(value)), "-")
+	name = strings.NewReplacer("-", "_", ".", "_").Replace(name)
+	for _, token := range []string{"api_key", "access_key", "private_key", "secret", "token", "password", "authorization", "credential", "cookie"} {
+		if name == token || strings.HasSuffix(name, "_"+token) {
+			return true
+		}
+	}
+	return false
+}
+
+func sensitiveEnvironmentValues() []string {
+	values := make([]string, 0)
+	for _, entry := range os.Environ() {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && len(value) >= 4 && sensitiveCommandName(name) {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func redactURLSecrets(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return value
+	}
+	hadUser := parsed.User != nil
+	if hadUser {
+		parsed.User = url.User("[REDACTED]")
+	}
+	query := parsed.Query()
+	changed := hadUser
+	for name := range query {
+		if sensitiveCommandName(name) {
+			query.Set(name, "[REDACTED]")
+			changed = true
+		}
+	}
+	if changed {
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	return value
+}
+
+func shellJoin(argv []string) string {
+	quoted := make([]string, len(argv))
+	for index, value := range argv {
+		quoted[index] = shellQuote(value)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(char rune) bool {
+		return !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("_@%+=:,./-", char))
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func profileHasName(profile provider.Config, name string) bool {
@@ -343,7 +495,7 @@ func validateExecutionEnvironment(profile provider.Config) string {
 
 func runTaskCommand(cfg *config.Config, command string, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: %s run|status|logs|watch|block|continue|patch-resume|stop|cancel", command)
+		return fmt.Errorf("usage: %s run|status|logs|result|watch|block|continue|patch-resume|stop|cancel", command)
 	}
 	service := agentrun.New(cfg.Home)
 	runType := agentrun.RunTask
@@ -359,6 +511,7 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 		if err := applyStdinPrompt(&options.Prompt, options.PromptFile); err != nil {
 			return err
 		}
+		options.Caller = "cli." + command
 		result, runErr := service.Run(context.Background(), options)
 		_ = printJSON(result)
 		return runErr
@@ -382,6 +535,16 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 			return err
 		}
 		return printJSON(logs)
+	case "result":
+		runID, err := parseRequiredID(args[1:], "--run-id", nil, nil)
+		if err != nil {
+			return err
+		}
+		result, err := service.ReadResult(runType, runID)
+		if err != nil {
+			return err
+		}
+		return printJSON(result)
 	case "watch":
 		runID, err := parseRequiredID(args[1:], "--run-id", map[string]bool{"--seconds": true, "--poll-seconds": true, "--tail": true}, nil)
 		if err != nil {
@@ -456,6 +619,24 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 				return options, fmt.Errorf("--run-id requires value")
 			}
 			options.RunID = args[i]
+		case "--session-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--session-id requires value")
+			}
+			options.SessionID = args[i]
+		case "--record-mode":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--record-mode requires value")
+			}
+			options.RecordMode = args[i]
+		case "--retention":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--retention requires value")
+			}
+			options.Retention = args[i]
 		case "--cwd":
 			i++
 			if i >= len(args) {
@@ -583,6 +764,8 @@ func runRuntimeSession(cfg *config.Config, args []string) error {
 	service := agentrun.New(cfg.Home)
 	ctx := context.Background()
 	switch args[0] {
+	case "history":
+		return runSessionHistory(cfg, args[1:])
 	case "start":
 		options, err := parseSessionStartOptions(args[1:])
 		if err != nil {
@@ -681,6 +864,162 @@ func runRuntimeSession(cfg *config.Config, args []string) error {
 	}
 }
 
+func runSessionHistory(cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: history create|list|show|messages|events|configure|delete|export|import|rebuild")
+	}
+	store := agentrun.NewSessionManager(agentrun.New(cfg.Home)).Store()
+	switch args[0] {
+	case "create":
+		if err := validateValueOptions(args[1:], map[string]bool{
+			"--session-id": true, "--project": true, "--cwd": true, "--title": true,
+			"--runtime": true, "--profile": true, "--record-mode": true, "--retention": true, "--tag": true,
+		}); err != nil {
+			return err
+		}
+		tags := repeatOption(args[1:], "--tag")
+		if err := agentrun.ValidateSessionTags(tags); err != nil {
+			return err
+		}
+		service := agentrun.New(cfg.Home)
+		manager := agentrun.NewSessionManager(service)
+		decision, err := agentrun.DecideRecordPolicy("cli.history", agentrun.RunTurn, agentrun.ExecutionAPI,
+			optionValue(args[1:], "--session-id"), optionValue(args[1:], "--record-mode"), optionValue(args[1:], "--retention"))
+		if err != nil {
+			return err
+		}
+		record, err := manager.EnsureSession(optionValue(args[1:], "--session-id"), optionValue(args[1:], "--project"),
+			optionValue(args[1:], "--cwd"), optionValue(args[1:], "--title"), decision)
+		if err != nil {
+			return err
+		}
+		if runtimeName, profile := optionValue(args[1:], "--runtime"), optionValue(args[1:], "--profile"); runtimeName != "" || profile != "" {
+			record, err = store.ConfigureSession(record.SessionID, runtimeName, profile)
+			if err != nil {
+				return err
+			}
+		}
+		if len(tags) > 0 {
+			record, err = store.SetTags(record.SessionID, tags)
+			if err != nil {
+				return err
+			}
+		}
+		return printJSON(record)
+	case "list":
+		if err := validateValueOptions(args[1:], map[string]bool{
+			"--project": true, "--state": true, "--retention": true, "--tag": true, "--limit": true,
+		}); err != nil {
+			return err
+		}
+		filter := agentrun.SessionFilter{
+			ProjectID: optionValue(args[1:], "--project"), State: optionValue(args[1:], "--state"),
+			Retention: optionValue(args[1:], "--retention"), Tags: repeatOption(args[1:], "--tag"),
+			Limit: intOption(args[1:], "--limit", 100),
+		}
+		values, err := store.List(filter)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"sessions": values})
+	case "show":
+		sessionID, err := parseRequiredID(args[1:], "--session-id", nil, nil)
+		if err != nil {
+			return err
+		}
+		value, err := store.View(sessionID)
+		if err != nil {
+			return err
+		}
+		return printJSON(value)
+	case "messages":
+		sessionID, err := parseRequiredID(args[1:], "--session-id", map[string]bool{"--after-seq": true, "--limit": true}, nil)
+		if err != nil {
+			return err
+		}
+		values, err := store.Messages(sessionID, int64(intOption(args[1:], "--after-seq", 0)), intOption(args[1:], "--limit", 200))
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"session_id": sessionID, "messages": values})
+	case "events":
+		sessionID, err := parseRequiredID(args[1:], "--session-id", map[string]bool{"--after-seq": true, "--limit": true}, nil)
+		if err != nil {
+			return err
+		}
+		values, err := store.Events(sessionID, int64(intOption(args[1:], "--after-seq", 0)), intOption(args[1:], "--limit", 200))
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"session_id": sessionID, "events": values})
+	case "export":
+		sessionID, err := parseRequiredID(args[1:], "--session-id", map[string]bool{"--output": true}, nil)
+		if err != nil {
+			return err
+		}
+		output := optionValue(args[1:], "--output")
+		if output == "" {
+			return fmt.Errorf("history export requires --output")
+		}
+		if err := store.Export(sessionID, output); err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "session_id": sessionID, "output": output})
+	case "configure":
+		sessionID, err := parseRequiredID(args[1:], "--session-id", map[string]bool{"--runtime": true, "--profile": true}, nil)
+		if err != nil {
+			return err
+		}
+		record, err := store.ConfigureSession(sessionID, optionValue(args[1:], "--runtime"), optionValue(args[1:], "--profile"))
+		if err != nil {
+			return err
+		}
+		return printJSON(record)
+	case "delete":
+		sessionID, err := parseRequiredID(args[1:], "--session-id", nil, nil)
+		if err != nil {
+			return err
+		}
+		trash, err := store.Trash(sessionID)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "session_id": sessionID, "trash_path": trash, "recoverable": true})
+	case "import":
+		if err := validateValueOptions(args[1:], map[string]bool{"--input": true}); err != nil {
+			return err
+		}
+		inputPath := optionValue(args[1:], "--input")
+		if inputPath == "" {
+			return fmt.Errorf("history import requires --input")
+		}
+		data, err := os.ReadFile(inputPath)
+		if err != nil {
+			return err
+		}
+		var input agentrun.SessionImport
+		if err := json.Unmarshal(data, &input); err != nil {
+			return fmt.Errorf("decode session import: %w", err)
+		}
+		record, err := store.Import(input)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "session": record, "messages": len(input.Messages), "events": len(input.Events)})
+	case "rebuild":
+		if len(args) != 1 {
+			return fmt.Errorf("history rebuild does not accept arguments")
+		}
+		index, err := store.RebuildIndex()
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "sessions": len(index.Sessions), "updated_at": index.UpdatedAt})
+	default:
+		return fmt.Errorf("unknown history command: %s", args[0])
+	}
+}
+
 func parseSessionStartOptions(args []string) (agentrun.SessionOptions, error) {
 	options := agentrun.SessionOptions{}
 	var promptParts []string
@@ -730,6 +1069,18 @@ func parseSessionStartOptions(args []string) (agentrun.SessionOptions, error) {
 			options.ForbiddenActions = append(options.ForbiddenActions, args[i])
 		case "--force":
 			options.Force = true
+		case "--record-mode":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--record-mode requires value")
+			}
+			options.RecordMode = args[i]
+		case "--retention":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--retention requires value")
+			}
+			options.Retention = args[i]
 		case "--":
 			options.RawCLIArgs = append(options.RawCLIArgs, args[i+1:]...)
 			i = len(args)
@@ -1392,6 +1743,49 @@ func runCapabilityMemory(cfg *config.Config, args []string) error {
 		return err
 	}
 	switch command {
+	case "candidates":
+		candidates, err := capability.OpenMemory(cfg.Paths.MemoryCandidatesFile)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "items": candidates.Items(), "promotion_required": true})
+	case "promote":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: memory promote <candidate-id...>")
+		}
+		candidates, err := capability.OpenMemory(cfg.Paths.MemoryCandidatesFile)
+		if err != nil {
+			return err
+		}
+		requested := make(map[string]struct{}, len(args)-1)
+		for _, id := range args[1:] {
+			if strings.HasPrefix(id, "--") {
+				break
+			}
+			requested[id] = struct{}{}
+		}
+		var promoted []capability.MemoryItem
+		for _, item := range candidates.Items() {
+			if _, ok := requested[item.ID]; ok {
+				now := time.Now().UTC()
+				item.PromotedAt = &now
+				promoted = append(promoted, item)
+			}
+		}
+		if len(promoted) != len(requested) {
+			return fmt.Errorf("one or more memory candidates were not found")
+		}
+		if err := memory.Write(promoted); err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(promoted))
+		for _, item := range promoted {
+			ids = append(ids, item.ID)
+		}
+		if err := candidates.Forget(ids); err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "promoted": ids, "durable_memory": path})
 	case "demo":
 		query := optionValue(args[1:], "--query")
 		if query == "" {
@@ -1461,6 +1855,19 @@ func optionValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func validateValueOptions(args []string, allowed map[string]bool) error {
+	for i := 0; i < len(args); i++ {
+		if !allowed[args[i]] {
+			return fmt.Errorf("unknown option: %s", args[i])
+		}
+		i++
+		if i >= len(args) {
+			return fmt.Errorf("%s requires value", args[i-1])
+		}
+	}
+	return nil
 }
 func optionDefault(args []string, name, fallback string) string {
 	if value := optionValue(args, name); value != "" {

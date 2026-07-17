@@ -14,6 +14,9 @@ type requestFingerprintPayload struct {
 	RunType           string
 	RunID             string
 	Caller            string
+	SessionID         string
+	TurnID            string
+	ExecutionID       string
 	ProviderProfile   string
 	Provider          string
 	ProviderConfig    map[string]any
@@ -32,6 +35,7 @@ type requestFingerprintPayload struct {
 func fingerprintRequest(request Request, prompt string, profile provider.Config) (string, error) {
 	payload := requestFingerprintPayload{
 		ProjectID: request.ProjectID, RunType: request.RunType, RunID: request.RunID, Caller: request.Caller,
+		SessionID: request.SessionID, TurnID: request.TurnID, ExecutionID: request.ExecutionID,
 		ProviderProfile: request.ProviderProfile, Provider: request.Provider, ProviderConfig: profile.Raw,
 		CWD: request.CWD, Prompt: prompt, PromptFile: request.PromptFile,
 		RawCLIArgs: request.RawCLIArgs, DeadlineSeconds: request.DeadlineSeconds,

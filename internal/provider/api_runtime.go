@@ -324,13 +324,17 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 				}, "required": []any{"query"}, "additionalProperties": false,
 			}}
 			if err := add(tool, func(_ context.Context, call nativeengine.ToolCall) (any, error) {
-				return memory.Recall(fmt.Sprint(call.Arguments["query"]), fmt.Sprint(call.Arguments["type"]), intValue(call.Arguments["top_k"], 5)), nil
+				kind := ""
+				if value, ok := call.Arguments["type"]; ok && value != nil {
+					kind = strings.TrimSpace(fmt.Sprint(value))
+				}
+				return memory.Recall(fmt.Sprint(call.Arguments["query"]), kind, intValue(call.Arguments["top_k"], 5)), nil
 			}); err != nil {
 				return nil, err
 			}
 		}
 		if agentActionAllowed("memory_write", "memory.write", request.Allowed, request.Forbidden) {
-			tool := nativeengine.Tool{Name: "memory_write", Description: "写入或更新本地 runtime memory", Parameters: map[string]any{
+			tool := nativeengine.Tool{Name: "memory_write", Description: "提交本地 runtime memory candidate，需显式 promote 后才进入 durable memory", Parameters: map[string]any{
 				"type": "object", "properties": map[string]any{
 					"id": map[string]any{"type": "string"}, "type": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
 				}, "required": []any{"id", "content"}, "additionalProperties": false,
@@ -339,6 +343,7 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 				item := capability.MemoryItem{
 					ID: strings.TrimSpace(fmt.Sprint(call.Arguments["id"])), Type: strings.TrimSpace(fmt.Sprint(call.Arguments["type"])),
 					Content: strings.TrimSpace(fmt.Sprint(call.Arguments["content"])), Source: strings.TrimSpace(fmt.Sprint(call.Arguments["source"])),
+					SessionID: request.SessionID, TurnID: request.TurnID, RunID: request.RunID,
 				}
 				if item.ID == "" || item.Content == "" {
 					return nil, fmt.Errorf("memory_write requires non-empty id and content")
@@ -350,12 +355,20 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 					item.Type = "fact"
 				}
 				if item.Source == "" {
-					item.Source = "api-agent:" + request.RunID
+					item.Source = "api-agent"
 				}
-				if err := memory.Write([]capability.MemoryItem{item}); err != nil {
+				candidateFile := request.MemoryCandidateFile
+				if candidateFile == "" {
+					return nil, fmt.Errorf("memory candidate store is unavailable")
+				}
+				candidates, err := capability.OpenMemory(candidateFile)
+				if err != nil {
 					return nil, err
 				}
-				return map[string]any{"written": item.ID}, nil
+				if err := candidates.Write([]capability.MemoryItem{item}); err != nil {
+					return nil, err
+				}
+				return map[string]any{"candidate": item.ID, "promoted": false}, nil
 			}); err != nil {
 				return nil, err
 			}

@@ -42,6 +42,13 @@ type Request struct {
 	RunType                 string         `json:"run_type"`
 	RunID                   string         `json:"run_id"`
 	Caller                  string         `json:"caller"`
+	SessionID               string         `json:"session_id,omitempty"`
+	TurnID                  string         `json:"turn_id,omitempty"`
+	ExecutionID             string         `json:"execution_id,omitempty"`
+	ExecutionKind           string         `json:"execution_kind,omitempty"`
+	RecordMode              string         `json:"record_mode,omitempty"`
+	Retention               string         `json:"retention,omitempty"`
+	CaptureQuality          string         `json:"capture_quality,omitempty"`
 	ProviderProfile         string         `json:"provider_profile"`
 	Provider                string         `json:"provider"`
 	CWD                     string         `json:"cwd,omitempty"`
@@ -106,6 +113,12 @@ type RunOptions struct {
 	Profile           string
 	ProjectID         string
 	Caller            string
+	SessionID         string
+	TurnID            string
+	ExecutionID       string
+	ExecutionKind     string
+	RecordMode        string
+	Retention         string
 	CWD               string
 	Prompt            string
 	PromptFile        string
@@ -127,6 +140,9 @@ type RunSummary struct {
 	FailureReason string `json:"failure_reason,omitempty"`
 	ResultFile    string `json:"result_file"`
 	RunDir        string `json:"run_dir"`
+	SessionID     string `json:"session_id,omitempty"`
+	TurnID        string `json:"turn_id,omitempty"`
+	ExecutionID   string `json:"execution_id,omitempty"`
 	Idempotent    bool   `json:"idempotent,omitempty"`
 	FinalText     string `json:"-"`
 }

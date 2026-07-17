@@ -76,6 +76,53 @@ func TestHTTPRunUsesAgentRunArtifacts(t *testing.T) {
 	}
 }
 
+func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["session turn ok"],"done_after":1}}}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTPHandler(agentrun.New(root))
+	createBody := bytes.NewBufferString(`{"session_id":"session-20260717-130000-http","project_id":"project","title":"HTTP session","runtime":"api","profile":"native-test","tags":["workbench"]}`)
+	create := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/sessions", createBody)
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(create, request)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	if !strings.Contains(create.Body.String(), `"runtime":"api"`) || !strings.Contains(create.Body.String(), `"profile":"native-test"`) || !strings.Contains(create.Body.String(), `"workbench"`) {
+		t.Fatalf("create body=%s", create.Body.String())
+	}
+	turnBody := bytes.NewBufferString(`{"run_id":"turn-20260717-130001-http","profile":"native-test","prompt":"hello"}`)
+	turn := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/v1/sessions/session-20260717-130000-http/turns", turnBody)
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(turn, request)
+	if turn.Code != http.StatusCreated {
+		t.Fatalf("turn status=%d body=%s", turn.Code, turn.Body.String())
+	}
+	for _, path := range []string{
+		"/v1/sessions?tag=workbench", "/v1/sessions/session-20260717-130000-http",
+		"/v1/sessions/session-20260717-130000-http/messages?after_seq=0",
+		"/v1/sessions/session-20260717-130000-http/events?after_seq=0",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	messages := httptest.NewRecorder()
+	handler.ServeHTTP(messages, httptest.NewRequest(http.MethodGet, "/v1/sessions/session-20260717-130000-http/messages", nil))
+	if !strings.Contains(messages.Body.String(), "hello") || !strings.Contains(messages.Body.String(), "session turn ok") {
+		t.Fatalf("messages=%s", messages.Body.String())
+	}
+}
+
 func TestHTTPHandlerRequiresConfiguredBearerToken(t *testing.T) {
 	handler := NewHTTPHandlerWithOptions(agentrun.New(t.TempDir()), HTTPOptions{BearerToken: "test-token"})
 

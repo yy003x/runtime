@@ -43,10 +43,14 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 	providerStatus["kind"] = kind
 	_, _ = s.store.WriteStatus(paths, request, StateRunning, "", "agent resuming", providerStatus)
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": profile.Type})
+	if err := NewSessionManager(s).ResumeRun(request); err != nil {
+		return RunSummary{}, fmt.Errorf("resume session history: %w", err)
+	}
 	prepared, err := selected.Prepare(ctx, profile, provider.Request{
 		Overrides: request.ProviderOverrides, CWD: request.CWD, HTTPClient: s.HTTPClient, Profiles: profiles,
 		RunID: runID, SnapshotFile: snapshotFile,
 		PersonaDir: s.PersonaDir, SkillDir: s.paths.SkillsDir, ToolDir: s.paths.ToolsDir, MemoryFile: s.paths.MemoryFile,
+		MemoryCandidateFile: s.paths.MemoryCandidatesFile, SessionID: request.SessionID, TurnID: request.TurnID,
 		Allowed: append([]string(nil), request.AllowedActions...), Forbidden: append([]string(nil), request.ForbiddenActions...),
 		NativeResume: true, NativePatch: patch,
 	})
@@ -120,6 +124,7 @@ func (s *Service) ControlNative(runType, runID, action, reason string) (RunSumma
 	status, err = s.store.WriteStatus(paths, request, state, failureReason, action, providerStatus)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "provider."+action, map[string]any{"transport": profile.Type, "reason": reason})
+	_ = NewSessionManager(s).CompleteRun(request, state, failureReason, failureReason)
 	return summary(paths, status, false), err
 }
 

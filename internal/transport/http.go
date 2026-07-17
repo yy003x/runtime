@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"agent-runtime/internal/agentrun"
@@ -42,11 +43,26 @@ type RunRequest struct {
 	ProviderOverrides map[string]any `json:"provider_overrides,omitempty"`
 	AllowedActions    []string       `json:"allowed_actions,omitempty"`
 	ForbiddenActions  []string       `json:"forbidden_actions,omitempty"`
+	SessionID         string         `json:"session_id,omitempty"`
+	RecordMode        string         `json:"record_mode,omitempty"`
+	Retention         string         `json:"retention,omitempty"`
 }
 
 type ControlRequest struct {
 	Reason string                `json:"reason,omitempty"`
 	Patch  *provider.NativePatch `json:"patch,omitempty"`
+}
+
+type SessionCreateRequest struct {
+	SessionID  string   `json:"session_id,omitempty"`
+	ProjectID  string   `json:"project_id,omitempty"`
+	CWD        string   `json:"cwd,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Runtime    string   `json:"runtime,omitempty"`
+	Profile    string   `json:"profile,omitempty"`
+	RecordMode string   `json:"record_mode,omitempty"`
+	Retention  string   `json:"retention,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
 }
 
 func NewHTTPHandler(service *agentrun.Service) *HTTPHandler {
@@ -79,6 +95,145 @@ func (h *HTTPHandler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
 	h.mux.HandleFunc("POST /v1/runs", h.handleRun)
 	h.mux.HandleFunc("/v1/runs/", h.handleRunByID)
+	h.mux.HandleFunc("/v1/sessions", h.handleSessions)
+	h.mux.HandleFunc("/v1/sessions/", h.handleSessionByID)
+}
+
+func (h *HTTPHandler) handleSessions(writer http.ResponseWriter, request *http.Request) {
+	manager := agentrun.NewSessionManager(h.svc)
+	if request.Method == http.MethodGet {
+		limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
+		values, err := manager.Store().List(agentrun.SessionFilter{
+			ProjectID: request.URL.Query().Get("project_id"), State: request.URL.Query().Get("state"),
+			Retention: request.URL.Query().Get("retention"), Tags: request.URL.Query()["tag"], Limit: limit,
+		})
+		if err != nil {
+			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"sessions": values})
+		return
+	}
+	if request.Method != http.MethodPost {
+		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
+		return
+	}
+	if !hasJSONContentType(request) {
+		writeJSON(writer, http.StatusUnsupportedMediaType, errorResponse{Error: "Content-Type must be application/json"})
+		return
+	}
+	var input SessionCreateRequest
+	if err := h.decodeJSON(writer, request, &input, false); err != nil {
+		handleDecodeError(writer, err)
+		return
+	}
+	if input.CWD != "" && (!filepath.IsAbs(input.CWD) || strings.ContainsRune(input.CWD, '\x00')) {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "cwd must be an absolute path without NUL"})
+		return
+	}
+	if err := agentrun.ValidateSessionTags(input.Tags); err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	decision, err := agentrun.DecideRecordPolicy("http", agentrun.RunTurn, agentrun.ExecutionAPI, input.SessionID, input.RecordMode, input.Retention)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	record, err := manager.EnsureSession(input.SessionID, input.ProjectID, input.CWD, input.Title, decision)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	if input.Runtime != "" || input.Profile != "" {
+		record, err = manager.Store().ConfigureSession(record.SessionID, input.Runtime, input.Profile)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+			return
+		}
+	}
+	if len(input.Tags) > 0 {
+		record, err = manager.Store().SetTags(record.SessionID, input.Tags)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+			return
+		}
+	}
+	writeJSON(writer, http.StatusCreated, record)
+}
+
+func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(request.URL.Path, "/v1/sessions/"), "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeJSON(writer, http.StatusNotFound, errorResponse{Error: "session_id is required"})
+		return
+	}
+	if len(parts) > 2 {
+		writeJSON(writer, http.StatusNotFound, errorResponse{Error: "unknown session resource"})
+		return
+	}
+	sessionID := parts[0]
+	action := "show"
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	store := agentrun.NewSessionManager(h.svc).Store()
+	if request.Method == http.MethodGet {
+		after, _ := strconv.ParseInt(request.URL.Query().Get("after_seq"), 10, 64)
+		limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
+		switch action {
+		case "show":
+			value, err := store.View(sessionID)
+			writeReadResult(writer, value, err)
+		case "messages":
+			value, err := store.Messages(sessionID, after, limit)
+			writeReadResult(writer, map[string]any{"session_id": sessionID, "messages": value}, err)
+		case "events", "watch":
+			value, err := store.Events(sessionID, after, limit)
+			writeReadResult(writer, map[string]any{"session_id": sessionID, "events": value}, err)
+		default:
+			writeJSON(writer, http.StatusNotFound, errorResponse{Error: "unknown session resource"})
+		}
+		return
+	}
+	if request.Method != http.MethodPost || action != "turns" {
+		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
+		return
+	}
+	if !hasJSONContentType(request) {
+		writeJSON(writer, http.StatusUnsupportedMediaType, errorResponse{Error: "Content-Type must be application/json"})
+		return
+	}
+	var input RunRequest
+	if err := h.decodeJSON(writer, request, &input, false); err != nil {
+		handleDecodeError(writer, err)
+		return
+	}
+	if err := validateRunRequest(input); err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	existing, err := store.Get(sessionID)
+	if err != nil {
+		writeJSON(writer, http.StatusNotFound, errorResponse{Error: err.Error()})
+		return
+	}
+	if input.ProjectID == "" {
+		input.ProjectID = existing.ProjectID
+	}
+	if input.CWD == "" {
+		input.CWD = existing.CWD
+	}
+	summary, err := h.svc.Run(request.Context(), agentrun.RunOptions{RunID: input.RunID, RunType: agentrun.RunTurn,
+		Profile: input.Profile, ProjectID: input.ProjectID, CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile,
+		ExecutionMode: input.ExecutionMode, DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
+		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions, SessionID: sessionID,
+		RecordMode: input.RecordMode, Retention: input.Retention, Caller: "http"})
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})
+		return
+	}
+	writeJSON(writer, http.StatusCreated, summary)
 }
 
 func (h *HTTPHandler) handleHealth(writer http.ResponseWriter, _ *http.Request) {
@@ -104,6 +259,7 @@ func (h *HTTPHandler) handleRun(writer http.ResponseWriter, request *http.Reques
 		CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile, ExecutionMode: input.ExecutionMode,
 		DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
 		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions,
+		SessionID: input.SessionID, RecordMode: input.RecordMode, Retention: input.Retention, Caller: "http",
 	})
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})

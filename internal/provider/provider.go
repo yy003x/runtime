@@ -19,28 +19,31 @@ type Provider interface {
 // Request contains execution context owned by agentrun but consumed by a
 // provider implementation.
 type Request struct {
-	Prompt       string
-	RawCLIArgs   []string
-	Overrides    map[string]any
-	CWD          string
-	Environment  map[string]string
-	HTTPClient   *http.Client
-	Daemon       *daemon.Client
-	Profiles     map[string]Config
-	RunID        string
-	RequestFile  string
-	ResultFile   string
-	DoneFile     string
-	OutputLog    string
-	SnapshotFile string
-	PersonaDir   string
-	SkillDir     string
-	ToolDir      string
-	MemoryFile   string
-	Allowed      []string
-	Forbidden    []string
-	NativeResume bool
-	NativePatch  *NativePatch
+	Prompt              string
+	RawCLIArgs          []string
+	Overrides           map[string]any
+	CWD                 string
+	Environment         map[string]string
+	HTTPClient          *http.Client
+	Daemon              *daemon.Client
+	Profiles            map[string]Config
+	RunID               string
+	RequestFile         string
+	ResultFile          string
+	DoneFile            string
+	OutputLog           string
+	SnapshotFile        string
+	PersonaDir          string
+	SkillDir            string
+	ToolDir             string
+	MemoryFile          string
+	MemoryCandidateFile string
+	SessionID           string
+	TurnID              string
+	Allowed             []string
+	Forbidden           []string
+	NativeResume        bool
+	NativePatch         *NativePatch
 }
 
 type NativeMessage struct {

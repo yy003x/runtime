@@ -12,11 +12,15 @@ import (
 )
 
 type MemoryItem struct {
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
-	Content   string    `json:"content"`
-	Source    string    `json:"source"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string     `json:"id"`
+	Type       string     `json:"type"`
+	Content    string     `json:"content"`
+	Source     string     `json:"source"`
+	SessionID  string     `json:"session_id,omitempty"`
+	TurnID     string     `json:"turn_id,omitempty"`
+	RunID      string     `json:"run_id,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	PromotedAt *time.Time `json:"promoted_at,omitempty"`
 }
 
 type Memory struct {
@@ -146,6 +150,22 @@ func (m *Memory) Sources() []map[string]any {
 		out = append(out, map[string]any{"source": name, "count": counts[name]})
 	}
 	return out
+}
+
+func (m *Memory) Items() []MemoryItem {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	items := make([]MemoryItem, 0, len(m.items))
+	for _, item := range m.items {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items
 }
 
 func (m *Memory) load() error {

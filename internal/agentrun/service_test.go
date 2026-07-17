@@ -77,6 +77,44 @@ func TestCaptureSynthesizesResultAndRunIDIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestManagedRunInjectsSessionContextPathsAndPersistsManifest(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "context.sh")
+	writeExecutable(t, script, `#!/bin/sh
+printf '%s|%s|%s|%s\n' "$AGENTRUN_SESSION_ID" "$AGENTRUN_TURN_ID" "$SN_RUNTIME_CONTEXT_MANIFEST" "$SN_RUNTIME_MEMORY_CANDIDATES_FILE"
+`)
+	writeProfile(t, root, "context", script, "required")
+	service := New(root)
+	sessionID := "session-20260717-130000-context"
+	result, err := service.Run(context.Background(), RunOptions{
+		RunID: "turn-20260717-130000-context", RunType: RunTurn, SessionID: sessionID,
+		Profile: "context", Prompt: "hello", ExecutionMode: ModeCapture,
+	})
+	if err != nil || result.State != StateDone {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if !strings.Contains(result.FinalText, sessionID+"|turn-20260717-130000-context|") || !strings.Contains(result.FinalText, "context-manifest.json") || !strings.Contains(result.FinalText, "memory/candidates.json") {
+		t.Fatalf("runtime environment output=%q", result.FinalText)
+	}
+	view, err := NewSessionManager(service).Store().View(sessionID)
+	if err != nil || len(view.Turns) != 1 || len(view.Attempts) != 1 {
+		t.Fatalf("view=%#v err=%v", view, err)
+	}
+	var manifest ContextManifest
+	if err := readJSON(view.Turns[0].ContextManifest, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ConfigDigest == "" || manifest.PolicyDigest == "" || manifest.MessageDigest == "" || manifest.SessionID != sessionID {
+		t.Fatalf("manifest=%#v", manifest)
+	}
+	if view.Session.Runtime != "cli" || view.Session.Profile != "context" {
+		t.Fatalf("session runtime=%#v", view.Session)
+	}
+	if view.Attempts[0].ResultRef == nil || view.Attempts[0].ResultRef.ResultFile != result.ResultFile {
+		t.Fatalf("attempt=%#v result=%#v", view.Attempts[0], result)
+	}
+}
+
 func TestForceRunDoesNotReuseStaleResult(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "force.sh")

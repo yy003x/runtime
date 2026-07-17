@@ -104,6 +104,7 @@ func TestOpenAIAPIRuntimeExecutesToolAndLoadsSkillMemoryContext(t *testing.T) {
 func TestAPIRuntimeMemoryToolsRespectSeparatePermissions(t *testing.T) {
 	root := t.TempDir()
 	memoryFile := filepath.Join(root, "memory.json")
+	candidateFile := filepath.Join(root, "candidates.json")
 	memory, err := capability.OpenMemory(memoryFile)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +113,8 @@ func TestAPIRuntimeMemoryToolsRespectSeparatePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime, err := buildAPIToolRuntime(context.Background(), Request{
-		RunID: "memory-tools", MemoryFile: memoryFile,
+		RunID: "memory-tools", MemoryFile: memoryFile, MemoryCandidateFile: candidateFile,
+		SessionID: "session-memory-tools", TurnID: "turn-memory-tools",
 		Allowed: []string{"memory.read", "memory.write", "memory.delete"},
 	}, APIRuntimeConfig{Memory: &APIMemoryConfig{Enabled: true}})
 	if err != nil {
@@ -125,10 +127,18 @@ func TestAPIRuntimeMemoryToolsRespectSeparatePermissions(t *testing.T) {
 	if _, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_write", map[string]any{"id": "new", "content": "new fact"})); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_recall", map[string]any{"query": "new", "top_k": 2})); err != nil || len(output.([]capability.MemoryItem)) != 1 {
-		t.Fatalf("recall=%#v err=%v", output, err)
+	if output, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_recall", map[string]any{"query": "new", "top_k": 2})); err != nil || len(output.([]capability.MemoryItem)) != 1 || output.([]capability.MemoryItem)[0].ID != "old" {
+		t.Fatalf("durable recall unexpectedly included candidate: recall=%#v err=%v", output, err)
 	}
-	if _, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_forget", map[string]any{"ids": []any{"old", "new"}})); err != nil {
+	candidates, err := capability.OpenMemory(candidateFile)
+	if err != nil || len(candidates.Recall("new", "", 5)) != 1 {
+		t.Fatalf("candidate was not persisted: err=%v", err)
+	}
+	candidate := candidates.Recall("new", "", 5)[0]
+	if candidate.SessionID != "session-memory-tools" || candidate.TurnID != "turn-memory-tools" || candidate.RunID != "memory-tools" {
+		t.Fatalf("candidate provenance=%#v", candidate)
+	}
+	if _, err := runtime.executor.Execute(context.Background(), nativeToolCall("memory_forget", map[string]any{"ids": []any{"old"}})); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := capability.OpenMemory(memoryFile)
@@ -136,7 +146,7 @@ func TestAPIRuntimeMemoryToolsRespectSeparatePermissions(t *testing.T) {
 		t.Fatalf("memory was not cleared: err=%v", err)
 	}
 	blocked, err := buildAPIToolRuntime(context.Background(), Request{
-		MemoryFile: memoryFile, Allowed: []string{"memory.write"}, Forbidden: []string{"memory_write"},
+		MemoryFile: memoryFile, MemoryCandidateFile: candidateFile, Allowed: []string{"memory.write"}, Forbidden: []string{"memory_write"},
 	}, APIRuntimeConfig{Memory: &APIMemoryConfig{Enabled: true}})
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +200,7 @@ func TestAPIRuntimeAuthorizationAndNormalizationHelpers(t *testing.T) {
 func TestAnthropicAPIRuntimeExecutesMemoryTool(t *testing.T) {
 	root := t.TempDir()
 	memoryFile := filepath.Join(root, "memory.json")
+	candidateFile := filepath.Join(root, "candidates.json")
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		calls++
@@ -211,7 +222,7 @@ func TestAnthropicAPIRuntimeExecutesMemoryTool(t *testing.T) {
 			return
 		}
 		encoded, _ := json.Marshal(body["messages"])
-		if !strings.Contains(string(encoded), "tool_result") || !strings.Contains(string(encoded), "written") {
+		if !strings.Contains(string(encoded), "tool_result") || !strings.Contains(string(encoded), "candidate") {
 			t.Errorf("tool result was not returned: %s", encoded)
 		}
 		writeFixtureJSON(writer, map[string]any{
@@ -227,7 +238,7 @@ func TestAnthropicAPIRuntimeExecutesMemoryTool(t *testing.T) {
 	}}
 	prepared, err := (apiProvider{}).Prepare(context.Background(), cfg, Request{
 		Prompt: "save memory", RunID: "run-anthropic", SnapshotFile: filepath.Join(root, "context-snapshot.json"),
-		MemoryFile: memoryFile, Allowed: []string{"memory.write"}, HTTPClient: server.Client(),
+		MemoryFile: memoryFile, MemoryCandidateFile: candidateFile, Allowed: []string{"memory.write"}, HTTPClient: server.Client(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -236,9 +247,9 @@ func TestAnthropicAPIRuntimeExecutesMemoryTool(t *testing.T) {
 	if err != nil || result.FinalText != "anthropic done" || calls != 2 {
 		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
 	}
-	memory, err := capability.OpenMemory(memoryFile)
+	memory, err := capability.OpenMemory(candidateFile)
 	if err != nil || len(memory.Recall("anthropic", "fact", 5)) != 1 {
-		t.Fatalf("memory recall err=%v", err)
+		t.Fatalf("memory candidate recall err=%v", err)
 	}
 }
 

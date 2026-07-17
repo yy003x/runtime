@@ -54,6 +54,19 @@ func TestNativeProviderPatchResumeUsesSameRun(t *testing.T) {
 	if result.Summary != "recovered" {
 		t.Fatalf("result=%#v", result)
 	}
+	view, err := NewSessionManager(service).Store().View(run.SessionID)
+	if err != nil || view.Session.State != StateDone || len(view.Attempts) != 1 || view.Attempts[0].State != StateDone {
+		t.Fatalf("history=%#v err=%v", view, err)
+	}
+	resumedEvents := 0
+	for _, event := range view.Events {
+		if event.Type == "run.resumed" {
+			resumedEvents++
+		}
+	}
+	if resumedEvents != 1 {
+		t.Fatalf("resumed events=%d", resumedEvents)
+	}
 }
 
 func TestAPIAgentProviderPersistsAndPatchResumesLocalContext(t *testing.T) {
@@ -114,6 +127,10 @@ func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
 	finished := <-done
 	if finished.run.State != StateCancelled || !errors.Is(finished.err, context.Canceled) {
 		t.Fatalf("finished=%#v err=%v", finished.run, finished.err)
+	}
+	view, err := NewSessionManager(service).Store().View(cancelled.SessionID)
+	if err != nil || view.Session.State != StateCancelled || len(view.Attempts) != 1 || view.Attempts[0].State != StateCancelled {
+		t.Fatalf("cancel history=%#v err=%v", view, err)
 	}
 }
 

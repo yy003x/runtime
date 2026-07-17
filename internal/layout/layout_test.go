@@ -16,7 +16,7 @@ func TestResolveUsesSNCLIHome(t *testing.T) {
 	if paths.Home != home || paths.ConfigDir != filepath.Join(home, "configs") || paths.RunsDir != filepath.Join(home, "runs") {
 		t.Fatalf("unexpected paths: %#v", paths)
 	}
-	if paths.MemoryFile != filepath.Join(home, "state", "memory.json") || paths.DaemonLog != filepath.Join(home, "logs", "daemon.log") {
+	if paths.MemoryFile != filepath.Join(home, "memory", "durable.json") || paths.MemoryCandidatesFile != filepath.Join(home, "memory", "candidates.json") || paths.DaemonLog != filepath.Join(home, "logs", "daemon.log") {
 		t.Fatalf("unexpected state paths: %#v", paths)
 	}
 }
@@ -29,7 +29,7 @@ func TestEnsureCreatesPrivateDirectoryTree(t *testing.T) {
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{paths.ConfigDir, paths.RunsDir, paths.DaemonDir, paths.StateDir, paths.LogsDir, paths.CacheDir, paths.TmpDir} {
+	for _, dir := range []string{paths.ConfigDir, paths.RunsDir, paths.SessionsDir, paths.HistoryDir, paths.MemoryDir, paths.DaemonDir, paths.StateDir, paths.SessionStateDir, paths.LogsDir, paths.CacheDir, paths.TmpDir} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Fatal(err)

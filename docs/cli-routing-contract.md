@@ -23,7 +23,7 @@ prompt 来源为 positional、`--prompt-file`、stdin 三选一；同时提供�
 第一个参数按以下顺序解析：
 
 1. `-h`、`--help` 等全局 flag。
-2. `help`、`version`、`profiles`、`config`、`doctor`、`daemon`、`task`、`turn`、`loop`、`capabilities`、`tools`、`session`、`command`、`clean`、`update` 等内建命令。
+2. `help`、`version`、`profiles`、`config`、`doctor`、`daemon`、`task`、`turn`、`loop`、`capabilities`、`tools`、`session`、`history`、`command`、`clean`、`update` 等内建命令。
 3. 从 `~/.sn/configs/*.json` 解析 config ID、alias 或 preset ID。
 4. 均未命中时返回 `unknown command`，不得猜测 Provider 或静默降级。
 
@@ -37,14 +37,14 @@ config ID、alias 和 preset ID 不得与内建命令重名，配置加载阶段
 
 | 调用形式 | 路由 | 参数处理 | Artifact |
 | --- | --- | --- | --- |
-| `sn-cli <profile>` | direct interactive | 无额外参数 | 无 |
-| `sn-cli <profile> -x ...` | direct passthrough | 参数直接传给目标 CLI | 无 |
-| `sn-cli <profile> --long ...` | direct passthrough | 参数直接传给目标 CLI | 无 |
-| `sn-cli <profile> -- ...` | direct passthrough | 移除 `--` 后原样传递 | 无 |
+| `sn-cli <profile>` | direct interactive | 无额外参数 | 无 run artifact；记录 metadata Session |
+| `sn-cli <profile> -x ...` | direct passthrough | 参数直接传给目标 CLI | 无 run artifact；记录 metadata Session |
+| `sn-cli <profile> --long ...` | direct passthrough | 参数直接传给目标 CLI | 无 run artifact；记录 metadata Session |
+| `sn-cli <profile> -- ...` | direct passthrough | 移除 `--` 后原样传递 | 无 run artifact；记录 metadata Session |
 | `sn-cli <profile> <text> ...` | managed prompt | 普通文本由 AgentRun 解析 | 有 |
 | `stdin | sn-cli <profile>` | managed prompt | stdin 由 AgentRun 解析 | 有 |
 
-direct 调用只使用 `cli.command.args`、model 和 env，不加入 `managed_args`。managed 调用的目标 argv 顺序固定为：
+direct 调用只使用 `cli.command.args`、model 和 env，不加入 `managed_args`。direct 不捕获 prompt/output，只记录 `capture_quality=metadata_only` 的执行元数据。managed 调用的目标 argv 顺序固定为：
 
 ```text
 binary + command.args + model + raw-cli-args + managed_args
@@ -91,11 +91,27 @@ sn-cli session send --run-id <id> "继续"
 sn-cli session logs --run-id <id> --tail 200
 sn-cli session stop --run-id <id>
 
+sn-cli history create --session-id <id> --project <project> --runtime api --profile ba
+sn-cli history list
+sn-cli history show --session-id <id>
+sn-cli history messages --session-id <id> --after-seq 0
+sn-cli history events --session-id <id> --after-seq 0
+sn-cli history configure --session-id <id> --runtime cli --profile cx
+sn-cli history delete --session-id <id>
+sn-cli history rebuild
+
+sn-cli config command -c cx-spark
+sn-cli config command -c cx-spark --json
+
 sn-cli clean
 sn-cli clean --apply
 ```
 
 `session start` 必须显式提供 `-c/--config`。它复用同一份 command config 启动 tmux 交互 CLI，不读取单独的 `tcx/tcc` 配置。启动成功表示 pane 已稳定；存在首个 prompt 时，还要求粘贴和 Enter 成功并记录 `prompt.submitted`，不表示模型任务已完成。
+
+`config command` 只读解析 CLI profile 的 managed argv，不启动 Provider，也不输出 profile env 值。文本模式输出可供 shell 阅读的脱敏命令；`--json` 输出 `argv` 与 `command`，敏感 flag、URL 凭据、敏感 query 和当前环境中的 secret 值必须替换为 `[REDACTED]`。
+
+`session list/status/send/...` 管理 tmux 活动执行；`history ...` 管理跨 API、CLI、TTY、tmux 的逻辑 Session。`task run`、`turn run` 和顶层 managed profile 可用 `--session-id` 关联已有 Session，并可用 `--record-mode full|metadata|off`、`--retention ephemeral|standard|pinned` 显式覆盖 Runtime policy。
 
 ## 5. 变更门禁
 

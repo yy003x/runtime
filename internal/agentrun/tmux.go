@@ -37,6 +37,8 @@ type SessionOptions struct {
 	AllowedActions   []string
 	ForbiddenActions []string
 	Force            bool
+	RecordMode       string
+	Retention        string
 }
 
 func (s *Service) StartSession(ctx context.Context, profileName, projectID, cwd, runID string, force bool) (SessionSummary, error) {
@@ -70,6 +72,10 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	if options.RunID == "" {
 		options.RunID = newRunID(RunSession)
 	}
+	decision, err := DecideRecordPolicy("cli.session", RunSession, ExecutionTmux, options.RunID, options.RecordMode, options.Retention)
+	if err != nil {
+		return SessionSummary{}, err
+	}
 	paths, err := RunPaths(s.RunsDir, RunSession, options.RunID)
 	if err != nil {
 		return SessionSummary{}, err
@@ -83,7 +89,9 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	request := Request{SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
 		ProjectID: options.ProjectID, RunType: RunSession, RunID: options.RunID, ProviderProfile: profile.ID,
 		Provider: provider.ExecutorTmux, CWD: resolvedCWD, PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), ResultFile: paths.ResultFile,
-		ExecutionMode: ModeManaged, ProviderOverrides: map[string]any{}, AllowedActions: append([]string(nil), options.AllowedActions...), ForbiddenActions: append([]string(nil), options.ForbiddenActions...), CreatedAt: now, UpdatedAt: now}
+		ExecutionMode: ModeManaged, SessionID: options.RunID, ExecutionID: executionIDForRun(options.RunID), ExecutionKind: ExecutionTmux,
+		RecordMode: decision.RecordMode, Retention: decision.Retention, CaptureQuality: decision.CaptureQuality,
+		ProviderOverrides: map[string]any{}, AllowedActions: append([]string(nil), options.AllowedActions...), ForbiddenActions: append([]string(nil), options.ForbiddenActions...), CreatedAt: now, UpdatedAt: now}
 	request.RequestFingerprint, err = fingerprintRequest(request, prompt, profile)
 	if err != nil {
 		return SessionSummary{}, err
@@ -103,6 +111,18 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 	}
 	if options.Force {
 		s.resetRun(paths)
+	}
+	manager := NewSessionManager(s)
+	if _, err := manager.EnsureSession(request.SessionID, request.ProjectID, request.CWD, prompt, decision); err != nil {
+		return SessionSummary{}, err
+	}
+	if _, err := manager.Store().ConfigureSession(request.SessionID, "tmux", profile.ID); err != nil {
+		return SessionSummary{}, err
+	}
+	if err := manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+		Kind: ExecutionTmux, Profile: profile.ID, Provider: provider.ExecutorTmux, State: StatePending,
+		CaptureQuality: request.CaptureQuality, RunIDs: []string{request.RunID}}); err != nil {
+		return SessionSummary{}, err
 	}
 	if err := s.store.WriteRequest(paths, request); err != nil {
 		return SessionSummary{}, err
@@ -130,6 +150,11 @@ func (s *Service) StartSessionWithOptions(ctx context.Context, options SessionOp
 		return SessionSummary{}, err
 	}
 	providerStatus := map[string]any{"tmux_session": session, "alive": true}
+	_ = manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+		Kind: ExecutionTmux, Profile: profile.ID, Provider: provider.ExecutorTmux, State: StateRunning,
+		CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}})
+	_ = manager.Store().AppendEvent(request.SessionID, SessionEvent{ExecutionID: request.ExecutionID, RunID: request.RunID,
+		Type: "execution.started", Data: map[string]any{"kind": ExecutionTmux, "tmux_session": session}})
 	status, err := s.store.WriteStatus(paths, request, StateRunning, "", "session running", providerStatus)
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateRunning, "transport": provider.ExecutorTmux})
 	if err != nil {
@@ -182,11 +207,19 @@ func (s *Service) SessionStatus(ctx context.Context, runID string) (SessionSumma
 			status, daemonErr = s.store.WriteStatus(paths, request, state, reason, "session process exited", providerStatus)
 			s.updateRegistry(paths, status)
 			_ = s.store.Event(paths, request, "provider.exited", map[string]any{"returncode": code, "attempts": attempts})
+			_ = NewSessionManager(s).Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+				Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: state,
+				CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}})
+			_ = NewSessionManager(s).Store().UpdateSessionState(request.SessionID, state, "session process exited")
 		} else {
 			request, _ := s.store.ReadRequest(paths)
 			status, daemonErr = s.store.WriteStatus(paths, request, StateFailed, "orphaned", "tmux session disappeared without exit marker", providerStatus)
 			s.updateRegistry(paths, status)
 			_ = s.store.Event(paths, request, "provider.disappeared", map[string]any{"tmux_session": session})
+			_ = NewSessionManager(s).Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+				Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: StateFailed,
+				CaptureQuality: request.CaptureQuality, TmuxSession: session, RunIDs: []string{request.RunID}})
+			_ = NewSessionManager(s).Store().UpdateSessionState(request.SessionID, StateFailed, "tmux session disappeared without exit marker")
 		}
 	}
 	return SessionSummary{RunID: runID, ProjectID: status.ProjectID, State: status.State, RunDir: paths.RunDir, Session: session, Attach: "tmux attach-session -t " + session, Alive: alive, Status: status.ProviderStatus}, daemonErr
@@ -224,14 +257,17 @@ func (s *Service) SessionSend(ctx context.Context, runID, text string, submit bo
 	bracketed := false
 	var backend *providertmux.Backend
 	paths, _ := RunPaths(s.RunsDir, RunSession, runID)
-	if request, readErr := s.store.ReadRequest(paths); readErr == nil {
-		if profiles, loadErr := s.Profiles(); loadErr == nil {
-			if profile, ok := provider.Resolve(profiles, request.ProviderProfile); ok {
-				profile, err = provider.AsTmuxSessionProfile(profile)
-				if err == nil {
-					bracketed = profile.CLI.Tmux.PasteBracketed
-					backend, err = provider.NewTmuxBackend(profile, s.DaemonClient())
-				}
+	request, readRequestErr := s.store.ReadRequest(paths)
+	if readRequestErr != nil {
+		return summary, readRequestErr
+	}
+	var profile provider.Config
+	if profiles, loadErr := s.Profiles(); loadErr == nil {
+		if resolved, ok := provider.Resolve(profiles, request.ProviderProfile); ok {
+			profile, err = provider.AsTmuxSessionProfile(resolved)
+			if err == nil {
+				bracketed = profile.CLI.Tmux.PasteBracketed
+				backend, err = provider.NewTmuxBackend(profile, s.DaemonClient())
 			}
 		}
 	}
@@ -241,15 +277,26 @@ func (s *Service) SessionSend(ctx context.Context, runID, text string, submit bo
 	if backend == nil {
 		return summary, fmt.Errorf("tmux profile is unavailable for session: %s", runID)
 	}
+	manager := NewSessionManager(s)
+	turnID := ""
+	if submit && request.RecordMode != RecordOff {
+		turnID = newRunID(RunTurn)
+		manifest, compileErr := manager.CompileContext(request.SessionID, turnID, request.CWD, profile, text, request.AllowedActions, request.ForbiddenActions)
+		if compileErr != nil {
+			return summary, compileErr
+		}
+		if _, addErr := manager.Store().AddTurn(request.SessionID, TurnRecord{TurnID: turnID, CaptureQuality: request.CaptureQuality}, text, manifest); addErr != nil {
+			return summary, addErr
+		}
+	}
 	if err := backend.Send(ctx, summary.Session, text, providertmux.SendOptions{Submit: submit, Bracketed: bracketed, Stabilize: submit}); err != nil {
+		if turnID != "" {
+			_ = manager.Store().CompleteTurn(request.SessionID, turnID, StateFailed, err.Error(), "error")
+		}
 		return summary, err
 	}
 	if submit {
-		request, readErr := s.store.ReadRequest(paths)
 		status, statusErr := s.store.ReadStatus(paths)
-		if readErr != nil {
-			return summary, readErr
-		}
 		if statusErr != nil {
 			return summary, statusErr
 		}
@@ -263,9 +310,14 @@ func (s *Service) SessionSend(ctx context.Context, runID, text string, submit bo
 			return summary, writeErr
 		}
 		s.updateRegistry(paths, updated)
-		if eventErr := s.store.Event(paths, request, "prompt.submitted", map[string]any{"submitted": true}); eventErr != nil {
+		if eventErr := s.store.Event(paths, request, "prompt.submitted", map[string]any{"submitted": true, "turn_id": turnID}); eventErr != nil {
 			return summary, eventErr
 		}
+		transcript, _ := backend.Capture(ctx, summary.Session, 200)
+		_ = manager.Store().CompleteTurn(request.SessionID, turnID, TurnStateSubmitted, transcript, "transcript_snapshot")
+		_ = manager.Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+			Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: StateRunning,
+			CaptureQuality: request.CaptureQuality, TmuxSession: summary.Session, RunIDs: []string{request.RunID}, TurnIDs: []string{turnID}})
 	}
 	return s.SessionStatus(ctx, runID)
 }
@@ -355,6 +407,12 @@ func (s *Service) SessionStop(ctx context.Context, runID string) (SessionSummary
 		}
 		s.updateRegistry(paths, status)
 		summary.State = status.State
+		_ = NewSessionManager(s).Store().UpsertExecution(request.SessionID, ExecutionRecord{ExecutionID: request.ExecutionID,
+			Kind: ExecutionTmux, Profile: request.ProviderProfile, Provider: request.Provider, State: StateCancelled,
+			CaptureQuality: request.CaptureQuality, TmuxSession: summary.Session, RunIDs: []string{request.RunID}})
+		_ = NewSessionManager(s).Store().AppendEvent(request.SessionID, SessionEvent{ExecutionID: request.ExecutionID,
+			RunID: request.RunID, Type: "execution.cancelled", Data: map[string]any{"tmux_session": summary.Session}})
+		_ = NewSessionManager(s).Store().UpdateSessionState(request.SessionID, StateCancelled, "session stopped")
 	}
 	summary.Alive = false
 	return summary, nil

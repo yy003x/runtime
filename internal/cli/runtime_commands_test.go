@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-runtime/internal/agentrun"
+	"agent-runtime/internal/capability"
 	"agent-runtime/internal/daemon"
 	"agent-runtime/internal/provider"
 )
@@ -55,19 +56,37 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "configs", "skills", "review", "skill.yaml"), []byte(skill), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	candidates, err := capability.OpenMemory(filepath.Join(home, "memory", "candidates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := candidates.Write([]capability.MemoryItem{{ID: "candidate-1", Type: "fact", Content: "promote me", Source: "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	historyExport := filepath.Join(home, "history-export.json")
 
 	commands := [][]string{
 		{}, {"--help"}, {"version"}, {"profiles"}, {"providers"},
-		{"config", "choices"}, {"config", "validate", "-c", "native-mock"}, {"doctor"},
+		{"config", "choices"}, {"config", "validate", "-c", "native-mock"}, {"config", "command", "-c", "shell"}, {"doctor"},
 		{"capabilities", "tools", "schemas"}, {"tools", "call", "echo", "--args", `{"value":"ok"}`},
 		{"capabilities", "skills", "list"}, {"capabilities", "skills", "route", "--query", "review this"},
 		{"capabilities", "memory", "write", "fact-1", "runtime fact", "--source", "test"},
 		{"capabilities", "memory", "recall", "runtime"}, {"capabilities", "memory", "sources"},
+		{"capabilities", "memory", "candidates"}, {"capabilities", "memory", "promote", "candidate-1"},
 		{"capabilities", "memory", "forget", "fact-1"}, {"clean"},
+		{"history", "create", "--session-id", "session-20260716-165900-cli", "--project", "project", "--runtime", "api", "--profile", "native-mock", "--tag", "workbench"},
+		{"history", "list", "--project", "project", "--tag", "workbench"},
+		{"history", "show", "--session-id", "session-20260716-165900-cli"},
+		{"history", "messages", "--session-id", "session-20260716-165900-cli"},
+		{"history", "events", "--session-id", "session-20260716-165900-cli"},
+		{"history", "configure", "--session-id", "session-20260716-165900-cli", "--runtime", "cli", "--profile", "shell"},
+		{"history", "export", "--session-id", "session-20260716-165900-cli", "--output", historyExport},
+		{"history", "rebuild"},
 		{"update", "--dry-run", "--version", "v1.2.3"},
 		{"task", "run", "-c", "native-mock", "--run-id", "task-20260716-170000-clitest", "hello"},
 		{"task", "status", "--run-id", "task-20260716-170000-clitest"},
 		{"task", "logs", "--run-id", "task-20260716-170000-clitest", "--tail", "5"},
+		{"task", "result", "--run-id", "task-20260716-170000-clitest"},
 		{"task", "watch", "--run-id", "task-20260716-170000-clitest", "--seconds", "1", "--poll-seconds", "0.01"},
 		{"native-mock", "--run-id", "task-20260716-170001-profile", "hello"},
 		{"capabilities", "skills", "run", "review", "--input", "main.go", "--run-id", "task-20260716-170002-skill"},
@@ -134,9 +153,26 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 		{"tools", "unknown"}, {"capabilities", "skills"}, {"capabilities", "skills", "unknown"},
 		{"capabilities", "memory", "unknown"}, {"task"}, {"task", "unknown"},
 		{"task", "run", "hello"}, {"task", "status"}, {"loop"}, {"loop", "unknown"},
+		{"history"}, {"history", "unknown"}, {"history", "create", "--unknown", "value"},
+		{"history", "show"}, {"history", "rebuild", "extra"},
 		{"loop", "step"}, {"session"}, {"session", "unknown"}, {"session", "list", "extra"},
 		{"session", "send"}, {"command"}, {"command", "unknown"}, {"command", "start", "-c", "shell"},
 		{"clean", "--unknown"}, {"update", "--unknown"},
+	}
+	durable, err := capability.OpenMemory(filepath.Join(home, "memory", "durable.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted := durable.Recall("promote", "fact", 5)
+	if len(promoted) != 1 || promoted[0].PromotedAt == nil {
+		t.Fatalf("promoted memory=%#v", durable.Items())
+	}
+	remaining, err := capability.OpenMemory(filepath.Join(home, "memory", "candidates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining.Items()) != 0 {
+		t.Fatalf("remaining candidates=%#v", remaining.Items())
 	}
 	for _, command := range invalidCommands {
 		if code, output := captureMain(t, command); code != 1 || !strings.Contains(output, "error:") {
@@ -167,6 +203,45 @@ func captureMain(t *testing.T, args []string) (int, string) {
 	}
 	_ = reader.Close()
 	return code, string(data)
+}
+
+func TestConfigCommandPreviewsManagedArgvWithoutExecutionAndRedactsSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	t.Setenv("MY_API_KEY", "environment-secret")
+	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"type":"cli","label":"Preview","cli":{"driver":"generic","executor":"command","command":{"binary":"never-execute","args":["--api-key","literal-secret","--endpoint=https://user:pass@example.test/v1?access=query-secret","environment-secret"],"model":"preview-model"},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"],"result_contract":"optional"}}}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "preview.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nativeProfile := `{"type":"native","native":{"mock":{"responses":["ok"],"done_after":1}}}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "native-mock.json"), []byte(nativeProfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, output := captureMain(t, []string{"config", "command", "-c", "preview", "--json"})
+	if code != 0 {
+		t.Fatalf("code=%d output=%q", code, output)
+	}
+	for _, secret := range []string{"literal-secret", "query-secret", "environment-secret", "user:pass"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("preview leaked %q: %s", secret, output)
+		}
+	}
+	for _, expected := range []string{"never-execute", "--model", "preview-model", "managed", "[REDACTED]"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("preview missing %q: %s", expected, output)
+		}
+	}
+	if _, err := exec.LookPath("never-execute"); err == nil {
+		t.Fatal("test binary unexpectedly exists; non-execution assertion is invalid")
+	}
+
+	if code, output := captureMain(t, []string{"config", "command", "-c", "native-mock"}); code != 1 || !strings.Contains(output, "not a CLI profile") {
+		t.Fatalf("non-CLI preview code=%d output=%q", code, output)
+	}
 }
 
 func TestCLIEnvironmentDiagnosticsReportHomesAndAuthConflict(t *testing.T) {

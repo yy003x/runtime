@@ -52,7 +52,16 @@ func (s *runProviderSink) Stderr(value []byte) error {
 }
 
 func (s *runProviderSink) Event(event provider.Event) error {
-	return s.service.store.Event(s.paths, s.request, event.Type, event.Data)
+	if err := s.service.store.Event(s.paths, s.request, event.Type, event.Data); err != nil {
+		return err
+	}
+	if s.request.SessionID != "" && s.request.RecordMode != RecordOff {
+		return NewSessionManager(s.service).Store().AppendEvent(s.request.SessionID, SessionEvent{
+			TurnID: s.request.TurnID, ExecutionID: s.request.ExecutionID, RunID: s.request.RunID,
+			Type: event.Type, Data: event.Data,
+		})
+	}
+	return nil
 }
 
 func (s *runProviderSink) StatusPatch(patch provider.StatusPatch) error {
@@ -93,12 +102,14 @@ func New(home string) *Service {
 		return &Service{Home: home, RuntimeVersion: Version, configErr: pathErr}
 	}
 	settings, err := loadSettings(paths.ConfigDir)
-	return &Service{
+	service := &Service{
 		Home: paths.Home, ConfigDir: paths.ConfigDir, PersonaDir: paths.PersonaDir,
 		RunsDir: paths.RunsDir, StateDir: paths.StateDir, paths: paths, DefaultProject: settings.DefaultProject,
 		DefaultProfile: settings.DefaultProfile, MaxConcurrency: settings.MaxConcurrency,
 		RuntimeVersion: Version, configErr: err,
 	}
+	_ = NewSessionManager(service).ImportLegacyMemory()
+	return service
 }
 
 func (s *Service) DaemonConfig() daemon.Config {
@@ -174,6 +185,32 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if runID == "" {
 		runID = newRunID(runType)
 	}
+	executionKind := options.ExecutionKind
+	if executionKind == "" {
+		executionKind = ExecutionCLIManaged
+		if profile.Type == provider.TypeAPI || profile.Type == provider.TypeNative {
+			executionKind = ExecutionAPI
+		}
+		if profile.Transport() == provider.ExecutorTmux {
+			executionKind = ExecutionTmux
+		}
+	}
+	decision, err := DecideRecordPolicy(options.Caller, runType, executionKind, options.SessionID, options.RecordMode, options.Retention)
+	if err != nil {
+		return RunSummary{}, err
+	}
+	sessionID := options.SessionID
+	if decision.RecordMode != RecordOff && sessionID == "" {
+		sessionID = sessionIDForRun(runID)
+	}
+	turnID := options.TurnID
+	if turnID == "" && sessionID != "" {
+		turnID = turnIDForRun(runID)
+	}
+	executionID := options.ExecutionID
+	if executionID == "" && sessionID != "" {
+		executionID = executionIDForRun(runID)
+	}
 	paths, err := RunPaths(s.RunsDir, runType, runID)
 	if err != nil {
 		return RunSummary{}, err
@@ -195,6 +232,8 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	request := Request{
 		SchemaVersion: 1, ContractVersion: ContractVersion, RuntimeVersion: s.RuntimeVersion,
 		ProjectID: projectID, RunType: runType, RunID: runID, Caller: options.Caller,
+		SessionID: sessionID, TurnID: turnID, ExecutionID: executionID, ExecutionKind: executionKind,
+		RecordMode: decision.RecordMode, Retention: decision.Retention, CaptureQuality: decision.CaptureQuality,
 		ProviderProfile: profile.ID, Provider: profile.Transport(), CWD: cwd,
 		PromptFile: promptFile, RawCLIArgs: append([]string(nil), options.RawCLIArgs...), DeadlineSeconds: timeout,
 		ResultFile: paths.ResultFile, ResultSchema: options.ResultSchema, ExecutionMode: mode,
@@ -230,6 +269,10 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	if options.Force {
 		s.resetRun(paths)
 	}
+	sessionManager := NewSessionManager(s)
+	if err := sessionManager.BeginRun(request, prompt, profile); err != nil {
+		return RunSummary{}, fmt.Errorf("initialize session history: %w", err)
+	}
 	if err := s.store.WriteRequest(paths, request); err != nil {
 		return RunSummary{}, err
 	}
@@ -252,38 +295,52 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 		providerPrompt = managedPrompt(prompt, request, paths)
 	}
 	extraEnv := map[string]string{
-		"AGENTRUN_DONE_FILE":    paths.DoneFile,
-		"AGENTRUN_OUTPUT_LOG":   paths.OutputLog,
-		"AGENTRUN_RESULT_FILE":  paths.ResultFile,
-		"AGENTRUN_REQUEST_FILE": paths.RequestFile,
-		"AGENTRUN_RUN_DIR":      paths.RunDir,
-		"AGENTRUN_RUN_ID":       request.RunID,
+		"AGENTRUN_DONE_FILE":                paths.DoneFile,
+		"AGENTRUN_OUTPUT_LOG":               paths.OutputLog,
+		"AGENTRUN_RESULT_FILE":              paths.ResultFile,
+		"AGENTRUN_REQUEST_FILE":             paths.RequestFile,
+		"AGENTRUN_RUN_DIR":                  paths.RunDir,
+		"AGENTRUN_RUN_ID":                   request.RunID,
+		"AGENTRUN_SESSION_ID":               request.SessionID,
+		"AGENTRUN_TURN_ID":                  request.TurnID,
+		"SN_RUNTIME_SKILLS_DIR":             s.paths.SkillsDir,
+		"SN_RUNTIME_TOOLS_DIR":              s.paths.ToolsDir,
+		"SN_RUNTIME_MEMORY_FILE":            s.paths.MemoryFile,
+		"SN_RUNTIME_MEMORY_CANDIDATES_FILE": s.paths.MemoryCandidatesFile,
+	}
+	if request.SessionID != "" && request.TurnID != "" && request.RecordMode != RecordOff {
+		if contextManifest, pathErr := sessionManager.Store().ContextManifestPath(request.SessionID, request.TurnID); pathErr == nil {
+			extraEnv["SN_RUNTIME_CONTEXT_MANIFEST"] = contextManifest
+		}
 	}
 	snapshotFile := filepath.Join(paths.RunDir, "native-snapshot.json")
 	if profile.Type == provider.TypeAPI && profile.API != nil && profile.API.Runtime != nil && profile.API.Runtime.Enabled {
 		snapshotFile = filepath.Join(paths.RunDir, "context-snapshot.json")
 	}
 	providerRequest := provider.Request{
-		Prompt:       providerPrompt,
-		RawCLIArgs:   append([]string(nil), options.RawCLIArgs...),
-		Overrides:    overrides,
-		CWD:          cwd,
-		Environment:  extraEnv,
-		HTTPClient:   s.HTTPClient,
-		Daemon:       s.DaemonClient(),
-		Profiles:     profiles,
-		RunID:        request.RunID,
-		RequestFile:  paths.RequestFile,
-		ResultFile:   paths.ResultFile,
-		DoneFile:     paths.DoneFile,
-		OutputLog:    paths.OutputLog,
-		SnapshotFile: snapshotFile,
-		PersonaDir:   s.PersonaDir,
-		SkillDir:     s.paths.SkillsDir,
-		ToolDir:      s.paths.ToolsDir,
-		MemoryFile:   s.paths.MemoryFile,
-		Allowed:      append([]string(nil), request.AllowedActions...),
-		Forbidden:    append([]string(nil), request.ForbiddenActions...),
+		Prompt:              providerPrompt,
+		RawCLIArgs:          append([]string(nil), options.RawCLIArgs...),
+		Overrides:           overrides,
+		CWD:                 cwd,
+		Environment:         extraEnv,
+		HTTPClient:          s.HTTPClient,
+		Daemon:              s.DaemonClient(),
+		Profiles:            profiles,
+		RunID:               request.RunID,
+		RequestFile:         paths.RequestFile,
+		ResultFile:          paths.ResultFile,
+		DoneFile:            paths.DoneFile,
+		OutputLog:           paths.OutputLog,
+		SnapshotFile:        snapshotFile,
+		PersonaDir:          s.PersonaDir,
+		SkillDir:            s.paths.SkillsDir,
+		ToolDir:             s.paths.ToolsDir,
+		MemoryFile:          s.paths.MemoryFile,
+		MemoryCandidateFile: s.paths.MemoryCandidatesFile,
+		SessionID:           request.SessionID,
+		TurnID:              request.TurnID,
+		Allowed:             append([]string(nil), request.AllowedActions...),
+		Forbidden:           append([]string(nil), request.ForbiddenActions...),
 	}
 	prepared, err := selectedProvider.Prepare(runCtx, profile, providerRequest)
 	if err != nil {
@@ -464,6 +521,7 @@ func (s *Service) Cancel(runType, runID string) (RunSummary, error) {
 	status, err = s.store.WriteStatus(paths, request, StateCancelled, "interrupted", "cancelled", providerStatus)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "provider.cancelled", map[string]any{"transport": request.Provider})
+	_ = NewSessionManager(s).CompleteRun(request, StateCancelled, "interrupted", "cancelled by user")
 	return summary(paths, status, false), err
 }
 
@@ -494,6 +552,7 @@ func (s *Service) markDone(paths Paths, request Request, providerStatus map[stri
 		return RunSummary{}, err
 	}
 	result, _ := s.store.ReadResult(paths)
+	_ = NewSessionManager(s).CompleteRun(request, StateDone, "", result.Summary)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "result.written", map[string]any{"outcome": result.Outcome})
 	return summary(paths, status, false), nil
@@ -503,6 +562,7 @@ func (s *Service) fail(paths Paths, request Request, providerStatus map[string]a
 	status, writeErr := s.store.WriteStatus(paths, request, StateFailed, reason, cause.Error(), providerStatus)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateFailed, "failure_reason": reason})
+	_ = NewSessionManager(s).CompleteRun(request, StateFailed, reason, cause.Error())
 	if writeErr != nil {
 		return RunSummary{}, writeErr
 	}
@@ -513,6 +573,7 @@ func (s *Service) cancelled(paths Paths, request Request, providerStatus map[str
 	status, writeErr := s.store.WriteStatus(paths, request, StateCancelled, "interrupted", "cancelled", providerStatus)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "provider.cancelled", map[string]any{"transport": request.Provider})
+	_ = NewSessionManager(s).CompleteRun(request, StateCancelled, "interrupted", cause.Error())
 	if writeErr != nil {
 		return RunSummary{}, writeErr
 	}
@@ -526,6 +587,7 @@ func (s *Service) blocked(paths Paths, request Request, providerStatus map[strin
 	status, err := s.store.WriteStatus(paths, request, StateBlocked, reason, reason, providerStatus)
 	s.updateRegistry(paths, status)
 	_ = s.store.Event(paths, request, "status.changed", map[string]any{"state": StateBlocked, "failure_reason": reason})
+	_ = NewSessionManager(s).CompleteRun(request, StateBlocked, reason, reason)
 	return summary(paths, status, false), err
 }
 
@@ -665,8 +727,13 @@ func cloneOverrides(input map[string]any) map[string]any {
 }
 
 func summary(paths Paths, status Status, idempotent bool) RunSummary {
-	return RunSummary{RunID: status.RunID, ProjectID: status.ProjectID, RunType: status.RunType,
+	value := RunSummary{RunID: status.RunID, ProjectID: status.ProjectID, RunType: status.RunType,
 		State: status.State, FailureReason: status.FailureReason, ResultFile: paths.ResultFile, RunDir: paths.RunDir, Idempotent: idempotent}
+	var request Request
+	if readJSON(paths.RequestFile, &request) == nil {
+		value.SessionID, value.TurnID, value.ExecutionID = request.SessionID, request.TurnID, request.ExecutionID
+	}
+	return value
 }
 
 func newRunID(runType string) string {
