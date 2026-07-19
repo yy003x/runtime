@@ -47,6 +47,20 @@ func TestRunStreamsAndCapturesOutput(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotReportFirstOutputForSilentCommand(t *testing.T) {
+	var first atomic.Int32
+	result, err := Run(context.Background(), Options{
+		Argv: []string{"sh", "-c", "exit 0"}, Env: os.Environ(),
+		Observer: Observer{FirstOutput: func() { first.Add(1) }},
+	})
+	if err != nil || result.ExitCode != 0 || result.Stdout != "" || result.Stderr != "" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if first.Load() != 0 {
+		t.Fatalf("first output callback count=%d", first.Load())
+	}
+}
+
 func TestRunResolvesBinaryFromProvidedPath(t *testing.T) {
 	root := t.TempDir()
 	tool := filepath.Join(root, "runtime-test-tool")

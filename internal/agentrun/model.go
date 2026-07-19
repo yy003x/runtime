@@ -83,6 +83,13 @@ type Status struct {
 	Provider       string         `json:"provider"`
 	ProviderStatus map[string]any `json:"provider_status"`
 	Message        string         `json:"message,omitempty"`
+	QueuedAt       time.Time      `json:"queued_at,omitzero"`
+	StartedAt      time.Time      `json:"started_at,omitzero"`
+	CompletedAt    time.Time      `json:"completed_at,omitzero"`
+	QueuePosition  int            `json:"queue_position,omitempty"`
+	Attempt        int            `json:"attempt,omitempty"`
+	ErrorCode      string         `json:"error_code,omitempty"`
+	Retryable      bool           `json:"retryable,omitempty"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
@@ -115,45 +122,52 @@ type Event struct {
 }
 
 type RunOptions struct {
-	RunType   string
-	RunID     string
-	Profile   string
-	ProjectID string
-	Caller    string
-	SessionID string
+	RunType   string `json:"run_type"`
+	RunID     string `json:"run_id"`
+	Profile   string `json:"profile"`
+	ProjectID string `json:"project_id,omitempty"`
+	Caller    string `json:"caller,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 	// CreateSession 表示调用方显式要求为本次 Run 创建逻辑 Session。
 	// 普通 task/profile/HTTP Run 默认只写 runs artifact，不隐式创建 Session。
-	CreateSession     bool
-	TurnID            string
-	ExecutionID       string
-	ExecutionKind     string
-	RecordMode        string
-	Retention         string
-	CWD               string
-	Prompt            string
-	PromptFile        string
-	RawCLIArgs        []string
-	DeadlineSeconds   int
-	ResultSchema      string
-	ExecutionMode     string
-	ProviderOverrides map[string]any
-	AllowedActions    []string
-	ForbiddenActions  []string
-	InjectedMemory    []provider.InjectedMemory
-	Force             bool
+	CreateSession     bool                      `json:"create_session,omitempty"`
+	TurnID            string                    `json:"turn_id,omitempty"`
+	ExecutionID       string                    `json:"execution_id,omitempty"`
+	ExecutionKind     string                    `json:"execution_kind,omitempty"`
+	RecordMode        string                    `json:"record_mode,omitempty"`
+	Retention         string                    `json:"retention,omitempty"`
+	CWD               string                    `json:"cwd,omitempty"`
+	Prompt            string                    `json:"prompt,omitempty"`
+	PromptFile        string                    `json:"prompt_file,omitempty"`
+	RawCLIArgs        []string                  `json:"raw_cli_args,omitempty"`
+	DeadlineSeconds   int                       `json:"deadline_seconds,omitempty"`
+	QueueTimeout      int                       `json:"queue_timeout_seconds,omitempty"`
+	ResultSchema      string                    `json:"result_schema,omitempty"`
+	ExecutionMode     string                    `json:"execution_mode,omitempty"`
+	ProviderOverrides map[string]any            `json:"provider_overrides,omitempty"`
+	AllowedActions    []string                  `json:"allowed_actions,omitempty"`
+	ForbiddenActions  []string                  `json:"forbidden_actions,omitempty"`
+	InjectedMemory    []provider.InjectedMemory `json:"injected_memory,omitempty"`
+	Force             bool                      `json:"force,omitempty"`
 }
 
 type RunSummary struct {
-	RunID         string `json:"run_id"`
-	ProjectID     string `json:"project_id"`
-	RunType       string `json:"run_type"`
-	State         string `json:"state"`
-	FailureReason string `json:"failure_reason,omitempty"`
-	ResultFile    string `json:"result_file"`
-	RunDir        string `json:"run_dir"`
-	SessionID     string `json:"session_id,omitempty"`
-	TurnID        string `json:"turn_id,omitempty"`
-	ExecutionID   string `json:"execution_id,omitempty"`
-	Idempotent    bool   `json:"idempotent,omitempty"`
-	FinalText     string `json:"-"`
+	RunID         string    `json:"run_id"`
+	ProjectID     string    `json:"project_id"`
+	RunType       string    `json:"run_type"`
+	State         string    `json:"state"`
+	FailureReason string    `json:"failure_reason,omitempty"`
+	ResultFile    string    `json:"result_file"`
+	RunDir        string    `json:"run_dir"`
+	SessionID     string    `json:"session_id,omitempty"`
+	TurnID        string    `json:"turn_id,omitempty"`
+	ExecutionID   string    `json:"execution_id,omitempty"`
+	QueuePosition int       `json:"queue_position,omitempty"`
+	QueuedAt      time.Time `json:"queued_at,omitzero"`
+	StartedAt     time.Time `json:"started_at,omitzero"`
+	CompletedAt   time.Time `json:"completed_at,omitzero"`
+	ErrorCode     string    `json:"error_code,omitempty"`
+	Retryable     bool      `json:"retryable,omitempty"`
+	Idempotent    bool      `json:"idempotent,omitempty"`
+	FinalText     string    `json:"-"`
 }

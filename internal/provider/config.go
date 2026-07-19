@@ -23,7 +23,7 @@ const (
 
 var ReservedCommands = map[string]struct{}{
 	"doctor": {}, "profiles": {}, "providers": {}, "config": {}, "capabilities": {},
-	"skills": {}, "tools": {}, "memory": {}, "task": {}, "turn": {},
+	"skills": {}, "tools": {}, "memory": {}, "task": {}, "turn": {}, "runs": {},
 	"loop": {}, "session": {}, "history": {}, "command": {}, "clean": {}, "run": {},
 	"status": {}, "logs": {}, "watch": {}, "cancel": {}, "start": {},
 	"step": {}, "send": {}, "interrupt": {}, "block": {}, "continue": {},

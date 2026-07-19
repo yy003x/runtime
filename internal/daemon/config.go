@@ -15,6 +15,7 @@ type Config struct {
 	Version     string
 	Executable  string
 	IdleTimeout time.Duration
+	Busy        func() bool
 }
 
 func (c Config) normalized() Config {

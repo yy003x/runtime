@@ -43,6 +43,8 @@ func Main(args []string) int {
 		return exit(runDaemonCommand(cfg, args[1:]))
 	case "task", "turn":
 		return exit(runTaskCommand(cfg, args[0], args[1:]))
+	case "runs":
+		return exit(runRunsCommand(cfg, args[1:]))
 	case "loop":
 		return exit(runLoopCommand(cfg, args[1:]))
 	case "capabilities":
@@ -409,8 +411,12 @@ Usage:
   sn-cli <profile>
   sn-cli <profile> [prompt...] [-- raw-cli-args...]
   sn-cli task run -c <config> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli task submit -c <config> [options] [prompt...] [-- raw-cli-args...]
   sn-cli task status|logs|watch|block|continue|patch-resume|stop|cancel --run-id <id>
   sn-cli turn run -c <config> --session-id <id> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli turn submit -c <config> --session-id <id> [options] [prompt...] [-- raw-cli-args...]
+  sn-cli runs list [--active] [--state <state>] [--type <type>] [--project <id>] [--profile <id>] [--limit <n>]
+  sn-cli runs reconcile [--dry-run]
   sn-cli loop run|start [--session-id <id>] [options]
   sn-cli loop step|status|logs|cancel --loop-id <id>
   sn-cli session run -c <config> [options] [prompt...] [-- raw-cli-args...]

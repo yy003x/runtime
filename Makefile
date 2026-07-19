@@ -13,7 +13,7 @@ GOCACHE ?= /tmp/go-build
 GOMODCACHE ?= /tmp/go-mod
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
-.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install release release-check sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install release release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
 
 COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
 COVERAGE_MIN ?= 65.0
@@ -32,6 +32,7 @@ help:
 	@echo "  make install           - build and install sn-cli into ~/.sn"
 	@echo "  make release           - build release archives for supported platforms"
 	@echo "  make release-check     - validate, build and smoke-test release assets"
+	@echo "  make provider-smoke    - opt-in real provider smoke (requires SN_REAL_PROVIDER_SMOKE=1)"
 	@echo "  make sn-cli-test       - run sn-cli Go tests"
 	@echo "  make sn-cli-doctor     - run sn-cli doctor"
 	@echo "  make run               - run HTTP server"
@@ -55,7 +56,7 @@ test-serial:
 	$(GO_ENV) $(GO) test -p 1 ./... -count=1
 
 test-race:
-	$(GO_ENV) $(GO) test -race ./internal/agentrun ./internal/capability ./internal/provider ./internal/provider/native ./internal/mcp ./internal/transport -run 'Native|APIRuntime|MCP|Loop|Memory|Concurrent|Idempotent|HTTP' -count=1
+	$(GO_ENV) $(GO) test -race ./internal/agentrun ./internal/capability ./internal/provider ./internal/provider/native ./internal/mcp ./internal/transport -run 'Native|APIRuntime|MCP|Loop|Memory|Concurrent|Idempotent|HTTP|Queue|Dispatch|Submit|Reconcile' -count=1
 
 coverage:
 	$(GO_ENV) $(GO) test ./... -covermode=atomic -coverprofile="$(COVERAGE_PROFILE)" -count=1
@@ -124,6 +125,9 @@ release:
 
 release-check:
 	SN_CLI_VERSION="$(SN_CLI_VERSION)" bash scripts/release-check.sh
+
+provider-smoke: sn-cli-build
+	bash scripts/provider-smoke.sh
 
 clean:
 	rm -rf bin dist

@@ -12,6 +12,8 @@ type Settings struct {
 	DefaultProject string `yaml:"default_project"`
 	DefaultProfile string `yaml:"default_profile"`
 	MaxConcurrency int    `yaml:"max_concurrency"`
+	MaxQueue       int    `yaml:"max_queue"`
+	QueueTimeout   int    `yaml:"queue_timeout_seconds"`
 }
 
 func loadSettings(configDir string) (Settings, error) {
@@ -19,6 +21,8 @@ func loadSettings(configDir string) (Settings, error) {
 		DefaultProject: "_default",
 		DefaultProfile: "cx",
 		MaxConcurrency: 1,
+		MaxQueue:       64,
+		QueueTimeout:   3600,
 	}
 	path := filepath.Join(configDir, "runtime.yaml")
 	data, err := os.ReadFile(path)
@@ -36,6 +40,12 @@ func loadSettings(configDir string) (Settings, error) {
 	}
 	if settings.MaxConcurrency <= 0 {
 		return Settings{}, fmt.Errorf("runtime settings max_concurrency must be positive")
+	}
+	if settings.MaxQueue <= 0 {
+		return Settings{}, fmt.Errorf("runtime settings max_queue must be positive")
+	}
+	if settings.QueueTimeout < 0 {
+		return Settings{}, fmt.Errorf("runtime settings queue_timeout_seconds must be non-negative")
 	}
 	return settings, nil
 }

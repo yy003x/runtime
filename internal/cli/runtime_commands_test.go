@@ -36,13 +36,18 @@ func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
 		t.Fatalf("doctor code=%d output=%q", code, output)
 	}
 	var payload struct {
-		ContractVersion int `json:"contract_version"`
+		ContractVersion int                    `json:"contract_version"`
+		Features        map[string]int         `json:"features"`
+		Scheduler       agentrun.QueueSnapshot `json:"scheduler"`
 	}
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		t.Fatalf("decode doctor output: %v\n%s", err, output)
 	}
 	if payload.ContractVersion != agentrun.ContractVersion {
 		t.Fatalf("contract_version=%d want=%d", payload.ContractVersion, agentrun.ContractVersion)
+	}
+	if payload.Features["durable_queue"] != 1 || !payload.Scheduler.Healthy {
+		t.Fatalf("doctor payload=%#v", payload)
 	}
 }
 
@@ -61,6 +66,16 @@ func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(options.RawCLIArgs, []string{"--search"}) {
 		t.Fatalf("raw_cli_args=%#v", options.RawCLIArgs)
+	}
+}
+
+func TestParseRunOptionsAcceptsQueueTimeout(t *testing.T) {
+	options, err := parseRunOptions(agentrun.RunTask, []string{"-c", "cx", "--queue-timeout-seconds", "45", "prompt"})
+	if err != nil || options.QueueTimeout != 45 {
+		t.Fatalf("options=%#v err=%v", options, err)
+	}
+	if _, err := parseRunOptions(agentrun.RunTask, []string{"-c", "cx", "--queue-timeout-seconds", "-1", "prompt"}); err == nil {
+		t.Fatal("negative queue timeout was accepted")
 	}
 }
 
@@ -96,6 +111,7 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 	commands := [][]string{
 		{}, {"--help"}, {"version"}, {"profiles"}, {"providers"},
 		{"config", "choices"}, {"config", "validate", "-c", "native-mock"}, {"config", "command", "-c", "shell"}, {"doctor"},
+		{"runs", "list", "--limit", "5"}, {"runs", "reconcile", "--dry-run"},
 		{"capabilities", "tools", "schemas"}, {"tools", "call", "echo", "--args", `{"value":"ok"}`},
 		{"capabilities", "skills", "list"}, {"capabilities", "skills", "route", "--query", "review this"},
 		{"capabilities", "memory", "write", "fact-1", "runtime fact", "--source", "test"},

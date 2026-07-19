@@ -48,7 +48,7 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
 }
 
 func TestReservedCommandsReflectCurrentCLI(t *testing.T) {
-	for _, command := range []string{"clean", "update", "profiles", "providers", "upgrade"} {
+	for _, command := range []string{"clean", "update", "profiles", "providers", "upgrade", "runs"} {
 		if _, ok := ReservedCommands[command]; !ok {
 			t.Fatalf("%s must be reserved", command)
 		}

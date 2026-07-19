@@ -198,15 +198,19 @@ func (s *Server) status(ctx context.Context) *Status {
 		proxyStatus = s.proxy.Status()
 	}
 	s.mu.Unlock()
+	busy := s.config.Busy != nil && s.config.Busy()
 	return &Status{
 		Version: s.config.Version, BinaryPath: s.binaryPath, BinaryMtimeNanos: s.binaryMtime,
 		PID: os.Getpid(), Socket: s.config.SocketPath(),
-		UptimeSeconds: int64(time.Since(s.startedAt).Seconds()), Clients: len(processes),
+		UptimeSeconds: int64(time.Since(s.startedAt).Seconds()), Clients: len(processes), Busy: busy,
 		Processes: processes, Dependencies: dependencies, Proxy: proxyStatus,
 	}
 }
 
 func (s *Server) shouldIdleExit() bool {
+	if s.config.Busy != nil && s.config.Busy() {
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.processes) > 0 || len(s.dependencies) > 0 {

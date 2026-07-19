@@ -99,6 +99,7 @@ type Status struct {
 	Socket           string             `json:"socket"`
 	UptimeSeconds    int64              `json:"uptime_seconds"`
 	Clients          int                `json:"clients"`
+	Busy             bool               `json:"busy"`
 	Processes        []ProcessStatus    `json:"processes"`
 	Dependencies     []DependencyStatus `json:"dependencies"`
 	Proxy            ProxyStatus        `json:"proxy"`

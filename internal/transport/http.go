@@ -40,6 +40,7 @@ type RunRequest struct {
 	PromptFile        string                    `json:"prompt_file,omitempty"`
 	ExecutionMode     string                    `json:"execution_mode,omitempty"`
 	DeadlineSeconds   int                       `json:"deadline_seconds,omitempty"`
+	QueueTimeout      int                       `json:"queue_timeout_seconds,omitempty"`
 	ProviderOverrides map[string]any            `json:"provider_overrides,omitempty"`
 	AllowedActions    []string                  `json:"allowed_actions,omitempty"`
 	ForbiddenActions  []string                  `json:"forbidden_actions,omitempty"`
@@ -94,6 +95,7 @@ func (h *HTTPHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 
 func (h *HTTPHandler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
+	h.mux.HandleFunc("GET /v1/runs", h.handleRunList)
 	h.mux.HandleFunc("POST /v1/runs", h.handleRun)
 	h.mux.HandleFunc("/v1/runs/", h.handleRunByID)
 	h.mux.HandleFunc("/v1/sessions", h.handleSessions)
@@ -295,18 +297,64 @@ func (h *HTTPHandler) handleRun(writer http.ResponseWriter, request *http.Reques
 		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
 		return
 	}
-	summary, err := h.svc.Run(request.Context(), agentrun.RunOptions{
+	options := agentrun.RunOptions{
 		RunID: input.RunID, RunType: input.RunType, Profile: input.Profile, ProjectID: input.ProjectID,
 		CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile, ExecutionMode: input.ExecutionMode,
-		DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
+		DeadlineSeconds: input.DeadlineSeconds, QueueTimeout: input.QueueTimeout, ProviderOverrides: input.ProviderOverrides,
 		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions,
 		SessionID: input.SessionID, RecordMode: input.RecordMode, Retention: input.Retention, InjectedMemory: input.Memory, Caller: "http",
-	})
+	}
+	respondAsync := preferRespondAsync(request.Header.Values("Prefer"))
+	var summary agentrun.RunSummary
+	var err error
+	if respondAsync {
+		summary, err = h.svc.Submit(request.Context(), options)
+	} else {
+		summary, err = h.svc.Run(request.Context(), options)
+	}
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})
 		return
 	}
-	writeJSON(writer, http.StatusCreated, summary)
+	status := http.StatusCreated
+	if respondAsync {
+		status = http.StatusAccepted
+		writer.Header().Set("Preference-Applied", "respond-async")
+	}
+	writeJSON(writer, status, summary)
+}
+
+func (h *HTTPHandler) handleRunList(writer http.ResponseWriter, request *http.Request) {
+	limit, err := strconv.Atoi(request.URL.Query().Get("limit"))
+	if request.URL.Query().Get("limit") != "" && (err != nil || limit <= 0) {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "limit must be a positive integer"})
+		return
+	}
+	active, err := strconv.ParseBool(request.URL.Query().Get("active"))
+	if request.URL.Query().Get("active") != "" && err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "active must be true or false"})
+		return
+	}
+	runs, err := h.svc.ListRuns(agentrun.RunFilter{
+		Active: active, State: request.URL.Query().Get("state"), RunType: request.URL.Query().Get("run_type"),
+		ProjectID: request.URL.Query().Get("project_id"), Profile: request.URL.Query().Get("profile"), Limit: limit,
+	})
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"runs": runs})
+}
+
+func preferRespondAsync(values []string) bool {
+	for _, value := range values {
+		for _, preference := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(preference), "respond-async") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *HTTPHandler) handleRunByID(writer http.ResponseWriter, request *http.Request) {
@@ -409,6 +457,9 @@ func validBearerToken(header, token string) bool {
 func validateRunRequest(input RunRequest) error {
 	if input.DeadlineSeconds < 0 || input.DeadlineSeconds > 24*60*60 {
 		return fmt.Errorf("deadline_seconds must be between 0 and 86400")
+	}
+	if input.QueueTimeout < 0 || input.QueueTimeout > 7*24*60*60 {
+		return fmt.Errorf("queue_timeout_seconds must be between 0 and 604800")
 	}
 	if strings.ContainsRune(input.CWD, '\x00') || strings.ContainsRune(input.PromptFile, '\x00') {
 		return fmt.Errorf("cwd and prompt_file must not contain NUL")

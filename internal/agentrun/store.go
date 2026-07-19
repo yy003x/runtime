@@ -30,14 +30,38 @@ func (s *Store) WriteStatus(paths Paths, request Request, state, failureReason, 
 		Provider: request.Provider, ProviderStatus: providerStatus, Message: message,
 		UpdatedAt: time.Now().UTC(),
 	}
+	status.Attempt = 1
+	status.QueuedAt = request.CreatedAt
+	if status.QueuedAt.IsZero() {
+		status.QueuedAt = status.UpdatedAt
+	}
+	if state == StateRunning {
+		status.StartedAt = status.UpdatedAt
+	}
+	if terminalStateValue(state) || state == StateBlocked {
+		status.CompletedAt = status.UpdatedAt
+		status.ErrorCode = failureReason
+		status.Retryable = failureReason == "queue_timeout" || failureReason == "orphaned"
+	}
 	if status.ProviderStatus == nil {
 		status.ProviderStatus = map[string]any{}
 	}
 	err := withAdvisoryFileLock(paths.StatusFile+".lock", func() error {
 		var existing Status
-		if err := readJSON(paths.StatusFile, &existing); err == nil && immutableTerminalState(existing.State) && existing.State != state {
-			status = existing
-			return nil
+		if err := readJSON(paths.StatusFile, &existing); err == nil {
+			if immutableTerminalState(existing.State) && existing.State != state {
+				status = existing
+				return nil
+			}
+			if !existing.QueuedAt.IsZero() {
+				status.QueuedAt = existing.QueuedAt
+			}
+			if status.StartedAt.IsZero() {
+				status.StartedAt = existing.StartedAt
+			}
+			if existing.Attempt > 0 {
+				status.Attempt = existing.Attempt
+			}
 		}
 		return writeJSONAtomic(paths.StatusFile, status)
 	})
@@ -186,8 +210,13 @@ func (s *Store) Event(paths Paths, request Request, eventType string, data map[s
 		if err != nil {
 			return fmt.Errorf("open events: %w", err)
 		}
-		defer file.Close()
-		return json.NewEncoder(file).Encode(record)
+		if err := json.NewEncoder(file).Encode(record); err != nil {
+			_ = file.Close()
+			return err
+		}
+		syncErr := file.Sync()
+		closeErr := file.Close()
+		return errors.Join(syncErr, closeErr)
 	})
 }
 
@@ -201,12 +230,36 @@ func writeJSONAtomic(path string, value any) error {
 	}
 	data = append(data, '\n')
 	tmp := path + ".tmp-" + randomID(8)
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
 		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync %s: %w", filepath.Base(path), err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close %s: %w", filepath.Base(path), err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open parent for %s: %w", filepath.Base(path), err)
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil || closeErr != nil {
+		return fmt.Errorf("sync parent for %s: %w", filepath.Base(path), errors.Join(syncErr, closeErr))
 	}
 	return nil
 }

@@ -31,6 +31,8 @@ type Service struct {
 	DefaultProfile string
 	RuntimeVersion string
 	MaxConcurrency int
+	MaxQueue       int
+	QueueTimeout   int
 	HTTPClient     *http.Client
 	store          Store
 	configErr      error
@@ -111,6 +113,7 @@ func New(home string) *Service {
 		Home: paths.Home, ConfigDir: paths.ConfigDir, PersonaDir: paths.PersonaDir,
 		RunsDir: paths.RunsDir, StateDir: paths.StateDir, paths: paths, DefaultProject: settings.DefaultProject,
 		DefaultProfile: settings.DefaultProfile, MaxConcurrency: settings.MaxConcurrency,
+		MaxQueue: settings.MaxQueue, QueueTimeout: settings.QueueTimeout,
 		RuntimeVersion: Version, configErr: err,
 	}
 	return service
@@ -143,6 +146,17 @@ func (s *Service) Profiles() (map[string]provider.Config, error) {
 }
 
 func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, error) {
+	if queueInlineMode() {
+		return s.runImmediate(ctx, options)
+	}
+	submitted, err := s.Submit(ctx, options)
+	if err != nil || submitted.RunID == "" {
+		return submitted, err
+	}
+	return s.Wait(ctx, submitted.RunType, submitted.RunID)
+}
+
+func (s *Service) runImmediate(ctx context.Context, options RunOptions) (RunSummary, error) {
 	runType := options.RunType
 	if runType == "" {
 		runType = RunTask
@@ -188,6 +202,14 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 	}
 	if _, err := selectedProvider.Prepare(ctx, profile, provider.Request{Overrides: overrides, RawCLIArgs: options.RawCLIArgs}); err != nil {
 		return RunSummary{}, err
+	}
+	var inlineSlot *advisoryLock
+	if queueInlineMode() {
+		inlineSlot, err = s.acquireConcurrencySlot()
+		if err != nil {
+			return RunSummary{}, err
+		}
+		defer inlineSlot.release()
 	}
 	runID := options.RunID
 	if runID == "" {
@@ -299,11 +321,6 @@ func (s *Service) Run(ctx context.Context, options RunOptions) (RunSummary, erro
 			return RunSummary{}, fmt.Errorf("cannot --force a Run associated with Session; use a new --run-id to preserve Turn history")
 		}
 	}
-	concurrencySlot, err := s.acquireConcurrencySlot()
-	if err != nil {
-		return RunSummary{}, err
-	}
-	defer concurrencySlot.release()
 	if err := paths.Ensure(); err != nil {
 		return RunSummary{}, err
 	}
@@ -530,7 +547,19 @@ func (s *Service) Status(runType, runID string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return s.store.ReadStatus(paths)
+	status, err := s.store.ReadStatus(paths)
+	if err == nil {
+		if queued, found, queueErr := s.queuedStatus(runType, runID); queueErr == nil && found && status.State == StatePending {
+			status.QueuePosition, status.QueuedAt, status.Attempt = queued.QueuePosition, queued.QueuedAt, queued.Attempt
+		}
+		return status, nil
+	}
+	if queued, found, queueErr := s.queuedStatus(runType, runID); queueErr != nil {
+		return Status{}, errors.Join(err, queueErr)
+	} else if found {
+		return queued, nil
+	}
+	return Status{}, err
 }
 
 type Logs struct {
@@ -574,6 +603,11 @@ func (s *Service) ReadResult(runType, runID string) (Result, error) {
 }
 
 func (s *Service) Cancel(runType, runID string) (RunSummary, error) {
+	if result, found, err := s.cancelQueued(runType, runID); found {
+		return result, err
+	} else if err != nil {
+		return RunSummary{}, err
+	}
 	paths, err := RunPaths(s.RunsDir, runType, runID)
 	if err != nil {
 		return RunSummary{}, err
@@ -868,7 +902,9 @@ func cloneOverrides(input map[string]any) map[string]any {
 
 func summary(paths Paths, status Status, idempotent bool) RunSummary {
 	value := RunSummary{RunID: status.RunID, ProjectID: status.ProjectID, RunType: status.RunType,
-		State: status.State, FailureReason: status.FailureReason, ResultFile: paths.ResultFile, RunDir: paths.RunDir, Idempotent: idempotent}
+		State: status.State, FailureReason: status.FailureReason, ResultFile: paths.ResultFile, RunDir: paths.RunDir,
+		QueuePosition: status.QueuePosition, QueuedAt: status.QueuedAt, StartedAt: status.StartedAt,
+		CompletedAt: status.CompletedAt, ErrorCode: status.ErrorCode, Retryable: status.Retryable, Idempotent: idempotent}
 	var request Request
 	if readJSON(paths.RequestFile, &request) == nil {
 		value.SessionID, value.TurnID, value.ExecutionID = request.SessionID, request.TurnID, request.ExecutionID

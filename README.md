@@ -186,11 +186,16 @@ sn-cli config validate -c fake
 sn-cli config command -c cx-spark --json
 sn-cli doctor
 
+sn-cli task run -c native-mock "同步执行"
+sn-cli task submit -c native-mock --queue-timeout-seconds 3600 "后台执行"
+sn-cli turn submit -c cx --session-id <id> "后台继续"
 sn-cli task status --run-id <id>
 sn-cli task logs --run-id <id> --tail 200
 sn-cli task result --run-id <id>
 sn-cli task watch --run-id <id>
 sn-cli task cancel --run-id <id>
+sn-cli runs list --active --project <project> --limit 20
+sn-cli runs reconcile --dry-run
 
 sn-cli turn run -c native-fake "继续任务"
 sn-cli task block --run-id <id> --reason "等待输入"
@@ -228,7 +233,9 @@ sn-cli clean
 sn-cli clean --apply
 ```
 
-`sn-cli doctor --json` 始终输出数字字段 `contract_version`，供 Workbench 等调用方在执行前校验 CLI/运行产物契约；provider 凭据缺失只影响 doctor 的 `ok` 与对应 provider 状态，不改变 contract version。
+`sn-cli doctor --json` 始终输出数字字段 `contract_version`、可加性演进的 `features` map 与 `scheduler`，供 Workbench 等调用方在执行前校验 CLI/运行产物契约；provider 凭据缺失只影响 doctor 的 `ok` 与对应 provider 状态，不改变 contract version。
+
+managed Run 使用本机持久 FIFO。`task run` 提交后等待终态，`task submit` 返回 `pending`；默认 `max_concurrency=1`、`max_queue=64`、`queue_timeout_seconds=3600`，因此并发提交会排队，不再因单个任务占用 slot 而直接报 `max_concurrency=1 reached`。队列位于 owner-only 的 `state/runs/queue.json`，daemon 重启时会自动 reconcile；也可先运行 `runs reconcile --dry-run` 查看动作。
 
 `session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。自动包装的 tmux session 使用 `sn-agent` 命名空间，不使用旧的 `mz-cli-agent`；session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
 
@@ -434,6 +441,7 @@ curl -H "Authorization: Bearer $SN_SERVER_TOKEN" http://127.0.0.1:8080/v1/runs/t
 server 与 CLI 读取同一个 `SN_CLI_HOME`：
 
 - `GET /healthz`
+- `GET /v1/runs`
 - `POST /v1/runs`
 - `GET /v1/runs/{run_type}/{run_id}/status|logs|result`
 - `POST /v1/runs/{run_type}/{run_id}/cancel|block|stop|continue|patch-resume`
@@ -442,7 +450,7 @@ server 与 CLI 读取同一个 `SN_CLI_HOME`：
 - `GET /v1/sessions/{session_id}/messages|events|watch`
 - `POST /v1/sessions/{session_id}/turns`
 
-`POST /v1/runs` 支持 `allowed_actions` 和 `forbidden_actions` 数组，HTTP 发起的 API Agent run 与 CLI 使用同一工具授权规则。
+`POST /v1/runs` 支持 `allowed_actions` 和 `forbidden_actions` 数组，HTTP 发起的 API Agent run 与 CLI 使用同一工具授权规则。默认同步；请求头包含 `Prefer: respond-async` 时返回 `202 Accepted`。`GET /v1/runs` 支持 active/state/type/project/profile/limit 过滤。
 
 Session/History 的完整数据模型、记录策略、Workbench 边界和迁移契约见 [`docs/SESSION_HISTORY_DESIGN.md`](docs/SESSION_HISTORY_DESIGN.md)。
 
@@ -463,6 +471,6 @@ make coverage COVERAGE_MIN=65.0
 git diff --check
 ```
 
-仓库 CI 在 push/pull request 上执行格式检查、双入口构建、vet、串行/并行测试、关键 race 和 65% 全仓覆盖率门禁。协议与工具回路测试使用本地 fixture，不调用真实或付费 API。
+仓库 CI 在 push/pull request 上执行格式检查、双入口构建、vet、串行/并行测试、关键 race 和 65% 全仓覆盖率门禁，并单独验证 scheduler 的 FIFO、超时、取消和崩溃恢复。协议与工具回路测试使用本地 fixture，不调用真实或付费 API；真实 Provider smoke 仅在显式提供凭据并启用时运行。
 
 `make release` 生成 darwin/linux、arm64/amd64 的 `sn-cli-<os>-<arch>.tar.gz`、`sn-server-<os>-<arch>` 和 `checksums.txt`。`make release-check` 进一步执行格式、测试、vet、资产/checksum 完整性检查，并在临时 home 中安装当前平台 archive、运行 `native-mock` smoke。推送 `v*` tag 后，GitHub Actions 复用该门禁并发布这些资产。

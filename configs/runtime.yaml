@@ -1,3 +1,5 @@
 default_project: _default
 default_profile: cx
 max_concurrency: 1
+max_queue: 64
+queue_timeout_seconds: 3600

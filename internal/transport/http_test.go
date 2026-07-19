@@ -65,6 +65,11 @@ func TestHTTPRunUsesAgentRunArtifacts(t *testing.T) {
 			t.Fatalf("resource=%s status=%d body=%s", resource, readResponse.Code, readResponse.Body.String())
 		}
 	}
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/runs?state=done&profile=native-test", nil))
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), "task-20260714-000000-httpnative") {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
 	cancelResponse := httptest.NewRecorder()
 	handler.ServeHTTP(cancelResponse, httptest.NewRequest(http.MethodPost, "/v1/runs/task/task-20260714-000000-httpnative/cancel", nil))
 	if cancelResponse.Code != http.StatusOK {
@@ -80,6 +85,26 @@ func TestHTTPRunUsesAgentRunArtifacts(t *testing.T) {
 		if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("path=%s status=%d", request.URL.Path, response.Code)
 		}
+	}
+}
+
+func TestHTTPRunSupportsRespondAsyncPreference(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["ok"],"done_after":1}}}`
+	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTPHandler(agentrun.New(root))
+	request := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{"run_id":"task-20260719-000007-async","profile":"native-test","prompt":"hello"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Prefer", "wait=1, respond-async")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || response.Header().Get("Preference-Applied") != "respond-async" {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }
 
@@ -193,6 +218,7 @@ func TestHTTPHandlerRejectsUnsafeFileInputs(t *testing.T) {
 		{Profile: "x", PromptFile: "/etc/passwd", CWD: t.TempDir()},
 		{Profile: "x", PromptFile: "../secret", CWD: t.TempDir()},
 		{Profile: "x", Prompt: "p", DeadlineSeconds: -1},
+		{Profile: "x", Prompt: "p", QueueTimeout: -1},
 		{Profile: "x", Prompt: "p", AllowedActions: []string{"echo", "echo"}},
 		{Profile: "x", Prompt: "p", ForbiddenActions: []string{" bad"}},
 	}

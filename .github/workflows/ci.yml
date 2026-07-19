@@ -3,6 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      real_provider_smoke:
+        description: "运行真实 Provider smoke（会产生 API 调用）"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,3 +54,20 @@ jobs:
 
       - name: 覆盖率门禁
         run: make coverage COVERAGE_PROFILE=/tmp/sn-runtime-coverage.out COVERAGE_MIN=65.0
+
+  real-provider-smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.real_provider_smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 真实 Provider smoke
+        env:
+          SN_REAL_PROVIDER_SMOKE: "1"
+          SN_SMOKE_PROFILE: api-openai-agent
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: make provider-smoke

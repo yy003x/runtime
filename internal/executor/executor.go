@@ -105,24 +105,6 @@ func runInteractive(ctx context.Context, cmd *exec.Cmd, options Options) (Result
 
 func runStreaming(ctx context.Context, cmd *exec.Cmd, options Options) (Result, error) {
 	cmd.Stdin = options.Stdin
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{ExitCode: 1}, fmt.Errorf("create stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{ExitCode: 1}, fmt.Errorf("create stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return Result{ExitCode: 1}, fmt.Errorf("start %q: %w", options.Argv[0], err)
-	}
-	info := startedInfo(cmd)
-	if options.Observer.Started != nil {
-		options.Observer.Started(info)
-	}
-
-	var stdoutBuffer bytes.Buffer
-	var stderrBuffer bytes.Buffer
 	var first sync.Once
 	notify := func() {
 		first.Do(func() {
@@ -131,43 +113,50 @@ func runStreaming(ctx context.Context, cmd *exec.Cmd, options Options) (Result, 
 			}
 		})
 	}
-	var readers sync.WaitGroup
-	readers.Add(2)
-	go func() {
-		defer readers.Done()
-		copyStream(stdout, &stdoutBuffer, options.Observer.Stdout, notify)
-	}()
-	go func() {
-		defer readers.Done()
-		copyStream(stderr, &stderrBuffer, options.Observer.Stderr, notify)
-	}()
+	stdout := &streamCapture{callback: options.Observer.Stdout, first: notify}
+	stderr := &streamCapture{callback: options.Observer.Stderr, first: notify}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if err := cmd.Start(); err != nil {
+		return Result{ExitCode: 1}, fmt.Errorf("start %q: %w", options.Argv[0], err)
+	}
+	info := startedInfo(cmd)
+	if options.Observer.Started != nil {
+		options.Observer.Started(info)
+	}
 
 	waitErr := wait(ctx, cmd, options.ForwardSignals, options.GracePeriod)
-	readers.Wait()
-	notify()
 	result := Result{
-		Stdout: stdoutBuffer.String(), Stderr: stderrBuffer.String(),
+		Stdout: stdout.String(), Stderr: stderr.String(),
 		ExitCode: exitCode(waitErr), PID: info.PID, PGID: info.PGID,
 	}
 	return result, executionError(options.Argv[0], waitErr)
 }
 
-func copyStream(source io.Reader, capture *bytes.Buffer, callback func([]byte), first func()) {
-	buffer := make([]byte, 32*1024)
-	for {
-		read, err := source.Read(buffer)
-		if read > 0 {
-			chunk := append([]byte(nil), buffer[:read]...)
-			first()
-			_, _ = capture.Write(chunk)
-			if callback != nil {
-				callback(chunk)
-			}
-		}
-		if err != nil {
-			return
-		}
+type streamCapture struct {
+	mu       sync.Mutex
+	buffer   bytes.Buffer
+	callback func([]byte)
+	first    func()
+}
+
+func (s *streamCapture) Write(value []byte) (int, error) {
+	chunk := append([]byte(nil), value...)
+	if len(chunk) > 0 && s.first != nil {
+		s.first()
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	written, err := s.buffer.Write(chunk)
+	if s.callback != nil {
+		s.callback(chunk)
+	}
+	return written, err
+}
+
+func (s *streamCapture) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buffer.String()
 }
 
 func wait(ctx context.Context, cmd *exec.Cmd, forwardSignals bool, grace time.Duration) error {

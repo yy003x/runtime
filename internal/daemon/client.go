@@ -30,11 +30,11 @@ func (c *Client) EnsureRunning(ctx context.Context) (*Status, string, error) {
 		if !c.daemonStale(status) {
 			return status, "", nil
 		}
-		if len(status.Processes) == 0 && len(status.Dependencies) == 0 {
+		if len(status.Processes) == 0 && len(status.Dependencies) == 0 && !status.Busy {
 			_ = c.Shutdown(ctx, false)
 			_ = c.waitStopped(ctx, 3*time.Second)
 		} else {
-			return status, "daemon version differs; active processes keep the current daemon", nil
+			return status, "daemon version differs; active work keeps the current daemon", nil
 		}
 	}
 	if err := c.start(); err != nil {

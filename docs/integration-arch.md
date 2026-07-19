@@ -60,7 +60,7 @@
 - profile discovery、validation、doctor、capabilities。
 - daemon 控制与 release self-update。
 
-`doctor --json` 暴露现有 `agentrun.ContractVersion`，调用方据此做兼容门禁；该字段独立于 build/release version，也不因单个 provider 凭据缺失而变化。
+`doctor --json` 暴露现有 `agentrun.ContractVersion`、可加性演进的 `features` map 与 `scheduler` 健康信息，调用方据此做兼容门禁；contract 字段独立于 build/release version，也不因单个 provider 凭据缺失而变化。当前 feature 包括 `durable_queue`、`async_submit`、`run_list`、`run_reconcile` 与 `artifact_durability`，版本均为 1。
 
 `cmd/sn-server` 负责：
 
@@ -79,6 +79,7 @@
 - 校验 managed result contract 和 result schema。
 - 维护 loop、native resume、tmux session 和 command lifecycle。
 - 维护跨 Provider 的逻辑 Session、规范化消息、Turn/RunAttempt/Execution 关系和可重建 History 索引。
+- 维护 `state/runs/queue.json` 的 owner-only 持久 FIFO、queue timeout、原子 claim、run 列表和崩溃恢复。
 - 通过 `result_ref` 引用 run 的不可变 `result.json`，不复制 result 事实。
 - 将 Provider detail 写入 `provider_status`，不产生第二套状态机。
 
@@ -126,7 +127,7 @@ type Provider interface {
 - dependency lease、ref count、wait TCP/HTTP、restart/optional。
 - 按 profile 启用的 audit proxy、upstream proxy、shim 和 DYLD 环境。
 
-daemon 不解析 profile，不创建 run ID，不写 AgentRun artifacts。
+daemon 不解析 profile，不创建 run ID，不直接写 AgentRun artifacts。daemon 进程同时托管 AgentRun dispatcher；dispatcher 通过 `agentrun.Service` claim 队列并执行，队列非空或有执行中 run 时禁止 idle exit。默认 `max_concurrency=1`、`max_queue=64`、`queue_timeout_seconds=3600`，多进程提交由文件锁串行化；状态、请求、结果、registry 与队列使用临时文件 `fsync`、原子 rename 和父目录 `fsync` 落盘。
 
 ## 3. Interactive 与 Managed 分流
 
@@ -369,6 +370,7 @@ stdout、pane 静默、进程退出或单独完成文件都不构成成功。
 HTTP 暴露 run 与 Session/History API：
 
 - `GET /healthz`
+- `GET /v1/runs`
 - `POST /v1/runs`
 - `GET /v1/runs/{type}/{id}/status|logs|result`
 - `POST /v1/runs/{type}/{id}/cancel|block|stop|continue|patch-resume`
@@ -378,6 +380,8 @@ HTTP 暴露 run 与 Session/History API：
 - `POST /v1/sessions/{id}/turns`
 
 `sn-server` 默认地址为 `127.0.0.1:8080`。非 loopback 地址必须通过 `SN_SERVER_TOKEN` 开启 Bearer 鉴权；`/healthz` 保持无鉴权以供存活探针使用。HTTP adapter 的 JSON body 上限默认为 1 MiB，拒绝未知字段和非 JSON 写请求，并限制 `prompt_file` 只能引用 `cwd` 内的相对路径。
+
+`POST /v1/runs` 默认保持同步兼容；请求头包含 `Prefer: respond-async` 时返回 `202 Accepted` 与 `Preference-Applied: respond-async`。`GET /v1/runs` 支持 `active`、`state`、`run_type`、`project_id`、`profile` 和 `limit` 过滤。
 
 Capability：
 
@@ -407,7 +411,7 @@ Capability：
 | 串行回归 | `make test-serial` | 文件锁、artifact 与生命周期顺序 |
 | 并行重复 | `go test ./... -count=5` | tmux、daemon、run 并发稳定性 |
 | Race | `make test-race` | AgentRun、memory、native/API agent、HTTP 关键并发路径 |
-| 覆盖率 | `make coverage COVERAGE_MIN=65.0` | 全仓 atomic coverage 门禁 |
+| 覆盖率 | `make coverage COVERAGE_MIN=65.0` | 全仓 atomic coverage 门禁；scheduler 另由故障恢复与 release smoke 覆盖 |
 | 静态检查 | `go vet ./...` | Go 静态问题 |
 | CLI 回归 | `make sn-cli-test` | AgentRun、Provider、executor、daemon、capability、HTTP、CLI |
 | 构建 | `make sn-cli-build && make build` | `sn-cli` 与 `sn-server` |
@@ -418,6 +422,7 @@ Capability：
 | Managed | `sn-cli <fixture> "prompt"`、`stdin \| sn-cli <fixture>` | prompt 来源、raw args、`managed_args` 与 result artifact |
 | Session | `sn-cli session start -c <fixture> "prompt"` | 同 config tmux、提交事件、持久日志、异常重启 |
 | Server | `/healthz` | `sn-server` 与共享 home |
+| Scheduler | 并发 submit、daemon restart、`runs reconcile --dry-run` | FIFO、queue timeout、终态不重跑、队列可观察性 |
 | 失败保护 | checksum/config/binary validation fixture | 旧 binary 保留、冲突零部分复制 |
 | 补丁质量 | `git diff --check` | 空白与补丁格式 |
 

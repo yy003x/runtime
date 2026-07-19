@@ -23,7 +23,7 @@ prompt 来源为 positional、`--prompt-file`、stdin 三选一；同时提供�
 第一个参数按以下顺序解析：
 
 1. `-h`、`--help` 等全局 flag。
-2. `help`、`version`、`profiles`、`config`、`doctor`、`daemon`、`task`、`turn`、`loop`、`capabilities`、`tools`、`session`、`history`、`command`、`clean`、`update` 等内建命令。
+2. `help`、`version`、`profiles`、`config`、`doctor`、`daemon`、`task`、`turn`、`runs`、`loop`、`capabilities`、`tools`、`session`、`history`、`command`、`clean`、`update` 等内建命令。
 3. 从 `~/.sn/configs/*.json` 解析 config ID、alias 或 preset ID。
 4. 均未命中时返回 `unknown command`，不得猜测 Provider 或静默降级。
 
@@ -82,10 +82,14 @@ direct、managed 与 session 必须使用同一份 `cli.command` 环境配置。
 
 ```bash
 sn-cli task run -c cx "hi"
+sn-cli task submit -c cx --queue-timeout-seconds 3600 "后台执行"
+sn-cli turn submit -c cx --session-id <id> "后台继续"
 sn-cli session run -c cx "一次性但需要会话记录的任务"
 sn-cli session exec -c cx -- --help
 sn-cli task status --run-id <id>
 sn-cli loop status --loop-id <id>
+sn-cli runs list --active --project <project> --limit 20
+sn-cli runs reconcile --dry-run
 
 sn-cli session start -c cx "hi" -- --no-alt-screen
 sn-cli session list
@@ -114,6 +118,8 @@ sn-cli clean --apply
 `config command` 只读解析 CLI profile 的 managed argv，不启动 Provider，也不输出 profile env 值。文本模式输出可供 shell 阅读的脱敏命令；`--json` 输出 `argv` 与 `command`，敏感 flag、URL 凭据、敏感 query 和当前环境中的 secret 值必须替换为 `[REDACTED]`。
 
 `session list/status/send/...` 管理 tmux 活动执行；`history ...` 管理跨 API、CLI、TTY、tmux 的逻辑 Session。普通 `task run`、顶层 managed profile 和 `POST /v1/runs` 只写 Run artifact，不隐式创建 Session；需要记录时使用 `session run`、Session HTTP API，或用 `--session-id` 关联既有 Session。`turn run` 强制要求 `--session-id`。`--record-mode`、`--retention` 只有存在显式 Session intent 时有效。
+
+`task run` 同步提交到本机持久 FIFO 并等待终态；`task submit` 只提交并立即返回 `pending`。`--queue-timeout-seconds` 限制等待调度的时间，不替代 Provider 的 `--deadline-seconds`。`runs list` 是跨进程查询 queued/active/terminal Run 的公共入口；`runs reconcile` 只修复 daemon 异常退出遗留的 claim，已有终态 artifact 绝不能重跑。队列容量或并发不足必须排队或返回 `queue_full`，不得再以 `max_concurrency=1 reached` 拒绝正常提交。
 
 ## 5. 变更门禁
 

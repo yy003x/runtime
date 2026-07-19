@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -44,9 +45,14 @@ func runRuntimeDoctor(cfg *config.Config, args []string) error {
 			ok = false
 		}
 	}
+	scheduler, schedulerErr := service.QueueSnapshot(false)
+	if schedulerErr != nil {
+		ok = false
+	}
 	return printJSON(map[string]any{
 		"ok": ok, "version": service.RuntimeVersion, "contract_version": agentrun.ContractVersion, "runs_dir": service.RunsDir,
 		"default_profile": service.DefaultProfile, "profiles": len(profiles), "providers": items,
+		"features": agentrun.SupportedFeatures(), "scheduler": scheduler,
 	})
 }
 
@@ -58,9 +64,19 @@ func runDaemonCommand(cfg *config.Config, args []string) error {
 	client := service.DaemonClient()
 	switch args[0] {
 	case "serve":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return daemon.NewServer(service.DaemonConfig()).Run(ctx)
+		ctx, cancel := context.WithCancel(signalCtx)
+		defer cancel()
+		config := service.DaemonConfig()
+		config.Busy = service.QueueBusy
+		dispatchErr := make(chan error, 1)
+		go func() {
+			dispatchErr <- service.DispatchQueue(ctx)
+		}()
+		serverErr := daemon.NewServer(config).Run(ctx)
+		cancel()
+		return errors.Join(serverErr, <-dispatchErr)
 	case "start":
 		status, notice, err := client.EnsureRunning(context.Background())
 		if err != nil {
@@ -101,8 +117,8 @@ func ensureDaemonRestartSafe(status *daemon.Status) error {
 	if status == nil {
 		return nil
 	}
-	if len(status.Processes) > 0 || len(status.Dependencies) > 0 {
-		return fmt.Errorf("daemon has %d active process(es) and %d dependency process(es); stop or cancel them before restart", len(status.Processes), len(status.Dependencies))
+	if len(status.Processes) > 0 || len(status.Dependencies) > 0 || status.Busy {
+		return fmt.Errorf("daemon has active work (processes=%d dependencies=%d queue_busy=%t); stop or cancel it before restart", len(status.Processes), len(status.Dependencies), status.Busy)
 	}
 	return nil
 }
@@ -504,7 +520,7 @@ func validateExecutionEnvironment(profile provider.Config) string {
 
 func runTaskCommand(cfg *config.Config, command string, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: %s run|status|logs|result|watch|block|continue|patch-resume|stop|cancel", command)
+		return fmt.Errorf("usage: %s run|submit|status|logs|result|watch|block|continue|patch-resume|stop|cancel", command)
 	}
 	service := agentrun.New(cfg.Home)
 	runType := agentrun.RunTask
@@ -512,7 +528,7 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 		runType = agentrun.RunTurn
 	}
 	switch args[0] {
-	case "run":
+	case "run", "submit":
 		options, err := parseRunOptions(runType, args[1:])
 		if err != nil {
 			return err
@@ -524,7 +540,13 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 			return fmt.Errorf("turn run requires --session-id")
 		}
 		options.Caller = "cli." + command
-		result, runErr := service.Run(context.Background(), options)
+		var result agentrun.RunSummary
+		var runErr error
+		if args[0] == "submit" {
+			result, runErr = service.Submit(context.Background(), options)
+		} else {
+			result, runErr = service.Run(context.Background(), options)
+		}
 		_ = printJSON(result)
 		return runErr
 	case "status":
@@ -608,6 +630,75 @@ func runTaskCommand(cfg *config.Config, command string, args []string) error {
 	}
 }
 
+func runRunsCommand(cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: runs list|reconcile")
+	}
+	service := agentrun.New(cfg.Home)
+	switch args[0] {
+	case "list":
+		filter := agentrun.RunFilter{}
+		for index := 1; index < len(args); index++ {
+			switch args[index] {
+			case "--active":
+				filter.Active = true
+			case "--state", "--type", "--project", "--profile", "--limit":
+				name := args[index]
+				index++
+				if index >= len(args) {
+					return fmt.Errorf("%s requires value", name)
+				}
+				switch name {
+				case "--state":
+					filter.State = args[index]
+				case "--type":
+					filter.RunType = args[index]
+				case "--project":
+					filter.ProjectID = args[index]
+				case "--profile":
+					filter.Profile = args[index]
+				case "--limit":
+					value, err := strconv.Atoi(args[index])
+					if err != nil || value <= 0 {
+						return fmt.Errorf("--limit must be a positive integer")
+					}
+					filter.Limit = value
+				}
+			default:
+				return fmt.Errorf("unknown runs list option: %s", args[index])
+			}
+		}
+		runs, err := service.ListRuns(filter)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"runs": runs})
+	case "reconcile":
+		dryRun := false
+		for _, arg := range args[1:] {
+			if arg != "--dry-run" {
+				return fmt.Errorf("unknown runs reconcile option: %s", arg)
+			}
+			dryRun = true
+		}
+		before, err := service.QueueSnapshot(true)
+		if err != nil {
+			return err
+		}
+		report, err := service.ReconcileQueue(dryRun)
+		if err != nil {
+			return err
+		}
+		after, err := service.QueueSnapshot(true)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"ok": true, "reconcile": report, "before": before, "after": after})
+	default:
+		return fmt.Errorf("unknown runs command: %s", args[0])
+	}
+}
+
 func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error) {
 	options := agentrun.RunOptions{RunType: runType, ExecutionMode: agentrun.ModeManaged, ProviderOverrides: map[string]any{}}
 	var promptParts []string
@@ -677,6 +768,16 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error)
 				return options, err
 			}
 			options.DeadlineSeconds = value
+		case "--queue-timeout-seconds":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("--queue-timeout-seconds requires value")
+			}
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value < 0 {
+				return options, fmt.Errorf("--queue-timeout-seconds must be a non-negative integer")
+			}
+			options.QueueTimeout = value
 		case "--result-schema":
 			i++
 			if i >= len(args) {
