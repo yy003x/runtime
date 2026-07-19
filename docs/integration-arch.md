@@ -60,6 +60,8 @@
 - profile discovery、validation、doctor、capabilities。
 - daemon 控制与 release self-update。
 
+`doctor --json` 暴露现有 `agentrun.ContractVersion`，调用方据此做兼容门禁；该字段独立于 build/release version，也不因单个 provider 凭据缺失而变化。
+
 `cmd/sn-server` 负责：
 
 - 提供 `/healthz`、`/v1/runs` 和 `/v1/sessions` HTTP adapter。
@@ -276,6 +278,8 @@ configs/
 
 同一 release 还提供 `sn-server-<os>-<arch>` 和 `checksums.txt`。GitHub Actions 在 `v*` tag 上执行测试、交叉编译、checksum 和 release 发布。
 
+发布前统一运行 `make release-check`：除生成四平台资产外，还校验资产与 checksum 完整性，并在临时 `SN_CLI_HOME` 中安装当前平台 archive、验证 `contract_version` 和执行 `native-mock` task。首个 GitHub Release 创建前，网络 binary 安装不可用，应使用 `install-source.sh`。
+
 ### 6.2 网络安装
 
 `install.sh`：
@@ -407,7 +411,7 @@ Capability：
 | 静态检查 | `go vet ./...` | Go 静态问题 |
 | CLI 回归 | `make sn-cli-test` | AgentRun、Provider、executor、daemon、capability、HTTP、CLI |
 | 构建 | `make sn-cli-build && make build` | `sn-cli` 与 `sn-server` |
-| Release | `make release` | 四平台 archive/server/checksum |
+| Release | `make release-check` | 四平台 archive/server/checksum、临时安装与 native-mock smoke |
 | 本地安装 | 临时 home 运行 `make install` | config 同步、binary、symlink |
 | 网络安装 | 本地 HTTP fixture | 无 Go/Git、checksum、无源码运行 |
 | Interactive | `sn-cli cx --help/--version`、`cc --version` | raw args、无 artifact |

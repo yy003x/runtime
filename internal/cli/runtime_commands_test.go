@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,32 @@ import (
 	"agent-runtime/internal/daemon"
 	"agent-runtime/internal/provider"
 )
+
+func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"type":"native","label":"Native Mock","native":{"mock":{"responses":["ok"],"done_after":1}}}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "native-mock.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, output := captureMain(t, []string{"doctor", "--json"})
+	if code != 0 {
+		t.Fatalf("doctor code=%d output=%q", code, output)
+	}
+	var payload struct {
+		ContractVersion int `json:"contract_version"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode doctor output: %v\n%s", err, output)
+	}
+	if payload.ContractVersion != agentrun.ContractVersion {
+		t.Fatalf("contract_version=%d want=%d", payload.ContractVersion, agentrun.ContractVersion)
+	}
+}
 
 func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
 	options, err := parseRunOptions(agentrun.RunTask, []string{

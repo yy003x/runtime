@@ -30,6 +30,8 @@ internal/installbundle     release 解包、checksum、配置同步
 
 网络安装下载 GitHub Release 中已编译的 binary、`configs/` 和 `checksums.txt`，不下载源码，也不要求 Go 或 Git：
 
+该方式要求仓库已经发布至少一个 GitHub Release；首个 `v*` tag 发布前请使用下文的网络源码安装。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
 ```
@@ -225,6 +227,8 @@ sn-cli command stop --run-id <id>
 sn-cli clean
 sn-cli clean --apply
 ```
+
+`sn-cli doctor --json` 始终输出数字字段 `contract_version`，供 Workbench 等调用方在执行前校验 CLI/运行产物契约；provider 凭据缺失只影响 doctor 的 `ok` 与对应 provider 状态，不改变 contract version。
 
 `session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。自动包装的 tmux session 使用 `sn-agent` 命名空间，不使用旧的 `mz-cli-agent`；session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
 
@@ -448,6 +452,7 @@ Session/History 的完整数据模型、记录策略、Workbench 边界和迁移
 make sn-cli-build
 make build
 make release
+make release-check
 
 go test ./...
 go vet ./...
@@ -460,4 +465,4 @@ git diff --check
 
 仓库 CI 在 push/pull request 上执行格式检查、双入口构建、vet、串行/并行测试、关键 race 和 65% 全仓覆盖率门禁。协议与工具回路测试使用本地 fixture，不调用真实或付费 API。
 
-`make release` 生成 darwin/linux、arm64/amd64 的 `sn-cli-<os>-<arch>.tar.gz`、`sn-server-<os>-<arch>` 和 `checksums.txt`。推送 `v*` tag 后，GitHub Actions 执行测试并发布这些资产。
+`make release` 生成 darwin/linux、arm64/amd64 的 `sn-cli-<os>-<arch>.tar.gz`、`sn-server-<os>-<arch>` 和 `checksums.txt`。`make release-check` 进一步执行格式、测试、vet、资产/checksum 完整性检查，并在临时 home 中安装当前平台 archive、运行 `native-mock` smoke。推送 `v*` tag 后，GitHub Actions 复用该门禁并发布这些资产。

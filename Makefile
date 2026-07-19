@@ -13,7 +13,7 @@ GOCACHE ?= /tmp/go-build
 GOMODCACHE ?= /tmp/go-mod
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
-.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install release sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install release release-check sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
 
 COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
 COVERAGE_MIN ?= 65.0
@@ -31,6 +31,7 @@ help:
 	@echo "  make sn-cli-build      - build sn-cli binary"
 	@echo "  make install           - build and install sn-cli into ~/.sn"
 	@echo "  make release           - build release archives for supported platforms"
+	@echo "  make release-check     - validate, build and smoke-test release assets"
 	@echo "  make sn-cli-test       - run sn-cli Go tests"
 	@echo "  make sn-cli-doctor     - run sn-cli doctor"
 	@echo "  make run               - run HTTP server"
@@ -120,6 +121,9 @@ release:
 	done; \
 	cd dist; \
 	if command -v sha256sum >/dev/null 2>&1; then sha256sum sn-cli-*.tar.gz sn-server-* > checksums.txt; else shasum -a 256 sn-cli-*.tar.gz sn-server-* > checksums.txt; fi
+
+release-check:
+	SN_CLI_VERSION="$(SN_CLI_VERSION)" bash scripts/release-check.sh
 
 clean:
 	rm -rf bin dist

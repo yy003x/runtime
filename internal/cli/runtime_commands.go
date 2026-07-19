@@ -45,7 +45,7 @@ func runRuntimeDoctor(cfg *config.Config, args []string) error {
 		}
 	}
 	return printJSON(map[string]any{
-		"ok": ok, "version": service.RuntimeVersion, "runs_dir": service.RunsDir,
+		"ok": ok, "version": service.RuntimeVersion, "contract_version": agentrun.ContractVersion, "runs_dir": service.RunsDir,
 		"default_profile": service.DefaultProfile, "profiles": len(profiles), "providers": items,
 	})
 }
