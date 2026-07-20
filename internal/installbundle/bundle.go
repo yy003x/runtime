@@ -198,7 +198,7 @@ func ExtractTarGz(archivePath, target string) error {
 			if err := os.MkdirAll(destination, 0o700); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, 0:
 			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 				return err
 			}

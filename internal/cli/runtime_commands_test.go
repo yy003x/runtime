@@ -443,14 +443,22 @@ func TestValidateNativeProfileDistinguishesDependencyAndCredentialFailures(t *te
 	if result["message"] != "native model_profile 不存在: api" {
 		t.Fatalf("result=%#v", result)
 	}
-	apiProfile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{APIKeyEnv: "NATIVE_TEST_KEY"}}
+	apiProfile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{APIKey: "${NATIVE_TEST_KEY}"}}
 	result = validateProfile(nativeProfile, map[string]provider.Config{"native": nativeProfile, "api": apiProfile}, false)
-	if result["message"] != "native model_profile 凭据缺失: NATIVE_TEST_KEY" {
+	if !strings.Contains(result["message"], "环境变量未设置: NATIVE_TEST_KEY") {
 		t.Fatalf("result=%#v", result)
 	}
 	t.Setenv("NATIVE_TEST_KEY", "secret")
 	result = validateProfile(nativeProfile, map[string]provider.Config{"native": nativeProfile, "api": apiProfile}, false)
 	if result["ok"] != true {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestValidateAPIProfileRejectsProgrammaticPlaintextKey(t *testing.T) {
+	profile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{APIKey: "secret"}}
+	result := validateProfile(profile, map[string]provider.Config{"api": profile}, false)
+	if result["ok"] == true || !strings.Contains(fmt.Sprint(result["message"]), "${ENV_VAR}") {
 		t.Fatalf("result=%#v", result)
 	}
 }

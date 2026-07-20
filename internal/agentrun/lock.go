@@ -68,7 +68,7 @@ func (s *Service) acquireRunLock(ctx context.Context, runID string) (*advisoryLo
 func (s *Service) acquireConcurrencySlot() (*advisoryLock, error) {
 	for slot := 0; slot < s.MaxConcurrency; slot++ {
 		path := filepath.Join(s.StateDir, "runs", "concurrency", fmt.Sprintf("slot-%d.lock", slot))
-		lock, err := acquireAdvisoryLock(nil, path, false)
+		lock, err := acquireAdvisoryLock(context.Background(), path, false)
 		if err == nil {
 			return lock, nil
 		}
@@ -77,7 +77,7 @@ func (s *Service) acquireConcurrencySlot() (*advisoryLock, error) {
 }
 
 func withAdvisoryFileLock(path string, operation func() error) error {
-	lock, err := acquireAdvisoryLock(nil, path, true)
+	lock, err := acquireAdvisoryLock(context.Background(), path, true)
 	if err != nil {
 		return err
 	}

@@ -62,8 +62,12 @@ func ExecuteCLIInteractive(ctx context.Context, cfg Config, request CLIRequest, 
 		defer func() { _ = client.Release(context.Background(), processID) }()
 		environment = injected
 	}
+	commandEnvironment, err := CommandEnvironment(cfg.CLI.Command, environment)
+	if err != nil {
+		return Result{ExitCode: 1}, fmt.Errorf("profile %s: %w", cfg.ID, err)
+	}
 	execution, err := executor.Run(ctx, executor.Options{
-		Argv: request.Argv, Env: CommandEnvironment(cfg.CLI.Command, environment), Dir: cwd,
+		Argv: request.Argv, Env: commandEnvironment, Dir: cwd,
 		Interactive: true, ForwardSignals: true,
 	})
 	return Result{ExitCode: execution.ExitCode, PID: execution.PID, PGID: execution.PGID}, err
@@ -87,8 +91,12 @@ func executeCLIStreaming(
 	if request.Stdin != "" {
 		stdin = strings.NewReader(request.Stdin)
 	}
+	commandEnvironment, err := CommandEnvironment(cfg.CLI.Command, extraEnv)
+	if err != nil {
+		return Result{ExitCode: 1}, fmt.Errorf("profile %s: %w", cfg.ID, err)
+	}
 	execution, err := executor.Run(ctx, executor.Options{
-		Argv: request.Argv, Env: CommandEnvironment(cfg.CLI.Command, extraEnv), Dir: cwd, Stdin: stdin,
+		Argv: request.Argv, Env: commandEnvironment, Dir: cwd, Stdin: stdin,
 		ForwardSignals: true,
 		Observer: executor.Observer{
 			Started: func(info executor.ProcessInfo) {
@@ -127,9 +135,9 @@ func ExecuteAPI(ctx context.Context, client *http.Client, cfg Config, request AP
 		text := fmt.Sprintf("[mock %s:%s] %d chars", request.Protocol, model, promptLength)
 		return Result{Stdout: text + "\n", FinalText: text}, nil
 	}
-	key := os.Getenv(api.APIKeyEnv)
-	if key == "" {
-		return Result{ExitCode: 1}, fmt.Errorf("profile %s: environment %s is required", cfg.ID, api.APIKeyEnv)
+	key, err := resolveAPIKey(cfg.ID, api)
+	if err != nil {
+		return Result{ExitCode: 1}, err
 	}
 	payload, err := json.Marshal(request.Payload)
 	if err != nil {
@@ -144,11 +152,12 @@ func ExecuteAPI(ctx context.Context, client *http.Client, cfg Config, request AP
 		return Result{ExitCode: 1}, fmt.Errorf("create API request: %w", err)
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
-	for name, value := range api.Headers {
-		expanded, ok := expandHeader(value)
-		if ok {
-			httpRequest.Header.Set(name, expanded)
-		}
+	headers, err := resolveAPIHeaders(api.Headers)
+	if err != nil {
+		return Result{ExitCode: 1}, fmt.Errorf("profile %s: %w", cfg.ID, err)
+	}
+	for name, value := range headers {
+		httpRequest.Header.Set(name, value)
 	}
 	if api.Auth.Header != "" {
 		httpRequest.Header.Set(api.Auth.Header, api.Auth.Prefix+key)
@@ -272,14 +281,31 @@ func readStream(reader io.Reader, protocol string) (string, string, error) {
 	return text.String(), raw.String(), nil
 }
 
-func expandHeader(value string) (string, bool) {
-	missing := false
-	expanded := os.Expand(value, func(key string) string {
-		resolved, ok := os.LookupEnv(key)
-		if !ok {
-			missing = true
+func resolveAPIKey(profileID string, api *APIConfig) (string, error) {
+	name, ok := EnvironmentReferenceName(api.APIKey)
+	if !ok {
+		return "", fmt.Errorf("profile %s: api.api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符", profileID)
+	}
+	key, err := ResolveEnv(api.APIKey)
+	if err != nil {
+		return "", fmt.Errorf("profile %s: api.api_key: %w", profileID, err)
+	}
+	if key == "" {
+		return "", fmt.Errorf("profile %s: 环境变量不能为空: %s", profileID, name)
+	}
+	return key, nil
+}
+
+func resolveAPIHeaders(headers map[string]string) (map[string]string, error) {
+	resolved := make(map[string]string, len(headers))
+	for name, value := range headers {
+		header, err := ResolveEnv(value)
+		if err != nil {
+			return nil, fmt.Errorf("api.headers.%s: %w", name, err)
 		}
-		return resolved
-	})
-	return expanded, !missing && expanded != ""
+		if header != "" {
+			resolved[name] = header
+		}
+	}
+	return resolved, nil
 }

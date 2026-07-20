@@ -104,12 +104,24 @@ func prepareCLI(cfg Config, prompt string, overrides map[string]any, rawCLIArgs 
 		return CLIRequest{}, fmt.Errorf("profile %s: missing cli config", cfg.ID)
 	}
 	cli := cfg.CLI
+	binary, err := resolveConfiguredBinary(cli.Command.Binary)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.command.binary: %w", cfg.ID, err)
+	}
+	baseArgs, err := resolveConfiguredArgs(cli.Command.Args)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.command.args: %w", cfg.ID, err)
+	}
+	baseModel, err := ResolveEnv(cli.Command.Model)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.command.model: %w", cfg.ID, err)
+	}
 	driver := cli.Driver
 	if driver == "" {
-		driver = inferDriver(expandConfiguredBinary(cli.Command.Binary))
+		driver = inferDriver(binary)
 	}
 	allowed := allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy)
-	args, model, effective, err := applyCLIOverrides(driver, expandConfiguredArgs(cli.Command.Args), ExpandEnv(cli.Command.Model), overrides, allowed)
+	args, model, effective, err := applyCLIOverrides(driver, baseArgs, baseModel, overrides, allowed)
 	if err != nil {
 		return CLIRequest{}, fmt.Errorf("profile %s: %w", cfg.ID, err)
 	}
@@ -117,14 +129,22 @@ func prepareCLI(cfg Config, prompt string, overrides map[string]any, rawCLIArgs 
 		args = append(args, "--model", model)
 	}
 	args = append(args, rawCLIArgs...)
-	args = append(args, expandConfiguredArgs(cli.Runtime.ManagedArgs)...)
-	argv := append([]string{expandConfiguredBinary(cli.Command.Binary)}, args...)
+	managedArgs, err := resolveConfiguredArgs(cli.Runtime.ManagedArgs)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.runtime.managed_args: %w", cfg.ID, err)
+	}
+	args = append(args, managedArgs...)
+	argv := append([]string{binary}, args...)
 	stdin := ""
 	switch cli.Runtime.PromptDelivery {
 	case "stdin":
 		stdin = prompt
 	case "arg":
-		argv = append(argv, expandPromptArgs(expandConfiguredArgs(cli.Runtime.PromptArgs), prompt)...)
+		promptArgs, resolveErr := resolveConfiguredArgs(cli.Runtime.PromptArgs)
+		if resolveErr != nil {
+			return CLIRequest{}, fmt.Errorf("profile %s: cli.runtime.prompt_args: %w", cfg.ID, resolveErr)
+		}
+		argv = append(argv, expandPromptArgs(promptArgs, prompt)...)
 	case "none", "paste":
 	default:
 		return CLIRequest{}, fmt.Errorf("unknown prompt_delivery %q", cli.Runtime.PromptDelivery)
@@ -152,11 +172,23 @@ func prepareUnmanagedCLI(cfg Config, rawArgs []string) (CLIRequest, error) {
 		return CLIRequest{}, fmt.Errorf("profile %s is not a CLI profile", cfg.ID)
 	}
 	cli := cfg.CLI
+	binary, err := resolveConfiguredBinary(cli.Command.Binary)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.command.binary: %w", cfg.ID, err)
+	}
+	baseArgs, err := resolveConfiguredArgs(cli.Command.Args)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.command.args: %w", cfg.ID, err)
+	}
+	baseModel, err := ResolveEnv(cli.Command.Model)
+	if err != nil {
+		return CLIRequest{}, fmt.Errorf("profile %s: cli.command.model: %w", cfg.ID, err)
+	}
 	driver := cli.Driver
 	if driver == "" {
-		driver = inferDriver(expandConfiguredBinary(cli.Command.Binary))
+		driver = inferDriver(binary)
 	}
-	args, model, effective, err := applyCLIOverrides(driver, expandConfiguredArgs(cli.Command.Args), ExpandEnv(cli.Command.Model), nil, allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy))
+	args, model, effective, err := applyCLIOverrides(driver, baseArgs, baseModel, nil, allowedOverrides(cliSupportedOverrides(driver), cli.Runtime.OverridePolicy))
 	if err != nil {
 		return CLIRequest{}, fmt.Errorf("profile %s: %w", cfg.ID, err)
 	}
@@ -166,7 +198,7 @@ func prepareUnmanagedCLI(cfg Config, rawArgs []string) (CLIRequest, error) {
 	args = append(args, rawArgs...)
 	effective["driver"] = driver
 	return CLIRequest{
-		ProfileID: cfg.ID, Driver: driver, Argv: append([]string{expandConfiguredBinary(cli.Command.Binary)}, args...),
+		ProfileID: cfg.ID, Driver: driver, Argv: append([]string{binary}, args...),
 		RequestedOverrides: map[string]any{}, EffectiveOptions: effective,
 	}, nil
 }
@@ -345,7 +377,7 @@ func validateCodexOverrides(overrides map[string]any) error {
 	for _, field := range []string{"model", "reasoning_effort", "sandbox_mode", "approval_policy", "service_tier", "verbosity"} {
 		if value, ok := overrides[field]; ok && value != nil {
 			if _, valid := value.(string); !valid {
-				return fmt.Errorf("Codex override %s must be a string", field)
+				return fmt.Errorf("codex override %s must be a string", field)
 			}
 		}
 	}
@@ -358,7 +390,7 @@ func validateCodexOverrides(overrides map[string]any) error {
 	for field, choices := range enums {
 		if value, ok := textOverride(overrides, field); ok {
 			if _, valid := choices[value]; !valid {
-				return fmt.Errorf("Codex override %s has invalid value %q", field, value)
+				return fmt.Errorf("codex override %s has invalid value %q", field, value)
 			}
 		}
 	}
@@ -373,18 +405,18 @@ func validateClaudeOverrides(overrides map[string]any) error {
 	for _, field := range []string{"model", "effort", "permission_mode", "append_system_prompt"} {
 		if value, ok := overrides[field]; ok && value != nil {
 			if _, valid := value.(string); !valid {
-				return fmt.Errorf("Claude override %s must be a string", field)
+				return fmt.Errorf("claude override %s must be a string", field)
 			}
 		}
 	}
 	if value, ok := textOverride(overrides, "effort"); ok {
 		if _, valid := set("low", "medium", "high", "xhigh", "max")[value]; !valid {
-			return fmt.Errorf("Claude override effort has invalid value %q", value)
+			return fmt.Errorf("claude override effort has invalid value %q", value)
 		}
 	}
 	if value, ok := textOverride(overrides, "permission_mode"); ok {
 		if _, valid := set("default", "acceptEdits", "auto", "plan", "dontAsk", "bypassPermissions")[value]; !valid {
-			return fmt.Errorf("Claude override permission_mode has invalid value %q", value)
+			return fmt.Errorf("claude override permission_mode has invalid value %q", value)
 		}
 	}
 	return nil
@@ -618,16 +650,24 @@ func expandHome(path string) string {
 	return path
 }
 
-func expandConfiguredBinary(value string) string {
-	return expandHome(ExpandEnv(value))
+func resolveConfiguredBinary(value string) (string, error) {
+	resolved, err := ResolveEnv(value)
+	if err != nil {
+		return "", err
+	}
+	return expandHome(resolved), nil
 }
 
-func expandConfiguredArgs(values []string) []string {
+func resolveConfiguredArgs(values []string) ([]string, error) {
 	expanded := make([]string, len(values))
 	for index, value := range values {
-		expanded[index] = ExpandEnv(value)
+		resolved, err := ResolveEnv(value)
+		if err != nil {
+			return nil, fmt.Errorf("[%d]: %w", index, err)
+		}
+		expanded[index] = resolved
 	}
-	return expanded
+	return expanded, nil
 }
 
 var osUserHomeDir = os.UserHomeDir

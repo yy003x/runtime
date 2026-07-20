@@ -380,8 +380,8 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 			return result
 		}
 		result["model_profile"] = modelProfile.ID
-		if os.Getenv(modelProfile.API.APIKeyEnv) == "" {
-			result["message"] = "native model_profile 凭据缺失: " + modelProfile.API.APIKeyEnv
+		if message := validateAPIKeyEnvironment(modelProfile.API); message != "" {
+			result["message"] = "native model_profile 凭据缺失: " + message
 			return result
 		}
 		result["ok"], result["message"] = true, "native profile 与 model_profile 凭据有效；doctor 不发起付费网络请求"
@@ -396,8 +396,8 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 			result["ok"], result["message"] = true, "mock API profile 可用"
 			return result
 		}
-		if os.Getenv(profile.API.APIKeyEnv) == "" {
-			result["message"] = "环境变量未设置: " + profile.API.APIKeyEnv
+		if message := validateAPIKeyEnvironment(profile.API); message != "" {
+			result["message"] = message
 			return result
 		}
 		if live {
@@ -414,8 +414,15 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 			return result
 		}
 	}
-	addCLIEnvironmentDiagnostics(profile, result)
-	binary := profile.CLI.Command.Binary
+	if message := addCLIEnvironmentDiagnostics(profile, result); message != "" {
+		result["message"] = message
+		return result
+	}
+	binary, err := provider.ResolveEnv(profile.CLI.Command.Binary)
+	if err != nil {
+		result["message"] = "cli.command.binary: " + err.Error()
+		return result
+	}
 	if _, err := exec.LookPath(binary); err != nil {
 		if info, statErr := os.Stat(binary); statErr != nil || info.IsDir() {
 			result["message"] = "命令不可用: " + binary
@@ -424,6 +431,21 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 	}
 	result["ok"], result["message"] = true, "命令可用"
 	return result
+}
+
+func validateAPIKeyEnvironment(api *provider.APIConfig) string {
+	name, ok := provider.EnvironmentReferenceName(api.APIKey)
+	if !ok {
+		return "api.api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符"
+	}
+	key, err := provider.ResolveEnv(api.APIKey)
+	if err != nil {
+		return "api.api_key: " + err.Error()
+	}
+	if key == "" {
+		return "环境变量不能为空: " + name
+	}
+	return ""
 }
 
 func validateAPIRuntimeEnvironment(profile provider.Config, result map[string]any) string {
@@ -439,7 +461,10 @@ func validateAPIRuntimeEnvironment(profile provider.Config, result map[string]an
 	servers := make([]string, 0, len(runtime.MCPServers))
 	for _, server := range runtime.MCPServers {
 		servers = append(servers, server.Name)
-		command := provider.ExpandEnv(server.Command)
+		command, err := provider.ResolveEnv(server.Command)
+		if err != nil {
+			return fmt.Sprintf("MCP server %s command: %s", server.Name, err)
+		}
 		if _, err := exec.LookPath(command); err != nil {
 			if info, statErr := os.Stat(command); statErr != nil || info.IsDir() {
 				return fmt.Sprintf("MCP server %s 命令不可用: %s", server.Name, command)
@@ -450,12 +475,16 @@ func validateAPIRuntimeEnvironment(profile provider.Config, result map[string]an
 	return ""
 }
 
-func addCLIEnvironmentDiagnostics(profile provider.Config, result map[string]any) {
+func addCLIEnvironmentDiagnostics(profile provider.Config, result map[string]any) string {
 	if profile.CLI == nil {
-		return
+		return ""
 	}
 	environment := make(map[string]string)
-	for _, item := range provider.CommandEnvironment(profile.CLI.Command, nil) {
+	resolvedEnvironment, err := provider.CommandEnvironment(profile.CLI.Command, nil)
+	if err != nil {
+		return err.Error()
+	}
+	for _, item := range resolvedEnvironment {
 		key, value, ok := strings.Cut(item, "=")
 		if ok {
 			environment[key] = value
@@ -489,6 +518,7 @@ func addCLIEnvironmentDiagnostics(profile provider.Config, result map[string]any
 	if len(details) > 0 {
 		result["environment"] = details
 	}
+	return ""
 }
 
 func userHomeDir() string {
@@ -500,15 +530,22 @@ func userHomeDir() string {
 }
 
 func validateExecutionEnvironment(profile provider.Config) string {
-	for _, name := range profile.Execution.UpstreamProxyEnv {
-		if strings.TrimSpace(os.Getenv(name)) == "" {
-			return "上游代理环境变量未设置: " + name
+	for index, upstream := range profile.Execution.Upstreams {
+		resolved, err := provider.ResolveEnv(upstream)
+		if err != nil {
+			return fmt.Sprintf("execution.upstreams[%d]: %s", index, err)
+		}
+		if strings.TrimSpace(resolved) == "" {
+			return fmt.Sprintf("execution.upstreams[%d] 不能为空", index)
 		}
 	}
 	if profile.Execution.Dylib == "" {
 		return ""
 	}
-	path := provider.ExpandEnv(profile.Execution.Dylib)
+	path, err := provider.ResolveEnv(profile.Execution.Dylib)
+	if err != nil {
+		return "execution.dylib: " + err.Error()
+	}
 	if path == "" {
 		return "dylib 路径环境变量未设置: " + profile.Execution.Dylib
 	}

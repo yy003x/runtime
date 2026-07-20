@@ -369,11 +369,10 @@ func (m *SessionManager) BeginDirectExecutionInSession(profile provider.Config, 
 	if sessionID == "" {
 		sessionID = newRunID(RunSession)
 	}
-	record, err := m.EnsureSession(sessionID, projectID, cwd, profile.ID+" interactive", decision)
-	if err != nil {
+	if _, err := m.EnsureSession(sessionID, projectID, cwd, profile.ID+" interactive", decision); err != nil {
 		return SessionRecord{}, ExecutionRecord{}, err
 	}
-	record, err = m.store.ConfigureSession(sessionID, "cli", profile.ID)
+	record, err := m.store.ConfigureSession(sessionID, "cli", profile.ID)
 	if err != nil {
 		return SessionRecord{}, ExecutionRecord{}, err
 	}

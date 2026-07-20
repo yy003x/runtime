@@ -55,7 +55,7 @@ func TestBuildNativeClientValidatesReferencedAPIProfile(t *testing.T) {
 	if _, err := buildNativeClient(prepared); err == nil {
 		t.Fatal("missing model profile was accepted")
 	}
-	prepared.Request.Profiles["api"] = Config{ID: "api", Type: TypeAPI, API: &APIConfig{Protocol: "openai", APIKeyEnv: "NATIVE_PROVIDER_TEST_KEY"}}
+	prepared.Request.Profiles["api"] = Config{ID: "api", Type: TypeAPI, API: &APIConfig{Protocol: "openai", APIKey: "${NATIVE_PROVIDER_TEST_KEY}"}}
 	prepared.Native.EffectiveOptions["model_profile"] = "api"
 	if _, err := buildNativeClient(prepared); err == nil {
 		t.Fatal("missing credential was accepted")

@@ -76,7 +76,7 @@ func TestOpenAIAPIRuntimeExecutesToolAndLoadsSkillMemoryContext(t *testing.T) {
 	defer server.Close()
 	t.Setenv("PROVIDER_API_RUNTIME_KEY", "fixture-key")
 	cfg := Config{ID: "openai-agent", Type: TypeAPI, API: &APIConfig{
-		Protocol: "openai", BaseURL: server.URL, Model: "fixture", APIKeyEnv: "PROVIDER_API_RUNTIME_KEY",
+		Protocol: "openai", BaseURL: server.URL, Model: "fixture", APIKey: "${PROVIDER_API_RUNTIME_KEY}",
 		Runtime: &APIRuntimeConfig{
 			Enabled: true, MaxRounds: 3, AutoRouteSkills: true, Skills: []string{"*"},
 			Memory: &APIMemoryConfig{Enabled: true, TopK: 3},
@@ -175,7 +175,7 @@ func TestAgentRuntimeResultMapsControlStates(t *testing.T) {
 func TestAPIProviderCompilesSessionHistoryAndInjectedMemoryByProtocol(t *testing.T) {
 	for _, protocol := range []string{"openai", "anthropic"} {
 		t.Run(protocol, func(t *testing.T) {
-			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: "https://example.test/v1", Model: "model", APIKeyEnv: "UNSET"}}
+			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: "https://example.test/v1", Model: "model", APIKey: "${UNSET}"}}
 			prepared, err := (apiProvider{}).Prepare(context.Background(), cfg, Request{Prompt: "current",
 				Messages:       []NativeMessage{{Role: "user", Content: "before"}, {Role: "assistant", Content: "answer"}},
 				InjectedMemory: []InjectedMemory{{ID: "project-1", Content: "project fact", Source: "workbench"}},
@@ -257,7 +257,7 @@ func TestAnthropicAPIRuntimeExecutesMemoryTool(t *testing.T) {
 	defer server.Close()
 	t.Setenv("PROVIDER_API_RUNTIME_KEY", "fixture-key")
 	cfg := Config{ID: "anthropic-agent", Type: TypeAPI, API: &APIConfig{
-		Protocol: "anthropic", BaseURL: server.URL, Model: "fixture", APIKeyEnv: "PROVIDER_API_RUNTIME_KEY",
+		Protocol: "anthropic", BaseURL: server.URL, Model: "fixture", APIKey: "${PROVIDER_API_RUNTIME_KEY}",
 		Runtime: &APIRuntimeConfig{Enabled: true, MaxRounds: 3, Memory: &APIMemoryConfig{Enabled: true}},
 	}}
 	prepared, err := (apiProvider{}).Prepare(context.Background(), cfg, Request{
@@ -312,7 +312,7 @@ func TestOpenAIAPIRuntimeCallsMCPTool(t *testing.T) {
 	defer server.Close()
 	t.Setenv("PROVIDER_API_RUNTIME_KEY", "fixture-key")
 	cfg := Config{ID: "mcp-agent", Type: TypeAPI, API: &APIConfig{
-		Protocol: "openai", BaseURL: server.URL, Model: "fixture", APIKeyEnv: "PROVIDER_API_RUNTIME_KEY",
+		Protocol: "openai", BaseURL: server.URL, Model: "fixture", APIKey: "${PROVIDER_API_RUNTIME_KEY}",
 		Runtime: &APIRuntimeConfig{Enabled: true, MaxRounds: 3, MCPServers: []MCPServerConfig{{
 			Name: "fixture", Transport: "stdio", Command: os.Args[0], Args: []string{"-test.run=TestProviderMCPHelperProcess"},
 			Env: map[string]string{"GO_WANT_PROVIDER_MCP_HELPER": "1"},

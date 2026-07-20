@@ -41,7 +41,10 @@ func (tmuxProvider) Execute(ctx context.Context, prepared PreparedRequest, sink 
 	if err != nil {
 		return Result{ExitCode: 1}, err
 	}
-	command := tmuxShellCommandArgv(prepared.Config, prepared.CLI.Argv, request.Environment)
+	command, err := tmuxShellCommandArgv(prepared.Config, prepared.CLI.Argv, request.Environment)
+	if err != nil {
+		return Result{ExitCode: 1}, fmt.Errorf("profile %s: %w", prepared.Config.ID, err)
+	}
 	taskResult, err := backend.ExecuteTask(ctx, providertmux.TaskRequest{
 		RunID:      request.RunID,
 		CWD:        request.CWD,
@@ -124,25 +127,45 @@ func daemonDependencies(cfg Config) []daemon.Dependency {
 }
 
 func daemonExecution(cfg Config) (daemon.ExecutionEnvironment, error) {
+	dylib, err := ResolveEnv(cfg.Execution.Dylib)
+	if err != nil {
+		return daemon.ExecutionEnvironment{}, fmt.Errorf("profile %s: execution.dylib: %w", cfg.ID, err)
+	}
 	execution := daemon.ExecutionEnvironment{
 		AuditProxy: cfg.Execution.AuditProxy, Bypass: append([]string(nil), cfg.Execution.Bypass...),
-		Shim: cfg.Execution.Shim, Dylib: ExpandEnv(cfg.Execution.Dylib),
+		Shim: cfg.Execution.Shim, Dylib: dylib,
 	}
-	for _, name := range cfg.Execution.UpstreamProxyEnv {
-		value := strings.TrimSpace(os.Getenv(name))
+	for index, upstream := range cfg.Execution.Upstreams {
+		resolved, resolveErr := ResolveEnv(upstream)
+		if resolveErr != nil {
+			return daemon.ExecutionEnvironment{}, fmt.Errorf("profile %s: execution.upstreams[%d]: %w", cfg.ID, index, resolveErr)
+		}
+		value := strings.TrimSpace(resolved)
 		if value == "" {
-			return daemon.ExecutionEnvironment{}, fmt.Errorf("profile %s: upstream proxy environment variable is not set: %s", cfg.ID, name)
+			return daemon.ExecutionEnvironment{}, fmt.Errorf("profile %s: execution.upstreams[%d] 不能为空", cfg.ID, index)
 		}
 		execution.Upstreams = append(execution.Upstreams, value)
 	}
 	return execution, nil
 }
 
-func TmuxShellCommand(cfg Config, extra map[string]string) string {
+func TmuxShellCommand(cfg Config, extra map[string]string) (string, error) {
 	command := cfg.CLI.Command
-	argv := append([]string{expandConfiguredBinary(command.Binary)}, expandConfiguredArgs(command.Args)...)
+	binary, err := resolveConfiguredBinary(command.Binary)
+	if err != nil {
+		return "", fmt.Errorf("cli.command.binary: %w", err)
+	}
+	args, err := resolveConfiguredArgs(command.Args)
+	if err != nil {
+		return "", fmt.Errorf("cli.command.args: %w", err)
+	}
+	argv := append([]string{binary}, args...)
 	if command.Model != "" {
-		argv = append(argv, "--model", ExpandEnv(command.Model))
+		model, resolveErr := ResolveEnv(command.Model)
+		if resolveErr != nil {
+			return "", fmt.Errorf("cli.command.model: %w", resolveErr)
+		}
+		argv = append(argv, "--model", model)
 	}
 	return tmuxShellCommandArgv(cfg, argv, extra)
 }
@@ -152,7 +175,7 @@ func TmuxShellCommandWithRawArgs(cfg Config, rawArgs []string, extra map[string]
 	if err != nil {
 		return "", err
 	}
-	return tmuxShellCommandArgv(cfg, request.Argv, extra), nil
+	return tmuxShellCommandArgv(cfg, request.Argv, extra)
 }
 
 func AsTmuxSessionProfile(cfg Config) (Config, error) {
@@ -194,13 +217,16 @@ func AsTmuxSessionProfile(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-func TmuxCommandEnv(cfg Config, command string) string {
-	values := tmuxEnvironment(cfg, nil)
+func TmuxCommandEnv(cfg Config, command string) (string, error) {
+	values, err := tmuxEnvironment(cfg, nil)
+	if err != nil {
+		return "", err
+	}
 	unset := cfg.CLI.Command.EnvUnset
 	if len(values) == 0 && len(unset) == 0 {
-		return command
+		return command, nil
 	}
-	return strings.Join(append(environmentParts(values, unset), command), " ")
+	return strings.Join(append(environmentParts(values, unset), command), " "), nil
 }
 
 func ShellQuote(value string) string {
@@ -210,9 +236,12 @@ func ShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func tmuxShellCommandArgv(cfg Config, argv []string, extra map[string]string) string {
+func tmuxShellCommandArgv(cfg Config, argv []string, extra map[string]string) (string, error) {
 	parts := []string{"exec"}
-	values := tmuxEnvironment(cfg, extra)
+	values, err := tmuxEnvironment(cfg, extra)
+	if err != nil {
+		return "", err
+	}
 	unset := cfg.CLI.Command.EnvUnset
 	if len(values) > 0 || len(unset) > 0 {
 		parts = append(parts, environmentParts(values, unset)...)
@@ -220,14 +249,18 @@ func tmuxShellCommandArgv(cfg Config, argv []string, extra map[string]string) st
 	for _, arg := range argv {
 		parts = append(parts, ShellQuote(arg))
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, " "), nil
 }
 
-func tmuxEnvironment(cfg Config, extra map[string]string) map[string]string {
+func tmuxEnvironment(cfg Config, extra map[string]string) (map[string]string, error) {
 	command := cfg.CLI.Command
 	values := make(map[string]string, len(command.Env)+len(command.EnvPassthrough)+len(extra))
 	for key, value := range command.Env {
-		values[key] = ExpandEnv(value)
+		resolved, err := ResolveEnv(value)
+		if err != nil {
+			return nil, fmt.Errorf("cli.command.env.%s: %w", key, err)
+		}
+		values[key] = resolved
 	}
 	for _, key := range command.EnvPassthrough {
 		if _, exists := values[key]; !exists {
@@ -237,7 +270,7 @@ func tmuxEnvironment(cfg Config, extra map[string]string) map[string]string {
 	for key, value := range extra {
 		values[key] = value
 	}
-	return values
+	return values, nil
 }
 
 func environmentParts(values map[string]string, unset []string) []string {

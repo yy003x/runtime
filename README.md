@@ -368,10 +368,12 @@ command profile 的子进程环境按以下顺序生成，direct、managed 和 t
 1. 继承 `sn-cli` 当前进程环境。
 2. 用 `env_unset` 删除不应传入目标 CLI 的变量。
 3. 用 `env_passthrough` 把当前进程变量显式带入 tmux 子进程。
-4. 用 `env` 覆盖固定值，值支持 `${HOME}` 等环境变量展开。
+4. 用 `env` 覆盖固定值；只有 `${HOME}` 形式会读取环境变量。
 5. 最后注入 AgentRun 内部变量。
 
-`env`、`env_passthrough` 与 `env_unset` 的冲突会在配置加载阶段报错。默认 `cx`/`cc` 不固定账号目录，会继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。需要不依赖 shell 显式选目录时，可以增加 preset：
+所有支持环境变量替换的 Provider 配置值共用同一规则：`${VAR}` 会读取当前 `sn-cli` 进程环境，`$VAR` 和 `VAR` 都是普通字符串；引用的变量未设置时直接报错，不会替换为空字符串。Runtime 不内置环境文件加载器，不读取项目 `.env` 或 `~/.sn` 下的环境文件；需要的变量应由 shell、系统服务或其他外部环境管理工具在启动 `sn-cli` 前注入。仓库继续忽略 `.env` 文件，仅用于避免本地 secret 被误提交。
+
+`env_passthrough` 与 `env_unset` 只控制子进程环境的继承和删除，不承担配置值替换。`env`、`env_passthrough` 与 `env_unset` 的冲突会在配置加载阶段报错。默认 `cx`/`cc` 不固定账号目录，会继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。需要不依赖 shell 显式选目录时，可以增加 preset：
 
 managed Provider 还会收到 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID`，以及 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`。这些变量只暴露 Runtime owner 的路径与关联 ID，CLI wrapper/MCP 可以据此复用上下文能力；敏感值不进入 manifest。
 
@@ -402,7 +404,9 @@ Claude profile 使用同样方式设置 `CLAUDE_CONFIG_DIR`。当 `ANTHROPIC_AUT
 
 切换后可先执行 `sn-cli config validate -c cx` 或 `sn-cli config validate -c cc`。输出会显示实际生效的配置目录和认证环境变量名称，但不会输出 secret 值；Claude 认证变量冲突会出现在 `warnings`。
 
-`depends`、audit proxy、PATH shim 和 DYLD 注入按 profile 显式启用。secret 只能引用环境变量名，不应写入配置、日志或 result。
+API profile 的凭据统一写为 `"api_key": "${OPENROUTER_API_KEY}"`；明文、`"OPENROUTER_API_KEY"` 和 `"$OPENROUTER_API_KEY"` 均会被拒绝。audit proxy 的上游值使用 `"upstreams": ["${HTTP_PROXY}"]`，不再通过字段保存环境变量名。旧 `api_key_env` 与 `upstream_proxy_env` 字段不兼容并会被严格 schema 校验拒绝。
+
+`depends`、audit proxy、PATH shim 和 DYLD 注入按 profile 显式启用。secret 只能通过完整 `${VAR}` 占位符引用，不应写入配置、日志或 result。
 
 ## 运行产物
 

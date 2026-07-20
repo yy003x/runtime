@@ -6,6 +6,6 @@
     "protocol": "openai",
     "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     "model": "qwen3.6-plus",
-    "api_key_env": "BAILIAN_API_KEY"
+    "api_key": "${BAILIAN_API_KEY}"
   }
 }

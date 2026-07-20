@@ -57,11 +57,11 @@ type Dependency struct {
 }
 
 type ExecutionConfig struct {
-	AuditProxy       bool     `json:"audit_proxy,omitempty"`
-	UpstreamProxyEnv []string `json:"upstream_proxy_env,omitempty"`
-	Bypass           []string `json:"bypass,omitempty"`
-	Shim             bool     `json:"shim,omitempty"`
-	Dylib            string   `json:"dylib,omitempty"`
+	AuditProxy bool     `json:"audit_proxy,omitempty"`
+	Upstreams  []string `json:"upstreams,omitempty"`
+	Bypass     []string `json:"bypass,omitempty"`
+	Shim       bool     `json:"shim,omitempty"`
+	Dylib      string   `json:"dylib,omitempty"`
 }
 
 type NativeConfig struct {
@@ -130,7 +130,7 @@ type APIConfig struct {
 	Protocol       string            `json:"protocol"`
 	BaseURL        string            `json:"base_url"`
 	Model          string            `json:"model"`
-	APIKeyEnv      string            `json:"api_key_env"`
+	APIKey         string            `json:"api_key"`
 	Auth           AuthConfig        `json:"auth,omitempty"`
 	Headers        map[string]string `json:"headers,omitempty"`
 	Stream         bool              `json:"stream,omitempty"`
@@ -499,12 +499,12 @@ func validateCLI(cfg *Config, source string) error {
 			}
 		}
 	}
-	if len(cfg.Execution.UpstreamProxyEnv) > 0 && !cfg.Execution.AuditProxy {
-		return fmt.Errorf("%s: execution.upstream_proxy_env requires audit_proxy=true", source)
+	if len(cfg.Execution.Upstreams) > 0 && !cfg.Execution.AuditProxy {
+		return fmt.Errorf("%s: execution.upstreams requires audit_proxy=true", source)
 	}
-	for index, name := range cfg.Execution.UpstreamProxyEnv {
-		if strings.TrimSpace(name) == "" || strings.Contains(name, "=") {
-			return fmt.Errorf("%s: execution.upstream_proxy_env[%d] 必须是环境变量名", source, index)
+	for index, upstream := range cfg.Execution.Upstreams {
+		if strings.TrimSpace(upstream) == "" {
+			return fmt.Errorf("%s: execution.upstreams[%d] 不能为空", source, index)
 		}
 	}
 	if cli.Runtime.ResultContract == "" {
@@ -550,7 +550,7 @@ func validateCLI(cfg *Config, source string) error {
 }
 
 func executionConfigured(config ExecutionConfig) bool {
-	return config.AuditProxy || config.Shim || config.Dylib != "" || len(config.UpstreamProxyEnv) > 0 || len(config.Bypass) > 0
+	return config.AuditProxy || config.Shim || config.Dylib != "" || len(config.Upstreams) > 0 || len(config.Bypass) > 0
 }
 
 func validateAPI(cfg *Config, source string) error {
@@ -561,8 +561,11 @@ func validateAPI(cfg *Config, source string) error {
 	if !contains([]string{"openai", "anthropic"}, api.Protocol) {
 		return fmt.Errorf("%s: api.protocol 必须是 openai|anthropic", source)
 	}
-	if strings.TrimSpace(api.BaseURL) == "" || strings.TrimSpace(api.Model) == "" || strings.TrimSpace(api.APIKeyEnv) == "" {
-		return fmt.Errorf("%s: api.base_url、api.model、api.api_key_env 均为必填", source)
+	if strings.TrimSpace(api.BaseURL) == "" || strings.TrimSpace(api.Model) == "" || strings.TrimSpace(api.APIKey) == "" {
+		return fmt.Errorf("%s: api.base_url、api.model、api.api_key 均为必填", source)
+	}
+	if _, ok := EnvironmentReferenceName(api.APIKey); !ok {
+		return fmt.Errorf("%s: api.api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符", source)
 	}
 	if api.ResultContract == "" {
 		api.ResultContract = "none"
@@ -812,7 +815,7 @@ func rejectForbiddenKeys(value any, path []string) error {
 	case map[string]any:
 		for key, child := range typed {
 			childPath := append(append([]string{}, path...), key)
-			if _, forbidden := sensitive[strings.ToLower(key)]; forbidden {
+			if _, forbidden := sensitive[strings.ToLower(key)]; forbidden && !isAPIKeyReferencePath(childPath) {
 				return fmt.Errorf("禁止在 provider 配置内写入敏感字段 %s", strings.Join(childPath, "."))
 			}
 			if _, forbidden := business[strings.ToLower(key)]; forbidden {
@@ -830,6 +833,10 @@ func rejectForbiddenKeys(value any, path []string) error {
 		}
 	}
 	return nil
+}
+
+func isAPIKeyReferencePath(path []string) bool {
+	return len(path) == 2 && path[0] == "api" && path[1] == "api_key"
 }
 
 func family(raw map[string]any) string {

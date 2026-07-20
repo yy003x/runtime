@@ -23,7 +23,7 @@ func TestRunProfilePrintsFinalText(t *testing.T) {
     "protocol": "openai",
     "base_url": "https://example.test/v1",
     "model": "mock-model",
-    "api_key_env": "UNSET_TEST_KEY",
+    "api_key":"${UNSET_TEST_KEY}",
     "mock": true
   }
 }`)
@@ -63,7 +63,7 @@ printf 'provider final text\n'
 
 func TestProfileConfigExists(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `{"type":"api","aliases":["mock-alias"],"api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true},"presets":{"fake-fast":{"overrides":{"model":"fast"}}}}`)
+	writeCLIProfile(t, root, "fake", `{"type":"api","aliases":["mock-alias"],"api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}","mock":true},"presets":{"fake-fast":{"overrides":{"model":"fast"}}}}`)
 
 	if !profileConfigExists(root, "fake") {
 		t.Fatal("profileConfigExists(fake)=false, want true")
@@ -77,7 +77,7 @@ func TestProfileConfigExists(t *testing.T) {
 	if !profileConfigExists(root, "fake-fast") || !profileConfigExists(root, "mock-alias") {
 		t.Fatal("profileConfigExists did not resolve preset/alias")
 	}
-	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}","mock":true}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !profileConfigExists(root, "json") {
@@ -143,7 +143,7 @@ func TestParseProfileInvocationRejectsRemovedUnderscoreOption(t *testing.T) {
 
 func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNSET","mock":true}}`)
+	writeCLIProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}","mock":true}}`)
 	stdout := captureStdout(t, func() {
 		if err := printProviders(root); err != nil {
 			t.Fatalf("printProviders returned error: %v", err)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,8 +35,17 @@ func (l *Loader) Load(ctx context.Context, id string) (Persona, error) {
 		p.ID = id
 	}
 	if p.Name == "" {
-		p.Name = strings.Title(id)
+		p.Name = titleFirstRune(id)
 	}
 
 	return p, nil
+}
+
+func titleFirstRune(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }

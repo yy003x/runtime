@@ -62,10 +62,11 @@ func TestReservedCommandsReflectCurrentCLI(t *testing.T) {
 
 func TestLoadDirRejectsUnknownKeysAtEveryLevel(t *testing.T) {
 	tests := map[string]string{
-		"root":    `{"type":"api","typo":true,"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K"}}`,
-		"api":     `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","modle":"typo"}}`,
-		"command": `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","unknown":1},"runtime":{}}}`,
-		"preset":  `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}},"presets":{"child":{"cli":{"runtime":{"unknown":true}}}}}`,
+		"root":            `{"type":"api","typo":true,"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}"}}`,
+		"api":             `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","modle":"typo"}}`,
+		"old-api-key-env": `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K"}}`,
+		"command":         `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","unknown":1},"runtime":{}}}`,
+		"preset":          `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}},"presets":{"child":{"cli":{"runtime":{"unknown":true}}}}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -82,7 +83,7 @@ func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
 	dir := t.TempDir()
 	writeConfig(t, dir, "api.json", `{
   "type":"api",
-  "api":{"protocol":"openai","base_url":"https://example.test/v1","model":"gpt-test","api_key_env":"TEST_API_KEY"}
+  "api":{"protocol":"openai","base_url":"https://example.test/v1","model":"gpt-test","api_key":"${TEST_API_KEY}"}
 }`)
 	writeConfig(t, dir, "tmux.json", `{
   "type":"cli",
@@ -119,7 +120,7 @@ func TestLoadDirAcceptsAPIAgentRuntime(t *testing.T) {
 	writeConfig(t, dir, "api-agent.json", `{
   "type":"api",
   "api":{
-    "protocol":"anthropic","base_url":"https://example.test","model":"claude-test","api_key_env":"TEST_API_KEY",
+    "protocol":"anthropic","base_url":"https://example.test","model":"claude-test","api_key":"${TEST_API_KEY}",
     "runtime":{
       "enabled":true,"system_prompt":"system","max_rounds":4,"token_budget":32000,"llm_timeout_seconds":10,
       "auto_route_skills":true,"skills":["review"],"memory":{"enabled":true,"top_k":3,"type":"fact"},
@@ -139,12 +140,12 @@ func TestLoadDirAcceptsAPIAgentRuntime(t *testing.T) {
 
 func TestLoadDirRejectsInvalidAPIAgentRuntime(t *testing.T) {
 	tests := map[string]string{
-		"stream":          `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","stream":true,"runtime":{"enabled":true}}}`,
-		"transport":       `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"mcp_servers":[{"name":"one","transport":"http","command":"x"}]}}}`,
-		"server-name":     `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"mcp_servers":[{"name":"bad name","command":"x"}]}}}`,
-		"memory-top-k":    `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"memory":{"enabled":true,"top_k":-1}}}}`,
-		"duplicate-skill": `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"skills":["x","x"]}}}`,
-		"unknown":         `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K","runtime":{"enabled":true,"unknown":1}}}`,
+		"stream":          `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","stream":true,"runtime":{"enabled":true}}}`,
+		"transport":       `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","runtime":{"enabled":true,"mcp_servers":[{"name":"one","transport":"http","command":"x"}]}}}`,
+		"server-name":     `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","runtime":{"enabled":true,"mcp_servers":[{"name":"bad name","command":"x"}]}}}`,
+		"memory-top-k":    `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","runtime":{"enabled":true,"memory":{"enabled":true,"top_k":-1}}}}`,
+		"duplicate-skill": `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","runtime":{"enabled":true,"skills":["x","x"]}}}`,
+		"unknown":         `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","runtime":{"enabled":true,"unknown":1}}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -159,12 +160,14 @@ func TestLoadDirRejectsInvalidAPIAgentRuntime(t *testing.T) {
 
 func TestLoadDirRejectsUnsafeAndConflictingConfig(t *testing.T) {
 	tests := map[string]string{
-		"secret":          `{"type":"api","api":{"protocol":"openai","base_url":"x","model":"m","api_key_env":"K","api_key":"secret"}}`,
-		"business":        `{"type":"cli","purpose":"x","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
-		"modelArg":        `{"type":"cli","cli":{"executor":"command","command":{"binary":"codex","args":["--model","x"],"model":""},"runtime":{}}}`,
-		"envConflict":     `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env":{"TOKEN":"x"},"env_unset":["TOKEN"]},"runtime":{}}}`,
-		"envPassConflict": `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env_passthrough":["TOKEN"],"env_unset":["TOKEN"]},"runtime":{}}}`,
-		"invalidEnvName":  `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env_unset":["BAD=NAME"]},"runtime":{}}}`,
+		"secret":             `{"type":"api","api":{"protocol":"openai","base_url":"x","model":"m","api_key":"secret"}}`,
+		"plain-api-key-name": `{"type":"api","api":{"protocol":"openai","base_url":"x","model":"m","api_key":"sample-api-key"}}`,
+		"dollar-api-key":     `{"type":"api","api":{"protocol":"openai","base_url":"x","model":"m","api_key":"$ANTHROPIC_API_KEY"}}`,
+		"business":           `{"type":"cli","purpose":"x","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+		"modelArg":           `{"type":"cli","cli":{"executor":"command","command":{"binary":"codex","args":["--model","x"],"model":""},"runtime":{}}}`,
+		"envConflict":        `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env":{"TOKEN":"x"},"env_unset":["TOKEN"]},"runtime":{}}}`,
+		"envPassConflict":    `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env_passthrough":["TOKEN"],"env_unset":["TOKEN"]},"runtime":{}}}`,
+		"invalidEnvName":     `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","env_unset":["BAD=NAME"]},"runtime":{}}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -190,7 +193,7 @@ func TestLoadDirAcceptsDaemonExecutionAndDependencies(t *testing.T) {
 	writeConfig(t, dir, "managed.json", `{
   "type":"cli",
   "depends":[{"command":"helper --serve","wait_tcp":"127.0.0.1:4141","restart":true,"optional":false}],
-  "execution":{"audit_proxy":true,"upstream_proxy_env":["TEST_UPSTREAM_PROXY"],"bypass":["localhost"],"shim":true,"dylib":"${TEST_DYLIB}"},
+  "execution":{"audit_proxy":true,"upstreams":["${TEST_UPSTREAM_PROXY}"],"bypass":["localhost"],"shim":true,"dylib":"${TEST_DYLIB}"},
   "cli":{"executor":"command","command":{"binary":"agent","args":[],"model":""},"runtime":{}}
 }`)
 	profiles, err := LoadDir(dir)
@@ -205,9 +208,10 @@ func TestLoadDirAcceptsDaemonExecutionAndDependencies(t *testing.T) {
 
 func TestLoadDirRejectsInvalidDaemonExecution(t *testing.T) {
 	tests := map[string]string{
-		"api":       `{"type":"api","execution":{"audit_proxy":true},"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K"}}`,
-		"proxy-env": `{"type":"cli","execution":{"upstream_proxy_env":["PROXY"]},"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
-		"wait-both": `{"type":"cli","depends":[{"command":"x","wait_tcp":"127.0.0.1:1","wait_http":"http://127.0.0.1:1"}],"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+		"api":                  `{"type":"api","execution":{"audit_proxy":true},"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}"}}`,
+		"proxy-requires-audit": `{"type":"cli","execution":{"upstreams":["${PROXY}"]},"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+		"old-proxy-env":        `{"type":"cli","execution":{"audit_proxy":true,"upstream_proxy_env":["PROXY"]},"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
+		"wait-both":            `{"type":"cli","depends":[{"command":"x","wait_tcp":"127.0.0.1:1","wait_http":"http://127.0.0.1:1"}],"cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

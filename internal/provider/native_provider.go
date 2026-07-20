@@ -171,17 +171,17 @@ func buildNativeClient(prepared PreparedRequest) (nativeengine.Client, error) {
 	if !ok || profile.Type != TypeAPI || profile.API == nil {
 		return nil, fmt.Errorf("profile %s: native model_profile %q must resolve to an API profile", prepared.Config.ID, profileID)
 	}
-	key := os.Getenv(profile.API.APIKeyEnv)
-	if key == "" {
-		return nil, fmt.Errorf("profile %s: environment %s is required", profile.ID, profile.API.APIKeyEnv)
+	key, err := resolveAPIKey(profile.ID, profile.API)
+	if err != nil {
+		return nil, err
 	}
 	client := prepared.Request.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
-	headers := make(map[string]string, len(profile.API.Headers))
-	for name, value := range profile.API.Headers {
-		headers[name] = ExpandEnv(value)
+	headers, err := resolveAPIHeaders(profile.API.Headers)
+	if err != nil {
+		return nil, fmt.Errorf("profile %s: %w", profile.ID, err)
 	}
 	clientOptions := llm.HTTPOptions{
 		Headers: headers, AuthHeader: profile.API.Auth.Header, AuthPrefix: profile.API.Auth.Prefix,

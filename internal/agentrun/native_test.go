@@ -73,7 +73,7 @@ func TestAPIAgentProviderPersistsAndPatchResumesLocalContext(t *testing.T) {
 	root := apiAgentTestRoot(t, `{
   "type":"api",
   "api":{
-    "protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key_env":"UNUSED_API_AGENT_KEY","mock":true,
+    "protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNUSED_API_AGENT_KEY}","mock":true,
     "runtime":{"enabled":true,"max_rounds":2,"llm_timeout_seconds":1}
   }
 }`)

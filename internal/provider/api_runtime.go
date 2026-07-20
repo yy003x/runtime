@@ -151,19 +151,17 @@ func buildAPIRuntimeClient(prepared PreparedRequest) (nativeengine.Client, error
 	if api.Mock {
 		return &nativeengine.MockClient{Responses: []string{fmt.Sprintf("[mock %s:%s] agent runtime", api.Protocol, api.Model)}, DoneAfter: 1}, nil
 	}
-	key := os.Getenv(api.APIKeyEnv)
-	if key == "" {
-		return nil, fmt.Errorf("profile %s: environment %s is required", prepared.Config.ID, api.APIKeyEnv)
+	key, err := resolveAPIKey(prepared.Config.ID, api)
+	if err != nil {
+		return nil, err
 	}
 	httpClient := prepared.Request.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	headers := make(map[string]string, len(api.Headers))
-	for name, value := range api.Headers {
-		if expanded, ok := expandHeader(value); ok {
-			headers[name] = expanded
-		}
+	headers, err := resolveAPIHeaders(api.Headers)
+	if err != nil {
+		return nil, fmt.Errorf("profile %s: %w", prepared.Config.ID, err)
 	}
 	options := llm.HTTPOptions{Headers: headers, AuthHeader: api.Auth.Header, AuthPrefix: api.Auth.Prefix}
 	var client llm.Client
@@ -419,9 +417,23 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 		if !mcpServerPotentiallyAllowed(server.Name, request.Allowed, request.Forbidden) {
 			continue
 		}
-		environment := mcpEnvironment(server)
+		environment, err := mcpEnvironment(server)
+		if err != nil {
+			runtime.Close()
+			return nil, fmt.Errorf("MCP server %s: %w", server.Name, err)
+		}
+		command, err := ResolveEnv(server.Command)
+		if err != nil {
+			runtime.Close()
+			return nil, fmt.Errorf("MCP server %s command: %w", server.Name, err)
+		}
+		args, err := resolveConfiguredArgs(server.Args)
+		if err != nil {
+			runtime.Close()
+			return nil, fmt.Errorf("MCP server %s args: %w", server.Name, err)
+		}
 		client, err := mcp.Start(ctx, mcp.Config{
-			Name: server.Name, Command: ExpandEnv(server.Command), Args: expandConfiguredArgs(server.Args),
+			Name: server.Name, Command: command, Args: args,
 			Dir: request.CWD, Env: environment, Timeout: durationSeconds(server.TimeoutSeconds, 30),
 		})
 		if err != nil {
@@ -530,7 +542,7 @@ func mcpToolName(server, tool string) string {
 	return value
 }
 
-func mcpEnvironment(server MCPServerConfig) []string {
+func mcpEnvironment(server MCPServerConfig) ([]string, error) {
 	values := make(map[string]string)
 	for _, name := range []string{"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"} {
 		if value, ok := os.LookupEnv(name); ok {
@@ -543,7 +555,11 @@ func mcpEnvironment(server MCPServerConfig) []string {
 		}
 	}
 	for name, value := range server.Env {
-		values[name] = ExpandEnv(value)
+		resolved, err := ResolveEnv(value)
+		if err != nil {
+			return nil, fmt.Errorf("env.%s: %w", name, err)
+		}
+		values[name] = resolved
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {
@@ -554,7 +570,7 @@ func mcpEnvironment(server MCPServerConfig) []string {
 	for _, name := range names {
 		environment = append(environment, name+"="+values[name])
 	}
-	return environment
+	return environment, nil
 }
 
 func anyStringSlice(value any) []string {

@@ -49,9 +49,11 @@ func TestDispatchQueueExecutesPersistedWork(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	entry := QueueEntry{SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000008-dispatch", RunType: RunTask,
+	entry := QueueEntry{
+		SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000008-dispatch", RunType: RunTask,
 		Profile: "native", State: StatePending, Attempt: 1, QueuedAt: now,
-		Options: RunOptions{RunType: RunTask, RunID: "task-20260719-000008-dispatch", Profile: "native", Prompt: "hello"}}
+		Options: RunOptions{RunType: RunTask, RunID: "task-20260719-000008-dispatch", Profile: "native", Prompt: "hello"},
+	}
 	seedQueue(t, service, []QueueEntry{entry})
 	dispatchErr := make(chan error, 1)
 	go func() { dispatchErr <- service.DispatchQueue(ctx) }()
@@ -63,9 +65,11 @@ func TestDispatchQueueExecutesPersistedWork(t *testing.T) {
 	if service.QueueBusy() {
 		t.Fatal("queue remained busy after terminal status")
 	}
-	bad := QueueEntry{SchemaVersion: queueSchemaVersion, Sequence: 2, RunID: "task-20260719-000009-invalid", RunType: RunTask,
+	bad := QueueEntry{
+		SchemaVersion: queueSchemaVersion, Sequence: 2, RunID: "task-20260719-000009-invalid", RunType: RunTask,
 		Profile: "missing", State: StatePending, Attempt: 1, QueuedAt: time.Now().UTC(),
-		Options: RunOptions{RunType: RunTask, RunID: "task-20260719-000009-invalid", Profile: "missing", Prompt: "hello"}}
+		Options: RunOptions{RunType: RunTask, RunID: "task-20260719-000009-invalid", Profile: "missing", Prompt: "hello"},
+	}
 	seedQueue(t, service, []QueueEntry{bad})
 	waitForState(t, service, bad.RunType, bad.RunID, StateFailed)
 	badStatus, err := service.Status(bad.RunType, bad.RunID)
@@ -111,9 +115,11 @@ func TestQueueClaimsFIFOAndExpiresTimedOutEntry(t *testing.T) {
 func TestCancelQueuedRunWritesTerminalArtifacts(t *testing.T) {
 	service := New(t.TempDir())
 	queuedAt := time.Now().UTC().Add(-time.Second)
-	entry := QueueEntry{SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000004-cancel", RunType: RunTask,
+	entry := QueueEntry{
+		SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000004-cancel", RunType: RunTask,
 		Profile: "mock", ProjectID: "demo", State: StatePending, Attempt: 1, QueuedAt: queuedAt,
-		Options: RunOptions{RunType: RunTask, RunID: "task-20260719-000004-cancel", Profile: "mock", Caller: "test"}}
+		Options: RunOptions{RunType: RunTask, RunID: "task-20260719-000004-cancel", Profile: "mock", Caller: "test"},
+	}
 	seedQueue(t, service, []QueueEntry{entry})
 
 	summary, err := service.Cancel(RunTask, entry.RunID)
@@ -139,8 +145,10 @@ func TestCancelQueuedRunWritesTerminalArtifacts(t *testing.T) {
 func TestReconcileOrphanedRunIsDryRunSafeAndNeverRequeuesExecution(t *testing.T) {
 	service := New(t.TempDir())
 	now := time.Now().UTC()
-	entry := QueueEntry{SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000005-orphan", RunType: RunTask,
-		Profile: "mock", State: StateRunning, OwnerPID: 999999999, Attempt: 1, QueuedAt: now.Add(-time.Minute), ClaimedAt: &now}
+	entry := QueueEntry{
+		SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000005-orphan", RunType: RunTask,
+		Profile: "mock", State: StateRunning, OwnerPID: 999999999, Attempt: 1, QueuedAt: now.Add(-time.Minute), ClaimedAt: &now,
+	}
 	seedQueue(t, service, []QueueEntry{entry})
 	paths, err := RunPaths(service.RunsDir, entry.RunType, entry.RunID)
 	if err != nil {
@@ -149,8 +157,10 @@ func TestReconcileOrphanedRunIsDryRunSafeAndNeverRequeuesExecution(t *testing.T)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	request := Request{SchemaVersion: 1, ContractVersion: ContractVersion, RunID: entry.RunID, RunType: entry.RunType,
-		Provider: "mock", ProviderProfile: entry.Profile, CreatedAt: entry.QueuedAt, UpdatedAt: now}
+	request := Request{
+		SchemaVersion: 1, ContractVersion: ContractVersion, RunID: entry.RunID, RunType: entry.RunType,
+		Provider: "mock", ProviderProfile: entry.Profile, CreatedAt: entry.QueuedAt, UpdatedAt: now,
+	}
 	if err := service.store.WriteRequest(paths, request); err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +193,10 @@ func TestReconcileOrphanedRunIsDryRunSafeAndNeverRequeuesExecution(t *testing.T)
 func TestWaitCancelsQueuedRunWithContext(t *testing.T) {
 	service := New(t.TempDir())
 	now := time.Now().UTC()
-	entry := QueueEntry{SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000006-context", RunType: RunTask,
-		Profile: "mock", State: StatePending, Attempt: 1, QueuedAt: now}
+	entry := QueueEntry{
+		SchemaVersion: queueSchemaVersion, Sequence: 1, RunID: "task-20260719-000006-context", RunType: RunTask,
+		Profile: "mock", State: StatePending, Attempt: 1, QueuedAt: now,
+	}
 	seedQueue(t, service, []QueueEntry{entry})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

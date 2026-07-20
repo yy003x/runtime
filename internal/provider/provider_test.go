@@ -23,7 +23,7 @@ func TestSelectReturnsProviderForEveryConfiguredTransport(t *testing.T) {
 		},
 		{
 			name: "api",
-			cfg:  Config{ID: "api", Type: TypeAPI, API: &APIConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "test", APIKeyEnv: "TEST_KEY", Mock: true}},
+			cfg:  Config{ID: "api", Type: TypeAPI, API: &APIConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "test", APIKey: "${TEST_KEY}", Mock: true}},
 			kind: TypeAPI,
 		},
 		{
@@ -78,7 +78,7 @@ func TestCommandAndAPIProvidersExecuteThroughSink(t *testing.T) {
 	}
 
 	apiConfig := Config{ID: "api", Type: TypeAPI, API: &APIConfig{
-		Protocol: "openai", BaseURL: "https://example.test/v1", Model: "mock-model", APIKeyEnv: "UNUSED", Mock: true,
+		Protocol: "openai", BaseURL: "https://example.test/v1", Model: "mock-model", APIKey: "${UNUSED}", Mock: true,
 	}}
 	prepared, err := (apiProvider{}).Prepare(context.Background(), apiConfig, Request{Prompt: "hello"})
 	if err != nil {

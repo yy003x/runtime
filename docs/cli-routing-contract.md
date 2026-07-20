@@ -70,11 +70,13 @@ sn-cli cx "hi" -- --skip-git-repo-check
 
 direct、managed 与 session 必须使用同一份 `cli.command` 环境配置。子进程环境顺序固定为：继承当前环境、应用 `env_unset`、应用 `env_passthrough`、应用 `env`、注入 runtime 环境。后写入的值优先。
 
-- `env` 用于 profile/preset 固定覆盖，值支持环境变量展开。
+- `env` 用于 profile/preset 固定覆盖；配置值只有 `${VAR}` 形式会读取环境变量，`$VAR` 与 `VAR` 都保持字面值。
 - `env_passthrough` 用于把当前 `sn-cli` 进程变量显式传入 tmux 子进程。
 - `env_unset` 用于删除继承变量；preset 追加写法为 `env_unset_append`。
 - 同一个变量不得同时出现在 `env_unset` 与 `env`/`env_passthrough`。
-- config 不得保存 secret，只能传递或删除 secret 对应的环境变量。
+- `${VAR}` 引用未设置时必须报错，不得静默替换为空字符串。
+- config 不得保存 secret；API 凭据只能写为完整的 `api_key: "${VAR}"` 引用。
+- Runtime 不内置环境文件加载器，环境由启动 `sn-cli` 的外部进程注入。
 
 默认 `cx`/`cc` 继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。多账号目录应通过 shell 环境或 profile preset 表达，不得在 CLI 路由层按 profile ID 硬编码。
 

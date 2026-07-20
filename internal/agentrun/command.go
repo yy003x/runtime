@@ -107,7 +107,11 @@ func (s *Service) StartCommand(ctx context.Context, options CommandOptions) (Ses
 	for _, arg := range options.Argv {
 		commandParts = append(commandParts, provider.ShellQuote(arg))
 	}
-	command := provider.TmuxCommandEnv(profile, strings.Join(commandParts, " "))
+	command, err := provider.TmuxCommandEnv(profile, strings.Join(commandParts, " "))
+	if err != nil {
+		_, _ = s.store.WriteStatus(paths, request, StateFailed, "provider_error", err.Error(), nil)
+		return SessionSummary{}, err
+	}
 	if options.DeadlineSeconds > 0 {
 		command = commandWithDeadline(command, options.DeadlineSeconds, commandTimeoutFile(paths))
 	}

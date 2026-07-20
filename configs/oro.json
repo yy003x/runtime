@@ -6,7 +6,7 @@
     "protocol": "openai",
     "base_url": "https://openrouter.ai/api/v1",
     "model": "z-ai/glm-5.1",
-    "api_key_env": "OPENROUTER_API_KEY",
+    "api_key": "${OPENROUTER_API_KEY}",
     "headers": {
       "HTTP-Referer": "http://localhost",
       "X-OpenRouter-Title": "runtime-provider"

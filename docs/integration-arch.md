@@ -178,6 +178,8 @@ session 运行时将 command config 包装为 tmux config，保留 binary、comm
 
 command 子进程环境由同一套 provider 逻辑生成，direct、managed 和 session 不允许各自实现。顺序固定为：继承当前环境、`env_unset` 删除、`env_passthrough` 显式传递、`env` 覆盖、AgentRun runtime env 注入。profile preset 可以用 `env_unset_append` 追加清理项。该规则用于切换 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等多账号目录，也用于消除父进程中的认证变量冲突；secret 值仍不得写入 profile。
 
+Provider 配置的环境变量替换只有一种语法：`${VAR}`。`$VAR` 与 `VAR` 均为普通字符串，引用未设置时立即报错；CLI command、API key/header、MCP command/args/env、audit proxy upstream 和 dylib 共用同一解析器。API 凭据 schema 为完整的 `api_key: "${VAR}"` 引用，audit proxy 使用实际值列表 `upstreams`；旧 `api_key_env` / `upstream_proxy_env` 不保留兼容。`env_passthrough` 与 `env_unset` 是继承控制字段，不是值引用机制。Runtime 不内置环境文件加载器，环境必须在进程启动前注入。
+
 managed 子进程通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 和 `SN_RUNTIME_CONTEXT_MANIFEST` 关联逻辑会话；skill、tool、Session working/candidate memory 和外部只读 memory 输入通过对应 `SN_RUNTIME_*` 环境变量提供给 wrapper/MCP。路径暴露不改变 tool capability 的授权与审计边界。
 
 基础 `cx`/`cc` 继承父进程账号与认证环境；发行模板中的 `cx-aip`/`cc-aip` 承担固定账号目录或 endpoint 的显式选择。Provider JSON 使用严格字段解码，根对象、嵌套对象和 preset 中的未知字段均拒绝加载，避免拼写错误静默失效。
@@ -258,7 +260,7 @@ active config 与 release template 严格分离：
 
 同步前，新 binary 会在临时目录中使用“现有本地配置 + 新增模板”执行 `profiles` 验证。验证通过后才写 active config 和 binary。
 
-该策略要求 schema 演进保持向后兼容。新增字段必须有代码默认值，不能依赖覆盖用户已有配置完成迁移。
+常规 schema 演进保持向后兼容，新增字段必须有代码默认值。明确批准的不兼容 schema 收口不会覆盖本地配置；新 binary 的合并配置预检会拒绝旧字段并保留旧 binary，用户需先显式迁移 active config。
 
 ## 6. 发行、安装与更新
 
@@ -435,7 +437,7 @@ Capability：
 5. 所有 managed prompt（包括 profile 普通文本简写）必须进入 AgentRun。
 6. daemon 只做长期进程和执行环境后端。
 7. 普通 profile 不经过 proxy/shim/dylib 路径。
-8. Provider 配置不保存 secret。
+8. Provider 配置不保存 secret；引用 secret 只使用完整 `${VAR}` 占位符。
 9. tmux managed task 成功判定使用 `result.json + done`；session start 成功判定使用 pane ready 和可选的 `prompt.submitted`。
 10. 安装后的 CLI 不依赖源码、Go 或 Git。
 11. API one-shot 与 API Agent Runtime 共用 profile schema 和协议 adapter；是否进入 Agent loop 只由 `api.runtime.enabled` 决定。

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -210,9 +209,4 @@ func (s *Server) removeProcessBySession(session string) {
 	if processID != "" {
 		s.releaseDependencies(processID)
 	}
-}
-
-func tmuxAvailable() error {
-	_, err := exec.LookPath("tmux")
-	return err
 }

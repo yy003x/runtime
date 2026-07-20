@@ -156,7 +156,7 @@ func TestExecuteOpenAIAndAnthropicAPI(t *testing.T) {
 			}))
 			defer server.Close()
 			t.Setenv("TEST_PROVIDER_KEY", "secret")
-			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: server.URL + "/v1", Model: "test-model", APIKeyEnv: "TEST_PROVIDER_KEY"}}
+			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "${TEST_PROVIDER_KEY}"}}
 			prepared, err := Prepare(cfg, "hello", nil)
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
