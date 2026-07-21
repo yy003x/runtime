@@ -19,7 +19,7 @@ sn-cli <namespace> <action> [arguments...] [options...]
 - namespace 中的 profile 使用第三个参数，例如 `session run cx`、`profile show cx`；公共语法不使用 `-c|--config`。
 - Run 使用 `--run-id`，逻辑 Session 使用 `--session-id`，Loop 使用 `--loop-id`；ID 不接受 positional 简写。
 - `--` 之后全部属于目标原生 CLI，Runtime 不再解析；prompt 后的 raw 参数始终追加在 profile 生成的参数之后。
-- 不保留 legacy alias、旧命令名、旧参数名或隐式兼容入口。
+- 不保留 alias、旧命令名、旧参数名或隐式兼容入口。
 
 ## 2. 顶层解析优先级
 
@@ -71,6 +71,7 @@ sn-cli cc -- -p "hi"
 ### 3.1 结果契约与记录 owner
 
 - profile config 不得出现 `result_contract`；普通加载遇到该字段时按未知字段拒绝。安装/更新流程只在 schema 升级阶段一次性删除旧字段，然后再执行严格校验。
+- `system doctor --json` 发现废弃字段时会返回 migration 提示：`migration.required: true`、`migration.action: "system migrate-config"`，以及 `migration.configs`（受影响文件与字段路径）。实际迁移执行通过 `system migrate-config` 完成。
 - direct interactive、direct passthrough、direct one-shot 和 `skill run` 不创建 Run/Session artifact，也不注入结果文件契约。
 - `session run|submit` 是 Provider 会话记录的唯一创建入口。command CLI 由 Runtime 注入 `result.json` 契约；API/native 由 Runtime 根据结构化 Provider 结果生成同一规范结果。
 - `session open` 记录 carrier Execution 与 transcript，不要求交互式 Provider 写 `result.json`。
@@ -95,7 +96,7 @@ direct、session、tmux 和 terminal carrier 必须使用同一份 `cli.command`
 run      list|show|logs|result|watch|cancel|reconcile
 session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
 profile  list|show|validate|command
-system   doctor|start|status|stop|restart|update
+system   doctor|start|status|stop|restart|migrate-config|update
 loop     run|list|show|logs|cancel
 skill    list|show|run
 tool     list|show|call
@@ -160,6 +161,7 @@ sn-cli profile validate cx
 sn-cli profile command cx --json
 
 sn-cli system doctor --json
+sn-cli system migrate-config
 sn-cli system start
 sn-cli system status
 sn-cli system stop
@@ -171,7 +173,7 @@ sn-cli system update --check
 
 ## 5. 不兼容清理
 
-以下旧入口全部移除且不提供 alias：`task`、`turn`、`runs`、`history`、`config`、`profiles`、`providers`、`doctor`、`daemon`、`command`、`capabilities`、`tools`、`clean`、`update`、`upgrade`、`version`、`help`。旧 `<profile> run|submit`、`run command`、`session start|exec|status|watch|history`、`loop start|step|status` 和 capability 旧 action 同样不保留。CLI 不再接受 `--mode`，结果契约只由入口语义决定。
+不再保留旧命令、旧参数名、alias 与隐式兼容入口；需变更时以版本变更说明和变更日志为准。
 
 ## 6. 变更门禁
 

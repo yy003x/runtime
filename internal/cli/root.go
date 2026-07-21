@@ -292,7 +292,7 @@ Namespaces:
   sn-cli run list|show|logs|result|watch|cancel|reconcile
   sn-cli session run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
   sn-cli profile list|show|validate|command
-  sn-cli system doctor|start|status|stop|restart|update
+  sn-cli system doctor|start|status|stop|restart|migrate-config|update
   sn-cli loop run|list|show|logs|cancel
   sn-cli skill list|show|run
   sn-cli tool list|show|call

@@ -138,6 +138,37 @@ func TestMigrateProfileConfigsRejectsInvalidJSONWithoutChangingFile(t *testing.T
 	assertContent(t, path, `{"result_contract":"required"} trailing`)
 }
 
+func TestScanProfileResultContractReportsLegacyFields(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "cx.json"), `{
+  "type":"api",
+  "api":{"protocol":"openai","base_url":"https://example.test/v1","model":"m","api_key":"${UNSET}","result_contract":"required"},
+  "presets":{
+    "fast":{"api":{"result_contract":"none","temperature":0}}
+  },
+  "cli":{"runtime":{"managed_args":["managed"],"result_contract":"keep"}}
+}`)
+	mustWrite(t, filepath.Join(dir, "native.json"), `{"type":"native","native":{"mock":{"responses":["ok"],"done_after":1}}}`)
+	result, err := ScanProfileResultContract(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 || result[0].File != "cx.json" {
+		t.Fatalf("result=%v", result)
+	}
+	if len(result[0].Fields) != 3 {
+		t.Fatalf("fields=%v", result[0].Fields)
+	}
+	if got, expected := strings.Join(result[0].Fields, "|"), "api.result_contract|cli.runtime.result_contract|presets.fast.api.result_contract"; got != expected {
+		t.Fatalf("fields=%q want=%q", got, expected)
+	}
+
+	result, err = ScanProfileResultContract(t.TempDir())
+	if err != nil || len(result) != 0 {
+		t.Fatalf("empty=%v err=%v", result, err)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

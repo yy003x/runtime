@@ -19,6 +19,7 @@ import (
 	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/cli/config"
 	"agent-runtime/internal/daemon"
+	"agent-runtime/internal/installbundle"
 	"agent-runtime/internal/provider"
 )
 
@@ -33,6 +34,26 @@ func runRuntimeDoctor(cfg *config.Config, args []string) error {
 	}
 	profiles, err := service.Profiles()
 	if err != nil {
+		legacyProfiles, scanErr := installbundle.ScanProfileResultContract(cfg.Paths.ConfigDir)
+		if scanErr == nil && len(legacyProfiles) > 0 {
+			return printJSON(map[string]any{
+				"ok":               false,
+				"version":          service.RuntimeVersion,
+				"contract_version": agentrun.ContractVersion,
+				"runs_dir":         service.RunsDir,
+				"default_profile":  service.DefaultProfile,
+				"error":            err.Error(),
+				"migration": map[string]any{
+					"required": true,
+					"action":   "system migrate-config",
+					"reason":   "配置包含已废弃字段 result_contract",
+					"configs":  legacyProfiles,
+				},
+			})
+		}
+		if scanErr != nil {
+			return scanErr
+		}
 		return err
 	}
 	items := make(map[string]any, len(profiles))

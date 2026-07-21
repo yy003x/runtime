@@ -50,6 +50,80 @@ func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
 	}
 }
 
+func TestRuntimeDoctorSuggestsMigrationWhenLegacyResultContractExists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := `{"type":"api","label":"Legacy","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"gpt","api_key":"${UNSET}","result_contract":"required"}}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "legacy.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, output := captureMain(t, []string{"system", "doctor", "--json"})
+	if code != 0 {
+		t.Fatalf("doctor code=%d output=%q", code, output)
+	}
+	var payload struct {
+		OK        bool             `json:"ok"`
+		Error     string           `json:"error"`
+		Migration map[string]any   `json:"migration"`
+		Configs   []map[string]any `json:"configs"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode doctor output: %v\n%s", err, output)
+	}
+	if payload.OK {
+		t.Fatalf("ok=%t payload=%#v", payload.OK, payload)
+	}
+	if payload.Error == "" {
+		t.Fatalf("missing doctor error: %#v", payload)
+	}
+	if migration, ok := payload.Migration["required"].(bool); !ok || !migration {
+		t.Fatalf("migration=%#v", payload.Migration)
+	}
+	configs, ok := payload.Migration["configs"].([]any)
+	if !ok || len(configs) != 1 {
+		t.Fatalf("migration configs=%#v", payload.Migration)
+	}
+}
+
+func TestSystemMigrateConfigCleansLegacyFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"type":"api","label":"Legacy","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"gpt","api_key":"${UNSET}","result_contract":"required"}}`
+	legacyPath := filepath.Join(home, "configs", "legacy.json")
+	if err := os.WriteFile(legacyPath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, output := captureMain(t, []string{"system", "migrate-config"})
+	if code != 0 {
+		t.Fatalf("migrate-config code=%d output=%q", code, output)
+	}
+	var payload struct {
+		Changed []string `json:"changed_configs"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode migrate output: %v", err)
+	}
+	if len(payload.Changed) != 1 || payload.Changed[0] != filepath.Base(legacyPath) {
+		t.Fatalf("changed=%v", payload.Changed)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy file missing after migrate: %v", err)
+	}
+	body, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "result_contract") {
+		t.Fatalf("legacy field not removed: %s", string(body))
+	}
+}
+
 func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
 	options, err := parseRunOptions(agentrun.RunTask, []string{
 		"-c", "cx", "--model", "first", "--image", "one.png", "--provider-overrides", `{"model":"final","verbosity":"high"}`, "prompt", "--", "--search",

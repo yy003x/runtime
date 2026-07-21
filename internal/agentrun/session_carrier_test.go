@@ -99,3 +99,10 @@ func TestTerminalLaunchCommandUsesExplicitDriver(t *testing.T) {
 		t.Fatalf("iterm argv=%q", got)
 	}
 }
+
+func TestResolveSessionCarrierRejectsUnsupportedTerminalDriver(t *testing.T) {
+	service := &Service{TerminalDriver: "unknown", DefaultCarrier: "terminal"}
+	if _, err := service.resolveSessionCarrier("terminal"); err == nil || !strings.Contains(err.Error(), "does not support driver") {
+		t.Fatalf("resolveSessionCarrier=%v", err)
+	}
+}

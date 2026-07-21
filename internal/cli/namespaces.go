@@ -224,7 +224,7 @@ func profilePublicView(profile provider.Config, profiles map[string]provider.Con
 
 func runSystemNamespace(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: system doctor|start|status|stop|restart|update")
+		return fmt.Errorf("usage: system doctor|start|status|stop|restart|migrate-config|update")
 	}
 	switch args[0] {
 	case "doctor":

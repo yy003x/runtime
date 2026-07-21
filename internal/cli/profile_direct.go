@@ -114,7 +114,7 @@ func parseProfilePrompt(args []string) (string, []string, error) {
 		}
 	}
 	for _, value := range promptArgs {
-		if strings.HasPrefix(value, "-") {
+		if value == "--help" || value == "-h" || value == "--version" {
 			return "", nil, fmt.Errorf("target CLI arguments must follow --")
 		}
 	}

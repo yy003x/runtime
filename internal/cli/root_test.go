@@ -136,9 +136,19 @@ func TestProfileRouteSeparatesInteractivePromptAndPassthrough(t *testing.T) {
 	}
 }
 
-func TestProfilePromptRejectsFlagsBeforeSeparator(t *testing.T) {
+func TestProfilePromptRejectsHelpLikeTokensBeforeSeparator(t *testing.T) {
 	if _, _, err := parseProfilePrompt([]string{"--help"}); err == nil || !strings.Contains(err.Error(), "must follow --") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestProfilePromptAcceptsHyphenLeadingPromptWithoutSeparator(t *testing.T) {
+	prompt, rawArgs, err := parseProfilePrompt([]string{"-foo", "-bar"})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if prompt != "-foo -bar" || len(rawArgs) != 0 {
+		t.Fatalf("prompt=%q raw=%v", prompt, rawArgs)
 	}
 }
 
@@ -160,7 +170,7 @@ func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 
 func TestPrintHelpDocumentsCanonicalNamespacesOnly(t *testing.T) {
 	stdout := captureStdout(t, printHelp)
-	for _, text := range []string{"<profile> [prompt...]", "run list|show", "session run|submit|open", "profile list|show", "system doctor|start"} {
+	for _, text := range []string{"<profile> [prompt...]", "run list|show", "session run|submit|open", "profile list|show", "system doctor|start|status|stop|restart|migrate-config|update"} {
 		if !strings.Contains(stdout, text) {
 			t.Fatalf("help missing %q:\n%s", text, stdout)
 		}

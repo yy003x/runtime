@@ -53,6 +53,9 @@ func (s *Service) resolveSessionCarrier(name string) (sessionCarrier, error) {
 		if s.TerminalDriver == "" {
 			return nil, fmt.Errorf("terminal carrier requires session.terminal.driver=ghostty|iterm2 in configs/runtime.yaml")
 		}
+		if s.TerminalDriver != "ghostty" && s.TerminalDriver != "iterm2" {
+			return nil, fmt.Errorf("terminal carrier does not support driver %q; set session.terminal.driver to ghostty|iterm2", s.TerminalDriver)
+		}
 		return terminalSessionCarrier{driver: s.TerminalDriver}, nil
 	default:
 		return nil, fmt.Errorf("carrier must be tmux|terminal")
@@ -183,7 +186,7 @@ func (carrier terminalSessionCarrier) Start(ctx context.Context, service *Servic
 	if output, err := launcher.CombinedOutput(); err != nil {
 		cleanup()
 		release()
-		return carrierHandle{}, fmt.Errorf("launch %s terminal: %w: %s", carrier.driver, err, strings.TrimSpace(string(output)))
+		return carrierHandle{}, terminalLaunchError(carrier.driver, string(output), err)
 	}
 	if err := waitForFile(ctx, readyPath, 10*time.Second); err != nil {
 		cleanup()
@@ -346,6 +349,27 @@ func terminalLaunchCommand(ctx context.Context, driver, wrapperPath string) *exe
 		)
 	default:
 		return exec.CommandContext(ctx, "open", "-na", "Ghostty.app", "--args", "-e", "/bin/sh", wrapperPath)
+	}
+}
+
+func terminalLaunchError(driver, output string, err error) error {
+	message := strings.TrimSpace(output)
+	switch driver {
+	case "iterm2":
+		if message == "" {
+			message = "建议确认 iTerm2 已安装且可被 AppleScript 控制"
+		}
+		return fmt.Errorf("launch iTerm2 terminal: %w: %s", err, message)
+	case "ghostty":
+		if message == "" {
+			message = "建议确认 Ghostty.app 已安装并可被 open 命令启动"
+		}
+		return fmt.Errorf("launch ghostty terminal: %w: %s", err, message)
+	default:
+		if message == "" {
+			message = fmt.Sprintf("terminal driver %q 不被支持", driver)
+		}
+		return fmt.Errorf("launch terminal %q: %w: %s", driver, err, message)
 	}
 }
 

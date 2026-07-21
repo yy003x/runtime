@@ -189,7 +189,7 @@ sn-cli session submit bo "后台调用"
 run      list|show|logs|result|watch|cancel|reconcile
 session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
 profile  list|show|validate|command
-system   doctor|start|status|stop|restart|update
+system   doctor|start|status|stop|restart|migrate-config|update
 loop     run|list|show|logs|cancel
 skill    list|show|run
 tool     list|show|call
@@ -218,6 +218,7 @@ sn-cli profile show cx
 sn-cli profile validate cx
 sn-cli profile command cx-spark --json
 sn-cli system doctor --json
+sn-cli system migrate-config
 
 sn-cli session run cx "创建逻辑会话并同步执行"
 sn-cli session submit cc --session-id <id> "切换 Provider 后台继续"
@@ -296,6 +297,7 @@ Agent 的 `memory.write` 先产生带 Session/Turn/Run provenance 的 candidate�
 
 ```bash
 sn-cli system doctor --json
+sn-cli system migrate-config
 sn-cli system start
 sn-cli system status
 sn-cli system restart
@@ -316,7 +318,7 @@ sn-cli --version
 
 版本由 exact Git tag 和构建 metadata 注入；非 tag 构建显示 commit 与 dirty 状态。更新从 GitHub Release 下载当前平台 archive 并校验 SHA256。新 binary 会先使用“本地配置 + 新增模板”的临时合并配置完成验证，再同步缺失配置并原子替换 `~/.sn/bin/sn-cli`。失败时保留旧 binary。
 
-旧入口（`task`、`turn`、`runs`、`history`、`config`、`doctor`、`daemon`、`command`、`capabilities`、`update` 等）已移除且不提供 alias。
+`system doctor --json` 发现旧 `result_contract` 时会返回 `migration` 字段；执行 `sn-cli system migrate-config` 可一次性清理配置文件中的废弃字段。
 
 ## Provider
 
