@@ -66,9 +66,12 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 	if err != nil {
 		return s.fail(paths, request, providerStatus, "provider_error", err)
 	}
+	if err := appendOutputLogHeader(paths.OutputLog, prepared, "resuming"); err != nil {
+		return s.fail(paths, request, providerStatus, "output_sync_failed", err)
+	}
 	sink := &runProviderSink{service: s, paths: paths, request: request, status: providerStatus}
 	result, err := selected.Execute(ctx, prepared, sink)
-	if writeErr := writeOutputLog(paths.OutputLog, prepared, result); writeErr != nil {
+	if writeErr := finalizeOutputLog(paths.OutputLog, sink, result); writeErr != nil {
 		return s.fail(paths, request, providerStatus, "output_sync_failed", writeErr)
 	}
 	if ctx.Err() != nil {

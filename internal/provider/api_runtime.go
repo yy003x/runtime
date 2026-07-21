@@ -231,8 +231,8 @@ func loadAPIRuntimeSkills(skillDir string, runtime *APIRuntimeConfig, prompt str
 	if runtime == nil || len(runtime.Skills) == 0 && !runtime.AutoRouteSkills {
 		return nil, nil
 	}
-	manager := capability.NewSkillManager()
-	manager.RegisterDir(skillDir)
+	registry := capability.NewRegistry(capability.RegistryConfig{SkillsDir: skillDir})
+	manager := registry.Skills
 	selected := make(map[string]capability.Skill)
 	for _, name := range runtime.Skills {
 		if name == "*" {
@@ -272,7 +272,8 @@ func loadAPIRuntimeMemory(memoryFile string, config *APIMemoryConfig, prompt str
 	if config == nil || !config.Enabled {
 		return "", nil
 	}
-	memory, err := capability.OpenMemory(memoryFile)
+	registry := capability.NewRegistry(capability.RegistryConfig{MemoryFile: memoryFile})
+	memory, err := registry.Memory()
 	if err != nil {
 		return "", fmt.Errorf("open API runtime memory: %w", err)
 	}
@@ -310,12 +311,10 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 		return nil
 	}
 
-	manager := capability.NewToolManager()
-	if request.ToolDir != "" {
-		if info, err := os.Stat(request.ToolDir); err == nil && info.IsDir() {
-			manager.RegisterDir(request.ToolDir)
-		}
-	}
+	registry := capability.NewRegistry(capability.RegistryConfig{
+		ToolsDir: request.ToolDir, MemoryFile: request.MemoryFile, MemoryCandidatesFile: request.MemoryCandidateFile,
+	})
+	manager := registry.Tools
 	for _, schema := range manager.Schemas() {
 		tool := schema
 		if tool.Kind == "external" || !agentActionAllowed(tool.Name, tool.Capability, request.Allowed, request.Forbidden) {
@@ -333,7 +332,7 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 	}
 
 	if config.Memory != nil && config.Memory.Enabled {
-		memory, err := capability.OpenMemory(request.MemoryFile)
+		memory, err := registry.Memory()
 		if err != nil {
 			return nil, fmt.Errorf("open API runtime memory tools: %w", err)
 		}
@@ -377,11 +376,10 @@ func buildAPIToolRuntime(ctx context.Context, request Request, config APIRuntime
 				if item.Source == "" {
 					item.Source = "api-agent"
 				}
-				candidateFile := request.MemoryCandidateFile
-				if candidateFile == "" {
+				if request.MemoryCandidateFile == "" {
 					return nil, fmt.Errorf("memory candidate store is unavailable")
 				}
-				candidates, err := capability.OpenMemory(candidateFile)
+				candidates, err := registry.MemoryCandidates()
 				if err != nil {
 					return nil, err
 				}

@@ -21,7 +21,7 @@ import (
 func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {
 	archiveName := platformArchiveName(t)
 	archive := makeArchive(t, map[string]archiveFile{
-		"sn-cli":               {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profiles ] && exit 0\nprintf new\n"},
+		"sn-cli":               {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n"},
 		"configs/runtime.yaml": {mode: 0o644, content: "packaged\n"},
 		"configs/new.json":     {mode: 0o644, content: "{}\n"},
 	})
@@ -32,16 +32,21 @@ func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {
 	cfg := testConfig(t)
 	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
 	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "runtime.yaml"), "local\n", 0o600)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "cx.json"), `{"type":"cli","cli":{"runtime":{"result_contract":"required"}}}`+"\n", 0o600)
 	result, err := Apply(context.Background(), cfg, "v2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Version != "v2" || len(result.CopiedConfigs) != 1 || result.CopiedConfigs[0] != "new.json" {
+	if result.Version != "v2" || len(result.CopiedConfigs) != 1 || result.CopiedConfigs[0] != "new.json" || len(result.MigratedConfigs) != 1 || result.MigratedConfigs[0] != "cx.json" {
 		t.Fatalf("result=%#v", result)
 	}
-	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profiles ] && exit 0\nprintf new\n")
+	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "runtime.yaml"), "local\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new.json"), "{}\n")
+	cxData, err := os.ReadFile(filepath.Join(cfg.Paths.ConfigDir, "cx.json"))
+	if err != nil || strings.Contains(string(cxData), "result_contract") {
+		t.Fatalf("cx.json=%q err=%v", cxData, err)
+	}
 }
 
 func TestApplyChecksumFailureKeepsOldBinaryAndConfigs(t *testing.T) {

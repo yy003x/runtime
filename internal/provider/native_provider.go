@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -246,12 +245,8 @@ func (a nativeClientAdapter) Generate(ctx context.Context, request nativeengine.
 }
 
 func buildNativeToolRuntime(request Request) ([]nativeengine.Tool, nativeengine.ToolExecutor) {
-	manager := capability.NewToolManager()
-	if request.ToolDir != "" {
-		if info, err := os.Stat(request.ToolDir); err == nil && info.IsDir() {
-			manager.RegisterDir(request.ToolDir)
-		}
-	}
+	registry := capability.NewRegistry(capability.RegistryConfig{ToolsDir: request.ToolDir})
+	manager := registry.Tools
 	available := make(map[string]capability.Tool)
 	var tools []nativeengine.Tool
 	for _, tool := range manager.Schemas() {

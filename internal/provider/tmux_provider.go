@@ -187,7 +187,6 @@ func AsTmuxSessionProfile(cfg Config) (Config, error) {
 	runtime.PromptDelivery = "paste"
 	runtime.PromptArgs = nil
 	runtime.ManagedArgs = nil
-	runtime.ResultContract = "optional"
 	cli.Executor = ExecutorTmux
 	cli.Runtime = runtime
 	if cli.Tmux == nil {

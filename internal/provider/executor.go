@@ -45,32 +45,53 @@ func ExecuteCLIInteractive(ctx context.Context, cfg Config, request CLIRequest, 
 	if len(request.Argv) == 0 {
 		return Result{ExitCode: 1}, fmt.Errorf("profile %s: empty argv", cfg.ID)
 	}
-	environment := map[string]string{}
-	if requiresDaemon(cfg) {
-		if client == nil {
-			return Result{ExitCode: 1}, fmt.Errorf("profile %s: daemon client is required", cfg.ID)
-		}
-		execution, err := daemonExecution(cfg)
-		if err != nil {
-			return Result{ExitCode: 1}, err
-		}
-		processID := fmt.Sprintf("interactive/%s/%d", cfg.ID, os.Getpid())
-		injected, err := client.Acquire(ctx, processID, daemonDependencies(cfg), execution)
-		if err != nil {
-			return Result{ExitCode: 1}, err
-		}
-		defer func() { _ = client.Release(context.Background(), processID) }()
-		environment = injected
-	}
-	commandEnvironment, err := CommandEnvironment(cfg.CLI.Command, environment)
+	processID := fmt.Sprintf("interactive/%s/%d", cfg.ID, os.Getpid())
+	commandEnvironment, acquired, err := InteractiveCLIEnvironment(ctx, cfg, client, processID)
 	if err != nil {
-		return Result{ExitCode: 1}, fmt.Errorf("profile %s: %w", cfg.ID, err)
+		return Result{ExitCode: 1}, err
+	}
+	if acquired {
+		defer func() { _ = client.Release(context.Background(), processID) }()
 	}
 	execution, err := executor.Run(ctx, executor.Options{
 		Argv: request.Argv, Env: commandEnvironment, Dir: cwd,
 		Interactive: true, ForwardSignals: true,
 	})
 	return Result{ExitCode: execution.ExitCode, PID: execution.PID, PGID: execution.PGID}, err
+}
+
+// InteractiveCLIEnvironment resolves the exact environment used by a direct
+// CLI execution. Callers that keep the process alive after returning must
+// retain processID and release the daemon lease when that execution ends.
+func InteractiveCLIEnvironment(ctx context.Context, cfg Config, client *daemon.Client, processID string) ([]string, bool, error) {
+	if cfg.CLI == nil {
+		return nil, false, fmt.Errorf("profile %s: missing cli config", cfg.ID)
+	}
+	environment := map[string]string{}
+	acquired := false
+	if requiresDaemon(cfg) {
+		if client == nil {
+			return nil, false, fmt.Errorf("profile %s: daemon client is required", cfg.ID)
+		}
+		execution, err := daemonExecution(cfg)
+		if err != nil {
+			return nil, false, err
+		}
+		injected, err := client.Acquire(ctx, processID, daemonDependencies(cfg), execution)
+		if err != nil {
+			return nil, false, err
+		}
+		environment = injected
+		acquired = true
+	}
+	commandEnvironment, err := CommandEnvironment(cfg.CLI.Command, environment)
+	if err != nil {
+		if acquired {
+			_ = client.Release(context.Background(), processID)
+		}
+		return nil, false, fmt.Errorf("profile %s: %w", cfg.ID, err)
+	}
+	return commandEnvironment, acquired, nil
 }
 
 func executeCLIStreaming(

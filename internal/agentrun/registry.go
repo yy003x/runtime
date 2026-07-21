@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -19,6 +20,48 @@ type registryEntry struct {
 	RunDir    string    `json:"run_dir"`
 	State     string    `json:"state"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ResolveRunType returns the persisted run type for a public run ID. The
+// registry and queue are the owners of this relationship; callers must not
+// infer it from an ID prefix or reconstruct run paths themselves.
+func (s *Service) ResolveRunType(runID string) (string, error) {
+	if err := validateRunID(runID); err != nil {
+		return "", err
+	}
+	resolved := ""
+	if err := s.withQueue(false, func(document *queueDocument) error {
+		for _, entry := range document.Entries {
+			if entry.RunID != runID {
+				continue
+			}
+			if resolved != "" && resolved != entry.RunType {
+				return fmt.Errorf("run_id %s is registered with multiple run types", runID)
+			}
+			resolved = entry.RunType
+		}
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	if err := s.withRegistry(false, func(document *registryDocument) {
+		if entry, ok := document.Runs[runID]; ok {
+			if resolved == "" || resolved == entry.RunType {
+				resolved = entry.RunType
+			} else {
+				resolved = "conflict:" + entry.RunType
+			}
+		}
+	}); err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(resolved, "conflict:") {
+		return "", fmt.Errorf("run_id %s is registered with multiple run types", runID)
+	}
+	if resolved == "" {
+		return "", fmt.Errorf("run not found: %s", runID)
+	}
+	return resolved, nil
 }
 
 func (s *Service) register(paths Paths, request Request, state string) {

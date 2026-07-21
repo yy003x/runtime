@@ -187,7 +187,7 @@ func (c *Client) start() error {
 		return err
 	}
 	defer logFile.Close()
-	command := exec.Command(executable, "daemon", "serve")
+	command := exec.Command(executable, "system", "serve")
 	command.Env = append(os.Environ(), "SN_CLI_HOME="+c.config.Home, "AGENT_RUNTIME_VERSION="+c.config.Version)
 	command.Stdin = nil
 	command.Stdout = logFile

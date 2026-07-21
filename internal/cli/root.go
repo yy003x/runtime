@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"agent-runtime/internal/agentrun"
@@ -29,76 +28,85 @@ func Main(args []string) int {
 		return 0
 	}
 	switch args[0] {
-	case "-h", "--help", "help":
+	case "-h", "--help":
 		printHelp()
-	case "--version", "version":
+	case "--version":
 		fmt.Println(version.String())
-	case "profiles", "providers":
-		return exit(printProviders(cfg.Home))
-	case "config":
-		return exit(runConfigCommand(cfg, args[1:]))
-	case "doctor":
-		return exit(runRuntimeDoctor(cfg, args[1:]))
-	case "daemon":
-		return exit(runDaemonCommand(cfg, args[1:]))
-	case "task", "turn":
-		return exit(runTaskCommand(cfg, args[0], args[1:]))
-	case "runs":
-		return exit(runRunsCommand(cfg, args[1:]))
-	case "loop":
-		return exit(runLoopCommand(cfg, args[1:]))
-	case "capabilities":
-		return exit(runCapabilitiesCommand(cfg, args[1:]))
-	case "tools":
-		return exit(runCapabilitiesCommand(cfg, append([]string{"tools"}, args[1:]...)))
+	case "run":
+		return exit(runRunNamespace(cfg, args[1:]))
 	case "session":
-		return exit(runRuntimeSession(cfg, args[1:]))
-	case "history":
-		return exit(runSessionHistory(cfg, args[1:]))
-	case "command":
-		return exit(runCommandCommand(cfg, args[1:]))
-	case "clean":
-		return exit(runCleanCommand(cfg, args[1:]))
-	case "update", "upgrade":
-		return exit(runUpdate(cfg, args[1:]))
+		return exit(runSessionNamespace(cfg, args[1:]))
+	case "profile":
+		return exit(runProfileNamespace(cfg, args[1:]))
+	case "system":
+		return exit(runSystemNamespace(cfg, args[1:]))
+	case "loop":
+		return exit(runLoopNamespace(cfg, args[1:]))
+	case "skill":
+		return exit(runSkillNamespace(cfg, args[1:]))
+	case "tool":
+		return exit(runToolNamespace(cfg, args[1:]))
+	case "memory":
+		return exit(runMemoryNamespace(cfg, args[1:]))
 	default:
 		if profile, ok := resolveProfile(cfg.Home, args[0]); ok {
-			if profile.Type == provider.TypeCLI && profile.CLI != nil && profile.CLI.Executor == provider.ExecutorCommand {
-				code, runErr := runCommandProfile(cfg, profile, args)
-				if runErr != nil {
-					return fail(runErr)
-				}
-				return code
+			code, runErr := runResolvedProfile(cfg, profile, args[1:])
+			if runErr != nil {
+				return fail(runErr)
 			}
-			return exit(runProfile(cfg, args))
+			return code
 		}
 		return fail(fmt.Errorf("unknown command %q", args[0]))
 	}
 	return 0
 }
 
-func runCommandProfile(cfg *config.Config, profile provider.Config, invocationArgs []string) (int, error) {
-	if len(invocationArgs) == 0 {
-		return 1, fmt.Errorf("profile invocation is required")
+type profileRoute string
+
+const (
+	profileRouteInteractive profileRoute = "interactive"
+	profileRoutePassthrough profileRoute = "passthrough"
+	profileRoutePrompt      profileRoute = "prompt"
+)
+
+func routeProfileArgs(args []string) (profileRoute, []string, error) {
+	if len(args) == 0 {
+		return profileRouteInteractive, nil, nil
 	}
-	managed, rawArgs := routeCommandProfileArgs(invocationArgs[1:])
-	if !managed && len(invocationArgs) == 1 && stdinHasPrompt() {
-		managed = true
+	switch args[0] {
+	case "--":
+		return profileRoutePassthrough, args[1:], nil
+	case "run", "submit":
+		return "", nil, fmt.Errorf("profile %s was removed; use 'session %s <profile> <prompt>' when recording is required", args[0], args[0])
+	default:
+		return profileRoutePrompt, args, nil
 	}
-	if managed {
-		return 0, runProfile(cfg, invocationArgs)
-	}
-	return runInteractiveProfile(cfg, profile, rawArgs)
 }
 
-func routeCommandProfileArgs(rawArgs []string) (bool, []string) {
-	if len(rawArgs) == 0 {
-		return false, nil
+func runResolvedProfile(cfg *config.Config, profile provider.Config, args []string) (int, error) {
+	route, routedArgs, err := routeProfileArgs(args)
+	if err != nil {
+		return 1, fmt.Errorf("profile %q: %w", profile.ID, err)
 	}
-	if rawArgs[0] == "--" {
-		return false, rawArgs[1:]
+	switch route {
+	case profileRouteInteractive:
+		if stdinHasPrompt() {
+			return runPromptProfile(cfg, profile, nil)
+		}
+		if profile.Type != provider.TypeCLI || profile.CLI == nil || profile.CLI.Executor != provider.ExecutorCommand {
+			return 1, fmt.Errorf("profile %q has no interactive command; provide a prompt or use 'session open %s'", profile.ID, profile.ID)
+		}
+		return runInteractiveProfile(cfg, profile, nil)
+	case profileRoutePassthrough:
+		if profile.Type != provider.TypeCLI || profile.CLI == nil || profile.CLI.Executor != provider.ExecutorCommand {
+			return 1, fmt.Errorf("profile %q does not support raw CLI passthrough", profile.ID)
+		}
+		return runInteractiveProfile(cfg, profile, routedArgs)
+	case profileRoutePrompt:
+		return runPromptProfile(cfg, profile, routedArgs)
+	default:
+		return 1, fmt.Errorf("profile %q: unsupported route %q", profile.ID, route)
 	}
-	return !strings.HasPrefix(rawArgs[0], "-"), rawArgs
 }
 
 func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs []string) (int, error) {
@@ -130,171 +138,39 @@ func printProviders(root string) error {
 	for _, profile := range profiles {
 		items = append(items, map[string]any{
 			"id": profile.ID, "type": profile.Type, "transport": profile.Transport(),
-			"label": profile.Label, "result_contract": profile.ResultContract(),
+			"label": profile.Label,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"]) })
 	return printJSON(map[string]any{"ok": true, "source": "configs", "profiles": items})
 }
 
-func runProfile(cfg *config.Config, args []string) error {
-	invocation, err := parseProfileInvocation(args)
+func runWithFollow(ctx context.Context, service *agentrun.Service, options agentrun.RunOptions) (agentrun.RunSummary, error) {
+	submitted, err := service.Submit(ctx, options)
+	if submitted.RunID == "" {
+		return submitted, err
+	}
+	fmt.Fprintf(os.Stderr, "[run:%s] %s\n", submitted.RunID, submitted.RunDir)
 	if err != nil {
-		return err
+		return submitted, err
 	}
-	if err := applyStdinPrompt(&invocation.Prompt, invocation.PromptFile); err != nil {
-		return err
+	followed, followErr := service.Follow(ctx, submitted.RunType, submitted.RunID, os.Stderr)
+	if followed.FinalText == "" {
+		followed.FinalText = submitted.FinalText
 	}
-
-	cwd, _ := os.Getwd()
-	overrides := cloneAnyMap(invocation.ProviderOverrides)
-	if len(invocation.Images) > 0 {
-		overrides["images"] = invocation.Images
-	}
-	if invocation.Model != "" {
-		overrides["model"] = invocation.Model
-	}
-	if invocation.ReasoningEffort != "" {
-		overrides["reasoning_effort"] = invocation.ReasoningEffort
-	}
-	service := agentrun.New(cfg.Home)
-	result, err := service.Run(context.Background(), agentrun.RunOptions{
-		RunType: agentrun.RunTask, RunID: invocation.RunID, Profile: invocation.Profile,
-		Prompt: invocation.Prompt, PromptFile: invocation.PromptFile, CWD: cwd, Caller: "cli.profile", SessionID: invocation.SessionID,
-		ExecutionMode: invocation.Mode, DeadlineSeconds: invocation.Timeout,
-		ProviderOverrides: overrides, RawCLIArgs: invocation.RawCLIArgs, Force: invocation.Force,
-		RecordMode: invocation.RecordMode, Retention: invocation.Retention,
-	})
-	if result.RunID != "" {
-		finalText := strings.TrimSpace(result.FinalText)
-		if finalText == "" {
-			if contract, readErr := service.ReadResult(agentrun.RunTask, result.RunID); readErr == nil {
-				finalText = strings.TrimSpace(contract.Summary)
-			}
-		}
-		if finalText != "" {
-			fmt.Println(finalText)
-		}
-		fmt.Fprintf(os.Stderr, "[run:%s] %s\n", result.RunID, result.RunDir)
-	}
-	return err
+	return followed, followErr
 }
 
-type profileInvocation struct {
-	Profile           string
-	Prompt            string
-	PromptFile        string
-	RawCLIArgs        []string
-	Images            []string
-	SessionID         string
-	RunID             string
-	Mode              string
-	Model             string
-	ReasoningEffort   string
-	Timeout           int
-	Force             bool
-	RecordMode        string
-	Retention         string
-	ProviderOverrides map[string]any
-}
-
-func parseProfileInvocation(args []string) (profileInvocation, error) {
-	if len(args) == 0 {
-		return profileInvocation{}, fmt.Errorf("profile is required")
-	}
-	invocation := profileInvocation{Profile: args[0], Mode: agentrun.ModeManaged, ProviderOverrides: map[string]any{}}
-	var promptParts []string
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "--session-id":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
-			}
-			invocation.SessionID = args[i]
-		case "--run-id":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--run-id requires value")
-			}
-			invocation.RunID = args[i]
-		case "--mode":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--mode requires value")
-			}
-			invocation.Mode = args[i]
-		case "--model":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--model requires value")
-			}
-			invocation.Model = args[i]
-		case "--reasoning-effort":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
-			}
-			invocation.ReasoningEffort = args[i]
-		case "--timeout":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--timeout requires value")
-			}
-			value, parseErr := strconv.Atoi(args[i])
-			if parseErr != nil {
-				return profileInvocation{}, fmt.Errorf("invalid --timeout: %w", parseErr)
-			}
-			invocation.Timeout = value
-		case "--provider-overrides":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--provider-overrides requires value")
-			}
-			if err := json.Unmarshal([]byte(args[i]), &invocation.ProviderOverrides); err != nil {
-				return profileInvocation{}, fmt.Errorf("parse --provider-overrides: %w", err)
-			}
-		case "--force":
-			invocation.Force = true
-		case "--record-mode":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--record-mode requires value")
-			}
-			invocation.RecordMode = args[i]
-		case "--retention":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--retention requires value")
-			}
-			invocation.Retention = args[i]
-		case "--prompt-file":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("%s requires value", args[i-1])
-			}
-			invocation.PromptFile = args[i]
-		case "--image":
-			i++
-			if i >= len(args) {
-				return profileInvocation{}, fmt.Errorf("--image requires value")
-			}
-			invocation.Images = append(invocation.Images, args[i])
-		case "--":
-			invocation.RawCLIArgs = append(invocation.RawCLIArgs, args[i+1:]...)
-			i = len(args)
-		default:
-			if strings.HasPrefix(args[i], "-") {
-				return profileInvocation{}, fmt.Errorf("unknown profile option: %s; put target CLI args after --", args[i])
-			}
-			promptParts = append(promptParts, args[i])
+func hasOptionBeforeSeparator(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == name {
+			return true
 		}
 	}
-	invocation.Prompt = strings.TrimSpace(strings.Join(promptParts, " "))
-	if invocation.Prompt != "" && strings.TrimSpace(invocation.PromptFile) != "" {
-		return profileInvocation{}, fmt.Errorf("inline prompt and --prompt-file cannot be used together")
-	}
-	return invocation, nil
+	return false
 }
 
 func stdinHasPrompt() bool {
@@ -410,49 +286,38 @@ func printHelp() {
 Usage:
   sn-cli <profile>
   sn-cli <profile> [prompt...] [-- raw-cli-args...]
-  sn-cli task run -c <config> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli task submit -c <config> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli task status|logs|watch|block|continue|patch-resume|stop|cancel --run-id <id>
-  sn-cli turn run -c <config> --session-id <id> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli turn submit -c <config> --session-id <id> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli runs list [--active] [--state <state>] [--type <type>] [--project <id>] [--profile <id>] [--limit <n>]
-  sn-cli runs reconcile [--dry-run]
-  sn-cli loop run|start [--session-id <id>] [options]
-  sn-cli loop step|status|logs|cancel --loop-id <id>
-  sn-cli session run -c <config> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli session exec -c <config> [options] [-- raw-cli-args...]
-  sn-cli session start -c <config> [options] [prompt...] [-- raw-cli-args...]
-  sn-cli session list
-  sn-cli session status|logs|watch|send|interrupt|stop|attach --run-id <id>
-  sn-cli history create|list|show|messages|events|configure|delete|export|import|rebuild
-  sn-cli command start -c <config> [options] -- <command> [args...]
-  sn-cli command status|logs|watch|interrupt|stop|attach --run-id <id>
-  sn-cli clean [--apply]
-  sn-cli capabilities skills|tools|memory
-  sn-cli profiles
-  sn-cli config choices|validate
-  sn-cli config command -c <config> [--json]
-  sn-cli doctor [--json]
-  sn-cli doctor daemon --json
-  sn-cli daemon start|status|stop|restart
-  sn-cli update [--check|--dry-run|--version VERSION]
-  sn-cli version
+  sn-cli <profile> -- [raw-cli-args...]
 
-Legacy aliases:
-  providers -> profiles
-  upgrade -> update
+Namespaces:
+  sn-cli run list|show|logs|result|watch|cancel|reconcile
+  sn-cli session run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
+  sn-cli profile list|show|validate|command
+  sn-cli system doctor|start|status|stop|restart|update
+  sn-cli loop run|list|show|logs|cancel
+  sn-cli skill list|show|run
+  sn-cli tool list|show|call
+  sn-cli memory list|recall|add|remove|promote
+
+Global flags:
+  -h, --help
+  --version
+
+Execution:
+  <profile> prompt   direct one-shot; no Run or Session record
+  session run       synchronous recorded execution
+  session submit    asynchronous recorded execution
 
 Installed binary: ~/.sn/bin/sn-cli
 Configuration:    ~/.sn/configs`)
 }
 
 func printUpdateHelp() {
-	fmt.Println(`sn-cli update - check and upgrade sn-cli
+	fmt.Println(`sn-cli system update - check and upgrade sn-cli
 
 Usage:
-  sn-cli update --check
-  sn-cli update --dry-run
-  sn-cli update [--version VERSION]
+  sn-cli system update --check
+  sn-cli system update --dry-run
+  sn-cli system update [--version VERSION]
 
 Options:
   --check             Check remote version without upgrading.
@@ -497,12 +362,4 @@ func printJSON(value any) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
-}
-
-func cloneAnyMap(input map[string]any) map[string]any {
-	out := make(map[string]any, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
-	return out
 }

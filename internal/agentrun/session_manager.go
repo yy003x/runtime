@@ -129,10 +129,12 @@ func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile p
 	if encoded, err := json.Marshal(profile.Raw); err == nil {
 		manifest.ConfigDigest = digestBytes(encoded)
 	}
-	skillManager := capability.NewSkillManager()
-	if m.service.paths.SkillsDir != "" {
-		skillManager.RegisterDir(m.service.paths.SkillsDir)
-	}
+	memoryFile, candidateFile := m.MemoryPaths(sessionID)
+	registry := capability.NewRegistry(capability.RegistryConfig{
+		SkillsDir: m.service.paths.SkillsDir, ToolsDir: m.service.paths.ToolsDir,
+		MemoryFile: memoryFile, MemoryCandidatesFile: candidateFile,
+	})
+	skillManager := registry.Skills
 	selected := map[string]capability.Skill{}
 	if profile.API != nil && profile.API.Runtime != nil {
 		for _, name := range profile.API.Runtime.Skills {
@@ -158,10 +160,7 @@ func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile p
 	sort.Slice(manifest.Skills, func(i, j int) bool { return manifest.Skills[i].ID < manifest.Skills[j].ID })
 	loadsLocalTools := profile.Type == provider.TypeNative || profile.Type == provider.TypeAPI && profile.API != nil && profile.API.Runtime != nil && profile.API.Runtime.Enabled
 	if loadsLocalTools {
-		toolManager := capability.NewToolManager()
-		if m.service.paths.ToolsDir != "" {
-			toolManager.RegisterDir(m.service.paths.ToolsDir)
-		}
+		toolManager := registry.Tools
 		for _, tool := range toolManager.Schemas() {
 			if tool.Kind == "external" || !contextToolAllowed(tool.Name, tool.Capability, allowed, forbidden) {
 				continue
@@ -171,8 +170,7 @@ func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile p
 		}
 	}
 	if profile.API != nil && profile.API.Runtime != nil && profile.API.Runtime.Memory != nil && profile.API.Runtime.Memory.Enabled {
-		memoryFile, _ := m.MemoryPaths(sessionID)
-		memory, err := capability.OpenMemory(memoryFile)
+		memory, err := registry.Memory()
 		if err == nil {
 			for _, item := range memory.Recall(prompt, "", profile.API.Runtime.Memory.TopK) {
 				manifest.MemoryReads = append(manifest.MemoryReads, ContextMemoryRead{ID: item.ID, Type: item.Type, Digest: digestBytes([]byte(item.Content)), Source: item.Source})
@@ -255,19 +253,10 @@ func DecideRecordPolicy(source, runType, executionKind, explicitSessionID, recor
 	if decision.Retention == "" {
 		decision.Retention = RetentionStandard
 	}
-	if executionKind == ExecutionCLIDirect {
-		decision.CaptureQuality = CaptureMetadataOnly
-		if recordMode == RecordFull {
-			return RecordDecision{}, fmt.Errorf("direct CLI does not support record_mode=full; use metadata or tmux transcript mode")
-		}
-		if recordMode == "" {
-			decision.RecordMode = RecordMetadata
-		}
-	}
-	if executionKind == ExecutionTmux {
+	if executionKind == ExecutionTmux || executionKind == ExecutionTerminal {
 		decision.CaptureQuality = CaptureTranscriptOnly
 	}
-	if runType == RunTask && explicitSessionID == "" && source != "http" && source != "cli.profile" {
+	if runType == RunTask && explicitSessionID == "" && source != "http" {
 		decision.Retention = RetentionEphemeral
 		decision.Reason = "one-shot task"
 	}
@@ -293,27 +282,24 @@ func oneOf(value string, allowed ...string) bool {
 }
 
 func sessionIDForRun(runID string) string {
-	parts := strings.SplitN(runID, "-", 2)
-	if len(parts) == 2 {
-		return "session-" + parts[1]
-	}
-	return "session-" + runID
+	return relatedID("session", runID)
 }
 
 func turnIDForRun(runID string) string {
-	parts := strings.SplitN(runID, "-", 2)
-	if len(parts) == 2 {
-		return "turn-" + parts[1]
-	}
-	return "turn-" + runID
+	return relatedID("turn", runID)
 }
 
 func executionIDForRun(runID string) string {
-	parts := strings.SplitN(runID, "-", 2)
-	if len(parts) == 2 {
-		return "execution-" + parts[1]
+	return relatedID("execution", runID)
+}
+
+func relatedID(kind, runID string) string {
+	candidate := kind + "-" + runID
+	if len(candidate) <= 128 {
+		return candidate
 	}
-	return "execution-" + runID
+	digest := sha256.Sum256([]byte(runID))
+	return fmt.Sprintf("%s-%x", kind, digest[:16])
 }
 
 func digestFile(path string) (string, error) {
@@ -354,70 +340,17 @@ func (m *SessionManager) ImportLegacyMemory() error {
 	return os.WriteFile(m.service.paths.MemoryFile, data, 0o600)
 }
 
-func (m *SessionManager) BeginDirectExecution(profile provider.Config, projectID, cwd string, rawArgCount int) (SessionRecord, ExecutionRecord, error) {
-	decision, err := DecideRecordPolicy("cli.profile", RunTask, ExecutionCLIDirect, "", "", "")
-	if err != nil {
-		return SessionRecord{}, ExecutionRecord{}, err
-	}
-	return m.BeginDirectExecutionInSession(profile, "", projectID, cwd, rawArgCount, decision)
-}
-
-func (m *SessionManager) BeginDirectExecutionInSession(profile provider.Config, sessionID, projectID, cwd string, rawArgCount int, decision RecordDecision) (SessionRecord, ExecutionRecord, error) {
-	if decision.RecordMode == RecordOff {
-		return SessionRecord{}, ExecutionRecord{}, fmt.Errorf("direct Session record_mode cannot be off")
-	}
-	if sessionID == "" {
-		sessionID = newRunID(RunSession)
-	}
-	if _, err := m.EnsureSession(sessionID, projectID, cwd, profile.ID+" interactive", decision); err != nil {
-		return SessionRecord{}, ExecutionRecord{}, err
-	}
-	record, err := m.store.ConfigureSession(sessionID, "cli", profile.ID)
-	if err != nil {
-		return SessionRecord{}, ExecutionRecord{}, err
-	}
-	execution := ExecutionRecord{ExecutionID: executionIDForRun(newRunID(RunTask)), Kind: ExecutionCLIDirect, Profile: profile.ID,
-		Provider: profile.Transport(), State: StateRunning, CaptureQuality: decision.CaptureQuality}
-	if err := m.store.UpsertExecution(sessionID, execution); err != nil {
-		return SessionRecord{}, ExecutionRecord{}, err
-	}
-	if err := m.store.AppendEvent(sessionID, SessionEvent{ExecutionID: execution.ExecutionID, Type: "execution.started",
-		Data: map[string]any{"kind": ExecutionCLIDirect, "profile": profile.ID, "raw_arg_count": rawArgCount}}); err != nil {
-		return SessionRecord{}, ExecutionRecord{}, err
-	}
-	return record, execution, nil
-}
-
 func sessionRuntimeName(executionKind string, profile provider.Config) string {
 	if executionKind == ExecutionTmux {
 		return "tmux"
+	}
+	if executionKind == ExecutionTerminal {
+		return "terminal"
 	}
 	if profile.Type == provider.TypeCLI {
 		return "cli"
 	}
 	return "api"
-}
-
-func (m *SessionManager) CompleteDirectExecution(sessionID string, execution ExecutionRecord, exitCode int, cause error) error {
-	state := StateDone
-	failure := ""
-	if cause != nil || exitCode != 0 {
-		state = StateFailed
-		if cause != nil {
-			failure = cause.Error()
-		} else {
-			failure = fmt.Sprintf("exit code %d", exitCode)
-		}
-	}
-	execution.State = state
-	if err := m.store.UpsertExecution(sessionID, execution); err != nil {
-		return err
-	}
-	if err := m.store.AppendEvent(sessionID, SessionEvent{ExecutionID: execution.ExecutionID, Type: "execution." + state,
-		Data: map[string]any{"exit_code": exitCode, "failure_reason": failure}}); err != nil {
-		return err
-	}
-	return m.store.UpdateSessionState(sessionID, SessionStateIdle, failure)
 }
 
 func requestModel(request Request, profile provider.Config) string {

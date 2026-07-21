@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
+func TestLoadDirExpandsPresetsAsCanonicalProfiles(t *testing.T) {
 	dir := t.TempDir()
 	writeConfig(t, dir, "cx.json", `{
   "type":"cli",
@@ -17,10 +17,10 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
     "driver":"codex",
     "executor":"command",
     "command":{"binary":"codex","args":["exec"],"model":"gpt-base","env_unset":["BASE_DROP"]},
-    "runtime":{"prompt_delivery":"stdin","result_contract":"required","override_policy":{"allow":["model","images"]}}
+    "runtime":{"prompt_delivery":"stdin","override_policy":{"allow":["model","images"]}}
   },
   "presets":{
-    "cx-fast":{"aliases":["codex-default"],"overrides":{"model":"gpt-fast"}},
+    "cx-fast":{"overrides":{"model":"gpt-fast"}},
     "cx-image":{"cli":{"command":{"args_append":["--color","never"],"env_unset_append":["CHILD_DROP"]}}}
   }
 }`)
@@ -41,19 +41,19 @@ func TestLoadDirExpandsPresetsAndAliases(t *testing.T) {
 	if got := strings.Join(profiles["cx-image"].CLI.Command.EnvUnset, " "); got != "BASE_DROP CHILD_DROP" {
 		t.Fatalf("preset env_unset=%q", got)
 	}
-	resolved, ok := Resolve(profiles, "codex-default")
+	resolved, ok := Resolve(profiles, "cx-fast")
 	if !ok || resolved.ID != "cx-fast" {
-		t.Fatalf("alias resolution=%#v ok=%v", resolved, ok)
+		t.Fatalf("preset resolution=%#v ok=%v", resolved, ok)
 	}
 }
 
 func TestReservedCommandsReflectCurrentCLI(t *testing.T) {
-	for _, command := range []string{"clean", "update", "profiles", "providers", "upgrade", "runs"} {
+	for _, command := range []string{"run", "session", "profile", "system", "loop", "skill", "tool", "memory"} {
 		if _, ok := ReservedCommands[command]; !ok {
 			t.Fatalf("%s must be reserved", command)
 		}
 	}
-	for _, removed := range []string{"prompt", "prune"} {
+	for _, removed := range []string{"task", "turn", "runs", "history", "config", "profiles", "providers", "upgrade", "clean", "capabilities", "tools"} {
 		if _, ok := ReservedCommands[removed]; ok {
 			t.Fatalf("removed command %q is still reserved", removed)
 		}
@@ -65,8 +65,10 @@ func TestLoadDirRejectsUnknownKeysAtEveryLevel(t *testing.T) {
 		"root":            `{"type":"api","typo":true,"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}"}}`,
 		"api":             `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}","modle":"typo"}}`,
 		"old-api-key-env": `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key_env":"K"}}`,
+		"legacy-alias":    `{"type":"api","aliases":["shortcut"],"api":{"protocol":"openai","base_url":"https://example.test","model":"m","api_key":"${K}"}}`,
 		"command":         `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":"","unknown":1},"runtime":{}}}`,
 		"preset":          `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{}},"presets":{"child":{"cli":{"runtime":{"unknown":true}}}}}`,
+		"result-contract": `{"type":"cli","cli":{"executor":"command","command":{"binary":"x","args":[],"model":""},"runtime":{"result_contract":"required"}}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -92,7 +94,7 @@ func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
     "executor":"tmux",
     "command":{"binary":"claude","args":[],"model":""},
     "tmux":{"session_name":"agent"},
-    "runtime":{"prompt_delivery":"paste","result_contract":"optional"}
+    "runtime":{"prompt_delivery":"paste"}
   }
 	}`)
 	writeConfig(t, dir, "native.json", `{
@@ -110,7 +112,7 @@ func TestLoadDirAcceptsAPIAndTmuxAndNativeProfiles(t *testing.T) {
 	if profiles["tmux"].Transport() != "tmux" {
 		t.Fatalf("tmux transport=%q", profiles["tmux"].Transport())
 	}
-	if profiles["native"].Transport() != "native" || profiles["native"].ResultContract() != "none" {
+	if profiles["native"].Transport() != "native" {
 		t.Fatalf("native=%#v", profiles["native"])
 	}
 }

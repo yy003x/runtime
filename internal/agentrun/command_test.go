@@ -20,7 +20,7 @@ func TestCommandLifecycleWithTmux(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-test","session_ready_settle_seconds":0.1},"runtime":{"prompt_delivery":"paste","result_contract":"optional"}}}`
+	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-test","session_ready_settle_seconds":0.1},"runtime":{"prompt_delivery":"paste"}}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-test.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestCommandDeadlineStopsAndCleansTmux(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-deadline","session_ready_settle_seconds":0.05},"runtime":{"prompt_delivery":"paste","result_contract":"optional"}}}`
+	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-deadline","session_ready_settle_seconds":0.05},"runtime":{"prompt_delivery":"paste"}}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-test.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
 	}
 	script := filepath.Join(root, "session.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'argv:%s\\n' \"$*\"\nwhile IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done\n")
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":"` + script + `","args":["base"],"model":""},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"],"result_contract":"optional"}}}`
+	profile := `{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":"` + script + `","args":["base"],"model":""},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"]}}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "shell.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
 	if err != nil || result.ResultKind != "execution_summary" || result.CaptureQuality != CaptureTranscriptOnly {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	view, err := NewSessionManager(service).Store().View(started.RunID)
+	view, err := NewSessionManager(service).Store().View(started.SessionID)
 	if err != nil || len(view.Executions) != 1 || view.Executions[0].ResultRef == nil || view.Executions[0].ResultRef.RunID != started.RunID {
 		t.Fatalf("view=%#v err=%v", view, err)
 	}
@@ -217,7 +217,7 @@ while IFS= read -r line; do
   printf 'reply:%s\n' "$line"
 done
 `)
-	profile := `{"type":"cli","timeout_seconds":5,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-task-test","session_ready_settle_seconds":0.1,"poll_interval_seconds":0.05,"silence_threshold_seconds":0.1},"runtime":{"prompt_delivery":"paste","result_contract":"optional"}}}`
+	profile := `{"type":"cli","timeout_seconds":5,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-task-test","session_ready_settle_seconds":0.1,"poll_interval_seconds":0.05,"silence_threshold_seconds":0.1},"runtime":{"prompt_delivery":"paste"}}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-task.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestTmuxDoneWithoutResultFails(t *testing.T) {
 	}
 	script := filepath.Join(root, "reply.sh")
 	writeExecutable(t, script, "#!/bin/sh\nwhile IFS= read -r line; do : > \"$AGENTRUN_DONE_FILE\"; done\n")
-	profile := `{"type":"cli","timeout_seconds":5,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-task-missing","session_ready_settle_seconds":0.1,"poll_interval_seconds":0.05},"runtime":{"prompt_delivery":"paste","result_contract":"optional"}}}`
+	profile := `{"type":"cli","timeout_seconds":5,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-task-missing","session_ready_settle_seconds":0.1,"poll_interval_seconds":0.05},"runtime":{"prompt_delivery":"paste"}}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-task.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestCancelTmuxRunCleansDaemonRegistry(t *testing.T) {
 	}
 	script := filepath.Join(root, "wait.sh")
 	writeExecutable(t, script, "#!/bin/sh\nwhile IFS= read -r line; do sleep 30; done\n")
-	profile := `{"type":"cli","timeout_seconds":30,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-cancel","session_ready_settle_seconds":0.05,"poll_interval_seconds":0.05},"runtime":{"prompt_delivery":"paste","result_contract":"optional"}}}`
+	profile := `{"type":"cli","timeout_seconds":30,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-cancel","session_ready_settle_seconds":0.05,"poll_interval_seconds":0.05},"runtime":{"prompt_delivery":"paste"}}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-cancel.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -412,7 +412,8 @@ func (s *Service) nextLoopAction(ctx context.Context, request LoopRequest, statu
 
 func (s *Service) executeLoopAction(ctx context.Context, request LoopRequest, action Action) ExecutionResult {
 	if action.Type == "tool" {
-		manager := capability.NewToolManager()
+		registry := capability.NewRegistry(capability.RegistryConfig{SkillsDir: s.paths.SkillsDir, ToolsDir: s.paths.ToolsDir})
+		manager := registry.Tools
 		output, err := manager.Call(action.Name, action.Arguments, request.Capabilities, request.Forbidden)
 		if err != nil {
 			return ExecutionResult{Status: "blocked", Output: err.Error()}

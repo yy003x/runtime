@@ -116,6 +116,41 @@ schema:
 	}
 }
 
+func TestRegistryLoadsSkillsToolsAndMemoryFromOneConfig(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "review")
+	toolDir := filepath.Join(root, "tools")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(toolDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: review\ndescription: review\nprompt_template: '{{input}}'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(toolDir, "local.tool.yaml"), []byte("name: local\ndescription: local\nkind: external\nschema:\n  type: object\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(RegistryConfig{SkillsDir: filepath.Join(root, "skills"), ToolsDir: toolDir, MemoryFile: filepath.Join(root, "memory.json")})
+	if _, err := registry.Skills.Get("review"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Tools.Get("local"); err != nil {
+		t.Fatal(err)
+	}
+	memory, err := registry.Memory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Write([]MemoryItem{{ID: "fact", Type: "fact", Content: "registry"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(memory.Recall("registry", "", 1)) != 1 {
+		t.Fatal("registry memory was not loaded")
+	}
+}
+
 func TestWorkspaceManagerIsolatesRunPaths(t *testing.T) {
 	manager, err := NewWorkspaceManager(t.TempDir())
 	if err != nil {

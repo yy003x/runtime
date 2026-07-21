@@ -9,6 +9,7 @@ var (
 	Version   = "0.1.0"
 	Commit    = ""
 	BuildDate = ""
+	Dirty     = "false"
 )
 
 var goVersion = ""
@@ -34,6 +35,10 @@ func init() {
 			if BuildDate == "" {
 				BuildDate = setting.Value
 			}
+		case "vcs.modified":
+			if Dirty == "" || Dirty == "false" {
+				Dirty = setting.Value
+			}
 		}
 	}
 }
@@ -46,11 +51,14 @@ func String() string {
 	if BuildDate != "" {
 		parts = append(parts, "built "+BuildDate)
 	}
+	if Dirty == "true" {
+		parts = append(parts, "dirty")
+	}
 	if goVersion != "" {
 		parts = append(parts, goVersion)
 	}
 	if len(parts) == 0 {
-		return Version
+		return "sn-cli " + Version
 	}
-	return Version + " (" + strings.Join(parts, ", ") + ")"
+	return "sn-cli " + Version + " (" + strings.Join(parts, ", ") + ")"
 }

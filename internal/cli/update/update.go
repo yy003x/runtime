@@ -30,10 +30,11 @@ type Status struct {
 }
 
 type ApplyResult struct {
-	Version       string   `json:"version"`
-	Archive       string   `json:"archive"`
-	Binary        string   `json:"binary"`
-	CopiedConfigs []string `json:"copied_configs"`
+	Version         string   `json:"version"`
+	Archive         string   `json:"archive"`
+	Binary          string   `json:"binary"`
+	CopiedConfigs   []string `json:"copied_configs"`
+	MigratedConfigs []string `json:"migrated_configs"`
 }
 
 type state struct {
@@ -146,6 +147,9 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	if _, err := installbundle.SyncMissing(packagedConfigs, mergedConfigs); err != nil {
 		return ApplyResult{}, err
 	}
+	if _, err := installbundle.MigrateProfileConfigs(mergedConfigs); err != nil {
+		return ApplyResult{}, err
+	}
 	if err := validateBinary(ctx, binary, mergedHome); err != nil {
 		return ApplyResult{}, err
 	}
@@ -153,10 +157,17 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	migrationResult, err := installbundle.MigrateProfileConfigs(cfg.Paths.ConfigDir)
+	if err != nil {
+		return ApplyResult{}, err
+	}
 	if err := installBinary(binary, cfg.Paths.Binary); err != nil {
 		return ApplyResult{}, err
 	}
-	result := ApplyResult{Version: version, Archive: archiveName, Binary: cfg.Paths.Binary, CopiedConfigs: syncResult.Copied}
+	result := ApplyResult{
+		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
+		CopiedConfigs: syncResult.Copied, MigratedConfigs: migrationResult.Changed,
+	}
 	_ = writeState(cfg, Status{CheckedAt: time.Now().UTC(), CurrentVersion: version, LatestVersion: version})
 	return result, nil
 }
@@ -233,7 +244,7 @@ func validatePayload(binary, configs string) error {
 }
 
 func validateBinary(ctx context.Context, binary, home string) error {
-	command := exec.CommandContext(ctx, binary, "profiles")
+	command := exec.CommandContext(ctx, binary, "profile", "list")
 	command.Env = replaceEnv(os.Environ(), "SN_CLI_HOME", home)
 	output, err := command.CombinedOutput()
 	if err != nil {

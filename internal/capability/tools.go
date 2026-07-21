@@ -87,6 +87,14 @@ func (m *ToolManager) Schemas() []Tool {
 	return out
 }
 
+func (m *ToolManager) Get(name string) (Tool, error) {
+	tool, ok := m.tools[name]
+	if !ok {
+		return Tool{}, fmt.Errorf("未注册工具: %s", name)
+	}
+	return tool, nil
+}
+
 func (m *ToolManager) Doctor() map[string]any {
 	return map[string]any{"ok": true, "loaded": len(m.tools), "errors": m.errors}
 }
@@ -108,7 +116,7 @@ func (m *ToolManager) Call(name string, args map[string]any, capabilities, forbi
 		}
 	}
 	if tool.Kind == "external" {
-		return nil, fmt.Errorf("工具 %s 是 external，请使用 describe-external", name)
+		return nil, fmt.Errorf("工具 %s 是 external，不能通过 tool call 在进程内执行", name)
 	}
 	return args, nil
 }

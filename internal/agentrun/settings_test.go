@@ -11,7 +11,7 @@ func TestNewLoadsRuntimeSettings(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte("runs_dir: ignored/legacy\ndefault_project: demo\ndefault_profile: fake\nmax_concurrency: 2\nmax_queue: 12\nqueue_timeout_seconds: 45\nprovider_config_dir: ignored/legacy\n")
+	data := []byte("runs_dir: ignored/legacy\ndefault_project: demo\ndefault_profile: fake\nmax_concurrency: 2\nmax_queue: 12\nqueue_timeout_seconds: 45\nsession:\n  default_carrier: terminal\n  terminal:\n    driver: iterm2\nprovider_config_dir: ignored/legacy\n")
 	if err := os.WriteFile(filepath.Join(root, "configs", "runtime.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -21,6 +21,29 @@ func TestNewLoadsRuntimeSettings(t *testing.T) {
 	}
 	if service.DefaultProject != "demo" || service.DefaultProfile != "fake" || service.MaxConcurrency != 2 || service.MaxQueue != 12 || service.QueueTimeout != 45 {
 		t.Fatalf("service settings: %#v", service)
+	}
+	if service.DefaultCarrier != "terminal" || service.TerminalDriver != "iterm2" {
+		t.Fatalf("carrier settings: %#v", service)
+	}
+}
+
+func TestRuntimeSettingsRejectUnknownCarrierAndTerminalDriver(t *testing.T) {
+	for name, body := range map[string]string{
+		"carrier": "session:\n  default_carrier: screen\n",
+		"driver":  "session:\n  terminal:\n    driver: auto\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "configs", "runtime.yaml"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := New(root).Profiles(); err == nil {
+				t.Fatal("invalid carrier settings were accepted")
+			}
+		})
 	}
 }
 

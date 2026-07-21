@@ -21,6 +21,7 @@ var featureVersions = map[string]int{
 	"artifact_durability": 1,
 	"async_submit":        1,
 	"durable_queue":       1,
+	"run_follow":          1,
 	"run_list":            1,
 	"run_reconcile":       1,
 }
@@ -161,6 +162,9 @@ func (s *Service) Submit(ctx context.Context, options RunOptions) (RunSummary, e
 	if err := validateRunID(options.RunID); err != nil {
 		return RunSummary{}, err
 	}
+	if options.CreateSession && options.SessionID == "" {
+		options.SessionID = sessionIDForRun(options.RunID)
+	}
 	if options.Profile == "" {
 		options.Profile = s.DefaultProfile
 	}
@@ -219,6 +223,27 @@ func (s *Service) Submit(ctx context.Context, options RunOptions) (RunSummary, e
 	})
 	if err != nil {
 		return RunSummary{}, err
+	}
+	if options.CreateSession {
+		decision, decisionErr := DecideRecordPolicy(options.Caller, options.RunType, options.ExecutionKind,
+			options.SessionID, options.RecordMode, options.Retention)
+		if decisionErr != nil {
+			_ = s.removeQueueEntry(entry.RunType, entry.RunID)
+			return RunSummary{}, decisionErr
+		}
+		if decision.RecordMode == RecordOff {
+			_ = s.removeQueueEntry(entry.RunType, entry.RunID)
+			return RunSummary{}, fmt.Errorf("session submit does not allow record_mode=off")
+		}
+		cwd, cwdErr := resolveCWD(options.CWD)
+		if cwdErr != nil {
+			_ = s.removeQueueEntry(entry.RunType, entry.RunID)
+			return RunSummary{}, cwdErr
+		}
+		if _, sessionErr := NewSessionManager(s).EnsureSession(options.SessionID, options.ProjectID, cwd, options.Prompt, decision); sessionErr != nil {
+			_ = s.removeQueueEntry(entry.RunType, entry.RunID)
+			return RunSummary{}, sessionErr
+		}
 	}
 	if queueInlineMode() {
 		return s.executeInlineQueued(ctx, entry)

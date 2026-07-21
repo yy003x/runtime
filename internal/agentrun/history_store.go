@@ -308,8 +308,23 @@ func (s *SessionStore) UpsertExecution(sessionID string, execution ExecutionReco
 			if execution.CaptureQuality == "" {
 				execution.CaptureQuality = existing.CaptureQuality
 			}
-			if execution.TmuxSession == "" {
-				execution.TmuxSession = existing.TmuxSession
+			if execution.Carrier == "" {
+				execution.Carrier = existing.Carrier
+			}
+			if execution.CarrierID == "" {
+				execution.CarrierID = existing.CarrierID
+			}
+			if execution.CWD == "" {
+				execution.CWD = existing.CWD
+			}
+			if execution.ProcessID == 0 {
+				execution.ProcessID = existing.ProcessID
+			}
+			if execution.RawArgCount == 0 {
+				execution.RawArgCount = existing.RawArgCount
+			}
+			if execution.TranscriptRef == "" {
+				execution.TranscriptRef = existing.TranscriptRef
 			}
 			if execution.ResultRef == nil {
 				execution.ResultRef = existing.ResultRef

@@ -1,8 +1,14 @@
 package agentrun
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -207,6 +213,143 @@ func TestWaitCancelsQueuedRunWithContext(t *testing.T) {
 	status, statusErr := service.Status(entry.RunType, entry.RunID)
 	if statusErr != nil || status.State != StateCancelled {
 		t.Fatalf("status=%#v err=%v", status, statusErr)
+	}
+}
+
+func TestFollowStreamsBeforeTerminalAndDrainsLastChunk(t *testing.T) {
+	service := New(t.TempDir())
+	runID := "task-20260721-180000-follow"
+	paths, err := RunPaths(service.RunsDir, RunTask, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	request := Request{SchemaVersion: 1, RunID: runID, RunType: RunTask, Provider: "cli", CreatedAt: now, UpdatedAt: now}
+	if err := service.store.WriteRequest(paths, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.store.WriteStatus(paths, request, StateRunning, "", "running", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.OutputLog, []byte("argv=[\"provider\" \"secret-arg\"]\nrunning\n"+outputStreamMarker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recorder := newFollowRecorder()
+	type followResult struct {
+		summary RunSummary
+		err     error
+	}
+	finished := make(chan followResult, 1)
+	go func() {
+		summary, followErr := service.Follow(context.Background(), RunTask, runID, recorder)
+		finished <- followResult{summary: summary, err: followErr}
+	}()
+
+	appendFile(t, paths.OutputLog, "[stderr] first chunk\n")
+	select {
+	case <-recorder.wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Provider chunk was not followed before terminal state")
+	}
+	if got := recorder.String(); !strings.Contains(got, "first chunk") || strings.Contains(got, "secret-arg") {
+		t.Fatalf("followed output=%q", got)
+	}
+	appendFile(t, paths.OutputLog, "[stdout] last chunk")
+	if _, err := service.store.WriteStatus(paths, request, StateDone, "", "done", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-finished:
+		if result.err != nil || result.summary.State != StateDone {
+			t.Fatalf("summary=%#v err=%v", result.summary, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Follow did not return after terminal state")
+	}
+	if got := recorder.String(); strings.Count(got, "first chunk") != 1 || strings.Count(got, "last chunk") != 1 {
+		t.Fatalf("followed output=%q", got)
+	}
+}
+
+func TestFollowWriterFailureDetachesWithoutCancellingRun(t *testing.T) {
+	service := New(t.TempDir())
+	runID := "task-20260721-180001-detach"
+	paths, err := RunPaths(service.RunsDir, RunTask, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	request := Request{SchemaVersion: 1, RunID: runID, RunType: RunTask, Provider: "cli", CreatedAt: now, UpdatedAt: now}
+	if err := service.store.WriteRequest(paths, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.store.WriteStatus(paths, request, StateRunning, "", "running", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.OutputLog, []byte("running\n"+outputStreamMarker+"[stdout] hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Follow(context.Background(), RunTask, runID, failingWriter{})
+	if err == nil || !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("err=%v", err)
+	}
+	status, statusErr := service.Status(RunTask, runID)
+	if statusErr != nil || status.State != StateRunning {
+		t.Fatalf("status=%#v err=%v", status, statusErr)
+	}
+}
+
+type followRecorder struct {
+	mu    sync.Mutex
+	data  bytes.Buffer
+	wrote chan struct{}
+}
+
+func newFollowRecorder() *followRecorder {
+	return &followRecorder{wrote: make(chan struct{}, 8)}
+}
+
+func (r *followRecorder) Write(value []byte) (int, error) {
+	r.mu.Lock()
+	written, err := r.data.Write(value)
+	r.mu.Unlock()
+	select {
+	case r.wrote <- struct{}{}:
+	default:
+	}
+	return written, err
+}
+
+func (r *followRecorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.data.String()
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func appendFile(t *testing.T, path, value string) {
+	t.Helper()
+	file, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(value); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -26,8 +26,8 @@ const (
 const (
 	ExecutionAPI        = "api"
 	ExecutionCLIManaged = "cli_managed"
-	ExecutionCLIDirect  = "cli_direct"
 	ExecutionTmux       = "tmux"
+	ExecutionTerminal   = "terminal"
 )
 
 const TurnStateSubmitted = "submitted"
@@ -105,11 +105,16 @@ type ExecutionRecord struct {
 	ExecutionID    string     `json:"execution_id"`
 	SessionID      string     `json:"session_id"`
 	Kind           string     `json:"kind"`
+	Carrier        string     `json:"carrier,omitempty"`
+	CarrierID      string     `json:"carrier_id,omitempty"`
 	Profile        string     `json:"profile,omitempty"`
 	Provider       string     `json:"provider,omitempty"`
 	State          string     `json:"state"`
 	CaptureQuality string     `json:"capture_quality"`
-	TmuxSession    string     `json:"tmux_session,omitempty"`
+	CWD            string     `json:"cwd,omitempty"`
+	ProcessID      int        `json:"process_id,omitempty"`
+	RawArgCount    int        `json:"raw_arg_count,omitempty"`
+	TranscriptRef  string     `json:"transcript_ref,omitempty"`
 	RunIDs         []string   `json:"run_ids,omitempty"`
 	TurnIDs        []string   `json:"turn_ids,omitempty"`
 	ResultRef      *ResultRef `json:"result_ref,omitempty"`

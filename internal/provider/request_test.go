@@ -15,7 +15,7 @@ func TestPrepareCodexTypedOverridesReplaceDefaults(t *testing.T) {
 	cfg := Config{ID: "cx", Type: TypeCLI, CLI: &CLIConfig{
 		Driver: "codex", Executor: ExecutorCommand,
 		Command: CommandConfig{Binary: "codex", Args: []string{"-c", "sandbox_mode=read-only", "-c", "model_reasoning_effort=low"}, Model: "base"},
-		Runtime: CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"exec"}, ResultContract: "required", OverridePolicy: OverridePolicy{Allow: []string{"model", "sandbox_mode", "reasoning_effort", "images"}}},
+		Runtime: CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"exec"}, OverridePolicy: OverridePolicy{Allow: []string{"model", "sandbox_mode", "reasoning_effort", "images"}}},
 	}}
 	prepared, err := Prepare(cfg, "hello", map[string]any{
 		"model": "next", "sandbox_mode": "danger-full-access", "reasoning_effort": "high", "images": []string{"a.png"},
@@ -32,7 +32,7 @@ func TestPrepareCodexTypedOverridesReplaceDefaults(t *testing.T) {
 	}
 }
 
-func TestPrepareCLIPlacesRawArgsBeforeManagedArgs(t *testing.T) {
+func TestPrepareCLIPlacesRawArgsAfterManagedArgs(t *testing.T) {
 	cfg := Config{ID: "cx", Type: TypeCLI, CLI: &CLIConfig{
 		Driver: "codex", Executor: ExecutorCommand,
 		Command: CommandConfig{Binary: "codex", Args: []string{"--search"}, Model: "configured"},
@@ -42,7 +42,7 @@ func TestPrepareCLIPlacesRawArgsBeforeManagedArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "--search", "--model", "configured", "--skip-git-repo-check", "exec"}
+	want := []string{"codex", "--search", "--model", "configured", "exec", "--skip-git-repo-check"}
 	if !reflect.DeepEqual(prepared.CLI.Argv, want) {
 		t.Fatalf("argv=%#v want=%#v", prepared.CLI.Argv, want)
 	}
@@ -52,7 +52,7 @@ func TestPrepareClaudeTypedOverrides(t *testing.T) {
 	cfg := Config{ID: "cc", Type: TypeCLI, CLI: &CLIConfig{
 		Driver: "claude", Executor: ExecutorCommand,
 		Command: CommandConfig{Binary: "claude", Args: []string{"--permission-mode", "default"}, Model: "opus"},
-		Runtime: CLIRuntime{PromptDelivery: "arg", PromptArgs: []string{"--prompt", "{prompt}"}, ManagedArgs: []string{"-p"}, ResultContract: "required"},
+		Runtime: CLIRuntime{PromptDelivery: "arg", PromptArgs: []string{"--prompt", "{prompt}"}, ManagedArgs: []string{"-p"}},
 	}}
 	prepared, err := Prepare(cfg, "hello", map[string]any{"effort": "high", "permission_mode": "bypassPermissions", "disallowed_tools": []string{"Bash(sudo:*)"}})
 	if err != nil {

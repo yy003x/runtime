@@ -78,6 +78,66 @@ func TestExtractTarGzRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestMigrateProfileConfigsRemovesOnlyObsoleteField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cx.json")
+	mustWrite(t, path, `{
+  "type": "cli",
+  "cli": {
+    "runtime": {
+      "managed_args": ["exec"],
+      "result_contract": "required"
+    }
+  },
+  "presets": {
+    "strict": {
+      "api": {
+        "result_contract": "none",
+        "temperature": 0
+      }
+    }
+  },
+  "extension": {
+    "result_contract": "extension-owned"
+  }
+}`)
+	mustWrite(t, filepath.Join(dir, "notes.yaml"), "result_contract: keep")
+
+	result, err := MigrateProfileConfigs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.Changed, ",") != "cx.json" {
+		t.Fatalf("changed=%v", result.Changed)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "result_contract") != 1 || !strings.Contains(string(data), `"result_contract": "extension-owned"`) || !strings.Contains(string(data), `"managed_args"`) || !strings.Contains(string(data), `"temperature": 0`) {
+		t.Fatalf("migrated config=%s", data)
+	}
+	yamlData, err := os.ReadFile(filepath.Join(dir, "notes.yaml"))
+	if err != nil || string(yamlData) != "result_contract: keep" {
+		t.Fatalf("yaml=%q err=%v", yamlData, err)
+	}
+
+	second, err := MigrateProfileConfigs(dir)
+	if err != nil || len(second.Changed) != 0 {
+		t.Fatalf("second=%v err=%v", second.Changed, err)
+	}
+}
+
+func TestMigrateProfileConfigsRejectsInvalidJSONWithoutChangingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broken.json")
+	mustWrite(t, path, `{"result_contract":"required"} trailing`)
+	if _, err := MigrateProfileConfigs(dir); err == nil {
+		t.Fatal("invalid JSON was accepted")
+	}
+	assertContent(t, path, `{"result_contract":"required"} trailing`)
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

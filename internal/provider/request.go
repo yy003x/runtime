@@ -128,7 +128,6 @@ func prepareCLI(cfg Config, prompt string, overrides map[string]any, rawCLIArgs 
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	args = append(args, rawCLIArgs...)
 	managedArgs, err := resolveConfiguredArgs(cli.Runtime.ManagedArgs)
 	if err != nil {
 		return CLIRequest{}, fmt.Errorf("profile %s: cli.runtime.managed_args: %w", cfg.ID, err)
@@ -149,6 +148,7 @@ func prepareCLI(cfg Config, prompt string, overrides map[string]any, rawCLIArgs 
 	default:
 		return CLIRequest{}, fmt.Errorf("unknown prompt_delivery %q", cli.Runtime.PromptDelivery)
 	}
+	argv = append(argv, rawCLIArgs...)
 	effective["driver"] = driver
 	return CLIRequest{
 		ProfileID:          cfg.ID,

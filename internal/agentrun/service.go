@@ -33,6 +33,8 @@ type Service struct {
 	MaxConcurrency int
 	MaxQueue       int
 	QueueTimeout   int
+	DefaultCarrier string
+	TerminalDriver string
 	HTTPClient     *http.Client
 	store          Store
 	configErr      error
@@ -44,6 +46,8 @@ type runProviderSink struct {
 	request Request
 	status  map[string]any
 	stream  sync.Mutex
+	stdout  bool
+	stderr  bool
 }
 
 func (s *runProviderSink) Stdout(value []byte) error {
@@ -93,12 +97,13 @@ func (s *runProviderSink) appendStream(name string, value []byte) error {
 		return err
 	}
 	defer file.Close()
-	for _, line := range strings.SplitAfter(string(value), "\n") {
-		if line != "" {
-			if _, err := fmt.Fprintf(file, "[%s] %s", name, line); err != nil {
-				return err
-			}
-		}
+	if err := writeStreamRecord(file, name, value); err != nil {
+		return err
+	}
+	if name == "stdout" {
+		s.stdout = true
+	} else if name == "stderr" {
+		s.stderr = true
 	}
 	return nil
 }
@@ -114,6 +119,7 @@ func New(home string) *Service {
 		RunsDir: paths.RunsDir, StateDir: paths.StateDir, paths: paths, DefaultProject: settings.DefaultProject,
 		DefaultProfile: settings.DefaultProfile, MaxConcurrency: settings.MaxConcurrency,
 		MaxQueue: settings.MaxQueue, QueueTimeout: settings.QueueTimeout,
+		DefaultCarrier: settings.Session.DefaultCarrier, TerminalDriver: settings.Session.Terminal.Driver,
 		RuntimeVersion: Version, configErr: err,
 	}
 	return service
@@ -373,7 +379,8 @@ func (s *Service) runImmediate(ctx context.Context, options RunOptions) (RunSumm
 	if profile.Type == provider.TypeCLI && len(options.InjectedMemory) > 0 {
 		providerPrompt = managedMemoryPrompt(options.InjectedMemory, providerPrompt)
 	}
-	if mode == ModeManaged && profile.ResultContract() == "required" {
+	providerResultRequired := mode == ModeManaged && profile.Type == provider.TypeCLI
+	if providerResultRequired {
 		providerPrompt = managedPrompt(prompt, request, paths)
 		if profile.Type == provider.TypeCLI && len(contextMessages) > 0 {
 			providerPrompt = managedSessionPrompt(contextMessages, providerPrompt)
@@ -463,10 +470,13 @@ func (s *Service) runImmediate(ctx context.Context, options RunOptions) (RunSumm
 		providerStatus["effective_options"] = prepared.Native.EffectiveOptions
 		providerStatus["snapshot_file"] = providerRequest.SnapshotFile
 	}
+	if err := initializeOutputLog(paths.OutputLog, prepared); err != nil {
+		return s.fail(paths, request, providerStatus, "output_sync_failed", err)
+	}
 	sink := &runProviderSink{service: s, paths: paths, request: request, status: providerStatus}
 	providerResult, err := selectedProvider.Execute(runCtx, prepared, sink)
 	isTmux := selectedProvider.Kind() == provider.ExecutorTmux
-	if writeErr := writeOutputLog(paths.OutputLog, prepared, providerResult); writeErr != nil {
+	if writeErr := finalizeOutputLog(paths.OutputLog, sink, providerResult); writeErr != nil {
 		return s.fail(paths, request, providerStatus, "output_sync_failed", writeErr)
 	}
 	if current, readErr := s.store.ReadStatus(paths); readErr == nil && current.State == StateCancelled {
@@ -512,7 +522,7 @@ func (s *Service) runImmediate(ctx context.Context, options RunOptions) (RunSumm
 	if validationReason == "schema_invalid" {
 		return s.fail(paths, request, providerStatus, validationReason, fmt.Errorf("result validation failed: %s", validationReason))
 	}
-	if !isTmux && (prepared.API != nil || (providerResult.ExitCode == 0 && (mode == ModeCapture || profile.ResultContract() != "required"))) {
+	if !isTmux && (prepared.API != nil || providerResult.ExitCode == 0 && !providerResultRequired) {
 		text := strings.TrimSpace(providerResult.FinalText)
 		if text == "" {
 			text = captureSummary(providerResult.Stdout)
@@ -804,36 +814,11 @@ func validateInjectedMemory(items []provider.InjectedMemory) ([]ContextMemoryRea
 
 func captureQualityForExecution(kind string) string {
 	switch kind {
-	case ExecutionCLIDirect:
-		return CaptureMetadataOnly
 	case ExecutionTmux:
 		return CaptureTranscriptOnly
 	default:
 		return CaptureStructured
 	}
-}
-
-func writeOutputLog(path string, prepared provider.PreparedRequest, result provider.Result) error {
-	var builder strings.Builder
-	if prepared.CLI != nil {
-		fmt.Fprintf(&builder, "argv=%q\nrunning\n--- stream ---\n", prepared.CLI.Argv)
-	}
-	if result.Stdout != "" {
-		for _, line := range strings.SplitAfter(result.Stdout, "\n") {
-			if line != "" {
-				builder.WriteString("[stdout] " + line)
-			}
-		}
-	}
-	if result.Stderr != "" {
-		for _, line := range strings.SplitAfter(result.Stderr, "\n") {
-			if line != "" {
-				builder.WriteString("[stderr] " + line)
-			}
-		}
-	}
-	fmt.Fprintf(&builder, "returncode=%d\n", result.ExitCode)
-	return os.WriteFile(path, []byte(builder.String()), 0o644)
 }
 
 func resolveCWD(value string) (string, error) {

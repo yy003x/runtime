@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-runtime/internal/provider"
@@ -13,6 +14,21 @@ func newTestSessionStore(t *testing.T) *SessionStore {
 	t.Helper()
 	root := t.TempDir()
 	return NewSessionStore(filepath.Join(root, "sessions"), filepath.Join(root, "history"), filepath.Join(root, "state", "sessions"))
+}
+
+func TestRelatedIDsStayIndependentAndValid(t *testing.T) {
+	runID := strings.Repeat("a", 128)
+	ids := []string{sessionIDForRun(runID), turnIDForRun(runID), executionIDForRun(runID)}
+	seen := map[string]bool{runID: true}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("related ID was reused: %s", id)
+		}
+		seen[id] = true
+		if err := validateRunID(id); err != nil {
+			t.Fatalf("invalid related ID %q: %v", id, err)
+		}
+	}
 }
 
 func TestSessionStorePersistsSessionTurnAttemptAndResultRef(t *testing.T) {
@@ -188,7 +204,7 @@ func TestSessionStoreExecutionUpdatePreservesRuntimeIdentity(t *testing.T) {
 	}
 	executionID := "execution-20260717-120004-execution"
 	if err := store.UpsertExecution(sessionID, ExecutionRecord{ExecutionID: executionID, Kind: ExecutionTmux,
-		Profile: "cx", Provider: "cli", State: StateRunning, CaptureQuality: CaptureTranscriptOnly, TmuxSession: "sn-agent-test"}); err != nil {
+		Carrier: "tmux", CarrierID: "sn-agent-test", Profile: "cx", Provider: "cli", State: StateRunning, CaptureQuality: CaptureTranscriptOnly}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpsertExecution(sessionID, ExecutionRecord{ExecutionID: executionID, State: StateDone}); err != nil {
@@ -199,7 +215,7 @@ func TestSessionStoreExecutionUpdatePreservesRuntimeIdentity(t *testing.T) {
 		t.Fatalf("view=%#v err=%v", view, err)
 	}
 	execution := view.Executions[0]
-	if execution.Kind != ExecutionTmux || execution.Profile != "cx" || execution.TmuxSession != "sn-agent-test" || execution.CaptureQuality != CaptureTranscriptOnly {
+	if execution.Kind != ExecutionTmux || execution.Profile != "cx" || execution.CarrierID != "sn-agent-test" || execution.CaptureQuality != CaptureTranscriptOnly {
 		t.Fatalf("execution identity was lost: %#v", execution)
 	}
 }
@@ -247,43 +263,13 @@ func TestSessionStoreBlockedRunCanResumeWithoutDuplicateCompletion(t *testing.T)
 }
 
 func TestDecideRecordPolicy(t *testing.T) {
-	direct, err := DecideRecordPolicy("cli.profile", RunTask, ExecutionCLIDirect, "", "", "")
-	if err != nil || direct.RecordMode != RecordMetadata || direct.CaptureQuality != CaptureMetadataOnly {
-		t.Fatalf("direct=%#v err=%v", direct, err)
-	}
-	if _, err := DecideRecordPolicy("cli.session", RunTask, ExecutionCLIDirect, "session-explicit", RecordFull, RetentionStandard); err == nil {
-		t.Fatal("direct CLI full recording must be rejected because no transcript is captured")
-	}
 	oneShot, err := DecideRecordPolicy("cli.task", RunTask, ExecutionCLIManaged, "", "", "")
 	if err != nil || oneShot.Retention != RetentionEphemeral {
 		t.Fatalf("one-shot=%#v err=%v", oneShot, err)
 	}
-	managed, err := DecideRecordPolicy("cli.profile", RunTask, ExecutionCLIManaged, "", "", "")
+	managed, err := DecideRecordPolicy("cli.session.run", RunTurn, ExecutionCLIManaged, "session-explicit", "", "")
 	if err != nil || managed.Retention != RetentionStandard || managed.RecordMode != RecordFull {
 		t.Fatalf("managed=%#v err=%v", managed, err)
-	}
-}
-
-func TestDirectExecutionCreatesMetadataOnlySession(t *testing.T) {
-	home := t.TempDir()
-	service := New(home)
-	manager := NewSessionManager(service)
-	record, execution, err := manager.BeginDirectExecution(provider.Config{ID: "cx", Type: provider.TypeCLI}, "project", home, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.RecordMode != RecordMetadata || record.CaptureQuality != CaptureMetadataOnly || record.Runtime != "cli" || record.Profile != "cx" || execution.Kind != ExecutionCLIDirect {
-		t.Fatalf("record=%#v execution=%#v", record, execution)
-	}
-	if err := manager.CompleteDirectExecution(record.SessionID, execution, 0, nil); err != nil {
-		t.Fatal(err)
-	}
-	view, err := manager.Store().View(record.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(view.Messages) != 0 || view.Session.State != SessionStateIdle || len(view.Executions) != 1 || view.Executions[0].State != StateDone {
-		t.Fatalf("view=%#v", view)
 	}
 }
 

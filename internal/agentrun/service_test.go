@@ -21,7 +21,7 @@ func TestManagedRunRequiresAndAcceptsResultContract(t *testing.T) {
 printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","summary":"managed ok","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
 printf 'stdout is only a log\n'
 `)
-	writeProfile(t, root, "managed", script, "required")
+	writeProfile(t, root, "managed", script)
 	service := New(root)
 	result, err := service.Run(context.Background(), RunOptions{Profile: "managed", Prompt: "do it", ExecutionMode: ModeManaged})
 	if err != nil {
@@ -36,11 +36,43 @@ printf 'stdout is only a log\n'
 	}
 }
 
+func TestManagedOutputLogRemainsAppendOnlyWithoutDuplicatingStream(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "output.log")
+	prepared := provider.PreparedRequest{CLI: &provider.CLIRequest{Argv: []string{"provider", "managed"}}}
+	if err := initializeOutputLog(path, prepared); err != nil {
+		t.Fatal(err)
+	}
+	sink := &runProviderSink{paths: Paths{OutputLog: path}}
+	if err := sink.Stdout([]byte("first\n")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeOutputLog(path, sink, provider.Result{Stdout: "first\n", Stderr: "last\n", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if after.Size() < before.Size() || strings.Count(text, "[stdout] first") != 1 || strings.Count(text, "[stderr] last") != 1 || !strings.Contains(text, "[runtime] returncode=0") {
+		t.Fatalf("before=%d after=%d output=%q", before.Size(), after.Size(), text)
+	}
+}
+
 func TestOrdinaryRunDoesNotCreateLogicalSession(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "capture.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'ok\\n'\n")
-	writeProfile(t, root, "capture", script, "optional")
+	writeProfile(t, root, "capture", script)
 	service := New(root)
 	run, err := service.Run(context.Background(), RunOptions{Profile: "capture", Prompt: "hello", ExecutionMode: ModeCapture})
 	if err != nil || run.SessionID != "" || run.TurnID != "" {
@@ -56,7 +88,7 @@ func TestExistingSessionRejectsTurnRetentionOverride(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "capture.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'ok\\n'\n")
-	writeProfile(t, root, "capture", script, "optional")
+	writeProfile(t, root, "capture", script)
 	service := New(root)
 	session, err := NewSessionManager(service).EnsureSession("session-20260717-210000-retention", service.DefaultProject, root, "retention",
 		RecordDecision{RecordMode: RecordFull, Retention: RetentionStandard, CaptureQuality: CaptureStructured})
@@ -73,7 +105,7 @@ func TestSessionContextCrossesProvidersAndFreezesTurnProfile(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "capture.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'cli answer\\n'\n")
-	writeProfile(t, root, "capture", script, "optional")
+	writeProfile(t, root, "capture", script)
 	if err := os.WriteFile(filepath.Join(root, "configs", "native.json"), []byte(`{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["native answer"],"done_after":1}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +159,7 @@ func TestCaptureSynthesizesResultAndRunIDIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "capture.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'capture ok\\n'\n")
-	writeProfile(t, root, "capture", script, "required")
+	writeProfile(t, root, "capture", script)
 	service := New(root)
 	options := RunOptions{RunID: "task-20260713-120000-fixed", Profile: "capture", Prompt: "hello", ExecutionMode: ModeCapture}
 	first, err := service.Run(context.Background(), options)
@@ -150,7 +182,7 @@ func TestManagedRunInjectsSessionContextPathsAndPersistsManifest(t *testing.T) {
 	writeExecutable(t, script, `#!/bin/sh
 printf '%s|%s|%s|%s\n' "$AGENTRUN_SESSION_ID" "$AGENTRUN_TURN_ID" "$SN_RUNTIME_CONTEXT_MANIFEST" "$SN_RUNTIME_MEMORY_CANDIDATES_FILE"
 `)
-	writeProfile(t, root, "context", script, "required")
+	writeProfile(t, root, "context", script)
 	service := New(root)
 	sessionID := "session-20260717-130000-context"
 	result, err := service.Run(context.Background(), RunOptions{
@@ -160,7 +192,8 @@ printf '%s|%s|%s|%s\n' "$AGENTRUN_SESSION_ID" "$AGENTRUN_TURN_ID" "$SN_RUNTIME_C
 	if err != nil || result.State != StateDone {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	if !strings.Contains(result.FinalText, sessionID+"|turn-20260717-130000-context|") || !strings.Contains(result.FinalText, "context-manifest.json") || !strings.Contains(result.FinalText, "memory/candidates.json") {
+	turnID := turnIDForRun("turn-20260717-130000-context")
+	if !strings.Contains(result.FinalText, sessionID+"|"+turnID+"|") || !strings.Contains(result.FinalText, "context-manifest.json") || !strings.Contains(result.FinalText, "memory/candidates.json") {
 		t.Fatalf("runtime environment output=%q", result.FinalText)
 	}
 	view, err := NewSessionManager(service).Store().View(sessionID)
@@ -180,13 +213,16 @@ printf '%s|%s|%s|%s\n' "$AGENTRUN_SESSION_ID" "$AGENTRUN_TURN_ID" "$SN_RUNTIME_C
 	if view.Attempts[0].ResultRef == nil || view.Attempts[0].ResultRef.ResultFile != result.ResultFile {
 		t.Fatalf("attempt=%#v result=%#v", view.Attempts[0], result)
 	}
+	if view.Turns[0].TurnID == view.Attempts[0].RunID || view.Attempts[0].ExecutionID == view.Attempts[0].RunID || view.Turns[0].TurnID == view.Attempts[0].ExecutionID {
+		t.Fatalf("turn, run and execution IDs must be independent: turn=%s run=%s execution=%s", view.Turns[0].TurnID, view.Attempts[0].RunID, view.Attempts[0].ExecutionID)
+	}
 }
 
 func TestForceRunDoesNotReuseStaleResult(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "force.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'first result\\n'\n")
-	writeProfile(t, root, "force", script, "required")
+	writeProfile(t, root, "force", script)
 	service := New(root)
 	runID := "task-20260713-120000-force"
 	first, err := service.Run(context.Background(), RunOptions{RunID: runID, Profile: "force", Prompt: "first", ExecutionMode: ModeCapture})
@@ -204,7 +240,7 @@ func TestManagedRunFailsWithoutRequiredResult(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "missing.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'no result\\n'\n")
-	writeProfile(t, root, "missing", script, "required")
+	writeProfile(t, root, "missing", script)
 	service := New(root)
 	result, err := service.Run(context.Background(), RunOptions{Profile: "missing", Prompt: "hello"})
 	if err == nil {
@@ -217,10 +253,11 @@ func TestManagedRunFailsWithoutRequiredResult(t *testing.T) {
 
 func TestAPIMockSynthesizesResult(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("UNSET_TEST_KEY", "mock-key")
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock-model","api_key_env":"UNSET_TEST_KEY","mock":true}}`
+	profile := `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock-model","api_key":"${UNSET_TEST_KEY}","mock":true}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "mock.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +272,7 @@ func TestInvalidExternalResultIsSchemaInvalid(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "invalid.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf '{\"schema_version\":1}' > \"$AGENTRUN_RESULT_FILE\"\n")
-	writeProfile(t, root, "invalid", script, "required")
+	writeProfile(t, root, "invalid", script)
 	service := New(root)
 	result, err := service.Run(context.Background(), RunOptions{Profile: "invalid", Prompt: "hello"})
 	if err == nil || result.FailureReason != "schema_invalid" {
@@ -247,7 +284,7 @@ func TestRunTimeoutIsClassified(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "slow.sh")
 	writeExecutable(t, script, "#!/bin/sh\nsleep 5\n")
-	writeProfile(t, root, "slow", script, "required")
+	writeProfile(t, root, "slow", script)
 	service := New(root)
 	started := time.Now()
 	result, err := service.Run(context.Background(), RunOptions{Profile: "slow", Prompt: "hello", DeadlineSeconds: 1})
@@ -390,7 +427,7 @@ func waitForState(t *testing.T, service *Service, runType, runID, state string) 
 	t.Fatalf("run %s did not reach state %s", runID, state)
 }
 
-func writeProfile(t *testing.T, root, id, script, contract string) {
+func writeProfile(t *testing.T, root, id, script string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -400,7 +437,7 @@ func writeProfile(t *testing.T, root, id, script, contract string) {
 		"cli": map[string]any{
 			"driver": "generic", "executor": "command",
 			"command": map[string]any{"binary": script, "args": []string{}, "model": ""},
-			"runtime": map[string]any{"prompt_delivery": "stdin", "result_contract": contract},
+			"runtime": map[string]any{"prompt_delivery": "stdin"},
 		},
 	}
 	data, _ := json.Marshal(profile)

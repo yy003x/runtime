@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -22,22 +21,14 @@ const (
 )
 
 var ReservedCommands = map[string]struct{}{
-	"doctor": {}, "profiles": {}, "providers": {}, "config": {}, "capabilities": {},
-	"skills": {}, "tools": {}, "memory": {}, "task": {}, "turn": {}, "runs": {},
-	"loop": {}, "session": {}, "history": {}, "command": {}, "clean": {}, "run": {},
-	"status": {}, "logs": {}, "watch": {}, "cancel": {}, "start": {},
-	"step": {}, "send": {}, "interrupt": {}, "block": {}, "continue": {},
-	"patch-resume": {}, "stop": {}, "attach": {},
-	"choices": {}, "validate": {}, "help": {}, "version": {}, "list": {},
-	"completion": {}, "update": {}, "upgrade": {},
-	"daemon": {},
+	"run": {}, "session": {}, "profile": {}, "system": {}, "loop": {},
+	"skill": {}, "tool": {}, "memory": {}, "help": {}, "version": {},
 }
 
 type Config struct {
 	ID             string          `json:"id"`
 	Type           string          `json:"type"`
 	Label          string          `json:"label"`
-	Aliases        []string        `json:"aliases,omitempty"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
 	CLI            *CLIConfig      `json:"cli,omitempty"`
 	API            *APIConfig      `json:"api,omitempty"`
@@ -122,7 +113,6 @@ type CLIRuntime struct {
 	PromptDelivery string         `json:"prompt_delivery"`
 	PromptArgs     []string       `json:"prompt_args,omitempty"`
 	ManagedArgs    []string       `json:"managed_args,omitempty"`
-	ResultContract string         `json:"result_contract"`
 	OverridePolicy OverridePolicy `json:"override_policy,omitempty"`
 }
 
@@ -135,7 +125,6 @@ type APIConfig struct {
 	Headers        map[string]string `json:"headers,omitempty"`
 	Stream         bool              `json:"stream,omitempty"`
 	Mock           bool              `json:"mock,omitempty"`
-	ResultContract string            `json:"result_contract,omitempty"`
 	OverridePolicy OverridePolicy    `json:"override_policy,omitempty"`
 	Runtime        *APIRuntimeConfig `json:"runtime,omitempty"`
 }
@@ -193,22 +182,6 @@ func (c Config) Transport() string {
 	return TypeCLI
 }
 
-func (c Config) ResultContract() string {
-	if c.Type == TypeNative {
-		return "none"
-	}
-	if c.Type == TypeAPI && c.API != nil {
-		if c.API.ResultContract == "" {
-			return "none"
-		}
-		return c.API.ResultContract
-	}
-	if c.CLI != nil {
-		return c.CLI.Runtime.ResultContract
-	}
-	return ""
-}
-
 func LoadDir(dir string) (map[string]Config, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -247,20 +220,13 @@ func LoadDir(dir string) (map[string]Config, error) {
 	}
 
 	profiles := make(map[string]Config, len(rawProfiles))
-	owners := make(map[string]string)
 	for id, raw := range rawProfiles {
 		cfg, err := normalize(id, raw, sources[id])
 		if err != nil {
 			return nil, err
 		}
-		for _, name := range append([]string{id}, cfg.Aliases...) {
-			if _, reserved := ReservedCommands[name]; reserved {
-				return nil, fmt.Errorf("profile %q 的命令名 %q 与内置命令冲突", id, name)
-			}
-			if owner, exists := owners[name]; exists {
-				return nil, fmt.Errorf("profile command %q is owned by both %q and %q", name, owner, id)
-			}
-			owners[name] = id
+		if _, reserved := ReservedCommands[id]; reserved {
+			return nil, fmt.Errorf("profile %q 的命令名与内置命令冲突", id)
 		}
 		profiles[id] = cfg
 	}
@@ -268,22 +234,8 @@ func LoadDir(dir string) (map[string]Config, error) {
 }
 
 func Resolve(profiles map[string]Config, name string) (Config, bool) {
-	if cfg, ok := profiles[name]; ok {
-		return cfg, true
-	}
-	ids := make([]string, 0, len(profiles))
-	for id := range profiles {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		for _, alias := range profiles[id].Aliases {
-			if alias == name {
-				return profiles[id], true
-			}
-		}
-	}
-	return Config{}, false
+	cfg, ok := profiles[name]
+	return cfg, ok
 }
 
 func readObject(path string) (map[string]any, error) {
@@ -345,9 +297,6 @@ func expandDocument(id string, input map[string]any, source string) (map[string]
 			return nil, err
 		}
 		child := deepMerge(parent, childOverlay)
-		if _, overridesAliases := childOverlay["aliases"]; !overridesAliases {
-			delete(child, "aliases")
-		}
 		if err := applyAppendFields(child, source, presetID); err != nil {
 			return nil, err
 		}
@@ -507,12 +456,6 @@ func validateCLI(cfg *Config, source string) error {
 			return fmt.Errorf("%s: execution.upstreams[%d] 不能为空", source, index)
 		}
 	}
-	if cli.Runtime.ResultContract == "" {
-		cli.Runtime.ResultContract = "optional"
-	}
-	if err := validateResultContract(cli.Runtime.ResultContract, source); err != nil {
-		return err
-	}
 	if cli.Executor == ExecutorCommand {
 		if cli.Tmux != nil {
 			return fmt.Errorf("%s: cli.executor=command 禁止出现 cli.tmux", source)
@@ -566,12 +509,6 @@ func validateAPI(cfg *Config, source string) error {
 	}
 	if _, ok := EnvironmentReferenceName(api.APIKey); !ok {
 		return fmt.Errorf("%s: api.api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符", source)
-	}
-	if api.ResultContract == "" {
-		api.ResultContract = "none"
-	}
-	if err := validateResultContract(api.ResultContract, source); err != nil {
-		return err
 	}
 	if err := validateAPIRuntime(api, source); err != nil {
 		return err
@@ -668,13 +605,6 @@ func validateOverridePolicy(policy OverridePolicy, supported map[string]struct{}
 		if _, ok := supported[name]; !ok {
 			return fmt.Errorf("%s: override field %q is not supported", source, name)
 		}
-	}
-	return nil
-}
-
-func validateResultContract(value, source string) error {
-	if !contains([]string{"none", "optional", "required"}, value) {
-		return fmt.Errorf("%s: 非法 result_contract %q", source, value)
 	}
 	return nil
 }

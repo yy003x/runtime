@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,27 @@ func TestLoopRunAgentRequiresAllowedCapability(t *testing.T) {
 	}
 	status, err = service.LoopStep(context.Background(), status.LoopID)
 	if err != nil || status.Outcome != OutcomeBlocked || !strings.Contains(status.Message, "blocked") {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
+func TestLoopUsesConfiguredCapabilityRegistry(t *testing.T) {
+	root := t.TempDir()
+	toolsDir := filepath.Join(root, "configs", "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := "name: local-loop\ndescription: local loop tool\nkind: external\nschema:\n  type: object\n"
+	if err := os.WriteFile(filepath.Join(toolsDir, "local-loop.tool.yaml"), []byte(tool), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := New(root)
+	status, err := service.LoopStart(LoopStartOptions{Input: "tool", Actions: []Action{{Type: "tool", Name: "local-loop", Arguments: map[string]any{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = service.LoopStep(context.Background(), status.LoopID)
+	if err != nil || status.Outcome != OutcomeBlocked || len(status.Observations) != 1 || !strings.Contains(fmt.Sprint(status.Observations[0].Content), "external") {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }
