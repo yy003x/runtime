@@ -11,8 +11,7 @@
     },
     "runtime": {
       "prompt_delivery": "stdin",
-      "managed_args": ["exec"],
-      "result_contract": "required"
+      "managed_args": ["exec"]
     }
   },
   "presets": {

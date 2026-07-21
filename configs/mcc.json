@@ -34,7 +34,6 @@
     "runtime": {
       "prompt_delivery": "stdin",
       "managed_args": ["-p"],
-      "result_contract": "required",
       "override_policy": {
         "allow": [
           "model",

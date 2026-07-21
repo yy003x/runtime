@@ -1,136 +1,188 @@
 # sn-cli 路由契约
 
-本文是 `sn-cli` 命令语法、profile 分流与参数边界的规范源。入口实现、帮助文案、README 和测试不得与本文冲突。
+本文是 `sn-cli` 命令语法、profile 分流、Session 与 carrier（执行载体）边界的规范源。入口实现、帮助文案、README、架构文档和测试不得与本文冲突。
 
-## 1. 统一语法
+## 1. 命令层级与统一语法
+
+`sn-cli` 最多只有两层命令词：第一层是 namespace 或动态 profile ID，第二层是 action。action 之后只能是业务参数；需要 profile 的 namespace 把 profile 放在 action 后的第一个 positional 参数。
 
 ```text
-sn-cli <namespace> <action> [named-options...] [prompt...] [-- raw-cli-args...]
+sn-cli <profile>
 sn-cli <profile> [prompt...] [-- raw-cli-args...]
+sn-cli <profile> -- [raw-cli-args...]
+sn-cli <namespace> <action> [arguments...] [options...]
 ```
 
-- `prompt` 是唯一允许不带 key 的业务数据，多个 positional token 以空格连接。引号只是 shell 的分组语法，不属于 `sn-cli` 协议。
-- config 统一使用 `-c/--config`。
-- lifecycle ID 统一使用 `--run-id` 或 `--loop-id`，不接受 positional ID。
-- prompt 文件只使用 `--prompt-file`，不存在 `--prompt`。
-- `--` 之后的全部参数只属于目标 CLI，`sn-cli` 不再解析。
-- 旧 `prompt` 命令、`prune` 命令、`--profile`、下划线参数和旧 positional ID 均无兼容入口。
-
-prompt 来源为 positional、`--prompt-file`、stdin 三选一；同时提供多个来源必须报错。session 可以不提供 prompt，此时只启动交互 CLI。
+- 全局参数只有 `-h|--help` 和 `--version`。
+- `prompt` 是唯一允许不带 key 的执行数据，多个 token 以空格连接。
+- 顶层 profile prompt 来源为 positional 或 stdin 二选一；`session run|submit` 额外支持 `--prompt-file`。同时提供多个来源必须报错。
+- namespace 中的 profile 使用第三个参数，例如 `session run cx`、`profile show cx`；公共语法不使用 `-c|--config`。
+- Run 使用 `--run-id`，逻辑 Session 使用 `--session-id`，Loop 使用 `--loop-id`；ID 不接受 positional 简写。
+- `--` 之后全部属于目标原生 CLI，Runtime 不再解析；prompt 后的 raw 参数始终追加在 profile 生成的参数之后。
+- 不保留 legacy alias、旧命令名、旧参数名或隐式兼容入口。
 
 ## 2. 顶层解析优先级
 
 第一个参数按以下顺序解析：
 
-1. `-h`、`--help` 等全局 flag。
-2. `help`、`version`、`profiles`、`config`、`doctor`、`daemon`、`task`、`turn`、`runs`、`loop`、`capabilities`、`tools`、`session`、`history`、`command`、`clean`、`update` 等内建命令。
-3. 从 `~/.sn/configs/*.json` 解析 config ID、alias 或 preset ID。
+1. `-h|--help`、`--version`。
+2. 固定 namespace：`run`、`session`、`profile`、`system`、`loop`、`skill`、`tool`、`memory`。
+3. 从 active config `~/.sn/configs/*.json` 解析精确 profile/preset ID。
 4. 均未命中时返回 `unknown command`，不得猜测 Provider 或静默降级。
 
-config ID、alias 和 preset ID 不得与内建命令重名，配置加载阶段必须拒绝冲突。
+profile/preset ID 不得与固定 namespace、`help` 或 `version` 重名。配置不再定义 alias；出现 `aliases` 字段必须按未知字段拒绝。
 
-`providers` 是 `profiles` 的 legacy alias，`upgrade` 是 `update` 的 legacy alias。二者继续可用并与正式命令一同列入保留字，但新文档和脚本只使用正式命令。除这两个明确登记的别名外，不新增隐式兼容入口。
+## 3. 动态 Profile 分流
 
-## 3. Command Profile 分流
+Profile 路由只区分交互、prompt 和显式 `--`，不创建持久 Run 或逻辑 Session：
 
-当 config 是 `type=cli` 且 `cli.executor=command` 时，只检查第一个 profile 参数：
+| 调用形式 | 路由 | 参数处理 | Run artifact | 逻辑 Session |
+| --- | --- | --- | --- | --- |
+| `sn-cli <profile>` + TTY stdin | direct interactive | 无额外参数 | 无 | 无 |
+| `stdin \| sn-cli <profile>` | direct one-shot | stdin 作为 prompt | 无 | 无 |
+| `sn-cli <profile> "prompt"` | direct one-shot | positional 作为 prompt | 无 | 无 |
+| `sn-cli <profile> -- ...` | direct passthrough | 移除 `--` 后原样传递 | 无 | 无 |
 
-| 调用形式 | 路由 | 参数处理 | Artifact |
-| --- | --- | --- | --- |
-| `sn-cli <profile>` | direct interactive | 无额外参数 | 无 run artifact；无逻辑 Session |
-| `sn-cli <profile> -x ...` | direct passthrough | 参数直接传给目标 CLI | 无 run artifact；无逻辑 Session |
-| `sn-cli <profile> --long ...` | direct passthrough | 参数直接传给目标 CLI | 无 run artifact；无逻辑 Session |
-| `sn-cli <profile> -- ...` | direct passthrough | 移除 `--` 后原样传递 | 无 run artifact；无逻辑 Session |
-| `sn-cli <profile> <text> ...` | managed prompt | 普通文本由 AgentRun 解析 | 有 |
-| `stdin | sn-cli <profile>` | managed prompt | stdin 由 AgentRun 解析 | 有 |
+interactive 与 passthrough 只适用于 `type=cli` 且 `cli.executor=command` 的 profile。one-shot prompt 支持 command CLI、API 和 native profile；tmux profile 必须使用 `session run` 或 `session open`。
 
-direct 调用只使用 `cli.command.args`、model 和 env，不加入 `managed_args`。顶层 direct 不记录逻辑 Session；只有显式 `session exec` 才记录 `capture_quality=metadata_only` 的执行元数据。managed 调用的目标 argv 顺序固定为：
+CLI one-shot 与 `session run|submit` 共用同一份 Provider argv 规则：
 
 ```text
-binary + command.args + model + raw-cli-args + managed_args
+binary + command.args + typed-overrides + model + managed_args + prompt-args + raw-cli-args
 ```
 
-顶层 `sn-cli <profile> <prompt>` 的 stdout 优先返回本次 Provider 的真实 final text，使 `cx`/`cc` 保持与原生非交互 CLI 一致；只有幂等复用等本次没有 Provider 输出的情况才回退到 `result.json.summary`。run ID 和目录只写 stderr，结构化结果仍以 artifact 为准。
+`managed_args` 只表达 Provider 的非交互入口差异，例如 Codex `exec` 与 Claude `-p`；它不表示是否记录。重复原生参数的覆盖语义由目标 CLI 决定。direct one-shot 直接转发 Provider stdout/stderr，不打印 Run ID、状态或 Runtime result，也不注入 `AGENTRUN_*` 环境变量。
 
-Provider 差异必须由 config 表达，不得在入口硬编码 `cx -> exec` 或 `cc -> -p`。
+Provider 差异只能由 profile config 表达，不得在入口硬编码 `cx -> exec` 或 `cc -> -p`。
 
 ```bash
 sn-cli cx
 sn-cli cc
 sn-cli cx "hi"
+sn-cli cc "hi"
 printf 'hi' | sn-cli cx
-sn-cli cx --help
-sn-cli cx -- exec "hi"
 sn-cli cx "hi" -- --skip-git-repo-check
+sn-cli cx -- exec "hi"
+sn-cli cc -- -p "hi"
 ```
 
-`sn-cli cx exec "hi"` 表示 managed prompt `exec hi`。原生 Codex `exec` 必须写为 `sn-cli cx -- exec "hi"`。
+`sn-cli cx run "hi"`、`sn-cli cx submit "hi"` 和 `sn-cli cx --help` 必须报错。需要记录时使用 `session run|submit`；原生参数必须放在 `--` 后。
 
-### 3.1 Command 环境契约
+### 3.1 结果契约与记录 owner
 
-direct、managed 与 session 必须使用同一份 `cli.command` 环境配置。子进程环境顺序固定为：继承当前环境、应用 `env_unset`、应用 `env_passthrough`、应用 `env`、注入 runtime 环境。后写入的值优先。
+- profile config 不得出现 `result_contract`；普通加载遇到该字段时按未知字段拒绝。安装/更新流程只在 schema 升级阶段一次性删除旧字段，然后再执行严格校验。
+- direct interactive、direct passthrough、direct one-shot 和 `skill run` 不创建 Run/Session artifact，也不注入结果文件契约。
+- `session run|submit` 是 Provider 会话记录的唯一创建入口。command CLI 由 Runtime 注入 `result.json` 契约；API/native 由 Runtime 根据结构化 Provider 结果生成同一规范结果。
+- `session open` 记录 carrier Execution 与 transcript，不要求交互式 Provider 写 `result.json`。
+- `run` namespace 只查询和控制已有记录，不创建新记录。
+- `loop` namespace 可以持久化循环恢复、状态和取消所需的编排数据；这些数据不等同于逻辑 Session。
 
-- `env` 用于 profile/preset 固定覆盖；配置值只有 `${VAR}` 形式会读取环境变量，`$VAR` 与 `VAR` 都保持字面值。
-- `env_passthrough` 用于把当前 `sn-cli` 进程变量显式传入 tmux 子进程。
-- `env_unset` 用于删除继承变量；preset 追加写法为 `env_unset_append`。
-- 同一个变量不得同时出现在 `env_unset` 与 `env`/`env_passthrough`。
-- `${VAR}` 引用未设置时必须报错，不得静默替换为空字符串。
-- config 不得保存 secret；API 凭据只能写为完整的 `api_key: "${VAR}"` 引用。
-- Runtime 不内置环境文件加载器，环境由启动 `sn-cli` 的外部进程注入。
+### 3.2 环境配置
 
-默认 `cx`/`cc` 继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。多账号目录应通过 shell 环境或 profile preset 表达，不得在 CLI 路由层按 profile ID 硬编码。
+direct、session、tmux 和 terminal carrier 必须使用同一份 `cli.command` 环境配置。子进程环境顺序固定为：继承当前环境、应用 `env_unset`、应用 `env_passthrough`、应用 `env`、注入当前入口允许的 Runtime 环境；后写入的值优先。
+
+- 只有完整的 `${VAR}` 会读取环境变量；`$VAR` 和 `VAR` 都是普通字符串。
+- `${VAR}` 未设置时立即报错，不得替换为空字符串。
+- 同一变量不得同时出现在 `env_unset` 与 `env|env_passthrough`。
+- API 凭据使用 `api_key: "${VAR}"`；配置、日志和 Session 记录不得保存 secret。
+- Runtime 不加载 `.env` 或 direnv 文件；环境由启动 `sn-cli` 的外部进程注入。
 
 ## 4. Namespace 契约
 
-```bash
-sn-cli task run -c cx "hi"
-sn-cli task submit -c cx --queue-timeout-seconds 3600 "后台执行"
-sn-cli turn submit -c cx --session-id <id> "后台继续"
-sn-cli session run -c cx "一次性但需要会话记录的任务"
-sn-cli session exec -c cx -- --help
-sn-cli task status --run-id <id>
-sn-cli loop status --loop-id <id>
-sn-cli runs list --active --project <project> --limit 20
-sn-cli runs reconcile --dry-run
+公共 command surface 固定为：
 
-sn-cli session start -c cx "hi" -- --no-alt-screen
-sn-cli session list
-sn-cli session send --run-id <id> "继续"
-sn-cli session logs --run-id <id> --tail 200
-sn-cli session stop --run-id <id>
-
-sn-cli history create --session-id <id> --project <project> --runtime api --profile ba
-sn-cli history list
-sn-cli history show --session-id <id>
-sn-cli history messages --session-id <id> --after-seq 0
-sn-cli history events --session-id <id> --after-seq 0
-sn-cli history configure --session-id <id> --runtime cli --profile cx --retention pinned
-sn-cli history delete --session-id <id>
-sn-cli history rebuild
-
-sn-cli config command -c cx-spark
-sn-cli config command -c cx-spark --json
-
-sn-cli clean
-sn-cli clean --apply
+```text
+run      list|show|logs|result|watch|cancel|reconcile
+session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
+profile  list|show|validate|command
+system   doctor|start|status|stop|restart|update
+loop     run|list|show|logs|cancel
+skill    list|show|run
+tool     list|show|call
+memory   list|recall|add|remove|promote
 ```
 
-`session run` 创建 `ephemeral` 逻辑 Session 并执行一次 managed Run；`session exec` 在前台直连原生 CLI，只记录 metadata，显式请求 `record_mode=full` 会被拒绝；`session start` 创建 standard 逻辑 Session 并复用同一份 command config 启动 tmux，不读取单独的 `tcx/tcc` 配置。tmux 启动成功表示 pane 已稳定；存在首个 prompt 时，还要求粘贴和 Enter 成功并记录 `prompt.submitted`，不表示模型任务已完成。
+namespace 可以有多个二级 action，但不得继续创建 action 下的子命令层。
 
-`config command` 只读解析 CLI profile 的 managed argv，不启动 Provider，也不输出 profile env 值。文本模式输出可供 shell 阅读的脱敏命令；`--json` 输出 `argv` 与 `command`，敏感 flag、URL 凭据、敏感 query 和当前环境中的 secret 值必须替换为 `[REDACTED]`。
+### 4.1 Run
 
-`session list/status/send/...` 管理 tmux 活动执行；`history ...` 管理跨 API、CLI、TTY、tmux 的逻辑 Session。普通 `task run`、顶层 managed profile 和 `POST /v1/runs` 只写 Run artifact，不隐式创建 Session；需要记录时使用 `session run`、Session HTTP API，或用 `--session-id` 关联既有 Session。`turn run` 强制要求 `--session-id`。`--record-mode`、`--retention` 只有存在显式 Session intent 时有效。
+```bash
+sn-cli run list --active --project <project> --limit 20
+sn-cli run show --run-id <id>
+sn-cli run logs --run-id <id> --tail 200
+sn-cli run result --run-id <id>
+sn-cli run watch --run-id <id>
+sn-cli run cancel --run-id <id>
+sn-cli run reconcile --dry-run
+```
 
-`task run` 同步提交到本机持久 FIFO 并等待终态；`task submit` 只提交并立即返回 `pending`。`--queue-timeout-seconds` 限制等待调度的时间，不替代 Provider 的 `--deadline-seconds`。`runs list` 是跨进程查询 queued/active/terminal Run 的公共入口；`runs reconcile` 只修复 daemon 异常退出遗留的 claim，已有终态 artifact 绝不能重跑。队列容量或并发不足必须排队或返回 `queue_full`，不得再以 `max_concurrency=1 reached` 拒绝正常提交。
+`run` 是 Session Turn、carrier Execution 和已有内部 Run 的统一查询控制面。Run 类型必须从持久 registry/request 解析，不得依赖 ID 前缀猜测。Loop 仍由 `loop` namespace 管理。
 
-## 5. 变更门禁
+### 4.2 Session
 
-修改顶层命令、参数名称、`--` 语义、prompt 来源或 direct/managed/session 边界时，必须在同一变更中：
+Session 是跨 API、native、CLI、tmux 和 terminal 的逻辑会话 owner，不等于某个 tmux window 或某次 Run。一个 Session 可以包含多个 Turn、RunAttempt 和 Execution；每个 Turn 可以切换 profile/provider，为 GUI 展示和后续上下文迁移保留稳定底层关系。
 
-1. 更新本文并说明不兼容影响。
-2. 更新 CLI 路由、parser 和 artifact 测试。
+```bash
+sn-cli session run cx --session-id <id> "继续分析"
+sn-cli session submit cc --session-id <id> "后台继续"
+sn-cli session open cx --carrier tmux --session-id <id> -- --no-alt-screen
+sn-cli session open cc --carrier terminal --session-id <id>
+sn-cli session list
+sn-cli session show --session-id <id>
+sn-cli session messages --session-id <id>
+sn-cli session events --session-id <id>
+sn-cli session logs --session-id <id> --tail 200
+sn-cli session send --session-id <id> "继续"
+sn-cli session interrupt --session-id <id>
+sn-cli session stop --session-id <id>
+sn-cli session attach --session-id <id>
+sn-cli session configure --session-id <id> --retention pinned
+sn-cli session export --session-id <id> --output session.json
+sn-cli session delete --session-id <id>
+```
+
+- `session run|submit` 创建或复用 logical Session，并产生结构化 Turn、规范化 user/assistant message、RunAttempt 和 Execution；默认 `record_mode=full`、`retention=standard`、`capture_quality=structured`。
+- `session run` 提交成功后立即输出 run 信息并 follow Provider stream，终态输出 `RunSummary`；`session submit` 只返回 pending `RunSummary`。
+- 顶层 profile 与 `skill run` 始终 direct；需要会话记录必须显式使用 `session` namespace。
+- `session open` 创建或复用 logical Session，并新增独立 Execution 和 Run artifact；Session ID、Run ID、Execution ID 不得复用为同一个 ID。
+- `tmux` 是可重连的持久 carrier；`terminal` 是独立 terminal window carrier，关闭 window 即结束其 Execution，不能重连。
+- `terminal` driver 只从 `configs/runtime.yaml` 的 `session.terminal.driver` 读取，支持 `iterm2|ghostty`，不得自动探测应用。
+- `session open` 只保证 transcript，`capture_quality=transcript_only`，不能将 terminal 文本伪装成结构化 assistant final。
+- `session send|attach` 只在 carrier 支持时执行；terminal 不支持输入注入或重新 attach 时必须明确报错。
+- `session logs|interrupt|stop|attach|send` 使用逻辑 `--session-id` 定位当前 active carrier Execution；Run 级控制仍使用 `run ... --run-id`。
+
+### 4.3 Profile 与 System
+
+```bash
+sn-cli profile list
+sn-cli profile show cx
+sn-cli profile validate cx
+sn-cli profile command cx --json
+
+sn-cli system doctor --json
+sn-cli system start
+sn-cli system status
+sn-cli system stop
+sn-cli system restart
+sn-cli system update --check
+```
+
+`profile command` 只读解析 one-shot/Session argv，不启动 Provider，也不输出 profile env 值；文本和 JSON 输出都必须脱敏。`system serve` 仅供 daemon 子进程内部启动，不列入公共 help。
+
+## 5. 不兼容清理
+
+以下旧入口全部移除且不提供 alias：`task`、`turn`、`runs`、`history`、`config`、`profiles`、`providers`、`doctor`、`daemon`、`command`、`capabilities`、`tools`、`clean`、`update`、`upgrade`、`version`、`help`。旧 `<profile> run|submit`、`run command`、`session start|exec|status|watch|history`、`loop start|step|status` 和 capability 旧 action 同样不保留。CLI 不再接受 `--mode`，结果契约只由入口语义决定。
+
+## 6. 变更门禁
+
+修改顶层命令、profile 分流、参数名称、`--` 语义、prompt 来源或 direct/session/carrier 边界时，必须在同一变更中：
+
+1. 更新本文并明确不兼容影响。
+2. 更新 CLI 路由、parser、artifact 和 Session 关系测试。
 3. 更新 `sn-cli --help` 与 README。
 4. 同步更新 `docs/integration-arch.md`。
 5. 运行 `go test ./...`、`go vet ./...` 和 `make sn-cli-test`。
+
+同步 `run` 的 follow 还必须保持 `output.log` 在 Provider 启动后单调追加；follow 只能转发 stream marker 之后的内容，不得输出可能包含原生参数的日志 header。终态前最后一个无换行 chunk 必须 drain，follow 断开不得取消已持久提交的 Run。
 
 只修改实现而不更新契约和测试，视为未完成。

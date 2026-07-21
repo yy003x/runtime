@@ -10,7 +10,7 @@ Go Runtime 是会话输入、输出、运行关系和上下文清单的唯一 ow
 - loop 显式关联既有 Session 后，planner 与 `run_agent` Turn 复用相同 Session；Runtime 在启动阶段校验 Session 存在且 project 一致。
 - `Turn` 表示一次用户输入及其响应生命周期。
 - `RunAttempt` 表示某个 Turn 的一次 Provider 尝试。
-- `Execution` 表示 API、managed CLI、direct TTY 或 tmux 执行容器，可以跨 Turn。
+- `Execution` 表示 API、managed CLI、tmux 或 terminal 执行容器；交互 carrier Execution 可以跨 Turn。
 - `result.json` 仍是单次 run 的不可变结果；Session 通过 `result_ref` 引用，不复制结果事实。
 - `History` 是从 Session 构建的可重建查询视图，不是第二套事实源。
 - Workbench UI/BFF 只调用 Runtime CLI/HTTP，不再自行维护 `messages.jsonl`。
@@ -22,7 +22,7 @@ Session
   └── Turn
         └── RunAttempt ──result_ref──> runs/.../result.json
 
-Execution(API/cli_managed/cli_direct/tmux) 与 Turn 正交关联
+Execution(API/cli_managed/tmux/terminal) 与 Turn 正交关联
 ```
 
 ## 2. 目录与事实源
@@ -60,13 +60,13 @@ Execution(API/cli_managed/cli_direct/tmux) 与 Turn 正交关联
 
 - `sessions/` 是持久化会话事实源；删除采用移动到 `history/trash`，可恢复。
 - `runs/` 是一次执行的 artifact，不保存长期会话正文。
-- `history/index.json` 仅用于 list/filter；损坏或丢失可执行 `history rebuild`。
+- `history/index.json` 仅用于 list/filter；损坏或丢失可由 Store 从 Session 事实重建，不暴露额外 CLI 层级。
 - `state/` 只保存活动锁、registry、lease 等运行态。
 - 不再复制 Session history 到 archive，也不从 run 目录反向拼装 UI 会话。
 
 ## 3. 标识与状态
 
-`session_id`、`turn_id`、`run_id`、`execution_id` 是独立标识。为兼容既有 tmux CLI，`session start --run-id` 的 run ID 可以与逻辑 Session ID 同值，但两者仍写入不同模型。
+`session_id`、`turn_id`、`run_id`、`execution_id` 是独立标识。`session open` 创建 carrier 时不得复用 Session ID、Run ID 与 Execution ID；关系只能通过持久记录显式关联。
 
 Run 状态继续使用：
 
@@ -99,16 +99,15 @@ Session 独立使用 `idle | active | blocked | archived`，不得把最后一�
 | 入口 | record_mode | retention | capture_quality |
 | --- | --- | --- | --- |
 | 普通 HTTP/API Run | off | - | structured |
-| 顶层 managed profile | off | - | structured/parsed |
-| `task run` 且无显式 Session | off | - | structured/parsed |
-| `session run` | full | ephemeral | structured/parsed |
-| `turn run --session-id` | 继承 Session | 继承 Session | structured/parsed |
+| 顶层 profile one-shot | off | - | - |
+| `skill run` | off | - | - |
+| `session run|submit` | full | standard | structured/parsed |
 | 顶层 direct interactive TTY | off | - | - |
-| `session exec` direct TTY | metadata | standard | metadata_only |
-| tmux session | full | standard | transcript_only |
-| help/version/config validate | off | - | - |
+| `session open --carrier tmux` | full | standard | transcript_only |
+| `session open --carrier terminal` | full | standard | transcript_only |
+| help/version/profile validate | off | - | - |
 
-direct TTY 只有在引入 PTY 代理或 Provider 结构化事件 adapter 后才能升级 capture quality。
+顶层 direct interactive、passthrough 和 one-shot 都不进入 Session；需要记录必须显式使用 `session run|submit|open`。
 
 ## 5. result 复用
 
@@ -150,10 +149,10 @@ managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话�
 - managed CLI/tmux 只能记录 Runtime 已装配的 context manifest 和可观察 transcript；没有 Provider 结构化事件时不推断 tool call。
 - Runtime working memory 只来自当前 Session 的 `memory/working.json`；无显式 Session 的 Run 不自动加载或固化长期 memory。
 - API Agent 的 `memory_write` 只写当前 Session 的 `memory/candidates.json`，ID 由 Runtime 生成，并携带 Session/Turn/Run provenance，返回 `promoted=false`。
-- working 写入必须显式执行 `sn-cli capabilities memory promote --session-id <id> <candidate...>`。
+- working 写入必须显式执行 `sn-cli memory promote <candidate...> --session-id <id>`。
 - memory 条目保留 `source/confidence/expires_at` 等 provenance；已过期条目不会参与 recall。
 - Workbench project/global memory 仍由 Workbench owner 管理，通过 HTTP `memory[]` 只读注入；Runtime 记录 digest 和本次输入快照，不扫描或写回 `ai-workbench/memory`。
-- 用户显式执行 `capabilities memory write --session-id <id>` 视为人工确认，可直接写 Session working memory。
+- 用户显式执行 `memory add <id> <content> --session-id <id>` 视为人工确认，可直接写 Session working memory。
 - `memory.delete` 仍是独立权限。
 
 这避免模型在一次执行中把未经确认的内容直接固化为长期事实。
@@ -161,29 +160,32 @@ managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话�
 ## 8. CLI
 
 ```bash
-sn-cli history create --session-id <id> --project <project> --runtime api --profile ba [--tag <tag>]
-sn-cli history list [--project <project>] [--state <state>] [--tag <tag>]
-sn-cli history show --session-id <id>
-sn-cli history messages --session-id <id> [--after-seq N]
-sn-cli history events --session-id <id> [--after-seq N]
-sn-cli history configure --session-id <id> --runtime cli --profile cx --record-mode full --retention pinned
-sn-cli history export --session-id <id> --output session.json
-sn-cli history import --input session-import.json
-sn-cli history delete --session-id <id>
-sn-cli history rebuild
-
-sn-cli turn run -c cx --session-id <id> "继续"
+sn-cli session run cx "创建结构化会话"
+sn-cli session submit cc --session-id <id> "切换 Provider 后台继续"
 sn-cli loop run --session-id <id> --input "协同执行" --planner-config ba --capability agent.run
-sn-cli session run -c cx "一次性会话任务"
-sn-cli session exec -c cx -- --help
-sn-cli session history list
 
-sn-cli capabilities memory candidates --session-id <id>
-sn-cli capabilities memory promote candidate-1 --session-id <id>
+sn-cli session open cx --carrier tmux --session-id <id> -- --no-alt-screen
+sn-cli session open cc --carrier terminal --session-id <id>
+sn-cli session list [--project <project>] [--state <state>] [--tag <tag>]
+sn-cli session show --session-id <id>
+sn-cli session messages --session-id <id> [--after-seq N]
+sn-cli session events --session-id <id> [--after-seq N]
+sn-cli session logs --session-id <id> [--tail N]
+sn-cli session send --session-id <id> "继续"
+sn-cli session interrupt --session-id <id>
+sn-cli session stop --session-id <id>
+sn-cli session attach --session-id <id>
+sn-cli session configure --session-id <id> --runtime cli --profile cx --record-mode full --retention pinned
+sn-cli session export --session-id <id> --output session.json
+sn-cli session delete --session-id <id>
+
+sn-cli memory list --session-id <id> --state candidate
+sn-cli memory promote candidate-1 --session-id <id>
 ```
 
-`session list/status/send/...` 继续负责 tmux 活动执行；`history ...` 负责所有 Provider 的逻辑会话。
-`retention` 是 Session 级策略，既有 Session 的 Turn 只能继承，不能在单个 Turn 上覆盖；需要变更时使用 `history configure`。`record_mode` 可以按 Turn 向更严格方向收窄；Session policy 从 metadata 改为 full 只影响后续 Turn，不会补录既有 transcript。
+所有 Provider 的逻辑会话和 carrier lifecycle 都收敛到 `session` namespace。`session run|submit` 形成结构化 Turn；`session open` 只形成 transcript-only Execution。tmux 支持 `send|attach`，terminal 不支持时明确报错。
+
+`retention` 是 Session 级策略，既有 Session 的 Turn 只能继承，不能在单个 Turn 上覆盖；需要变更时使用 `session configure`。`record_mode` 可以按 Turn 向更严格方向收窄；Session policy 从 metadata 改为 full 只影响后续 Turn，不会补录既有 transcript。
 
 ## 9. HTTP
 
@@ -203,9 +205,9 @@ POST /v1/sessions/{session_id}/turns
 
 - `wb.task.sn_cli.SnCLIClient` 是 BFF adapter，只调用 `sn-cli`。
 - UI 会话 list/show/message/stop/configure 不直接读取 `~/.sn`。
-- UI 的 profile choices/validate/command preview 同样来自 `sn-cli config choices|validate|command`，避免 Workbench 配置与实际执行 profile 漂移。
-- UI 不需要会话的一次性 Agent 任务通过 `sn-cli task run/result` 执行，只产生 Run；需要本地会话展示的一次性任务改用 `sn-cli session run`，形成 `ephemeral` Session。
-- UI 的 `/api/runtime/runs` 长任务面板通过带 `workbench-runtime` tag 的 Session 与 `sn-cli task/session` 启动、查询、续轮、日志和停止；对 UI 暴露的 `run_id` 是逻辑 Session ID，实际 attempt ID 作为 `provider_run_id` 返回。
+- UI 的 profile list/validate/command preview 来自 `sn-cli profile list|validate|command`，避免 Workbench 配置与实际执行 profile 漂移。
+- UI 不需要展示或续轮的一次性 Agent 任务通过 `sn-cli <profile> <prompt>` direct 执行，不产生本地记录；需要本地会话展示的任务使用 `sn-cli session run`，形成 standard Session。
+- UI 的 `/api/runtime/runs` 长任务面板通过逻辑 Session 与 `sn-cli session/run` namespace 启动、查询、续轮、日志和停止；Session ID、Run ID 和 Execution ID 分别暴露，不再把逻辑 Session ID 伪装成 Run ID。
 - Workbench 不再接受 `command` / `provider_env` 直传执行，binary、args 与 env 必须由 `sn-cli` profile/preset 声明并校验，避免 BFF 绕过 Runtime 配置 owner。
 - Workbench 不保留 Session/History 迁移器或双写路径；现行会话只写 Go Runtime。
 - Workbench 的业务 knowledge、outputs、project config 继续由 Workbench owner 管理。
@@ -214,7 +216,7 @@ POST /v1/sessions/{session_id}/turns
 
 ## 11. 已知边界
 
-- direct TTY 当前只能可靠记录 metadata；不能保证 transcript。
-- tmux transcript snapshot 不是结构化 assistant final text。
+- 顶层 direct interactive、passthrough 和 one-shot 不进入 Session，因此不记录 metadata、transcript 或 Run artifact。
+- tmux/terminal transcript 不是结构化 assistant final text。
 - `history/index.json` 当前是本地可重建 JSON 索引，不承诺 O(log n) 或全文搜索；达到查询压力后可在 Store 接口后替换为 SQLite/FTS。
 - SSE/WebSocket、ephemeral 自动 GC、Provider 专属结构化 TTY adapter 属于后续增强，不得在文档中宣称已完成。

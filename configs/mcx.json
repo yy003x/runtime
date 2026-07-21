@@ -39,7 +39,6 @@
     "runtime": {
       "prompt_delivery": "stdin",
       "managed_args": ["exec"],
-      "result_contract": "required",
       "override_policy": {
         "allow": [
           "model",

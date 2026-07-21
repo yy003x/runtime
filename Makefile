@@ -2,11 +2,13 @@ SHELL := /bin/bash
 
 APP_NAME ?= sn-server
 SERVER_ADDR ?= :8080
-SN_CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-dev)
 SN_CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+SN_CLI_TAG ?= $(shell git describe --tags --exact-match 2>/dev/null)
+SN_CLI_DIRTY ?= $(shell test -n "$$(git status --porcelain --untracked-files=no 2>/dev/null)" && echo true || echo false)
+SN_CLI_VERSION ?= $(if $(strip $(SN_CLI_TAG)),$(SN_CLI_TAG),v0.0.0-dev+$(SN_CLI_COMMIT))
 SN_CLI_BUILDDATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 RUNTIME_LDFLAGS := -X agent-runtime/internal/agentrun.Version=$(SN_CLI_VERSION)
-SN_CLI_LDFLAGS := $(RUNTIME_LDFLAGS) -X agent-runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X agent-runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X agent-runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE)
+SN_CLI_LDFLAGS := $(RUNTIME_LDFLAGS) -X agent-runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X agent-runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X agent-runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X agent-runtime/internal/cli/version.Dirty=$(SN_CLI_DIRTY)
 
 GO ?= go
 GOCACHE ?= /tmp/go-build
@@ -34,7 +36,7 @@ help:
 	@echo "  make release-check     - validate, build and smoke-test release assets"
 	@echo "  make provider-smoke    - opt-in real provider smoke (requires SN_REAL_PROVIDER_SMOKE=1)"
 	@echo "  make sn-cli-test       - run sn-cli Go tests"
-	@echo "  make sn-cli-doctor     - run sn-cli doctor"
+	@echo "  make sn-cli-doctor     - run sn-cli system doctor"
 	@echo "  make run               - run HTTP server"
 	@echo "  make dev               - run server with simple auto-restart on file changes"
 	@echo "  make check             - run fmt + test"
@@ -80,7 +82,7 @@ sn-cli-test:
 	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider/... ./internal/executor ./internal/daemon ./internal/capability ./internal/transport ./internal/cli/...
 
 sn-cli-doctor: sn-cli-build
-	@home="$$(mktemp -d)"; trap 'rm -rf "$$home"' EXIT; mkdir -p "$$home/configs"; cp -R configs/. "$$home/configs/"; SN_CLI_HOME="$$home" ./cmd/sn-cli-wrapper doctor --json
+	@home="$$(mktemp -d)"; trap 'rm -rf "$$home"' EXIT; mkdir -p "$$home/configs"; cp -R configs/. "$$home/configs/"; SN_CLI_HOME="$$home" ./cmd/sn-cli-wrapper system doctor --json
 
 run:
 	HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/sn-server

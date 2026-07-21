@@ -86,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 
 ### 配置同步
 
-首次安装、再次安装、源码安装和 `sn-cli update` 都执行同一规则：
+首次安装、再次安装、源码安装和 `sn-cli system update` 都执行同一规则：
 
 1. 递归复制发行包 `configs/` 中本地缺失的目录和文件。
 2. 已存在的本地文件永不覆盖。
@@ -135,134 +135,171 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 └── tmp/
 ```
 
-`configs/runtime.yaml` 只配置 `default_project`、`default_profile` 和 `max_concurrency`。所有路径由 `internal/layout` 固定，不接受配置文件改写。
+`configs/runtime.yaml` 配置默认 project/profile、队列上限和 Session carrier。所有路径由 `internal/layout` 固定，不接受配置文件改写：
+
+```yaml
+default_project: _default
+default_profile: cx
+max_concurrency: 1
+max_queue: 64
+queue_timeout_seconds: 3600
+session:
+  default_carrier: tmux       # tmux|terminal
+  terminal:
+    driver: ghostty           # ghostty|iterm2，显式配置，不自动探测
+```
 
 ## CLI 使用
 
 ### Profile 入口
 
-command CLI profile 根据第一个 profile 参数分流。无参数时启动原生交互程序；`-` 开头的参数直接透传；普通文本或 stdin 作为 managed prompt：
+Profile 入口默认 direct。无参数且 stdin 是 TTY 时启动原生交互程序；提供 prompt 或管道输入时执行一次 one-shot；原生参数统一放在 `--` 后：
 
 ```bash
 sn-cli cx                         # Codex interactive
 sn-cli cc                         # Claude interactive
-sn-cli cx "分析当前仓库"           # managed，自动使用 cx.json 的 exec
-sn-cli cc "分析当前仓库"           # managed，自动使用 cc.json 的 -p
-printf '分析当前仓库' | sn-cli cx   # stdin managed prompt
-sn-cli cx --help                  # 原生 flag 透传
-sn-cli cc -p "分析当前仓库"        # 原生 Claude print mode
-sn-cli cx -- exec "分析当前仓库"   # -- 后强制原生透传
+sn-cli cx "分析当前仓库"           # 等价于按 cx 配置执行 codex exec
+sn-cli cc "分析当前仓库"           # 等价于按 cc 配置执行 claude -p
+printf '分析当前仓库' | sn-cli cx
 sn-cli cx "分析当前仓库" -- --skip-git-repo-check
+sn-cli cx -- exec "分析当前仓库"   # -- 后强制原生透传
+sn-cli cc -- -p "分析当前仓库"     # 原生 Claude print mode
 ```
 
-direct 调用不创建 run artifact、逻辑 Session，也不加入 `managed_args`；需要 metadata Session 时显式使用 `sn-cli session exec -c cx -- ...`，该模式不捕获 transcript，因而拒绝 `record_mode=full`。普通文本调用复用 AgentRun，并由 profile 的 `managed_args` 和 `prompt_delivery` 决定实际调用方式。命令 stdout 返回 Provider 的真实 final text，run ID 与 artifact 目录写入 stderr；幂等复用时才回退输出 `result.json.summary`。完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
+上述三种 direct 调用都不创建 Run artifact 或逻辑 Session。one-shot 与 `session run|submit` 共用 profile 的 `managed_args` 和 `prompt_delivery`，用来表达 Codex `exec`、Claude `-p` 等 Provider 差异；路由层不按 profile ID 硬编码。direct one-shot 原样转发 Provider stdout/stderr，不注入 `result.json` 契约。
 
-### Managed task
-
-`task/turn` 提供完整 lifecycle。config 统一使用 `-c/--config`，prompt 可以来自 positional、`--prompt-file` 或 stdin，三者互斥：
+API/native profile 同样支持无记录 one-shot。需要结构化记录或异步执行时，显式使用 `session run|submit`：
 
 ```bash
-sn-cli task run -c fake --mode capture "hello"
-sn-cli task run -c cx "处理任务"
-sn-cli task run -c cx --prompt-file task.md
-printf '处理任务' | sn-cli task run -c cx
-sn-cli session run -c cx "需要保留为 ephemeral Session 的一次性任务"
-sn-cli turn run -c cx --session-id <id> "继续"
-```
-
-API/native profile 仍通过 prompt 驱动：
-
-```bash
-sn-cli bo "hello"
 sn-cli native-mock "hello"
+sn-cli bo "直接调用"
+sn-cli session run cx "记录本次任务"
+sn-cli session submit bo "后台调用"
 ```
+
+`sn-cli cx run ...`、`sn-cli cx submit ...` 和 `sn-cli cx --help` 都会报错；原生参数必须放在 `--` 后。profile config 不再接受 `result_contract`，结果文件契约只由 `session run|submit` 启用。安装或更新时会在严格校验前一次性删除本机旧配置中的该字段，普通配置加载不会隐式改写文件。
+
+完整规则见 [`docs/cli-routing-contract.md`](docs/cli-routing-contract.md)。
+
+### 命令面
+
+公共命令最多两层：第一层是 namespace，第二层是 action；需要 profile 时固定作为第三个参数，不再使用 `-c|--config`。
+
+```text
+run      list|show|logs|result|watch|cancel|reconcile
+session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
+profile  list|show|validate|command
+system   doctor|start|status|stop|restart|update
+loop     run|list|show|logs|cancel
+skill    list|show|run
+tool     list|show|call
+memory   list|recall|add|remove|promote
+```
+
+Run 的统一查询控制面：
+
+```bash
+sn-cli run list --active --project <project> --limit 20
+sn-cli run show --run-id <id>
+sn-cli run logs --run-id <id> --tail 200
+sn-cli run result --run-id <id>
+sn-cli run watch --run-id <id>
+sn-cli run cancel --run-id <id>
+sn-cli run reconcile --dry-run
+```
+
+`run` 只查询和控制 Session、Loop 等 owner 已创建的记录，会从持久 registry/request 识别真实类型，不依赖 ID 前缀。Loop 仍由 `loop` namespace 管理。
 
 ### 生命周期
 
 ```bash
-sn-cli profiles
-sn-cli config choices
-sn-cli config validate -c fake
-sn-cli config command -c cx-spark --json
-sn-cli doctor
+sn-cli profile list
+sn-cli profile show cx
+sn-cli profile validate cx
+sn-cli profile command cx-spark --json
+sn-cli system doctor --json
 
-sn-cli task run -c native-mock "同步执行"
-sn-cli task submit -c native-mock --queue-timeout-seconds 3600 "后台执行"
-sn-cli turn submit -c cx --session-id <id> "后台继续"
-sn-cli task status --run-id <id>
-sn-cli task logs --run-id <id> --tail 200
-sn-cli task result --run-id <id>
-sn-cli task watch --run-id <id>
-sn-cli task cancel --run-id <id>
-sn-cli runs list --active --project <project> --limit 20
-sn-cli runs reconcile --dry-run
-
-sn-cli turn run -c native-fake "继续任务"
-sn-cli task block --run-id <id> --reason "等待输入"
-sn-cli task continue --run-id <id>
-sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages":[{"role":"user","content":"继续"}]}'
+sn-cli session run cx "创建逻辑会话并同步执行"
+sn-cli session submit cc --session-id <id> "切换 Provider 后台继续"
+sn-cli session list --project <project>
+sn-cli session show --session-id <id>
+sn-cli session messages --session-id <id> --after-seq 0
+sn-cli session events --session-id <id> --after-seq 0
+sn-cli session configure --session-id <id> --retention pinned
+sn-cli session export --session-id <id> --output session.json
+sn-cli session delete --session-id <id>
 
 sn-cli loop run --input "执行计划" --actions-json '[{"type":"respond","content":"完成"}]'
 sn-cli loop run --session-id <id> --input "协同执行计划" --planner-config ba --capability agent.run
-sn-cli loop status --loop-id <id>
-
-sn-cli session start -c cx "分析当前仓库"
-sn-cli session start -c cx --prompt-file task.md
-sn-cli session start -c cx "分析当前仓库" -- --no-alt-screen
-sn-cli session list
-sn-cli session send --run-id <id> "继续"
-sn-cli session logs --run-id <id> --tail 200
-sn-cli session attach --run-id <id>
-sn-cli session stop --run-id <id>
-
-sn-cli history create --session-id <id> --project <project> --runtime api --profile ba
-sn-cli history list --project <project>
-sn-cli history show --session-id <id>
-sn-cli history messages --session-id <id> --after-seq 0
-sn-cli history events --session-id <id> --after-seq 0
-sn-cli history configure --session-id <id> --runtime cli --profile cx --retention pinned
-sn-cli history export --session-id <id> --output session.json
-sn-cli history delete --session-id <id>
-sn-cli history rebuild
-
-sn-cli command start -c cx -- printf 'hello'
-sn-cli command status --run-id <id>
-sn-cli command stop --run-id <id>
-
-sn-cli clean
-sn-cli clean --apply
+sn-cli loop list --active
+sn-cli loop show --loop-id <id>
+sn-cli loop logs --loop-id <id> --tail 200
+sn-cli loop cancel --loop-id <id>
 ```
 
-`sn-cli doctor --json` 始终输出数字字段 `contract_version`、可加性演进的 `features` map 与 `scheduler`，供 Workbench 等调用方在执行前校验 CLI/运行产物契约；provider 凭据缺失只影响 doctor 的 `ok` 与对应 provider 状态，不改变 contract version。
+`sn-cli system doctor --json` 始终输出数字字段 `contract_version`、可加性演进的 `features` map 与 `scheduler`，供 Workbench 等调用方在执行前校验 CLI/运行产物契约；Provider 凭据缺失只影响 doctor 的 `ok` 与对应 Provider 状态，不改变 contract version。
 
-managed Run 使用本机持久 FIFO。`task run` 提交后等待终态，`task submit` 返回 `pending`；默认 `max_concurrency=1`、`max_queue=64`、`queue_timeout_seconds=3600`，因此并发提交会排队，不再因单个任务占用 slot 而直接报 `max_concurrency=1 reached`。队列位于 owner-only 的 `state/runs/queue.json`，daemon 重启时会自动 reconcile；也可先运行 `runs reconcile --dry-run` 查看动作。
+Session Run 使用本机持久 FIFO。`session run` 在显示 run ID 后 follow 至终态，`session submit` 返回 `pending`；默认 `max_concurrency=1`、`max_queue=64`、`queue_timeout_seconds=3600`。队列位于 owner-only 的 `state/runs/queue.json`，daemon 重启时自动 reconcile，也可运行 `sn-cli run reconcile --dry-run` 预览动作。
 
-`session start` 复用 `cx.json/cc.json` 的 binary、common args、model 和 env，在 tmux 中启动交互 CLI，不需要 `tcx/tcc`。自动包装的 tmux session 使用 `sn-agent` 命名空间，不使用旧的 `mz-cli-agent`；session 使用 `pipe-pane` 持续写入 `output.log`；CLI 异常退出时最多尝试 5 次、间隔 3 秒，显式 `session stop` 不重启。
+### Session 与 carrier
 
-普通 `task run`、顶层 managed profile 和 `POST /v1/runs` 只产生 Run artifact，不隐式创建逻辑 Session；`session run`、`session exec`、`session start`、Session HTTP API 或显式 `--session-id` 才进入 History。
-loop 只有显式传入已存在的 `--session-id` 时，planner 与 `run_agent` 子执行才复用该 Session 的跨 Provider 上下文和 Session memory；缺失或跨 project 的 Session 会在 loop 启动阶段拒绝。
+Session 是跨 API、native、CLI、tmux 和 terminal 的逻辑会话 owner，不等于某个 tmux window 或某次 Run。一个 Session 可以包含多个 Turn、RunAttempt 和 Execution，每个 Turn 可以切换 profile/provider。
+
+```bash
+sn-cli session open cx --carrier tmux --session-id <id> -- --no-alt-screen
+sn-cli session open cc --carrier terminal --session-id <id>
+sn-cli session logs --session-id <id> --tail 200
+sn-cli session send --session-id <id> "继续"
+sn-cli session interrupt --session-id <id>
+sn-cli session attach --session-id <id>
+sn-cli session stop --session-id <id>
+```
+
+- `session run|submit` 形成结构化 Turn、message、RunAttempt 和 Execution，适合 GUI 展示及后续上下文迁移。
+- 顶层 profile 与 `skill run` 始终 direct，不创建 Run 或 Session；需要记录必须显式进入 `session` namespace。
+- `session open` 创建独立 carrier Execution，只保证 transcript，不把终端文本伪装成结构化 assistant final。
+- `tmux` 可持久化和重新 attach；`terminal` 新开 Ghostty/iTerm2 window，关闭 window 即结束 Execution，当前不支持 `send|attach`。
+- Session ID、Run ID、Execution ID 相互独立；carrier 控制命令统一通过逻辑 `--session-id` 定位当前 Execution。
+
+Loop 只有显式传入已有 `--session-id` 时，planner 与 `run_agent` 子执行才复用该 Session 的跨 Provider 上下文和 Session memory；缺失或跨 project 的 Session 会在启动阶段拒绝。
 
 ### Capabilities
 
 ```bash
-sn-cli capabilities skills list
-sn-cli capabilities tools schemas
-sn-cli capabilities memory write note-1 "runtime fact" --session-id <id>
-sn-cli capabilities memory recall runtime --session-id <id>
-sn-cli capabilities memory candidates --session-id <id>
-sn-cli capabilities memory promote candidate-1 --session-id <id>
+sn-cli skill list
+sn-cli skill show <name>
+sn-cli skill run <name> --input "检查当前变更"
+
+sn-cli tool list
+sn-cli tool show echo
+sn-cli tool call echo --args '{"text":"hello"}'
+
+sn-cli memory list --session-id <id> --state all
+sn-cli memory recall runtime --session-id <id> --top-k 5
+sn-cli memory add note-1 "runtime fact" --session-id <id>
+sn-cli memory promote candidate-1 --session-id <id>
+sn-cli memory remove note-1 --session-id <id>
 ```
 
-skills/tools 默认位于 `~/.sn/configs`。Agent 自动读取和写入的 Runtime memory 位于当前 Session 的 `memory/{working.json,candidates.json}`；`memory_write` 只生成带 Session/Turn/Run provenance、由 Runtime 分配 ID 的 candidate，必须显式 `promote --session-id` 才进入 working memory。`~/.sn/memory` 只保留 legacy/manual global capability，不被 Session Agent 自动加载。Workbench project/global memory 通过 API `memory[]` 只读注入，Runtime 不扫描或写回 Workbench 目录。
+`skill run` 只渲染 skill prompt 并 direct 调用其 `default_profile`，不接受 Run/Session 记录参数；需要持久会话时由 `session run` 或 API/native 的 skill 路由进入记录链路。
+
+四类配置共用同一个 capability registry，不再由 CLI、loop、native 和 API runtime 各自加载：
+
+- `configs/personas/<id>.yaml`：native profile 在未显式配置 `native.system_prompt` 时，通过 `native.persona: <id>` 加载系统角色；`coder.yaml` 不会自动生效。
+- `configs/skills/*.skill.yaml` 或 `configs/skills/<name>/skill.yaml`：声明 prompt 模板、关键词和 `default_profile`；可由 `skill run`、API/native 自动路由使用。
+- `configs/tools/*.tool.yaml` 或 `configs/tools/<name>/tool.yaml`：声明 external tool 的 schema、capability 和 request 模板；内置 function tool 与目录工具在同一 registry 中展示。
+- Session memory 位于 `sessions/.../<session_id>/memory/{working.json,candidates.json}`；不带 `--session-id` 的 memory 命令操作 `~/.sn/memory` 全局手工存储。
+
+Agent 的 `memory.write` 先产生带 Session/Turn/Run provenance 的 candidate，只有显式 `memory promote --session-id` 才进入 working memory。Workbench project/global memory 仍通过 API `memory[]` 只读注入，Runtime 不扫描或写回 Workbench 目录。
 
 ### Daemon
 
 ```bash
-sn-cli doctor daemon --json
-sn-cli daemon start
-sn-cli daemon status
-sn-cli daemon restart
-sn-cli daemon stop
+sn-cli system doctor --json
+sn-cli system start
+sn-cli system status
+sn-cli system restart
+sn-cli system stop
 ```
 
 daemon 使用 owner-only socket 和 token，日志写入 `~/.sn/logs/daemon.log`。
@@ -270,13 +307,16 @@ daemon 使用 owner-only socket 和 token，日志写入 `~/.sn/logs/daemon.log`
 ### 更新
 
 ```bash
-sn-cli update --check
-sn-cli update --dry-run
-sn-cli update
-sn-cli update --version v1.0.0
+sn-cli system update --check
+sn-cli system update --dry-run
+sn-cli system update
+sn-cli system update --version v1.0.0
+sn-cli --version
 ```
 
-更新从 GitHub Release 下载当前平台 archive 并校验 SHA256。新 binary 会先使用“本地配置 + 新增模板”的临时合并配置完成验证，再同步缺失配置并原子替换 `~/.sn/bin/sn-cli`。失败时保留旧 binary。
+版本由 exact Git tag 和构建 metadata 注入；非 tag 构建显示 commit 与 dirty 状态。更新从 GitHub Release 下载当前平台 archive 并校验 SHA256。新 binary 会先使用“本地配置 + 新增模板”的临时合并配置完成验证，再同步缺失配置并原子替换 `~/.sn/bin/sn-cli`。失败时保留旧 binary。
+
+旧入口（`task`、`turn`、`runs`、`history`、`config`、`doctor`、`daemon`、`command`、`capabilities`、`update` 等）已移除且不提供 alias。
 
 ## Provider
 
@@ -294,17 +334,12 @@ sn-cli update --version v1.0.0
 两种协议共享相同的 Agent 状态机、权限门禁和运行产物，不需要再套一层 `type=native`。示例：
 
 ```bash
-sn-cli task run -c api-openai-agent --allowed-action echo "调用 echo 后总结"
-sn-cli task run -c api-anthropic-agent --allowed-action memory.read "结合本地记忆回答"
-sn-cli task run -c api-openai-agent --allowed-action memory.write "把确认后的事实写入 memory"
+sn-cli api-openai-agent run --allowed-action echo "调用 echo 后总结"
+sn-cli api-anthropic-agent run --allowed-action memory.read "结合本地记忆回答"
+sn-cli session run api-openai-agent --session-id <id> --allowed-action memory.write "把确认后的事实写入 memory"
 ```
 
-API Agent 的本地上下文写入当前 run 的 `context-snapshot.json`，可沿用公共生命周期继续或修补：
-
-```bash
-sn-cli task continue --run-id <id>
-sn-cli task patch-resume --run-id <id> --patch '{"operation":"append","messages":[{"role":"user","content":"补充上下文后继续"}]}'
-```
+API Agent 的本地上下文写入当前 Run 的 `context-snapshot.json`；需要跨轮继续时使用 `session run <profile> --session-id <id>`，而不是引入额外顶层生命周期命令。
 
 `api.runtime` 配置示例：
 
@@ -340,12 +375,12 @@ memory 工具的授权边界为 `memory.read`、`memory.write`、`memory.delete`
 native 默认不向模型暴露任何工具。仅 `--allowed-action <tool-name|capability>` 明确授权的本地 function tool 会进入请求，`--forbidden-action` 优先级更高；external tool 不会由 native 进程内执行。例如：
 
 ```bash
-sn-cli task run -c native-agent --allowed-action echo "调用 echo 后总结结果"
+sn-cli session run native-agent --allowed-action echo "调用 echo 后总结结果"
 ```
 
 外部 CLI provider 无法在进程内硬拦截模型自己的工具系统，其 `allowed_actions` / `forbidden_actions` 仅作为运行请求审计字段；loop 与 native 的本地 action 边界会强制执行。
 
-command profile 可区分 common args 与 managed-only args：
+command profile 可区分交互 common args 与 one-shot/session args：
 
 ```json
 {
@@ -356,26 +391,25 @@ command profile 可区分 common args 与 managed-only args：
     "command": {"binary": "codex", "args": ["--search"], "model": "gpt-5.6-sol"},
     "runtime": {
       "prompt_delivery": "stdin",
-      "managed_args": ["exec"],
-      "result_contract": "required"
+      "managed_args": ["exec"]
     }
   }
 }
 ```
 
-command profile 的子进程环境按以下顺序生成，direct、managed 和 tmux/session 使用同一规则：
+command profile 的子进程环境按以下顺序生成，direct 与 tmux/session 使用同一规则：
 
 1. 继承 `sn-cli` 当前进程环境。
 2. 用 `env_unset` 删除不应传入目标 CLI 的变量。
 3. 用 `env_passthrough` 把当前进程变量显式带入 tmux 子进程。
 4. 用 `env` 覆盖固定值；只有 `${HOME}` 形式会读取环境变量。
-5. 最后注入 AgentRun 内部变量。
+5. 只有 Session/Loop 等记录入口才注入 AgentRun 内部变量。
 
 所有支持环境变量替换的 Provider 配置值共用同一规则：`${VAR}` 会读取当前 `sn-cli` 进程环境，`$VAR` 和 `VAR` 都是普通字符串；引用的变量未设置时直接报错，不会替换为空字符串。Runtime 不内置环境文件加载器，不读取项目 `.env` 或 `~/.sn` 下的环境文件；需要的变量应由 shell、系统服务或其他外部环境管理工具在启动 `sn-cli` 前注入。仓库继续忽略 `.env` 文件，仅用于避免本地 secret 被误提交。
 
 `env_passthrough` 与 `env_unset` 只控制子进程环境的继承和删除，不承担配置值替换。`env`、`env_passthrough` 与 `env_unset` 的冲突会在配置加载阶段报错。默认 `cx`/`cc` 不固定账号目录，会继承当前 shell 的 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。需要不依赖 shell 显式选目录时，可以增加 preset：
 
-managed Provider 还会收到 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID`，以及 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`。这些变量只暴露 Runtime owner 的路径与关联 ID，CLI wrapper/MCP 可以据此复用上下文能力；敏感值不进入 manifest。
+Session Provider 还会收到 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID`，以及 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`。这些变量只暴露 Runtime owner 的路径与关联 ID，CLI wrapper/MCP 可以据此复用上下文能力；敏感值不进入 manifest。
 
 ```json
 {
@@ -400,9 +434,9 @@ managed Provider 还会收到 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID`，以�
 
 Claude profile 使用同样方式设置 `CLAUDE_CONFIG_DIR`。当 `ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_API_KEY` 同时存在时，应按实际认证方式在对应 preset 中用 `env_unset_append` 删除其中一个，避免改变默认账号或计费来源。
 
-发行模板已提供 `cx-aip` 和 `cc-aip` preset。基础 `cx`/`cc` 不写固定账号目录、API endpoint 或密钥值；`cc-aip` 只固定账号目录和 endpoint，API Key 仍从父进程环境继承。Provider JSON 对未知字段采用严格校验，字段拼写错误会在 `profiles` 或 `config validate` 阶段直接失败。
+发行模板已提供 `cx-aip` 和 `cc-aip` preset。基础 `cx`/`cc` 不写固定账号目录、API endpoint 或密钥值；`cc-aip` 只固定账号目录和 endpoint，API Key 仍从父进程环境继承。Provider JSON 对未知字段采用严格校验，字段拼写错误会在 `profile list` 或 `profile validate` 阶段直接失败。
 
-切换后可先执行 `sn-cli config validate -c cx` 或 `sn-cli config validate -c cc`。输出会显示实际生效的配置目录和认证环境变量名称，但不会输出 secret 值；Claude 认证变量冲突会出现在 `warnings`。
+切换后可先执行 `sn-cli profile validate cx` 或 `sn-cli profile validate cc`。输出会显示实际生效的配置目录和认证环境变量名称，但不会输出 secret 值；Claude 认证变量冲突会出现在 `warnings`。
 
 API profile 的凭据统一写为 `"api_key": "${OPENROUTER_API_KEY}"`；明文、`"OPENROUTER_API_KEY"` 和 `"$OPENROUTER_API_KEY"` 均会被拒绝。audit proxy 的上游值使用 `"upstreams": ["${HTTP_PROXY}"]`，不再通过字段保存环境变量名。旧 `api_key_env` 与 `upstream_proxy_env` 字段不兼容并会被严格 schema 校验拒绝。
 
@@ -417,7 +451,7 @@ managed run 位于：
 ~/.sn/runs/loop/<YYYY-MM-DD>/<loop_id>/
 ```
 
-标准文件包括 `request.json`、`status.json`、`events.jsonl`、`output.log` 和 `result.json`。tmux managed task 还使用空 `done` 文件，native Provider 使用 `native-snapshot.json`，API Agent Runtime 使用 `context-snapshot.json`。
+标准文件包括 `request.json`、`status.json`、`events.jsonl`、`output.log` 和 `result.json`。Provider 启动后的 `output.log` 只追加；同步 `run` 只跟随 stream marker 后的新增内容，日志 header 不进入终端。tmux managed task 还使用空 `done` 文件，native Provider 使用 `native-snapshot.json`，API Agent Runtime 使用 `context-snapshot.json`。
 
 tmux managed task 只有在合法 `result.json` 和空 `done` 同时存在时才算完成。stdout、pane 静默或单独完成标记都不能替代该契约。
 

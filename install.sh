@@ -249,9 +249,16 @@ if [ -d "$SN_CLI_HOME/configs" ]; then
   sync_missing "$SN_CLI_HOME/configs" "$MERGED_HOME/configs" 1
 fi
 sync_missing "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1
-SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profiles >/dev/null || die "new sn-cli failed config validation"
+SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" system migrate-config >/dev/null || \
+  die "new sn-cli failed config migration"
+SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profile list >/dev/null || die "new sn-cli failed config validation"
 
 sync_missing "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs"
+migration_output="$(SN_CLI_HOME="$SN_CLI_HOME" "$PACKAGE_BINARY" system migrate-config)" || \
+  die "new sn-cli failed config migration"
+if ! printf '%s\n' "$migration_output" | grep -Eq '"changed_configs"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]'; then
+  log "migrated obsolete profile config fields"
+fi
 for directory in \
   "$SN_CLI_HOME/configs/personas" "$SN_CLI_HOME/configs/skills" "$SN_CLI_HOME/configs/tools" \
   "$SN_CLI_HOME/bin" "$SN_CLI_HOME/runs" "$SN_CLI_HOME/daemon" "$SN_CLI_HOME/state" \
