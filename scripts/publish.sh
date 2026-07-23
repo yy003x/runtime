@@ -2,80 +2,49 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-}"
-EXPECTED_BRANCH="main"
+TAG="${TAG:-}"
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
 
-if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-  die "VERSION 必须是 SemVer Git tag，例如 make publish VERSION=v0.1.1"
-fi
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=release-lib.sh
+source "$ROOT_DIR/scripts/release-lib.sh"
+require_release_repository
 
-command -v git >/dev/null 2>&1 || die "git is required"
-command -v make >/dev/null 2>&1 || die "make is required"
-git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$ROOT_DIR 不是 Git 仓库"
-
-branch="$(git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-if [ "$branch" != "$EXPECTED_BRANCH" ]; then
-  die "必须在 $EXPECTED_BRANCH 分支发布，当前分支为 ${branch:-detached HEAD}"
-fi
-
-if [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
-  die "工作区必须干净；请先提交或处理所有改动"
-fi
-
-if git -C "$ROOT_DIR" show-ref --tags --verify --quiet "refs/tags/$VERSION"; then
-  die "tag $VERSION 已存在"
-fi
-
-head_tags="$(git -C "$ROOT_DIR" tag --points-at HEAD --list 'v[0-9]*')"
-if [ -n "$head_tags" ]; then
-  head_tag="${head_tags%%$'\n'*}"
-  die "当前 HEAD 已有 release tag ${head_tag}；请先产生新的发布提交"
-fi
-
-head_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-log "[publish] preflight version=$VERSION branch=$branch commit=${head_commit:0:7}"
-make -C "$ROOT_DIR" release-check SN_CLI_VERSION="$VERSION"
-
-if [ "$(git -C "$ROOT_DIR" rev-parse HEAD)" != "$head_commit" ]; then
-  die "release-check 期间 HEAD 发生变化，未创建 tag"
-fi
-if [ "$(git -C "$ROOT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$branch" ]; then
-  die "release-check 期间分支发生变化，未创建 tag"
-fi
-if [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
-  die "release-check 后工作区不再干净，未创建 tag"
-fi
-
-git -C "$ROOT_DIR" tag -a "$VERSION" -m "sn-cli $VERSION"
-log "[publish] created local annotated tag $VERSION"
-
-if ! make -C "$ROOT_DIR" install; then
-  die "tag $VERSION 已创建但本地安装失败；修复后运行 make install，或确认 tag 未 push 后运行 git tag -d $VERSION"
-fi
-
-if [ -n "${SN_CLI_HOME:-}" ]; then
-  runtime_home="$SN_CLI_HOME"
-elif [ -n "${HOME:-}" ]; then
-  runtime_home="$HOME/.sn"
+if [ -n "$TAG" ]; then
+  is_semver_tag "$TAG" || die "TAG 必须是 SemVer，例如 TAG=v0.2.0"
 else
-  die "tag $VERSION 已创建，但 SN_CLI_HOME 与 HOME 均未设置，无法验证安装结果"
+  head_tags="$(git -C "$ROOT_DIR" tag --points-at HEAD --list 'v*')"
+  TAG="$(printf '%s\n' "$head_tags" | latest_stable_tag || true)"
+  [ -n "$TAG" ] || die "当前 HEAD 没有稳定 SemVer release tag；请先执行 make release"
 fi
-installed_binary="$runtime_home/bin/sn-cli"
-if [ ! -x "$installed_binary" ]; then
-  die "tag $VERSION 已创建，但未找到已安装 binary：$installed_binary"
+
+git -C "$ROOT_DIR" show-ref --tags --verify --quiet "refs/tags/$TAG" || die "本地 tag $TAG 不存在"
+[ "$(git -C "$ROOT_DIR" cat-file -t "refs/tags/$TAG")" = "tag" ] || die "tag $TAG 不是 annotated tag"
+tag_commit="$(git -C "$ROOT_DIR" rev-list -n 1 "$TAG")"
+[ "$tag_commit" = "$RELEASE_HEAD" ] || die "tag $TAG 未指向当前 HEAD"
+
+remote_refs="$(remote_tag_refs)" || die "读取 origin tag 列表失败"
+local_tag_oid="$(git -C "$ROOT_DIR" rev-parse "refs/tags/$TAG")"
+existing_remote_oid="$(remote_tag_oid "$remote_refs" "$TAG" || true)"
+if [ -n "$existing_remote_oid" ] && [ "$existing_remote_oid" != "$local_tag_oid" ]; then
+  die "远端 tag $TAG 与本地 tag 不一致，拒绝覆盖"
 fi
-installed_version="$("$installed_binary" --version)"
-if [[ "$installed_version" != "sn-cli $VERSION" && "$installed_version" != "sn-cli $VERSION ("* ]]; then
-  die "tag $VERSION 已创建，但安装版本不匹配：$installed_version"
-fi
+
+verify_repository_unchanged "publish preflight"
+log "[publish] pushing branch=main tag=$TAG commit=${RELEASE_HEAD:0:7}"
+git -C "$ROOT_DIR" push --atomic origin \
+  "refs/heads/main:refs/heads/main" \
+  "refs/tags/$TAG:refs/tags/$TAG"
+
+remote_refs_after="$(remote_tag_refs)" || die "push 后读取 origin tag 列表失败"
+[ "$(remote_tag_oid "$remote_refs_after" "$TAG" || true)" = "$local_tag_oid" ] || die "远端 tag $TAG 回读不一致"
+remote_main_oid="$(git -C "$ROOT_DIR" ls-remote --heads origin refs/heads/main | awk 'NR == 1 {print $1}')"
+[ "$remote_main_oid" = "$RELEASE_HEAD" ] || die "远端 main 回读不一致"
 
 printf 'publish complete\n'
-printf 'version: %s\n' "$VERSION"
-printf 'commit:  %s\n' "$head_commit"
-printf 'tag:     local annotated tag\n'
-printf 'binary:  %s\n' "$installed_binary"
-printf 'verify:  %s\n' "$installed_version"
-printf 'push:    not performed\n'
+printf 'tag:     %s\n' "$TAG"
+printf 'commit:  %s\n' "$RELEASE_HEAD"
+printf 'remote:  origin\n'
+printf 'push:    main + tag (atomic)\n'

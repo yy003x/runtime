@@ -15,37 +15,17 @@ GOCACHE ?= /tmp/go-build
 GOMODCACHE ?= /tmp/go-mod
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
-.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install publish publish-test release release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
 
 COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
 COVERAGE_MIN ?= 65.0
 SN_CLI_OVERWRITE_CONFIGS ?= 1
 
 help:
-	@echo "Available targets:"
-	@echo "  make tidy              - sync go modules"
-	@echo "  make fmt               - format go files"
-	@echo "  make fmt-check         - verify Go formatting without modifying files"
-	@echo "  make test              - run unit tests"
-	@echo "  make test-serial       - run unit tests serially"
-	@echo "  make test-race         - run key race tests"
-	@echo "  make coverage          - enforce repository coverage threshold"
-	@echo "  make build             - build server binary"
-	@echo "  make sn-cli-build      - build sn-cli binary"
-	@echo "  make install           - build/install sn-cli; overwrite same-name configs by default"
-	@echo "                           use SN_CLI_OVERWRITE_CONFIGS=0 to keep existing configs"
-	@echo "  make publish VERSION=vX.Y.Z"
-	@echo "                         - validate, create a local tag and install; never commit/push"
-	@echo "  make publish-test      - test the local publish workflow in temporary Git repositories"
-	@echo "  make release           - build release archives for supported platforms"
-	@echo "  make release-check     - validate, build and smoke-test release assets"
-	@echo "  make provider-smoke    - opt-in real provider smoke (requires SN_REAL_PROVIDER_SMOKE=1)"
-	@echo "  make sn-cli-test       - run sn-cli Go tests"
-	@echo "  make sn-cli-doctor     - run sn-cli system doctor"
-	@echo "  make run               - run HTTP server"
-	@echo "  make dev               - run server with simple auto-restart on file changes"
-	@echo "  make check             - run fmt + test"
-	@echo "  make clean             - remove build output"
+	@echo "Release workflow:"
+	@echo "  make install              - build and install the current checkout"
+	@echo "  make release [TAG=vX.Y.Z] - validate, build assets and create a local annotated tag"
+	@echo "  make publish [TAG=vX.Y.Z] - atomically push main and the current release tag"
 
 tidy:
 	$(GO_ENV) $(GO) mod tidy
@@ -89,8 +69,11 @@ install: sn-cli-build
 
 sn-cli-install: install
 
+release:
+	@TAG="$(TAG)" bash scripts/release.sh
+
 publish:
-	@VERSION="$(VERSION)" bash scripts/publish.sh
+	@TAG="$(TAG)" bash scripts/publish.sh
 
 publish-test:
 	bash scripts/publish-test.sh
@@ -126,7 +109,7 @@ dev:
 
 check: fmt-check test
 
-release:
+release-assets:
 	rm -rf dist
 	mkdir -p dist
 	@set -euo pipefail; \

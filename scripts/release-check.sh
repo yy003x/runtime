@@ -30,7 +30,7 @@ make -C "$ROOT_DIR" test-serial
 env GOCACHE="${GOCACHE:-/tmp/go-build}" GOMODCACHE="${GOMODCACHE:-/tmp/go-mod}" go -C "$ROOT_DIR" vet ./...
 
 log "[release-check] building assets version=$RELEASE_VERSION"
-make -C "$ROOT_DIR" release SN_CLI_VERSION="$RELEASE_VERSION"
+make -C "$ROOT_DIR" release-assets SN_CLI_VERSION="$RELEASE_VERSION"
 
 expected_assets=(checksums.txt)
 for platform in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do

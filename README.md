@@ -355,7 +355,6 @@ make build
 ```bash
 make sn-cli-build
 make build
-make release
 make release-check
 
 go test ./...
@@ -367,34 +366,55 @@ make coverage COVERAGE_MIN=65.0
 git diff --check
 ```
 
-`make release` 生成 darwin/linux、arm64/amd64 的 CLI archive、server binary 和 `checksums.txt`。`make release-check` 执行格式、测试、vet、目录边界、资产/checksum 与离线 smoke 校验。
+内部的 `release-check` 会执行格式、测试、vet、目录边界、四平台资产/checksum 与离线 smoke 校验。
 
-## 本地发布
+## 安装与发布
 
-完成代码提交后，可用一个命令执行发布门禁、创建本地 annotated tag 并安装：
+用户入口固定为三个：
 
 ```bash
-make publish VERSION=v0.1.1
+make install
+make release
+make publish
 ```
 
-`publish` 要求 `VERSION` 符合 `vMAJOR.MINOR.PATCH`、当前分支为 `main`、工作区干净、目标 tag 不存在且当前 HEAD 尚未发布。它依次执行：
+### install
 
-1. `make release-check SN_CLI_VERSION=<VERSION>`
-2. `git tag -a <VERSION> -m "sn-cli <VERSION>"`
-3. `make install`
-4. 回读 `${SN_CLI_HOME:-~/.sn}/bin/sn-cli --version`
+`make install` 构建并安装当前 checkout，不访问远端、不创建 tag。HEAD 正好有 release tag 时安装正式版本，否则版本为 `v0.0.0-dev+<commit>`。默认覆盖发行包内同名 config，并保留 local-only profile；只补缺失配置时使用 `SN_CLI_OVERWRITE_CONFIGS=0`。
 
-该流程不自动 commit、不推断版本号，也不执行 `git push`。如果 tag 创建后本地安装失败，tag 会保留；修复后可重新执行 `make install`，或确认 tag 尚未 push 后手动删除。
+### release
 
-需要发布 GitHub Release 时，仍显式推送 commit 与 tag：
+`make release` 要求位于干净的 `main`。它读取本地 tag 与 `origin` 的远端 tag，按稳定 SemVer 取最高版本并自动增加 patch；没有任何 tag 时从 `v0.1.0` 开始。随后执行完整 release gate、生成 `dist/` 并创建本地 annotated tag，不安装、不 push。
 
 ```bash
-git push origin main
-git push origin v0.1.1
+make release
 ```
 
-tag push 会触发 `.github/workflows/release.yml`。发布编排测试使用临时 Git 仓库，不修改真实 tag：
+需要升级 minor/major 或使用 prerelease 时显式指定：
 
 ```bash
-make publish-test
+make release TAG=v0.2.0
+make release TAG=v1.0.0-rc.1
+```
+
+### publish
+
+`make publish` 要求位于干净的 `main`，默认选择当前 HEAD 上版本最高的本地稳定 SemVer annotated tag，并验证它确实指向 HEAD。然后读取远端 tag 防止同名冲突，使用 atomic push 同时更新 `origin/main` 与该 tag；它不构建、不测试、不创建 tag、不安装，也不 force。
+
+```bash
+make publish
+```
+
+也可显式指定当前 HEAD 上的 tag：
+
+```bash
+make publish TAG=v0.2.0
+```
+
+tag push 会触发 `.github/workflows/release.yml` 创建 GitHub Release。标准发布顺序是：
+
+```bash
+make release
+make install
+make publish
 ```
