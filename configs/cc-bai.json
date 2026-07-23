@@ -1,6 +1,9 @@
 {
   "command": "claude",
+  "model": "glm-5.2",
+  "effort": "high",
   "args": [
+    "--dangerously-skip-permissions",
     "--permission-mode", "bypassPermissions",
     "--disallowed-tools", "Bash(rm -rf:*)", "Bash(sudo:*)", "Bash(su:*)", "Bash(git push --force:*)"
   ],
@@ -12,9 +15,10 @@
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.2",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-5.2",
     "ANTHROPIC_MODEL": "glm-5.2",
     "API_TIMEOUT_MS": "300000",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "CLAUDE_CODE_EFFORT_LEVEL": "high",
     "CLAUDE_CODE_SUBAGENT_MODEL": "glm-5.2",
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"
   },

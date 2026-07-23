@@ -267,17 +267,37 @@ func TestPrintHelpDocumentsCanonicalNamespacesOnly(t *testing.T) {
 		"run list|show",
 		"session run|submit|open",
 		"profile list|show|validate|command|exec",
-		"system doctor|start|status|stop|restart|migrate-config|update",
+		"system doctor|start|status|stop|restart|update",
+		"<CLI profile>      native direct execution",
+		"<API profile>      direct typed API request",
+		"--version        Show the Git tag version and build metadata.",
 		"Runtime options must appear before <profile>",
+		"${SN_CLI_HOME:-~/.sn}",
 	} {
 		if !strings.Contains(stdout, text) {
 			t.Fatalf("help missing %q:\n%s", text, stdout)
 		}
 	}
-	for _, removed := range []string{"Legacy aliases", "providers ->", "upgrade ->", "sn-cli task ", "sn-cli history ", "<profile> run|submit", "reconcile|command", "<profile> -- [raw-cli-args", "Runtime separator", "CLI receives it literally"} {
+	for _, removed := range []string{"Legacy aliases", "providers ->", "upgrade ->", "sn-cli task ", "sn-cli history ", "sn-cli version", "<profile> run|submit", "reconcile|command", "<profile> -- [raw-cli-args", "Runtime separator", "CLI receives it literally", "Installed binary: ~/.sn/bin/sn-cli"} {
 		if strings.Contains(stdout, removed) {
 			t.Fatalf("help contains removed command %q:\n%s", removed, stdout)
 		}
+	}
+}
+
+func TestGlobalHelpAndVersionDoNotRequireRuntimeHome(t *testing.T) {
+	blockedHome := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedHome, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SN_CLI_HOME", blockedHome)
+	for _, args := range [][]string{{}, {"--help"}, {"-h"}, {"--version"}} {
+		if code, output := captureMain(t, args); code != 0 {
+			t.Fatalf("Main(%q) code=%d output=%q", args, code, output)
+		}
+	}
+	if code, output := captureMain(t, []string{"profile", "list"}); code == 0 || !strings.Contains(output, "create runtime directory") {
+		t.Fatalf("profile list code=%d output=%q, want runtime home error", code, output)
 	}
 }
 

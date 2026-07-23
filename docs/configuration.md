@@ -40,7 +40,7 @@
 | `effort` | 推理等级；Codex 映射为 `model_reasoning_effort`，Claude 映射为 `--effort` | 否 |
 | `args` | native direct 与 managed execution 共用的基础 argv；每个元素对应一个 argv token | 否 |
 | `env` | 子进程环境；string 表示设置，`null` 表示删除 | 否 |
-| `timeout_seconds` | managed execution 与 direct API/native request 的 deadline；native direct CLI 由目标程序管理生命周期 | 否 |
+| `timeout_seconds` | managed execution 与 direct API request 的 deadline；native direct CLI 由目标程序管理生命周期 | 否 |
 
 顶层 `sn-cli <profile> [args...]` 使用 native direct 模式，不自动增加子命令，所有参数按原生 argv 传递。显式 `profile exec`、`session run|submit`、Loop 与 HTTP Run 才根据 `command` basename 选择 managed adapter：
 
@@ -89,13 +89,22 @@ API profile 固定为四个必填字段，另有可选 headers 与超时：
 | 字段 | 作用 |
 | --- | --- |
 | `protocol` | `openai` 或 `anthropic`；必须显式提供 |
-| `base_url` | compatible endpoint 的基础 URL |
+| `base_url` | compatible endpoint 的绝对 HTTP(S) 基础 URL |
 | `model` | 请求模型 ID |
 | `api_key` | 只能是完整 `${ENV_VAR}` 引用，禁止明文 |
 | `headers` | 可选固定请求 headers；value 支持 `${VAR}` 展开 |
 | `timeout_seconds` | 可选的 profile deadline |
 
-认证 header 由 Runtime 根据协议与 endpoint 选择，不配置 `auth`。`headers` 不能覆盖 `Authorization`、`Proxy-Authorization` 或 `x-api-key`，这些认证字段只由 `api_key` 生成。公开 profile 不接受 `stream`、`mock` 或 `runtime`；单次请求参数通过调用入口的 typed options 提供。
+认证 header 由 Runtime 根据协议与 endpoint 生成。`headers` 不能覆盖 `Authorization`、`Proxy-Authorization` 或 `x-api-key`。单次请求参数通过调用入口的 typed options 提供。
+
+Runtime 统一规范化 OpenAI 与 Anthropic endpoint：
+
+- `base_url` 末段没有显式 `vN` 版本时自动补 `/v1`。
+- 已以 `/v1`、`/v2` 等版本段结尾时不重复追加版本。
+- 已包含完整 `chat/completions` 或 `messages` endpoint 时保持幂等。
+- OpenAI 最终追加 `chat/completions`，Anthropic 最终追加 `messages`。
+
+例如，OpenAI 的 `https://example.test/compatible-mode` 与 `https://example.test/compatible-mode/v1` 都解析为 `https://example.test/compatible-mode/v1/chat/completions`；Anthropic 的 `https://example.test/apps/anthropic` 与 `https://example.test/apps/anthropic/v1` 都解析为 `https://example.test/apps/anthropic/v1/messages`。`base_url` 必须是绝对 HTTP(S) URL，不能包含 fragment。
 
 API Provider 后只接受有限的请求级 typed options 与最后一个 quoted prompt：
 
@@ -107,30 +116,6 @@ sn-cli session run --session-id <id> api-cx --temperature 0.2 "hi"
 ```
 
 支持的 option 是 `--model`、`--max-tokens`、`--temperature`、`--stream|--no-stream`。未知 option、多 positional prompt、命令行 `protocol/base_url/api_key/headers` 都会拒绝。
-
-## 不再属于 profile 的字段
-
-以下能力不进入公开 JSON schema：
-
-- `type`、`cli`、`api`：由 `command` 或 API 四字段自动识别，不再使用 wrapper。
-- `native`：不再是可加载的 profile family。
-- `executor`、`tmux`：tmux 是 Session carrier，使用 `sn-cli session open --carrier tmux <profile>`。
-- `prompt_delivery`、`prompt_args`：由内部适配器固定管理。
-- `env_passthrough`、`env_unset`：分别改为 `env.NAME="${NAME}"` 与 `env.NAME=null`。
-- `override_policy`：profile 不再决定调用方权限；CLI profile 尾参数原样透传，API CLI 入口和 HTTP/Go 结构化调用按 adapter 的固定字段校验。
-- `depends`、`execution`：依赖进程、proxy/shim 不再由 profile 启动。
-
-## 显式迁移
-
-普通加载严格且只读，不会修改文件。旧配置使用：
-
-```bash
-sn-cli system migrate-config
-```
-
-迁移会把旧 `type/cli/api` wrapper、`driver/binary`、嵌套 `command/runtime`、默认 `managed_args`、`api.auth` 和 embedded presets 转为扁平独立文件，并把 `env_passthrough/env_unset` 合并进 `env`。旧 `native`、profile 内 tmux、`depends/execution`、非默认 prompt 或 API 高级运行字段无法等价表达时会明确报错，不会静默改变行为。
-
-迁移同时删除旧 `runtime.yaml` 的路径字段，并把旧 `configs/{personas,skills,tools,schema}` 中缺失的资源复制到 `resources/`；旧资源不删除，已有目标不覆盖。
 
 ## runtime.yaml
 
@@ -147,4 +132,4 @@ session:
     driver: ghostty
 ```
 
-`session.default_carrier` 支持 `tmux|terminal`；`session.terminal.driver` 支持 `ghostty|iterm2`。路径由 Runtime layout 固定，不接受配置覆盖。
+`session.default_carrier` 支持 `tmux|terminal`；`session.terminal.driver` 支持 `ghostty|iterm2`。Runtime 目录由 layout 固定。

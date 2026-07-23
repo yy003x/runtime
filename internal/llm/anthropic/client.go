@@ -94,7 +94,11 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, e
 	var statusCode int
 
 	for attempt := 1; attempt <= maxRetriesOn529; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicEndpoint(c.baseURL), bytes.NewReader(payload))
+		endpoint, err := llm.ResolveCompatibleEndpoint(c.baseURL, "messages")
+		if err != nil {
+			return llm.Response{}, err
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 		if err != nil {
 			return llm.Response{}, fmt.Errorf("build anthropic request: %w", err)
 		}
@@ -213,13 +217,6 @@ func buildTools(tools []llm.Tool) []toolPayload {
 		out = append(out, toolPayload{Name: tool.Name, Description: tool.Description, InputSchema: tool.Parameters})
 	}
 	return out
-}
-
-func anthropicEndpoint(baseURL string) string {
-	if strings.HasSuffix(baseURL, "/v1") {
-		return baseURL + "/messages"
-	}
-	return baseURL + "/v1/messages"
 }
 
 func readLimited(reader io.Reader, limit int64) ([]byte, error) {

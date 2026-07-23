@@ -294,8 +294,6 @@ fi
 if [ -d "$SN_CLI_HOME/resources" ]; then
   sync_missing "$SN_CLI_HOME/resources" "$MERGED_HOME/resources" 1
 fi
-SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" system migrate-config >/dev/null || \
-  die "new sn-cli failed runtime-home migration"
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
   sync_overwrite "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1 config
 else
@@ -304,16 +302,6 @@ fi
 sync_missing "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1
 SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profile list >/dev/null || die "new sn-cli failed config validation"
 
-if [ -d "$SN_CLI_HOME/configs" ]; then
-  migration_output="$(SN_CLI_HOME="$SN_CLI_HOME" "$PACKAGE_BINARY" system migrate-config)" || \
-    die "new sn-cli failed runtime-home migration"
-else
-  migration_output='{"changed_configs":[],"copied_resources":[]}'
-fi
-if ! printf '%s\n' "$migration_output" | grep -Eq '"changed_configs"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' || \
-   ! printf '%s\n' "$migration_output" | grep -Eq '"copied_resources"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]'; then
-  log "migrated legacy runtime home"
-fi
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
   sync_overwrite "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 config
 else
@@ -348,9 +336,6 @@ mv -f "$NEW_LINK" "$LINK"
 
 log "installed binary: $TARGET_BINARY"
 log "installed command: $LINK"
-if [ -d "$HOME/.sn-cli/runtime" ]; then
-  log "note: the legacy source checkout was preserved but is no longer used"
-fi
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) log "PATH hint: add $INSTALL_DIR to PATH" ;;

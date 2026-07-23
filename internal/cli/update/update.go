@@ -30,13 +30,11 @@ type Status struct {
 }
 
 type ApplyResult struct {
-	Version           string   `json:"version"`
-	Archive           string   `json:"archive"`
-	Binary            string   `json:"binary"`
-	CopiedConfigs     []string `json:"copied_configs"`
-	CopiedResources   []string `json:"copied_resources"`
-	MigratedConfigs   []string `json:"migrated_configs"`
-	MigratedResources []string `json:"migrated_resources"`
+	Version         string   `json:"version"`
+	Archive         string   `json:"archive"`
+	Binary          string   `json:"binary"`
+	CopiedConfigs   []string `json:"copied_configs"`
+	CopiedResources []string `json:"copied_resources"`
 }
 
 type state struct {
@@ -161,9 +159,6 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	} else if err != nil && !os.IsNotExist(err) {
 		return ApplyResult{}, err
 	}
-	if _, err := installbundle.MigrateHome(mergedConfigs, mergedResources); err != nil {
-		return ApplyResult{}, err
-	}
 	if _, err := installbundle.SyncMissing(packagedConfigs, mergedConfigs); err != nil {
 		return ApplyResult{}, err
 	}
@@ -172,15 +167,6 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	}
 	if err := validateBinary(ctx, binary, mergedHome); err != nil {
 		return ApplyResult{}, err
-	}
-	migrationResult := installbundle.HomeMigrationResult{ChangedConfigs: []string{}, CopiedResources: []string{}}
-	if info, statErr := os.Stat(cfg.Paths.ConfigDir); statErr == nil && info.IsDir() {
-		migrationResult, err = installbundle.MigrateHome(cfg.Paths.ConfigDir, cfg.Paths.ResourcesDir)
-		if err != nil {
-			return ApplyResult{}, err
-		}
-	} else if statErr != nil && !os.IsNotExist(statErr) {
-		return ApplyResult{}, statErr
 	}
 	syncResult, err := installbundle.SyncMissing(packagedConfigs, cfg.Paths.ConfigDir)
 	if err != nil {
@@ -196,7 +182,6 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	result := ApplyResult{
 		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
 		CopiedConfigs: syncResult.Copied, CopiedResources: resourceSyncResult.Copied,
-		MigratedConfigs: migrationResult.ChangedConfigs, MigratedResources: migrationResult.CopiedResources,
 	}
 	_ = writeState(cfg, Status{CheckedAt: time.Now().UTC(), CurrentVersion: version, LatestVersion: version})
 	return result, nil

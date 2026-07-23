@@ -96,7 +96,11 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, e
 		return llm.Response{}, fmt.Errorf("marshal openai request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(payload))
+	endpoint, err := llm.ResolveCompatibleEndpoint(c.baseURL, "chat/completions")
+	if err != nil {
+		return llm.Response{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return llm.Response{}, fmt.Errorf("build openai request: %w", err)
 	}

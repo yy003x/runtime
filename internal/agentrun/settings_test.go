@@ -31,7 +31,7 @@ func TestRuntimeSettingsRejectUnknownCarrierAndTerminalDriver(t *testing.T) {
 	for name, body := range map[string]string{
 		"carrier":          "session:\n  default_carrier: screen\n",
 		"driver":           "session:\n  terminal:\n    driver: auto\n",
-		"unknown":          "runs_dir: ignored/legacy\n",
+		"unknown":          "unsupported: true\n",
 		"negative-timeout": "default_deadline_seconds: -1\n",
 	} {
 		t.Run(name, func(t *testing.T) {

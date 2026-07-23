@@ -8,8 +8,12 @@ RELEASE_VERSION="${SN_CLI_VERSION:-release-check}"
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'release-check: %s\n' "$*" >&2; exit 1; }
 
+if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+  die "SN_CLI_VERSION must be a SemVer Git tag such as v0.1.0: $RELEASE_VERSION"
+fi
+
 log "[release-check] validating source"
-required_configs=(api-cc.json api-cx.json cc-bai.json cc-glm.json cc.json commit.json cx-image.json cx-spark.json cx.json mcc.json mcx.json runtime.yaml)
+required_configs=(api-cc.json api-cx.json cc-bai.json cc.json commit.json cx-adv.json cx-image.json cx.json runtime.yaml)
 for config in "${required_configs[@]}"; do
   [ -f "$ROOT_DIR/configs/$config" ] || die "missing required config template: $config"
 done
@@ -69,15 +73,7 @@ cleanup() {
 trap cleanup EXIT
 
 log "[release-check] installing and exercising $archive"
-mkdir -p \
-  "$runtime_home/configs/personas" "$runtime_home/configs/skills/review" \
-  "$runtime_home/configs/tools" "$runtime_home/configs/schema" \
-  "$runtime_home/resources/personas"
-printf '%s\n' "legacy persona" >"$runtime_home/configs/personas/local.yaml"
-printf '%s\n' "name: review" >"$runtime_home/configs/skills/review/skill.yaml"
-printf '%s\n' "name: legacy-tool" >"$runtime_home/configs/tools/legacy.tool.yaml"
-printf '%s\n' '{}' >"$runtime_home/configs/schema/legacy.schema.json"
-printf '%s\n' "user persona" >"$runtime_home/resources/personas/local.yaml"
+mkdir -p "$runtime_home/configs" "$runtime_home/resources"
 printf '%s\n' '{"command":"/bin/true"}' >"$runtime_home/configs/cx.json"
 printf '%s\n' '{"command":"/bin/true"}' >"$runtime_home/configs/local-only.json"
 bash "$ROOT_DIR/install.sh" \
@@ -99,14 +95,6 @@ cmp "$ROOT_DIR/configs/cx.json" "$runtime_home/configs/cx.json" >/dev/null || \
 grep -q '"/bin/true"' "$runtime_home/configs/local-only.json" || \
   die "--overwrite-configs removed or changed a local-only profile"
 
-for resource in skills/review/skill.yaml tools/legacy.tool.yaml schema/legacy.schema.json; do
-  cmp "$runtime_home/configs/$resource" "$runtime_home/resources/$resource" >/dev/null || \
-    die "legacy resource was not copied safely: $resource"
-done
-[ "$(sed -n '1p' "$runtime_home/configs/personas/local.yaml")" = "legacy persona" ] || \
-  die "legacy persona source was changed"
-[ "$(sed -n '1p' "$runtime_home/resources/personas/local.yaml")" = "user persona" ] || \
-  die "existing persona resource was overwritten"
 for directory in personas skills tools schema; do
   [ -d "$runtime_home/resources/$directory" ] || die "missing runtime resource directory: $directory"
 done
@@ -114,7 +102,10 @@ for schema in provider-profile.schema.json runtime.schema.json; do
   [ -f "$runtime_home/resources/schema/$schema" ] || die "release did not install schema resource: $schema"
 done
 
-SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --version >/dev/null
+version_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --version)"
+if [[ "$version_output" != "sn-cli $RELEASE_VERSION" && "$version_output" != "sn-cli $RELEASE_VERSION ("* ]]; then
+  die "release binary version mismatch: $version_output"
+fi
 doctor_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" system doctor --json)"
 printf '%s\n' "$doctor_output" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*1' || \
   die "doctor output has no supported contract_version"

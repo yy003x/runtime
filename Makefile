@@ -3,8 +3,8 @@ SHELL := /bin/bash
 APP_NAME ?= sn-server
 SERVER_ADDR ?= :8080
 SN_CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-SN_CLI_TAG ?= $(shell git describe --tags --exact-match 2>/dev/null)
-SN_CLI_DIRTY ?= $(shell test -n "$$(git status --porcelain --untracked-files=no 2>/dev/null)" && echo true || echo false)
+SN_CLI_TAG ?= $(shell git describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null)
+SN_CLI_DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
 SN_CLI_VERSION ?= $(if $(strip $(SN_CLI_TAG)),$(SN_CLI_TAG),v0.0.0-dev+$(SN_CLI_COMMIT))
 SN_CLI_BUILDDATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 RUNTIME_LDFLAGS := -X agent-runtime/internal/agentrun.Version=$(SN_CLI_VERSION)

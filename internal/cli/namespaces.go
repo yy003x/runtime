@@ -8,7 +8,6 @@ import (
 
 	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/installbundle"
 	"agent-runtime/internal/provider"
 )
 
@@ -256,7 +255,7 @@ func profilePublicView(profile provider.Config, profiles map[string]provider.Con
 
 func runSystemNamespace(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: system doctor|start|status|stop|restart|migrate-config|update")
+		return fmt.Errorf("usage: system doctor|start|status|stop|restart|update")
 	}
 	switch args[0] {
 	case "doctor":
@@ -271,15 +270,6 @@ func runSystemNamespace(cfg *config.Config, args []string) error {
 			return fmt.Errorf("system %s does not accept arguments", args[0])
 		}
 		return runDaemonCommand(cfg, []string{args[0]})
-	case "migrate-config":
-		if len(args) != 1 {
-			return fmt.Errorf("system migrate-config does not accept arguments")
-		}
-		result, err := installbundle.MigrateHome(cfg.Paths.ConfigDir, cfg.Paths.ResourcesDir)
-		if err != nil {
-			return err
-		}
-		return printJSON(result)
 	case "update":
 		return runUpdate(cfg, args[1:])
 	default:

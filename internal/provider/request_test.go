@@ -176,9 +176,18 @@ func TestPrepareRejectsLockedOverride(t *testing.T) {
 func TestExecuteOpenAIAndAnthropicAPI(t *testing.T) {
 	for _, protocol := range []string{"openai", "anthropic"} {
 		t.Run(protocol, func(t *testing.T) {
+			basePath := "/compatible-mode"
+			wantPath := "/compatible-mode/v1/chat/completions"
+			if protocol == "anthropic" {
+				basePath = "/apps/anthropic"
+				wantPath = "/apps/anthropic/v1/messages"
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					t.Fatalf("method=%s", r.Method)
+				}
+				if r.URL.Path != wantPath {
+					t.Fatalf("path=%q want=%q", r.URL.Path, wantPath)
 				}
 				body, _ := io.ReadAll(r.Body)
 				var payload map[string]any
@@ -206,7 +215,7 @@ func TestExecuteOpenAIAndAnthropicAPI(t *testing.T) {
 			}))
 			defer server.Close()
 			t.Setenv("TEST_PROVIDER_KEY", "secret")
-			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "${TEST_PROVIDER_KEY}"}}
+			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{Protocol: protocol, BaseURL: server.URL + basePath, Model: "test-model", APIKey: "${TEST_PROVIDER_KEY}"}}
 			prepared, err := Prepare(cfg, "hello", nil)
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)

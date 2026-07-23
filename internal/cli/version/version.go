@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	Version   = "0.1.0"
+	Version   = "v0.0.0-dev"
 	Commit    = ""
 	BuildDate = ""
 	Dirty     = "false"
@@ -19,7 +19,7 @@ func init() {
 	if !ok || info == nil {
 		return
 	}
-	if Version == "" || Version == "0.1.0" {
+	if Version == "" || Version == "v0.0.0-dev" {
 		if v := info.Main.Version; v != "" && v != "(devel)" {
 			Version = v
 		}

@@ -13,7 +13,7 @@ Go Runtime 是会话输入、输出、运行关系和上下文清单的唯一 ow
 - `Execution` 表示 API、managed CLI、tmux 或 terminal 执行容器；交互 carrier Execution 可以跨 Turn。
 - `result.json` 仍是单次 run 的不可变结果；Session 通过 `result_ref` 引用，不复制结果事实。
 - `History` 是从 Session 构建的可重建查询视图，不是第二套事实源。
-- Workbench UI/BFF 只调用 Runtime CLI/HTTP，不再自行维护 `messages.jsonl`。
+- Workbench UI/BFF 通过 Runtime CLI/HTTP 访问会话数据。
 
 关系如下：
 
@@ -51,7 +51,7 @@ Execution(API/cli_managed/tmux/terminal) 与 Turn 正交关联
 ├── state/
 │   ├── runs/
 │   └── sessions/locks/
-└── memory/                         # legacy/manual global capability，不由 Session Agent 自动读取
+└── memory/                         # 显式管理的全局 capability
     ├── durable.json
     └── candidates.json
 ```
@@ -62,7 +62,7 @@ Execution(API/cli_managed/tmux/terminal) 与 Turn 正交关联
 - `runs/` 是一次执行的 artifact，不保存长期会话正文。
 - `history/index.json` 仅用于 list/filter；损坏或丢失可由 Store 从 Session 事实重建，不暴露额外 CLI 层级。
 - `state/` 只保存活动锁、registry、lease 等运行态。
-- 不再复制 Session history 到 archive，也不从 run 目录反向拼装 UI 会话。
+- Session 正文只保存在 `sessions/`，UI 直接读取规范化会话数据。
 
 ## 3. 标识与状态
 
@@ -100,7 +100,7 @@ Session 独立使用 `idle | active | blocked | archived`，不得把最后一�
 | --- | --- | --- | --- |
 | 普通 HTTP/API Run | off | - | structured |
 | 顶层 CLI profile native direct | off | - | - |
-| 顶层 API/native profile direct request | off | - | - |
+| 顶层 API profile direct request | off | - | - |
 | `profile exec` | off | - | - |
 | `skill run` | off | - | - |
 | `session run|submit` | full | standard | structured/parsed |
@@ -108,7 +108,7 @@ Session 独立使用 `idle | active | blocked | archived`，不得把最后一�
 | `session open --carrier terminal` | full | standard | transcript_only |
 | help/version/profile validate | off | - | - |
 
-顶层 native direct、direct API/native request、`profile exec` 和 `skill run` 都不进入 Session；需要记录必须显式使用 `session run|submit|open`。
+顶层 native direct、direct API request、`profile exec` 和 `skill run` 都不进入 Session；需要记录必须显式使用 `session run|submit|open`。
 
 ## 5. result 复用
 
@@ -140,13 +140,13 @@ tmux 退出时也写公共 `result.json`，但固定标记 `result_kind=executio
 
 manifest 不写 token、secret、cookie、Authorization、完整环境变量或 tool 参数原文。Provider 事件进入 Session history 前再次做敏感 key 脱敏。
 
-Runtime 从最近 14 条规范化 `user/assistant` 消息编译实际 Provider 输入：API/native 使用结构化 messages，managed CLI 使用带边界标记的历史块。切换 Provider 时重新编译，不复用 Provider 私有 snapshot。
+Runtime 从最近 14 条规范化 `user/assistant` 消息编译实际 Provider 输入：API 使用结构化 messages，managed CLI 使用带边界标记的 history block。切换 Provider 时重新编译，不复用 Provider 私有 snapshot。
 
 managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话，并可读取 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`、`SN_RUNTIME_MEMORY_INPUT_FILE`。这些环境变量是复用入口，不赋予绕过 capability permission 的权限。
 
 ## 7. Skill、Tool 与 Memory
 
-- API/native runtime 的 tool lifecycle 通过 Provider `Sink.Event` 同步到 Session events。
+- API runtime 的 tool lifecycle 通过 Provider `Sink.Event` 同步到 Session events。
 - managed CLI/tmux 只能记录 Runtime 已装配的 context manifest 和可观察 transcript；没有 Provider 结构化事件时不推断 tool call。
 - Runtime working memory 只来自当前 Session 的 `memory/working.json`；无显式 Session 的 Run 不自动加载或固化长期 memory。
 - API Agent 的 `memory_write` 只写当前 Session 的 `memory/candidates.json`，ID 由 Runtime 生成，并携带 Session/Turn/Run provenance，返回 `promoted=false`。
@@ -208,16 +208,16 @@ POST /v1/sessions/{session_id}/turns
 - UI 会话 list/show/message/stop/configure 不直接读取 `~/.sn`。
 - UI 的 profile list/validate/command preview 来自 `sn-cli profile list|validate|command`，避免 Workbench 配置与实际执行 profile 漂移。
 - UI 不需要展示或续轮的 batch Agent 任务通过 `sn-cli profile exec <profile> <prompt>` 执行，不产生本地记录；CLI 的 `sn-cli <profile> <args...>` 保留给原生 TTY。需要本地会话展示的任务使用 `sn-cli session run`，形成 standard Session。
-- UI 的 `/api/runtime/runs` 长任务面板通过逻辑 Session 与 `sn-cli session/run` namespace 启动、查询、续轮、日志和停止；Session ID、Run ID 和 Execution ID 分别暴露，不再把逻辑 Session ID 伪装成 Run ID。
-- Workbench 不再接受 `command` / `provider_env` 直传执行，binary、args 与 env 必须由独立的 `sn-cli` profile 声明并校验，避免 BFF 绕过 Runtime 配置 owner。
-- Workbench 不保留 Session/History 迁移器或双写路径；现行会话只写 Go Runtime。
+- UI 的 `/api/runtime/runs` 长任务面板通过逻辑 Session 与 `sn-cli session/run` namespace 启动、查询、续轮、日志和停止；Session ID、Run ID 和 Execution ID 分别暴露。
+- binary、args 与 env 由独立的 `sn-cli` profile 声明并校验，BFF 只传 Runtime 允许的结构化参数。
+- 会话数据由 Go Runtime 单点写入。
 - Workbench 的业务 knowledge、outputs、project config 继续由 Workbench owner 管理。
 
 因此不维护两份通用 Runtime：Go 负责 Provider、execution、run、session、history、context 和 Session memory；Python 只负责 HTTP BFF、UI view model、Workbench project/global memory 与业务编排。
 
 ## 11. 已知边界
 
-- 顶层 native direct、direct API/native request、`profile exec` 和 `skill run` 不进入 Session，因此不记录 metadata、transcript 或 Run artifact。
+- 顶层 native direct、direct API request、`profile exec` 和 `skill run` 不进入 Session，因此不记录 metadata、transcript 或 Run artifact。
 - tmux/terminal transcript 不是结构化 assistant final text。
 - `history/index.json` 当前是本地可重建 JSON 索引，不承诺 O(log n) 或全文搜索；达到查询压力后可在 Store 接口后替换为 SQLite/FTS。
 - SSE/WebSocket、ephemeral 自动 GC、Provider 专属结构化 TTY adapter 属于后续增强，不得在文档中宣称已完成。

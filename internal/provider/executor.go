@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 
 	"agent-runtime/internal/daemon"
 	"agent-runtime/internal/executor"
+	"agent-runtime/internal/llm"
 )
 
 type Result struct {
@@ -164,7 +164,7 @@ func ExecuteAPI(ctx context.Context, client *http.Client, cfg Config, request AP
 	if err != nil {
 		return Result{ExitCode: 1}, fmt.Errorf("marshal API request: %w", err)
 	}
-	endpoint, err := joinURL(api.BaseURL, request.Endpoint)
+	endpoint, err := llm.ResolveCompatibleEndpoint(api.BaseURL, request.Endpoint)
 	if err != nil {
 		return Result{ExitCode: 1}, err
 	}
@@ -210,15 +210,6 @@ func ExecuteAPI(ctx context.Context, client *http.Client, cfg Config, request AP
 		return Result{Stdout: string(body), ExitCode: 1}, err
 	}
 	return Result{Stdout: string(body), FinalText: text}, nil
-}
-
-func joinURL(base, endpoint string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(base, "/") + "/")
-	if err != nil {
-		return "", fmt.Errorf("invalid API base_url: %w", err)
-	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + strings.TrimLeft(endpoint, "/")
-	return parsed.String(), nil
 }
 
 func parseAPIText(body []byte, protocol string) (string, error) {

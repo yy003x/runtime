@@ -35,7 +35,12 @@
       "required": ["protocol", "base_url", "model", "api_key"],
       "properties": {
         "protocol": { "enum": ["openai", "anthropic"] },
-        "base_url": { "type": "string", "minLength": 1 },
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "description": "OpenAI/Anthropic-compatible 的绝对 HTTP(S) 基础 URL。末段没有 vN 版本时 Runtime 自动补 /v1；已有版本段或完整 endpoint 时不重复追加。"
+        },
         "model": { "type": "string", "minLength": 1 },
         "api_key": {
           "type": "string",

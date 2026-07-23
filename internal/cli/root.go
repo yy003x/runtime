@@ -19,10 +19,6 @@ import (
 )
 
 func Main(args []string) int {
-	cfg, err := config.Load()
-	if err != nil {
-		return fail(err)
-	}
 	if len(args) == 0 {
 		printHelp()
 		return 0
@@ -30,8 +26,16 @@ func Main(args []string) int {
 	switch args[0] {
 	case "-h", "--help":
 		printHelp()
+		return 0
 	case "--version":
 		fmt.Println(version.String())
+		return 0
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fail(err)
+	}
+	switch args[0] {
 	case "run":
 		return exit(runRunNamespace(cfg, args[1:]))
 	case "session":
@@ -58,7 +62,6 @@ func Main(args []string) int {
 		}
 		return fail(fmt.Errorf("unknown command %q", args[0]))
 	}
-	return 0
 }
 
 func runResolvedProfile(cfg *config.Config, profile provider.Config, args []string) (int, error) {
@@ -249,29 +252,31 @@ Namespaces:
   sn-cli run list|show|logs|result|watch|cancel|reconcile
   sn-cli session run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
   sn-cli profile list|show|validate|command|exec
-  sn-cli system doctor|start|status|stop|restart|migrate-config|update
+  sn-cli system doctor|start|status|stop|restart|update
   sn-cli loop run|list|show|logs|cancel
   sn-cli skill list|show|run
   sn-cli tool list|show|call
   sn-cli memory list|recall|add|remove|promote
 
 Global flags:
-  -h, --help
-  --version
+  -h, --help       Show this Runtime help.
+  --version        Show the Git tag version and build metadata.
 
 Execution:
-  <profile>          native direct execution in the current TTY; no Runtime record
+  <CLI profile>      native direct execution in the current TTY; no Runtime record
+  <API profile>      direct typed API request; no Runtime record
   profile exec       explicit unrecorded batch execution
-  session run       synchronous recorded execution
-  session submit    asynchronous recorded execution
+  session run        synchronous recorded execution
+  session submit     asynchronous recorded execution
+  session open       recorded interactive carrier execution
 
 Routing:
   CLI profile        every token after <profile> is passed to the native command
-  API profile        typed options followed by one final quoted prompt, or stdin
+  API profile        --model/--max-tokens/--temperature/--stream and one prompt
   Session options    Runtime options must appear before <profile>
 
-Installed binary: ~/.sn/bin/sn-cli
-Configuration:    ~/.sn/configs`)
+Runtime home:      ${SN_CLI_HOME:-~/.sn}
+Profile configs:   <runtime-home>/configs`)
 }
 
 func printUpdateHelp() {
