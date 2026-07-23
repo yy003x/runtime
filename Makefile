@@ -15,7 +15,7 @@ GOCACHE ?= /tmp/go-build
 GOMODCACHE ?= /tmp/go-mod
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
-.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install release release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install publish publish-test release release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor
 
 COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
 COVERAGE_MIN ?= 65.0
@@ -34,6 +34,9 @@ help:
 	@echo "  make sn-cli-build      - build sn-cli binary"
 	@echo "  make install           - build/install sn-cli; overwrite same-name configs by default"
 	@echo "                           use SN_CLI_OVERWRITE_CONFIGS=0 to keep existing configs"
+	@echo "  make publish VERSION=vX.Y.Z"
+	@echo "                         - validate, create a local tag and install; never commit/push"
+	@echo "  make publish-test      - test the local publish workflow in temporary Git repositories"
 	@echo "  make release           - build release archives for supported platforms"
 	@echo "  make release-check     - validate, build and smoke-test release assets"
 	@echo "  make provider-smoke    - opt-in real provider smoke (requires SN_REAL_PROVIDER_SMOKE=1)"
@@ -85,6 +88,12 @@ install: sn-cli-build
 	bash install.sh --binary "$(CURDIR)/bin/sn-cli" --configs "$(CURDIR)/configs" --resources "$(CURDIR)/resources" $$overwrite_flag
 
 sn-cli-install: install
+
+publish:
+	@VERSION="$(VERSION)" bash scripts/publish.sh
+
+publish-test:
+	bash scripts/publish-test.sh
 
 sn-cli-test:
 	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider/... ./internal/executor ./internal/daemon ./internal/capability ./internal/transport ./internal/cli/...

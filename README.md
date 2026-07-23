@@ -368,3 +368,33 @@ git diff --check
 ```
 
 `make release` 生成 darwin/linux、arm64/amd64 的 CLI archive、server binary 和 `checksums.txt`。`make release-check` 执行格式、测试、vet、目录边界、资产/checksum 与离线 smoke 校验。
+
+## 本地发布
+
+完成代码提交后，可用一个命令执行发布门禁、创建本地 annotated tag 并安装：
+
+```bash
+make publish VERSION=v0.1.1
+```
+
+`publish` 要求 `VERSION` 符合 `vMAJOR.MINOR.PATCH`、当前分支为 `main`、工作区干净、目标 tag 不存在且当前 HEAD 尚未发布。它依次执行：
+
+1. `make release-check SN_CLI_VERSION=<VERSION>`
+2. `git tag -a <VERSION> -m "sn-cli <VERSION>"`
+3. `make install`
+4. 回读 `${SN_CLI_HOME:-~/.sn}/bin/sn-cli --version`
+
+该流程不自动 commit、不推断版本号，也不执行 `git push`。如果 tag 创建后本地安装失败，tag 会保留；修复后可重新执行 `make install`，或确认 tag 尚未 push 后手动删除。
+
+需要发布 GitHub Release 时，仍显式推送 commit 与 tag：
+
+```bash
+git push origin main
+git push origin v0.1.1
+```
+
+tag push 会触发 `.github/workflows/release.yml`。发布编排测试使用临时 Git 仓库，不修改真实 tag：
+
+```bash
+make publish-test
+```
