@@ -19,6 +19,7 @@ GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
 COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
 COVERAGE_MIN ?= 65.0
+SN_CLI_OVERWRITE_CONFIGS ?= 1
 
 help:
 	@echo "Available targets:"
@@ -31,7 +32,8 @@ help:
 	@echo "  make coverage          - enforce repository coverage threshold"
 	@echo "  make build             - build server binary"
 	@echo "  make sn-cli-build      - build sn-cli binary"
-	@echo "  make install           - build and install sn-cli into ~/.sn"
+	@echo "  make install           - build/install sn-cli; overwrite same-name configs by default"
+	@echo "                           use SN_CLI_OVERWRITE_CONFIGS=0 to keep existing configs"
 	@echo "  make release           - build release archives for supported platforms"
 	@echo "  make release-check     - validate, build and smoke-test release assets"
 	@echo "  make provider-smoke    - opt-in real provider smoke (requires SN_REAL_PROVIDER_SMOKE=1)"
@@ -74,7 +76,13 @@ sn-cli-build:
 	$(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o bin/sn-cli ./cmd/sn-cli
 
 install: sn-cli-build
-	bash install.sh --binary "$(CURDIR)/bin/sn-cli" --configs "$(CURDIR)/configs"
+	@overwrite_configs="$(SN_CLI_OVERWRITE_CONFIGS)"; \
+	case "$$overwrite_configs" in \
+	  1) overwrite_flag="--overwrite-configs" ;; \
+	  0) overwrite_flag="" ;; \
+	  *) echo "SN_CLI_OVERWRITE_CONFIGS must be 0 or 1" >&2; exit 1 ;; \
+	esac; \
+	bash install.sh --binary "$(CURDIR)/bin/sn-cli" --configs "$(CURDIR)/configs" --resources "$(CURDIR)/resources" $$overwrite_flag
 
 sn-cli-install: install
 
@@ -82,7 +90,7 @@ sn-cli-test:
 	$(GO_ENV) $(GO) test ./internal/agentrun ./internal/provider/... ./internal/executor ./internal/daemon ./internal/capability ./internal/transport ./internal/cli/...
 
 sn-cli-doctor: sn-cli-build
-	@home="$$(mktemp -d)"; trap 'rm -rf "$$home"' EXIT; mkdir -p "$$home/configs"; cp -R configs/. "$$home/configs/"; SN_CLI_HOME="$$home" ./cmd/sn-cli-wrapper system doctor --json
+	@home="$$(mktemp -d)"; trap 'rm -rf "$$home"' EXIT; mkdir -p "$$home/configs" "$$home/resources"; cp -R configs/. "$$home/configs/"; cp -R resources/. "$$home/resources/"; SN_CLI_HOME="$$home" ./cmd/sn-cli-wrapper system doctor --json
 
 run:
 	HTTP_ADDR=$(SERVER_ADDR) $(GO_ENV) $(GO) run ./cmd/sn-server
@@ -93,7 +101,7 @@ dev:
 	pid=""; \
 	trap 'if [[ -n "$$pid" ]]; then kill "$$pid" 2>/dev/null || true; wait "$$pid" 2>/dev/null || true; fi; exit 0' INT TERM EXIT; \
 	while true; do \
-		sig="$$(find cmd internal configs -type f \( -name '*.go' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 stat -f '%m %N' | sort | shasum | awk '{print $$1}')"; \
+		sig="$$(find cmd internal configs resources -type f \( -name '*.go' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 stat -f '%m %N' | sort | shasum | awk '{print $$1}')"; \
 		if [[ "$$sig" != "$$last_sig" ]]; then \
 			if [[ -n "$$pid" ]]; then \
 				echo "change detected, restarting"; \
@@ -115,11 +123,12 @@ release:
 	@set -euo pipefail; \
 	for platform in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do \
 		os="$${platform%/*}"; arch="$${platform#*/}"; stage="dist/.stage-$$os-$$arch"; \
-		mkdir -p "$$stage/configs"; \
+		mkdir -p "$$stage/configs" "$$stage/resources"; \
 		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" $(GO_ENV) $(GO) build -ldflags "$(SN_CLI_LDFLAGS)" -o "$$stage/sn-cli" ./cmd/sn-cli; \
 		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" $(GO_ENV) $(GO) build -ldflags "$(RUNTIME_LDFLAGS)" -o "dist/sn-server-$$os-$$arch" ./cmd/sn-server; \
 		cp -R configs/. "$$stage/configs/"; \
-		COPYFILE_DISABLE=1 tar -czf "dist/sn-cli-$$os-$$arch.tar.gz" -C "$$stage" sn-cli configs; \
+		cp -R resources/. "$$stage/resources/"; \
+		COPYFILE_DISABLE=1 tar -czf "dist/sn-cli-$$os-$$arch.tar.gz" -C "$$stage" sn-cli configs resources; \
 		rm -rf "$$stage"; \
 	done; \
 	cd dist; \

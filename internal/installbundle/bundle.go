@@ -20,16 +20,16 @@ type SyncResult struct {
 func SyncMissing(source, target string) (SyncResult, error) {
 	sourceInfo, err := os.Stat(source)
 	if err != nil {
-		return SyncResult{}, fmt.Errorf("read config source %s: %w", source, err)
+		return SyncResult{}, fmt.Errorf("read sync source %s: %w", source, err)
 	}
 	if !sourceInfo.IsDir() {
-		return SyncResult{}, fmt.Errorf("config source is not a directory: %s", source)
+		return SyncResult{}, fmt.Errorf("sync source is not a directory: %s", source)
 	}
 	if err := preflightSync(source, target); err != nil {
 		return SyncResult{}, err
 	}
 	if err := os.MkdirAll(target, 0o700); err != nil {
-		return SyncResult{}, fmt.Errorf("create config target %s: %w", target, err)
+		return SyncResult{}, fmt.Errorf("create sync target %s: %w", target, err)
 	}
 	result := SyncResult{}
 	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -60,7 +60,7 @@ func SyncMissing(source, target string) (SyncResult, error) {
 		return nil
 	})
 	if err != nil {
-		return SyncResult{}, fmt.Errorf("sync configs: %w", err)
+		return SyncResult{}, fmt.Errorf("sync files: %w", err)
 	}
 	return result, nil
 }
@@ -71,14 +71,14 @@ func preflightSync(source, target string) error {
 			return walkErr
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("config source contains symlink: %s", path)
+			return fmt.Errorf("sync source contains symlink: %s", path)
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("config source contains unsupported file: %s", path)
+			return fmt.Errorf("sync source contains unsupported file: %s", path)
 		}
 		relative, err := filepath.Rel(source, path)
 		if err != nil {
@@ -96,7 +96,7 @@ func preflightSync(source, target string) error {
 			return err
 		}
 		if targetInfo.Mode()&os.ModeSymlink != 0 || targetInfo.IsDir() != info.IsDir() || (!info.IsDir() && !targetInfo.Mode().IsRegular()) {
-			return fmt.Errorf("config type conflict at %s", destination)
+			return fmt.Errorf("sync type conflict at %s", destination)
 		}
 		return nil
 	})

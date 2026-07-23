@@ -11,6 +11,8 @@ LOCAL_ARCHIVE=""
 LOCAL_CHECKSUMS=""
 LOCAL_BINARY=""
 LOCAL_CONFIGS=""
+LOCAL_RESOURCES=""
+OVERWRITE_CONFIGS=0
 DRY_RUN=0
 
 usage() {
@@ -22,13 +24,14 @@ Usage:
   bash install.sh [--version VERSION] [--dry-run]
 
 Local package options used by `make install`:
-  --binary FILE --configs DIR
+  --binary FILE --configs DIR --resources DIR [--overwrite-configs]
   --archive FILE [--checksums FILE]
 
 Options:
   --version VERSION    Install a specific release tag; default is latest.
   --install-dir DIR    Symlink directory; default is ~/.local/bin.
   --home DIR           Runtime home; default is ~/.sn.
+  --overwrite-configs  Replace same-name config files; keep extra local files.
   --dry-run            Print the resolved install plan without writing files.
   -h, --help           Show this help.
 
@@ -52,6 +55,8 @@ while [ "$#" -gt 0 ]; do
     --checksums) [ "$#" -ge 2 ] || die "--checksums requires a value"; LOCAL_CHECKSUMS="$2"; shift 2 ;;
     --binary) [ "$#" -ge 2 ] || die "--binary requires a value"; LOCAL_BINARY="$2"; shift 2 ;;
     --configs) [ "$#" -ge 2 ] || die "--configs requires a value"; LOCAL_CONFIGS="$2"; shift 2 ;;
+    --resources) [ "$#" -ge 2 ] || die "--resources requires a value"; LOCAL_RESOURCES="$2"; shift 2 ;;
+    --overwrite-configs) OVERWRITE_CONFIGS=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -92,10 +97,13 @@ if [ "$DRY_RUN" = "1" ]; then
   log "home: $SN_CLI_HOME"
   log "binary: $SN_CLI_HOME/bin/sn-cli"
   log "configs: $SN_CLI_HOME/configs"
+  log "resources: $SN_CLI_HOME/resources"
+  log "overwrite configs: $OVERWRITE_CONFIGS"
   log "symlink: $INSTALL_DIR/sn-cli"
   if [ -n "$LOCAL_BINARY" ]; then
     log "source binary: $LOCAL_BINARY"
     log "source configs: $LOCAL_CONFIGS"
+    log "source resources: $LOCAL_RESOURCES"
   elif [ -n "$LOCAL_ARCHIVE" ]; then
     log "source archive: $LOCAL_ARCHIVE"
   else
@@ -108,8 +116,8 @@ fi
 if [ -n "$LOCAL_BINARY" ] && [ -n "$LOCAL_ARCHIVE" ]; then
   die "--binary and --archive are mutually exclusive"
 fi
-if [ -n "$LOCAL_BINARY" ] && [ -z "$LOCAL_CONFIGS" ]; then
-  die "--binary requires --configs"
+if [ -n "$LOCAL_BINARY" ] && { [ -z "$LOCAL_CONFIGS" ] || [ -z "$LOCAL_RESOURCES" ]; }; then
+  die "--binary requires --configs and --resources"
 fi
 
 mkdir -p "$SN_CLI_HOME/tmp"
@@ -152,36 +160,36 @@ validate_archive_paths() {
 
 preflight_sync() {
   local source="$1" target="$2" path relative destination
-  [ -d "$source" ] || die "config source is not a directory: $source"
+  [ -d "$source" ] || die "sync source is not a directory: $source"
   if find "$source" -type l -print -quit | grep -q .; then
-    die "config source contains symlink: $source"
+    die "sync source contains symlink: $source"
   fi
   if [ -e "$target" ] || [ -L "$target" ]; then
-    [ -d "$target" ] && [ ! -L "$target" ] || die "config type conflict at $target"
+    [ -d "$target" ] && [ ! -L "$target" ] || die "sync type conflict at $target"
   fi
   while IFS= read -r -d '' path; do
     relative="${path#"$source"/}"
     [ "$relative" != "$path" ] || continue
     destination="$target/$relative"
     if [ -L "$destination" ]; then
-      die "config type conflict at $destination"
+      die "sync type conflict at $destination"
     fi
     if [ -d "$path" ]; then
       if [ -e "$destination" ] && [ ! -d "$destination" ]; then
-        die "config type conflict at $destination"
+        die "sync type conflict at $destination"
       fi
     elif [ -f "$path" ]; then
       if [ -e "$destination" ] && [ ! -f "$destination" ]; then
-        die "config type conflict at $destination"
+        die "sync type conflict at $destination"
       fi
     else
-      die "config source contains unsupported file: $path"
+      die "sync source contains unsupported file: $path"
     fi
   done < <(find "$source" -mindepth 1 -print0)
 }
 
 sync_missing() {
-  local source="$1" target="$2" quiet="${3:-0}" path relative destination
+  local source="$1" target="$2" quiet="${3:-0}" kind="${4:-file}" path relative destination
   preflight_sync "$source" "$target"
   mkdir -p "$target"
   chmod 700 "$target"
@@ -197,7 +205,37 @@ sync_missing() {
       mkdir -p "$(dirname "$destination")"
       cp "$path" "$destination"
       if [ "$quiet" != "1" ]; then
-        log "installed config: $relative"
+        log "installed $kind: $relative"
+      fi
+    fi
+  done < <(find "$source" -mindepth 1 -print0)
+}
+
+sync_overwrite() {
+  local source="$1" target="$2" quiet="${3:-0}" kind="${4:-file}" path relative destination temporary action
+  preflight_sync "$source" "$target"
+  mkdir -p "$target"
+  chmod 700 "$target"
+  while IFS= read -r -d '' path; do
+    relative="${path#"$source"/}"
+    destination="$target/$relative"
+    if [ -d "$path" ]; then
+      if [ ! -e "$destination" ]; then
+        mkdir -p "$destination"
+        chmod 700 "$destination"
+      fi
+    elif [ -f "$path" ]; then
+      mkdir -p "$(dirname "$destination")"
+      if [ -e "$destination" ]; then
+        action="updated"
+      else
+        action="installed"
+      fi
+      temporary="$(mktemp "${destination}.install.XXXXXX")"
+      cp "$path" "$temporary"
+      mv -f "$temporary" "$destination"
+      if [ "$quiet" != "1" ]; then
+        log "$action $kind: $relative"
       fi
     fi
   done < <(find "$source" -mindepth 1 -print0)
@@ -208,8 +246,10 @@ mkdir -p "$PAYLOAD"
 if [ -n "$LOCAL_BINARY" ]; then
   [ -x "$LOCAL_BINARY" ] || die "local binary is not executable: $LOCAL_BINARY"
   [ -d "$LOCAL_CONFIGS" ] || die "local configs not found: $LOCAL_CONFIGS"
+  [ -d "$LOCAL_RESOURCES" ] || die "local resources not found: $LOCAL_RESOURCES"
   PACKAGE_BINARY="$LOCAL_BINARY"
   PACKAGE_CONFIGS="$LOCAL_CONFIGS"
+  PACKAGE_RESOURCES="$LOCAL_RESOURCES"
 else
   ARCHIVE_PATH="$LOCAL_ARCHIVE"
   CHECKSUMS_PATH="$LOCAL_CHECKSUMS"
@@ -232,10 +272,12 @@ else
   tar -xzf "$ARCHIVE_PATH" -C "$PAYLOAD"
   PACKAGE_BINARY="$PAYLOAD/sn-cli"
   PACKAGE_CONFIGS="$PAYLOAD/configs"
+  PACKAGE_RESOURCES="$PAYLOAD/resources"
 fi
 
 [ -x "$PACKAGE_BINARY" ] || die "package has no executable sn-cli"
 [ -d "$PACKAGE_CONFIGS" ] || die "package has no configs directory"
+[ -d "$PACKAGE_RESOURCES" ] || die "package has no resources directory"
 
 TARGET_BINARY="$SN_CLI_HOME/bin/sn-cli"
 if [ -e "$TARGET_BINARY" ] || [ -L "$TARGET_BINARY" ]; then
@@ -243,28 +285,48 @@ if [ -e "$TARGET_BINARY" ] || [ -L "$TARGET_BINARY" ]; then
 fi
 
 MERGED_HOME="$WORK_DIR/merged-home"
-mkdir -p "$MERGED_HOME/configs"
+mkdir -p "$MERGED_HOME/configs" "$MERGED_HOME/resources"
 preflight_sync "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs"
+preflight_sync "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources"
 if [ -d "$SN_CLI_HOME/configs" ]; then
   sync_missing "$SN_CLI_HOME/configs" "$MERGED_HOME/configs" 1
 fi
-sync_missing "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1
+if [ -d "$SN_CLI_HOME/resources" ]; then
+  sync_missing "$SN_CLI_HOME/resources" "$MERGED_HOME/resources" 1
+fi
 SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" system migrate-config >/dev/null || \
-  die "new sn-cli failed config migration"
+  die "new sn-cli failed runtime-home migration"
+if [ "$OVERWRITE_CONFIGS" = "1" ]; then
+  sync_overwrite "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1 config
+else
+  sync_missing "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1
+fi
+sync_missing "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1
 SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profile list >/dev/null || die "new sn-cli failed config validation"
 
-sync_missing "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs"
-migration_output="$(SN_CLI_HOME="$SN_CLI_HOME" "$PACKAGE_BINARY" system migrate-config)" || \
-  die "new sn-cli failed config migration"
-if ! printf '%s\n' "$migration_output" | grep -Eq '"changed_configs"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]'; then
-  log "migrated obsolete profile config fields"
+if [ -d "$SN_CLI_HOME/configs" ]; then
+  migration_output="$(SN_CLI_HOME="$SN_CLI_HOME" "$PACKAGE_BINARY" system migrate-config)" || \
+    die "new sn-cli failed runtime-home migration"
+else
+  migration_output='{"changed_configs":[],"copied_resources":[]}'
 fi
+if ! printf '%s\n' "$migration_output" | grep -Eq '"changed_configs"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' || \
+   ! printf '%s\n' "$migration_output" | grep -Eq '"copied_resources"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]'; then
+  log "migrated legacy runtime home"
+fi
+if [ "$OVERWRITE_CONFIGS" = "1" ]; then
+  sync_overwrite "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 config
+else
+  sync_missing "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 config
+fi
+sync_missing "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
 for directory in \
-  "$SN_CLI_HOME/configs/personas" "$SN_CLI_HOME/configs/skills" "$SN_CLI_HOME/configs/tools" \
+  "$SN_CLI_HOME/configs" "$SN_CLI_HOME/resources" "$SN_CLI_HOME/resources/personas" \
+  "$SN_CLI_HOME/resources/skills" "$SN_CLI_HOME/resources/tools" "$SN_CLI_HOME/resources/schema" \
   "$SN_CLI_HOME/bin" "$SN_CLI_HOME/runs" "$SN_CLI_HOME/daemon" "$SN_CLI_HOME/state" \
   "$SN_CLI_HOME/logs" "$SN_CLI_HOME/cache"; do
   if [ -e "$directory" ] || [ -L "$directory" ]; then
-    [ -d "$directory" ] && [ ! -L "$directory" ] || die "config type conflict at $directory"
+    [ -d "$directory" ] && [ ! -L "$directory" ] || die "runtime directory type conflict at $directory"
   else
     mkdir -p "$directory"
   fi

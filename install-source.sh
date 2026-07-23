@@ -80,6 +80,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "source: $SOURCE_DIR"
   log "binary: $SN_CLI_HOME/bin/sn-cli"
   log "configs: $SN_CLI_HOME/configs"
+  log "resources: $SN_CLI_HOME/resources"
   log "symlink: $INSTALL_DIR/sn-cli"
   exit 0
 fi
@@ -129,7 +130,7 @@ else
   TEMP_SOURCE=""
 fi
 
-for required in go.mod Makefile install.sh configs; do
+for required in go.mod Makefile install.sh configs resources; do
   [ -e "$SOURCE_DIR/$required" ] || die "source checkout is missing $required"
 done
 
@@ -140,6 +141,7 @@ make -C "$SOURCE_DIR" sn-cli-build
 bash "$SOURCE_DIR/install.sh" \
   --binary "$SOURCE_DIR/bin/sn-cli" \
   --configs "$SOURCE_DIR/configs" \
+  --resources "$SOURCE_DIR/resources" \
   --home "$SN_CLI_HOME" \
   --install-dir "$INSTALL_DIR"
 

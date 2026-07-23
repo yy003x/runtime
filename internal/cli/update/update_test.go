@@ -21,9 +21,10 @@ import (
 func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {
 	archiveName := platformArchiveName(t)
 	archive := makeArchive(t, map[string]archiveFile{
-		"sn-cli":               {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n"},
-		"configs/runtime.yaml": {mode: 0o644, content: "packaged\n"},
-		"configs/new.json":     {mode: 0o644, content: "{}\n"},
+		"sn-cli":                        {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n"},
+		"configs/runtime.yaml":          {mode: 0o644, content: "packaged\n"},
+		"configs/new.json":              {mode: 0o644, content: "{\"type\":\"native\",\"native\":{\"mock\":{\"responses\":[\"ok\"],\"done_after\":1}}}\n"},
+		"resources/schema/profile.json": {mode: 0o644, content: "packaged-schema\n"},
 	})
 	hash := sha256.Sum256(archive)
 	server := releaseServer(t, "v2", archiveName, archive, fmt.Sprintf("%x  %s\n", hash, archiveName))
@@ -32,20 +33,56 @@ func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {
 	cfg := testConfig(t)
 	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
 	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "runtime.yaml"), "local\n", 0o600)
-	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "cx.json"), `{"type":"cli","cli":{"runtime":{"result_contract":"required"}}}`+"\n", 0o600)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "cx.json"), `{"type":"cli","label":"Codex","cli":{"driver":"codex","command":{"binary":"codex","args":[],"model":"gpt"},"runtime":{"managed_args":["exec"],"result_contract":"required"}}}`+"\n", 0o600)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "personas", "local.yaml"), "legacy-persona\n", 0o600)
 	result, err := Apply(context.Background(), cfg, "v2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Version != "v2" || len(result.CopiedConfigs) != 1 || result.CopiedConfigs[0] != "new.json" || len(result.MigratedConfigs) != 1 || result.MigratedConfigs[0] != "cx.json" {
+	if result.Version != "v2" || len(result.CopiedConfigs) != 1 || result.CopiedConfigs[0] != "new.json" || strings.Join(result.CopiedResources, ",") != "schema/profile.json" || len(result.MigratedConfigs) != 1 || result.MigratedConfigs[0] != "cx.json" || strings.Join(result.MigratedResources, ",") != "personas/local.yaml" {
 		t.Fatalf("result=%#v", result)
 	}
 	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "runtime.yaml"), "local\n")
-	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new.json"), "{}\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new.json"), "{\"type\":\"native\",\"native\":{\"mock\":{\"responses\":[\"ok\"],\"done_after\":1}}}\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "schema", "profile.json"), "packaged-schema\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "personas", "local.yaml"), "legacy-persona\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "personas", "local.yaml"), "legacy-persona\n")
 	cxData, err := os.ReadFile(filepath.Join(cfg.Paths.ConfigDir, "cx.json"))
 	if err != nil || strings.Contains(string(cxData), "result_contract") {
 		t.Fatalf("cx.json=%q err=%v", cxData, err)
+	}
+}
+
+func TestApplyMigratesLocalPresetsBeforeAddingPackagedProfiles(t *testing.T) {
+	archiveName := platformArchiveName(t)
+	archive := makeArchive(t, map[string]archiveFile{
+		"sn-cli":                        {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nexit 0\n"},
+		"configs/cx-fast.json":          {mode: 0o644, content: `{"type":"cli","cli":{"command":"codex","model":"packaged","effort":"high"}}` + "\n"},
+		"resources/schema/profile.json": {mode: 0o644, content: "{}\n"},
+	})
+	hash := sha256.Sum256(archive)
+	server := releaseServer(t, "v2", archiveName, archive, fmt.Sprintf("%x  %s\n", hash, archiveName))
+	defer server.Close()
+	t.Setenv("SN_CLI_RELEASE_BASE_URL", server.URL+"/releases")
+	cfg := testConfig(t)
+	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "mcx.json"), `{
+  "type":"cli",
+  "cli":{"driver":"codex","command":{"binary":"codex","args":[],"model":"base"},"runtime":{"managed_args":["exec"]}},
+  "presets":{"cx-fast":{"overrides":{"model":"local-custom","reasoning_effort":"medium"}}}
+}`+"\n", 0o600)
+
+	result, err := Apply(context.Background(), cfg, "v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.CopiedConfigs) != 0 || strings.Join(result.MigratedConfigs, ",") != "cx-fast.json,mcx.json" {
+		t.Fatalf("result=%#v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.Paths.ConfigDir, "cx-fast.json"))
+	if err != nil || !strings.Contains(string(data), `"model": "local-custom"`) || strings.Contains(string(data), "packaged") {
+		t.Fatalf("cx-fast=%s err=%v", data, err)
 	}
 }
 

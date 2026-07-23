@@ -9,6 +9,18 @@ log() { printf '%s\n' "$*" >&2; }
 die() { printf 'release-check: %s\n' "$*" >&2; exit 1; }
 
 log "[release-check] validating source"
+required_configs=(api-cc.json api-cx.json cc-bai.json cc-glm.json cc.json commit.json cx-image.json cx-spark.json cx.json mcc.json mcx.json runtime.yaml)
+for config in "${required_configs[@]}"; do
+  [ -f "$ROOT_DIR/configs/$config" ] || die "missing required config template: $config"
+done
+unexpected_configs="$(find "$ROOT_DIR/configs" -mindepth 1 -maxdepth 1 -type f ! -name '*.json' ! -name 'runtime.yaml' -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')"
+[ -z "$unexpected_configs" ] || die "configs/ only accepts provider JSON and runtime.yaml: $unexpected_configs"
+if find "$ROOT_DIR/configs" -mindepth 1 -type d -print -quit | grep -q .; then
+  die "configs/ must not contain resource directories"
+fi
+for schema in provider-profile.schema.json runtime.schema.json; do
+  [ -f "$ROOT_DIR/resources/schema/$schema" ] || die "missing resource schema: $schema"
+done
 make -C "$ROOT_DIR" fmt-check
 make -C "$ROOT_DIR" test-serial
 env GOCACHE="${GOCACHE:-/tmp/go-build}" GOMODCACHE="${GOMODCACHE:-/tmp/go-mod}" go -C "$ROOT_DIR" vet ./...
@@ -57,11 +69,50 @@ cleanup() {
 trap cleanup EXIT
 
 log "[release-check] installing and exercising $archive"
+mkdir -p \
+  "$runtime_home/configs/personas" "$runtime_home/configs/skills/review" \
+  "$runtime_home/configs/tools" "$runtime_home/configs/schema" \
+  "$runtime_home/resources/personas"
+printf '%s\n' "legacy persona" >"$runtime_home/configs/personas/local.yaml"
+printf '%s\n' "name: review" >"$runtime_home/configs/skills/review/skill.yaml"
+printf '%s\n' "name: legacy-tool" >"$runtime_home/configs/tools/legacy.tool.yaml"
+printf '%s\n' '{}' >"$runtime_home/configs/schema/legacy.schema.json"
+printf '%s\n' "user persona" >"$runtime_home/resources/personas/local.yaml"
+printf '%s\n' '{"command":"/bin/true"}' >"$runtime_home/configs/cx.json"
+printf '%s\n' '{"command":"/bin/true"}' >"$runtime_home/configs/local-only.json"
 bash "$ROOT_DIR/install.sh" \
   --archive "$archive" \
   --checksums "$DIST_DIR/checksums.txt" \
   --home "$runtime_home" \
   --install-dir "$install_dir"
+
+grep -q '"/bin/true"' "$runtime_home/configs/cx.json" || \
+  die "default install overwrote an existing config"
+bash "$ROOT_DIR/install.sh" \
+  --archive "$archive" \
+  --checksums "$DIST_DIR/checksums.txt" \
+  --home "$runtime_home" \
+  --install-dir "$install_dir" \
+  --overwrite-configs
+cmp "$ROOT_DIR/configs/cx.json" "$runtime_home/configs/cx.json" >/dev/null || \
+  die "--overwrite-configs did not replace the packaged config"
+grep -q '"/bin/true"' "$runtime_home/configs/local-only.json" || \
+  die "--overwrite-configs removed or changed a local-only profile"
+
+for resource in skills/review/skill.yaml tools/legacy.tool.yaml schema/legacy.schema.json; do
+  cmp "$runtime_home/configs/$resource" "$runtime_home/resources/$resource" >/dev/null || \
+    die "legacy resource was not copied safely: $resource"
+done
+[ "$(sed -n '1p' "$runtime_home/configs/personas/local.yaml")" = "legacy persona" ] || \
+  die "legacy persona source was changed"
+[ "$(sed -n '1p' "$runtime_home/resources/personas/local.yaml")" = "user persona" ] || \
+  die "existing persona resource was overwritten"
+for directory in personas skills tools schema; do
+  [ -d "$runtime_home/resources/$directory" ] || die "missing runtime resource directory: $directory"
+done
+for schema in provider-profile.schema.json runtime.schema.json; do
+  [ -f "$runtime_home/resources/schema/$schema" ] || die "release did not install schema resource: $schema"
+done
 
 SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --version >/dev/null
 doctor_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" system doctor --json)"
@@ -70,21 +121,22 @@ printf '%s\n' "$doctor_output" | grep -Eq '"contract_version"[[:space:]]*:[[:spa
 printf '%s\n' "$doctor_output" | grep -Eq '"durable_queue"[[:space:]]*:[[:space:]]*1' || \
   die "doctor output has no durable_queue feature"
 SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" profile list >/dev/null
-SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" profile validate native-mock >/dev/null
-run_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" session run native-mock --json \
+cp "$ROOT_DIR/test/fixtures/cli-smoke-profile.json" "$runtime_home/configs/cli-smoke.json"
+SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" profile validate cli-smoke >/dev/null
+run_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" session run --json \
   --run-id turn-release-check --session-id session-release-check --project release-check --cwd "$ROOT_DIR" \
-  --deadline-seconds 30 'release smoke')"
+  --deadline-seconds 30 cli-smoke 'release smoke')"
 printf '%s\n' "$run_output" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"done"' || \
-  die "native-mock task did not finish"
+  die "cli-smoke task did not finish"
 result_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" run result --run-id turn-release-check)"
 printf '%s\n' "$result_output" | grep -Eq '"outcome"[[:space:]]*:[[:space:]]*"succeeded"' || \
-  die "native-mock result did not succeed"
+  die "cli-smoke result did not succeed"
 
-async_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" session submit native-mock \
+async_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" session submit \
   --run-id turn-release-check-async --session-id session-release-check-async --project release-check --cwd "$ROOT_DIR" \
-  --deadline-seconds 30 'release async smoke')"
+  --deadline-seconds 30 cli-smoke 'release async smoke')"
 printf '%s\n' "$async_output" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"pending"' || \
-  die "native-mock async submit was not accepted"
+  die "cli-smoke async submit was not accepted"
 for _ in {1..100}; do
   async_status="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" run show --run-id turn-release-check-async)"
   if printf '%s\n' "$async_status" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"done"'; then
@@ -93,8 +145,8 @@ for _ in {1..100}; do
   sleep 0.1
 done
 printf '%s\n' "$async_status" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"done"' || \
-  die "native-mock async task did not finish"
-SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" run list --state done --limit 5 >/dev/null
+  die "cli-smoke async task did not finish"
+SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" run list --state "done" --limit 5 >/dev/null
 SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" run reconcile --dry-run >/dev/null
 SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" system stop >/dev/null
 

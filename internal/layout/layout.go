@@ -14,9 +14,11 @@ type Paths struct {
 	BinDir               string
 	Binary               string
 	ConfigDir            string
+	ResourcesDir         string
 	PersonaDir           string
 	SkillsDir            string
 	ToolsDir             string
+	SchemaDir            string
 	RunsDir              string
 	SessionsDir          string
 	HistoryDir           string
@@ -66,11 +68,14 @@ func FromHome(home string) (Paths, error) {
 		return Paths{}, fmt.Errorf("resolve runtime home %q: %w", home, err)
 	}
 	configDir := filepath.Join(absolute, "configs")
+	resourcesDir := filepath.Join(absolute, "resources")
 	stateDir := filepath.Join(absolute, "state")
 	logsDir := filepath.Join(absolute, "logs")
 	return Paths{
 		Home: absolute, BinDir: filepath.Join(absolute, "bin"), Binary: filepath.Join(absolute, "bin", "sn-cli"),
-		ConfigDir: configDir, PersonaDir: filepath.Join(configDir, "personas"), SkillsDir: filepath.Join(configDir, "skills"), ToolsDir: filepath.Join(configDir, "tools"),
+		ConfigDir: configDir, ResourcesDir: resourcesDir,
+		PersonaDir: filepath.Join(resourcesDir, "personas"), SkillsDir: filepath.Join(resourcesDir, "skills"),
+		ToolsDir: filepath.Join(resourcesDir, "tools"), SchemaDir: filepath.Join(resourcesDir, "schema"),
 		RunsDir: filepath.Join(absolute, "runs"), SessionsDir: filepath.Join(absolute, "sessions"), HistoryDir: filepath.Join(absolute, "history"),
 		DaemonDir: filepath.Join(absolute, "daemon"), DaemonLog: filepath.Join(logsDir, "daemon.log"),
 		StateDir: stateDir, SessionStateDir: filepath.Join(stateDir, "sessions"),
@@ -82,7 +87,7 @@ func FromHome(home string) (Paths, error) {
 
 func (p Paths) Ensure() error {
 	for _, dir := range []string{
-		p.Home, p.BinDir, p.ConfigDir, p.PersonaDir, p.SkillsDir, p.ToolsDir,
+		p.Home, p.BinDir, p.ConfigDir, p.ResourcesDir, p.PersonaDir, p.SkillsDir, p.ToolsDir, p.SchemaDir,
 		p.RunsDir, p.SessionsDir, p.HistoryDir, p.DaemonDir, p.StateDir, p.SessionStateDir,
 		p.MemoryDir, p.LogsDir, p.CacheDir, p.TmpDir,
 	} {

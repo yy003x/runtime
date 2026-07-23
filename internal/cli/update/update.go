@@ -30,11 +30,13 @@ type Status struct {
 }
 
 type ApplyResult struct {
-	Version         string   `json:"version"`
-	Archive         string   `json:"archive"`
-	Binary          string   `json:"binary"`
-	CopiedConfigs   []string `json:"copied_configs"`
-	MigratedConfigs []string `json:"migrated_configs"`
+	Version           string   `json:"version"`
+	Archive           string   `json:"archive"`
+	Binary            string   `json:"binary"`
+	CopiedConfigs     []string `json:"copied_configs"`
+	CopiedResources   []string `json:"copied_resources"`
+	MigratedConfigs   []string `json:"migrated_configs"`
+	MigratedResources []string `json:"migrated_resources"`
 }
 
 type state struct {
@@ -129,7 +131,8 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	}
 	binary := filepath.Join(payload, "sn-cli")
 	packagedConfigs := filepath.Join(payload, "configs")
-	if err := validatePayload(binary, packagedConfigs); err != nil {
+	packagedResources := filepath.Join(payload, "resources")
+	if err := validatePayload(binary, packagedConfigs, packagedResources); err != nil {
 		return ApplyResult{}, err
 	}
 	if info, err := os.Lstat(cfg.Paths.Binary); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
@@ -139,25 +142,51 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	}
 	mergedHome := filepath.Join(temporary, "merged-home")
 	mergedConfigs := filepath.Join(mergedHome, "configs")
+	mergedResources := filepath.Join(mergedHome, "resources")
+	if err := os.MkdirAll(mergedConfigs, 0o700); err != nil {
+		return ApplyResult{}, err
+	}
+	if err := os.MkdirAll(mergedResources, 0o700); err != nil {
+		return ApplyResult{}, err
+	}
 	if info, err := os.Stat(cfg.Paths.ConfigDir); err == nil && info.IsDir() {
 		if _, err := installbundle.SyncMissing(cfg.Paths.ConfigDir, mergedConfigs); err != nil {
 			return ApplyResult{}, err
 		}
 	}
+	if info, err := os.Stat(cfg.Paths.ResourcesDir); err == nil && info.IsDir() {
+		if _, err := installbundle.SyncMissing(cfg.Paths.ResourcesDir, mergedResources); err != nil {
+			return ApplyResult{}, err
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return ApplyResult{}, err
+	}
+	if _, err := installbundle.MigrateHome(mergedConfigs, mergedResources); err != nil {
+		return ApplyResult{}, err
+	}
 	if _, err := installbundle.SyncMissing(packagedConfigs, mergedConfigs); err != nil {
 		return ApplyResult{}, err
 	}
-	if _, err := installbundle.MigrateProfileConfigs(mergedConfigs); err != nil {
+	if _, err := installbundle.SyncMissing(packagedResources, mergedResources); err != nil {
 		return ApplyResult{}, err
 	}
 	if err := validateBinary(ctx, binary, mergedHome); err != nil {
 		return ApplyResult{}, err
 	}
+	migrationResult := installbundle.HomeMigrationResult{ChangedConfigs: []string{}, CopiedResources: []string{}}
+	if info, statErr := os.Stat(cfg.Paths.ConfigDir); statErr == nil && info.IsDir() {
+		migrationResult, err = installbundle.MigrateHome(cfg.Paths.ConfigDir, cfg.Paths.ResourcesDir)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return ApplyResult{}, statErr
+	}
 	syncResult, err := installbundle.SyncMissing(packagedConfigs, cfg.Paths.ConfigDir)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	migrationResult, err := installbundle.MigrateProfileConfigs(cfg.Paths.ConfigDir)
+	resourceSyncResult, err := installbundle.SyncMissing(packagedResources, cfg.Paths.ResourcesDir)
 	if err != nil {
 		return ApplyResult{}, err
 	}
@@ -166,7 +195,8 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	}
 	result := ApplyResult{
 		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
-		CopiedConfigs: syncResult.Copied, MigratedConfigs: migrationResult.Changed,
+		CopiedConfigs: syncResult.Copied, CopiedResources: resourceSyncResult.Copied,
+		MigratedConfigs: migrationResult.ChangedConfigs, MigratedResources: migrationResult.CopiedResources,
 	}
 	_ = writeState(cfg, Status{CheckedAt: time.Now().UTC(), CurrentVersion: version, LatestVersion: version})
 	return result, nil
@@ -232,13 +262,16 @@ func download(ctx context.Context, client *http.Client, source, target string) e
 	return closeErr
 }
 
-func validatePayload(binary, configs string) error {
+func validatePayload(binary, configs, resources string) error {
 	info, err := os.Stat(binary)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
 		return fmt.Errorf("release archive has no executable sn-cli")
 	}
 	if info, err := os.Stat(configs); err != nil || !info.IsDir() {
 		return fmt.Errorf("release archive has no configs directory")
+	}
+	if info, err := os.Stat(resources); err != nil || !info.IsDir() {
+		return fmt.Errorf("release archive has no resources directory")
 	}
 	return nil
 }
