@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yy003x/runtime/resources/schema/provider-profile.schema.json",
+  "title": "sn-cli provider profile",
+  "description": "一个 JSON 文件定义一个扁平 profile，profile ID 取文件名（不含 .json）。command 表示 CLI，base_url 表示 API。",
+  "oneOf": [
+    { "$ref": "#/$defs/cli_profile" },
+    { "$ref": "#/$defs/api_profile" }
+  ],
+  "$defs": {
+    "cli_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "实际执行的 CLI 命令或可执行文件路径；运行时按 basename 自动识别 Codex/Claude 适配器。"
+        },
+        "model": { "type": "string", "minLength": 1 },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "native direct 与 managed execution 共用的基础 argv；每个数组元素对应一个 argv token。"
+        },
+        "env": { "$ref": "#/$defs/environment" },
+        "timeout_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "api_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "base_url", "model", "api_key"],
+      "properties": {
+        "protocol": { "enum": ["openai", "anthropic"] },
+        "base_url": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "api_key": {
+          "type": "string",
+          "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+        },
+        "headers": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1,
+            "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+            "not": {
+              "pattern": "^([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Xx][Yy]-[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy])$"
+            }
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[^\\r\\n]*$"
+          },
+          "description": "可选固定请求 header；值支持 ${VAR} 展开。认证 header 由 api_key 与协议推导，不能在此覆盖。"
+        },
+        "timeout_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/environment_name" },
+      "additionalProperties": {
+        "type": ["string", "null"],
+        "description": "字符串设置变量并展开 ${VAR}；null 从子进程环境删除变量。"
+      }
+    },
+    "environment_name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^=\\u0000]+$",
+      "not": { "pattern": "^\\s+$" }
+    }
+  }
+}

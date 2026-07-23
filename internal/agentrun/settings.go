@@ -1,7 +1,9 @@
 package agentrun
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -9,12 +11,13 @@ import (
 )
 
 type Settings struct {
-	DefaultProject string          `yaml:"default_project"`
-	DefaultProfile string          `yaml:"default_profile"`
-	MaxConcurrency int             `yaml:"max_concurrency"`
-	MaxQueue       int             `yaml:"max_queue"`
-	QueueTimeout   int             `yaml:"queue_timeout_seconds"`
-	Session        SessionSettings `yaml:"session"`
+	DefaultProject  string          `yaml:"default_project"`
+	DefaultProfile  string          `yaml:"default_profile"`
+	MaxConcurrency  int             `yaml:"max_concurrency"`
+	MaxQueue        int             `yaml:"max_queue"`
+	QueueTimeout    int             `yaml:"queue_timeout_seconds"`
+	DefaultDeadline int             `yaml:"default_deadline_seconds"`
+	Session         SessionSettings `yaml:"session"`
 }
 
 type SessionSettings struct {
@@ -28,11 +31,12 @@ type TerminalCarrierSettings struct {
 
 func loadSettings(configDir string) (Settings, error) {
 	settings := Settings{
-		DefaultProject: "_default",
-		DefaultProfile: "cx",
-		MaxConcurrency: 1,
-		MaxQueue:       64,
-		QueueTimeout:   3600,
+		DefaultProject:  "_default",
+		DefaultProfile:  "cx",
+		MaxConcurrency:  1,
+		MaxQueue:        64,
+		QueueTimeout:    3600,
+		DefaultDeadline: 300,
 		Session: SessionSettings{
 			DefaultCarrier: "tmux",
 		},
@@ -45,8 +49,20 @@ func loadSettings(configDir string) (Settings, error) {
 		}
 		return Settings{}, fmt.Errorf("read runtime settings %s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(data, &settings); err != nil {
-		return Settings{}, fmt.Errorf("parse runtime settings %s: %w", path, err)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	decodeErr := decoder.Decode(&settings)
+	if decodeErr != nil && decodeErr != io.EOF {
+		return Settings{}, fmt.Errorf("parse runtime settings %s: %w", path, decodeErr)
+	}
+	if decodeErr == nil {
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			if err == nil {
+				return Settings{}, fmt.Errorf("parse runtime settings %s: multiple YAML documents", path)
+			}
+			return Settings{}, fmt.Errorf("parse runtime settings %s: %w", path, err)
+		}
 	}
 	if settings.DefaultProject == "" || settings.DefaultProfile == "" {
 		return Settings{}, fmt.Errorf("runtime settings requires default_project and default_profile")
@@ -59,6 +75,9 @@ func loadSettings(configDir string) (Settings, error) {
 	}
 	if settings.QueueTimeout < 0 {
 		return Settings{}, fmt.Errorf("runtime settings queue_timeout_seconds must be non-negative")
+	}
+	if settings.DefaultDeadline < 0 {
+		return Settings{}, fmt.Errorf("runtime settings default_deadline_seconds must be non-negative")
 	}
 	if settings.Session.DefaultCarrier == "" {
 		settings.Session.DefaultCarrier = "tmux"

@@ -163,7 +163,8 @@ func buildAPIRuntimeClient(prepared PreparedRequest) (nativeengine.Client, error
 	if err != nil {
 		return nil, fmt.Errorf("profile %s: %w", prepared.Config.ID, err)
 	}
-	options := llm.HTTPOptions{Headers: headers, AuthHeader: api.Auth.Header, AuthPrefix: api.Auth.Prefix}
+	auth := defaultAPIAuth(api.Protocol, api.BaseURL)
+	options := llm.HTTPOptions{Headers: headers, AuthHeader: auth.Header, AuthPrefix: auth.Prefix}
 	var client llm.Client
 	switch api.Protocol {
 	case "openai":

@@ -168,7 +168,7 @@
 
 ### 任务 5.1：统一 API Agent loop 与本地 context
 
-- 动作：保持 `type=api` one-shot 兼容；以 `api.runtime.enabled` 显式进入进程内 Agent loop；OpenAI/Anthropic 复用统一消息、tool call、finish reason、usage 和 context snapshot；接入 block/continue/patch-resume/stop/cancel。
+- 动作：保持 `type=api` direct request 兼容；以 `api.runtime.enabled` 显式进入进程内 Agent loop；OpenAI/Anthropic 复用统一消息、tool call、finish reason、usage 和 context snapshot；接入 block/continue/patch-resume/stop/cancel。
 - 输出：`context-snapshot.json`、标准 status/events/result 与 OpenAI/Anthropic API Agent profile 模板。
 - 验证：本地 `httptest` 分别覆盖 OpenAI `tool_calls` 和 Anthropic `tool_use/tool_result` 两轮回路；API mock 覆盖 context patch-resume。
 - 阻塞条件：需要真实供应商凭据才能验证的特性不得假定通过。

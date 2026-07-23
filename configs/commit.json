@@ -1,0 +1,17 @@
+{
+  "command": "codex",
+  "model": "gpt-5.3-codex-spark",
+  "args": [
+    "--sandbox", "danger-full-access",
+    "--ask-for-approval", "never",
+    "-c", "model_reasoning_effort=xhigh",
+    "-c", "model_verbosity=high",
+    "exec",
+    "--skip-git-repo-check",
+    "--ignore-user-config",
+    "--ephemeral"
+  ],
+  "env": {
+    "CODEX_HOME": "${HOME}/.codex-ait"
+  }
+}

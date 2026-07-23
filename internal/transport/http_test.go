@@ -18,10 +18,7 @@ func TestHTTPRunUsesAgentRunArtifacts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["http native ok"],"done_after":1}}}`
-	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeHTTPFixtureProfile(t, root, "native-test", "http native ok")
 	handler := NewHTTPHandler(agentrun.New(root))
 	body, _ := json.Marshal(RunRequest{
 		RunID: "task-20260714-000000-httpnative", RunType: agentrun.RunTask, Profile: "native-test", Prompt: "hello",
@@ -93,10 +90,7 @@ func TestHTTPRunSupportsRespondAsyncPreference(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["ok"],"done_after":1}}}`
-	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeHTTPFixtureProfile(t, root, "native-test", "ok")
 	handler := NewHTTPHandler(agentrun.New(root))
 	request := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{"run_id":"task-20260719-000007-async","profile":"native-test","prompt":"hello"}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -113,12 +107,9 @@ func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["session turn ok"],"done_after":1}}}`
-	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeHTTPFixtureProfile(t, root, "native-test", "session turn ok")
 	handler := NewHTTPHandler(agentrun.New(root))
-	createBody := bytes.NewBufferString(`{"session_id":"session-20260717-130000-http","project_id":"project","title":"HTTP session","runtime":"api","profile":"native-test","tags":["workbench"]}`)
+	createBody := bytes.NewBufferString(`{"session_id":"session-20260717-130000-http","project_id":"project","title":"HTTP session","runtime":"cli","profile":"native-test","tags":["workbench"]}`)
 	create := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/sessions", createBody)
 	request.Header.Set("Content-Type", "application/json")
@@ -126,7 +117,7 @@ func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
 	}
-	if !strings.Contains(create.Body.String(), `"runtime":"api"`) || !strings.Contains(create.Body.String(), `"profile":"native-test"`) || !strings.Contains(create.Body.String(), `"workbench"`) {
+	if !strings.Contains(create.Body.String(), `"runtime":"cli"`) || !strings.Contains(create.Body.String(), `"profile":"native-test"`) || !strings.Contains(create.Body.String(), `"workbench"`) {
 		t.Fatalf("create body=%s", create.Body.String())
 	}
 	turnBody := bytes.NewBufferString(`{"run_id":"turn-20260717-130001-http","prompt":"hello","memory":[{"id":"project-fact","content":"workbench project memory","source":"workbench"}]}`)
@@ -137,7 +128,7 @@ func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
 	if turn.Code != http.StatusCreated {
 		t.Fatalf("turn status=%d body=%s", turn.Code, turn.Body.String())
 	}
-	snapshot, err := os.ReadFile(filepath.Join(root, "runs", "turn", "2026-07-17", "turn-20260717-130001-http", "native-snapshot.json"))
+	snapshot, err := os.ReadFile(filepath.Join(root, "runs", "turn", "2026-07-17", "turn-20260717-130001-http", "context-memory.json"))
 	if err != nil || !bytes.Contains(snapshot, []byte("workbench project memory")) {
 		t.Fatalf("injected memory snapshot=%s err=%v", snapshot, err)
 	}
@@ -245,5 +236,30 @@ func TestValidateRunRequestRejectsPromptFileSymlinkEscape(t *testing.T) {
 	}
 	if err := validateRunRequest(RunRequest{CWD: cwd, PromptFile: "prompt.md"}); err == nil {
 		t.Fatal("prompt_file symlink outside cwd was accepted")
+	}
+}
+
+func writeHTTPFixtureProfile(t *testing.T, root, id, reply string) {
+	t.Helper()
+	script := filepath.Join(root, id+"-fixture.sh")
+	content := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' "$SN_TEST_REPLY"
+if [ -n "$AGENTRUN_RESULT_FILE" ]; then
+  printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","summary":"%s","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" "$SN_TEST_REPLY" > "$AGENTRUN_RESULT_FILE"
+fi
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := json.Marshal(map[string]any{
+		"command": script,
+		"env":     map[string]string{"SN_TEST_REPLY": reply},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "configs", id+".json"), profile, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

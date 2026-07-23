@@ -1,0 +1,17 @@
+{
+  "command": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "xhigh",
+  "args": [
+    "exec",
+    "--skip-git-repo-check",
+    "--ignore-user-config",
+    "--ephemeral",
+    "--color", "never",
+    "--image", "${WB_RUNTIME_IMAGE_PATH}"
+  ],
+  "env": {
+    "CODEX_HOME": "${HOME}/.codex-aip"
+  },
+  "timeout_seconds": 180
+}

@@ -12,6 +12,7 @@ import (
 	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/capability"
 	"agent-runtime/internal/cli/config"
+	"agent-runtime/internal/provider"
 )
 
 func newCapabilityRegistry(cfg *config.Config, sessionID string) (*capability.Registry, error) {
@@ -130,30 +131,42 @@ func runSkillByName(cfg *config.Config, registry *capability.Registry, args []st
 		variables               map[string]any
 		rawArgs                 []string
 	}{variables: map[string]any{}}
-	for index := 1; index < len(args); index++ {
+	for index := 1; index < len(args); {
 		name := args[index]
-		if name == "--" {
-			options.rawArgs = append(options.rawArgs, args[index+1:]...)
-			break
-		}
-		index++
-		if index >= len(args) {
-			return fmt.Errorf("%s requires value", name)
-		}
-		value := args[index]
 		switch name {
 		case "--input":
-			options.input = value
+			index++
+			if index >= len(args) {
+				return fmt.Errorf("%s requires value", name)
+			}
+			options.input = args[index]
+			index++
 		case "--input-file":
-			options.inputFile = value
+			index++
+			if index >= len(args) {
+				return fmt.Errorf("%s requires value", name)
+			}
+			options.inputFile = args[index]
+			index++
 		case "--query":
-			options.query = value
+			index++
+			if index >= len(args) {
+				return fmt.Errorf("%s requires value", name)
+			}
+			options.query = args[index]
+			index++
 		case "--vars":
-			if err := json.Unmarshal([]byte(value), &options.variables); err != nil {
+			index++
+			if index >= len(args) {
+				return fmt.Errorf("%s requires value", name)
+			}
+			if err := json.Unmarshal([]byte(args[index]), &options.variables); err != nil {
 				return fmt.Errorf("parse --vars: %w", err)
 			}
+			index++
 		default:
-			return fmt.Errorf("unknown skill run option: %s", name)
+			options.rawArgs = append(options.rawArgs, args[index:]...)
+			index = len(args)
 		}
 	}
 	if options.input != "" && options.inputFile != "" {
@@ -177,7 +190,23 @@ func runSkillByName(cfg *config.Config, registry *capability.Registry, args []st
 	if !ok {
 		return fmt.Errorf("skill %s references unknown profile %q", skill.Name, skill.DefaultProfile)
 	}
-	code, err := executePromptProfile(cfg, profile, prompt, options.rawArgs)
+	var code int
+	if profile.Type == provider.TypeCLI && profile.CLI != nil && profile.CLI.Executor == provider.ExecutorCommand {
+		directArgs := append([]string(nil), options.rawArgs...)
+		directArgs = append(directArgs, prompt)
+		code, err = runInteractiveProfile(cfg, profile, directArgs)
+	} else {
+		overrides := map[string]any{}
+		if profile.Type == provider.TypeAPI {
+			_, overrides, err = parseAPIProviderArgs(append(append([]string(nil), options.rawArgs...), prompt))
+			if err != nil {
+				return err
+			}
+		} else if len(options.rawArgs) > 0 {
+			return fmt.Errorf("profile %s does not accept provider arguments", profile.ID)
+		}
+		code, err = executeUnrecordedProfile(cfg, profile, prompt, nil, overrides)
+	}
 	if err != nil {
 		return err
 	}

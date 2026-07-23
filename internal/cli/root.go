@@ -61,52 +61,14 @@ func Main(args []string) int {
 	return 0
 }
 
-type profileRoute string
-
-const (
-	profileRouteInteractive profileRoute = "interactive"
-	profileRoutePassthrough profileRoute = "passthrough"
-	profileRoutePrompt      profileRoute = "prompt"
-)
-
-func routeProfileArgs(args []string) (profileRoute, []string, error) {
-	if len(args) == 0 {
-		return profileRouteInteractive, nil, nil
-	}
-	switch args[0] {
-	case "--":
-		return profileRoutePassthrough, args[1:], nil
-	case "run", "submit":
-		return "", nil, fmt.Errorf("profile %s was removed; use 'session %s <profile> <prompt>' when recording is required", args[0], args[0])
-	default:
-		return profileRoutePrompt, args, nil
-	}
-}
-
 func runResolvedProfile(cfg *config.Config, profile provider.Config, args []string) (int, error) {
-	route, routedArgs, err := routeProfileArgs(args)
-	if err != nil {
-		return 1, fmt.Errorf("profile %q: %w", profile.ID, err)
+	if profile.Type == provider.TypeCLI && profile.CLI != nil && profile.CLI.Executor == provider.ExecutorCommand {
+		return runInteractiveProfile(cfg, profile, args)
 	}
-	switch route {
-	case profileRouteInteractive:
-		if stdinHasPrompt() {
-			return runPromptProfile(cfg, profile, nil)
-		}
-		if profile.Type != provider.TypeCLI || profile.CLI == nil || profile.CLI.Executor != provider.ExecutorCommand {
-			return 1, fmt.Errorf("profile %q has no interactive command; provide a prompt or use 'session open %s'", profile.ID, profile.ID)
-		}
-		return runInteractiveProfile(cfg, profile, nil)
-	case profileRoutePassthrough:
-		if profile.Type != provider.TypeCLI || profile.CLI == nil || profile.CLI.Executor != provider.ExecutorCommand {
-			return 1, fmt.Errorf("profile %q does not support raw CLI passthrough", profile.ID)
-		}
-		return runInteractiveProfile(cfg, profile, routedArgs)
-	case profileRoutePrompt:
-		return runPromptProfile(cfg, profile, routedArgs)
-	default:
-		return 1, fmt.Errorf("profile %q: unsupported route %q", profile.ID, route)
+	if profile.Type == provider.TypeCLI {
+		return 1, fmt.Errorf("profile %q has no direct command; use 'session open %s'", profile.ID, profile.ID)
 	}
+	return runUnrecordedProfile(cfg, profile, args)
 }
 
 func runInteractiveProfile(cfg *config.Config, profile provider.Config, rawArgs []string) (int, error) {
@@ -138,7 +100,6 @@ func printProviders(root string) error {
 	for _, profile := range profiles {
 		items = append(items, map[string]any{
 			"id": profile.ID, "type": profile.Type, "transport": profile.Transport(),
-			"label": profile.Label,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"]) })
@@ -161,32 +122,16 @@ func runWithFollow(ctx context.Context, service *agentrun.Service, options agent
 	return followed, followErr
 }
 
-func hasOptionBeforeSeparator(args []string, name string) bool {
-	for _, arg := range args {
-		if arg == "--" {
-			return false
-		}
-		if arg == name {
-			return true
-		}
-	}
-	return false
-}
-
 func stdinHasPrompt() bool {
 	info, err := os.Stdin.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice == 0
 }
 
 func applyStdinPrompt(prompt *string, promptFile string) error {
-	if !stdinHasPrompt() {
-		return nil
-	}
-	data, err := io.ReadAll(os.Stdin)
+	stdinPrompt, err := readStdinPrompt()
 	if err != nil {
-		return fmt.Errorf("read stdin prompt: %w", err)
+		return err
 	}
-	stdinPrompt := strings.TrimSpace(string(data))
 	if stdinPrompt == "" {
 		return nil
 	}
@@ -195,6 +140,17 @@ func applyStdinPrompt(prompt *string, promptFile string) error {
 	}
 	*prompt = stdinPrompt
 	return nil
+}
+
+func readStdinPrompt() (string, error) {
+	if !stdinHasPrompt() {
+		return "", nil
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("read stdin prompt: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func runUpdate(cfg *config.Config, args []string) error {
@@ -284,14 +240,15 @@ func printHelp() {
 	fmt.Println(`sn-cli - Go Agent Runtime
 
 Usage:
-  sn-cli <profile>
-  sn-cli <profile> [prompt...] [-- raw-cli-args...]
-  sn-cli <profile> -- [raw-cli-args...]
+  sn-cli <profile> [native-cli-args...]
+  sn-cli profile exec <profile> [provider-input...]
+  sn-cli session run|submit [runtime-options...] <profile> [provider-input...]
+  sn-cli session open [runtime-options...] <profile> [native-cli-args...]
 
 Namespaces:
   sn-cli run list|show|logs|result|watch|cancel|reconcile
   sn-cli session run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
-  sn-cli profile list|show|validate|command
+  sn-cli profile list|show|validate|command|exec
   sn-cli system doctor|start|status|stop|restart|migrate-config|update
   sn-cli loop run|list|show|logs|cancel
   sn-cli skill list|show|run
@@ -303,9 +260,15 @@ Global flags:
   --version
 
 Execution:
-  <profile> prompt   direct one-shot; no Run or Session record
+  <profile>          native direct execution in the current TTY; no Runtime record
+  profile exec       explicit unrecorded batch execution
   session run       synchronous recorded execution
   session submit    asynchronous recorded execution
+
+Routing:
+  CLI profile        every token after <profile> is passed to the native command
+  API profile        typed options followed by one final quoted prompt, or stdin
+  Session options    Runtime options must appear before <profile>
 
 Installed binary: ~/.sn/bin/sn-cli
 Configuration:    ~/.sn/configs`)

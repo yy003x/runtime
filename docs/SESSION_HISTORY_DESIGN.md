@@ -99,15 +99,16 @@ Session 独立使用 `idle | active | blocked | archived`，不得把最后一�
 | 入口 | record_mode | retention | capture_quality |
 | --- | --- | --- | --- |
 | 普通 HTTP/API Run | off | - | structured |
-| 顶层 profile one-shot | off | - | - |
+| 顶层 CLI profile native direct | off | - | - |
+| 顶层 API/native profile direct request | off | - | - |
+| `profile exec` | off | - | - |
 | `skill run` | off | - | - |
 | `session run|submit` | full | standard | structured/parsed |
-| 顶层 direct interactive TTY | off | - | - |
 | `session open --carrier tmux` | full | standard | transcript_only |
 | `session open --carrier terminal` | full | standard | transcript_only |
 | help/version/profile validate | off | - | - |
 
-顶层 direct interactive、passthrough 和 one-shot 都不进入 Session；需要记录必须显式使用 `session run|submit|open`。
+顶层 native direct、direct API/native request、`profile exec` 和 `skill run` 都不进入 Session；需要记录必须显式使用 `session run|submit|open`。
 
 ## 5. result 复用
 
@@ -161,11 +162,11 @@ managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话�
 
 ```bash
 sn-cli session run cx "创建结构化会话"
-sn-cli session submit cc --session-id <id> "切换 Provider 后台继续"
-sn-cli loop run --session-id <id> --input "协同执行" --planner-config ba --capability agent.run
+sn-cli session submit --session-id <id> cc "切换 Provider 后台继续"
+sn-cli loop run --session-id <id> --input "协同执行" --planner-config api-cx --capability agent.run
 
-sn-cli session open cx --carrier tmux --session-id <id> -- --no-alt-screen
-sn-cli session open cc --carrier terminal --session-id <id>
+sn-cli session open --carrier tmux --session-id <id> cx --no-alt-screen
+sn-cli session open --carrier terminal --session-id <id> cc
 sn-cli session list [--project <project>] [--state <state>] [--tag <tag>]
 sn-cli session show --session-id <id>
 sn-cli session messages --session-id <id> [--after-seq N]
@@ -206,9 +207,9 @@ POST /v1/sessions/{session_id}/turns
 - `wb.task.sn_cli.SnCLIClient` 是 BFF adapter，只调用 `sn-cli`。
 - UI 会话 list/show/message/stop/configure 不直接读取 `~/.sn`。
 - UI 的 profile list/validate/command preview 来自 `sn-cli profile list|validate|command`，避免 Workbench 配置与实际执行 profile 漂移。
-- UI 不需要展示或续轮的一次性 Agent 任务通过 `sn-cli <profile> <prompt>` direct 执行，不产生本地记录；需要本地会话展示的任务使用 `sn-cli session run`，形成 standard Session。
+- UI 不需要展示或续轮的 batch Agent 任务通过 `sn-cli profile exec <profile> <prompt>` 执行，不产生本地记录；CLI 的 `sn-cli <profile> <args...>` 保留给原生 TTY。需要本地会话展示的任务使用 `sn-cli session run`，形成 standard Session。
 - UI 的 `/api/runtime/runs` 长任务面板通过逻辑 Session 与 `sn-cli session/run` namespace 启动、查询、续轮、日志和停止；Session ID、Run ID 和 Execution ID 分别暴露，不再把逻辑 Session ID 伪装成 Run ID。
-- Workbench 不再接受 `command` / `provider_env` 直传执行，binary、args 与 env 必须由 `sn-cli` profile/preset 声明并校验，避免 BFF 绕过 Runtime 配置 owner。
+- Workbench 不再接受 `command` / `provider_env` 直传执行，binary、args 与 env 必须由独立的 `sn-cli` profile 声明并校验，避免 BFF 绕过 Runtime 配置 owner。
 - Workbench 不保留 Session/History 迁移器或双写路径；现行会话只写 Go Runtime。
 - Workbench 的业务 knowledge、outputs、project config 继续由 Workbench owner 管理。
 
@@ -216,7 +217,7 @@ POST /v1/sessions/{session_id}/turns
 
 ## 11. 已知边界
 
-- 顶层 direct interactive、passthrough 和 one-shot 不进入 Session，因此不记录 metadata、transcript 或 Run artifact。
+- 顶层 native direct、direct API/native request、`profile exec` 和 `skill run` 不进入 Session，因此不记录 metadata、transcript 或 Run artifact。
 - tmux/terminal transcript 不是结构化 assistant final text。
 - `history/index.json` 当前是本地可重建 JSON 索引，不承诺 O(log n) 或全文搜索；达到查询压力后可在 Store 接口后替换为 SQLite/FTS。
 - SSE/WebSocket、ephemeral 自动 GC、Provider 专属结构化 TTY adapter 属于后续增强，不得在文档中宣称已完成。

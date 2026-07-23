@@ -34,7 +34,7 @@ func runRuntimeDoctor(cfg *config.Config, args []string) error {
 	}
 	profiles, err := service.Profiles()
 	if err != nil {
-		legacyProfiles, scanErr := installbundle.ScanProfileResultContract(cfg.Paths.ConfigDir)
+		legacyProfiles, scanErr := installbundle.ScanProfileMigrations(cfg.Paths.ConfigDir)
 		if scanErr == nil && len(legacyProfiles) > 0 {
 			return printJSON(map[string]any{
 				"ok":               false,
@@ -46,7 +46,7 @@ func runRuntimeDoctor(cfg *config.Config, args []string) error {
 				"migration": map[string]any{
 					"required": true,
 					"action":   "system migrate-config",
-					"reason":   "配置包含已废弃字段 result_contract",
+					"reason":   "配置使用旧版 profile schema",
 					"configs":  legacyProfiles,
 				},
 			})
@@ -175,7 +175,7 @@ func runProfileValidation(cfg *config.Config, profileID string, live bool) error
 	return printJSON(map[string]any{"ok": allOK, "validated": len(results), "results": results})
 }
 
-func printProfileCommand(cfg *config.Config, profileID string, jsonOutput bool) error {
+func printProfileCommand(cfg *config.Config, profileID, mode string, jsonOutput bool) error {
 	profiles, err := agentrun.New(cfg.Home).Profiles()
 	if err != nil {
 		return err
@@ -187,14 +187,29 @@ func printProfileCommand(cfg *config.Config, profileID string, jsonOutput bool) 
 	if profile.Type != provider.TypeCLI || profile.CLI == nil {
 		return fmt.Errorf("profile %q is not a CLI profile", profile.ID)
 	}
-	prepared, err := provider.Prepare(profile, "", nil)
-	if err != nil {
-		return err
+	var argv []string
+	switch mode {
+	case "direct":
+		prepared, err := provider.PrepareInteractiveCLI(profile, nil)
+		if err != nil {
+			return err
+		}
+		argv = prepared.Argv
+	case "exec":
+		prepared, err := provider.Prepare(profile, "", nil)
+		if err != nil {
+			return err
+		}
+		if prepared.CLI != nil {
+			argv = prepared.CLI.Argv
+		}
+	default:
+		return fmt.Errorf("profile command --mode must be direct|exec")
 	}
-	if prepared.CLI == nil || len(prepared.CLI.Argv) == 0 {
+	if len(argv) == 0 {
 		return fmt.Errorf("profile %q did not resolve a CLI command", profile.ID)
 	}
-	argv := redactCommandArgv(prepared.CLI.Argv)
+	argv = redactCommandArgv(argv)
 	command := shellJoin(argv)
 	if !jsonOutput {
 		fmt.Println(command)
@@ -202,7 +217,7 @@ func printProfileCommand(cfg *config.Config, profileID string, jsonOutput bool) 
 	}
 	return printJSON(map[string]any{
 		"ok": true, "profile": profile.ID, "provider_type": profile.Type,
-		"transport": profile.Transport(), "argv": argv, "command": command,
+		"transport": profile.Transport(), "mode": mode, "argv": argv, "command": command,
 	})
 }
 
@@ -358,6 +373,10 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 			result["message"] = message
 			return result
 		}
+		if message := validateAPIHeaderEnvironment(profile.API); message != "" {
+			result["message"] = message
+			return result
+		}
 		if live {
 			result["message"] = "配置有效；真实 API 验证请执行 profile smoke，避免 doctor 产生费用"
 		} else {
@@ -378,7 +397,7 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 	}
 	binary, err := provider.ResolveEnv(profile.CLI.Command.Binary)
 	if err != nil {
-		result["message"] = "cli.command.binary: " + err.Error()
+		result["message"] = "command: " + err.Error()
 		return result
 	}
 	if _, err := exec.LookPath(binary); err != nil {
@@ -394,14 +413,28 @@ func validateProfile(profile provider.Config, profiles map[string]provider.Confi
 func validateAPIKeyEnvironment(api *provider.APIConfig) string {
 	name, ok := provider.EnvironmentReferenceName(api.APIKey)
 	if !ok {
-		return "api.api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符"
+		return "api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符"
 	}
 	key, err := provider.ResolveEnv(api.APIKey)
 	if err != nil {
-		return "api.api_key: " + err.Error()
+		return "api_key: " + err.Error()
 	}
 	if key == "" {
 		return "环境变量不能为空: " + name
+	}
+	return ""
+}
+
+func validateAPIHeaderEnvironment(api *provider.APIConfig) string {
+	names := make([]string, 0, len(api.Headers))
+	for name := range api.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, err := provider.ResolveEnv(api.Headers[name]); err != nil {
+			return "headers." + name + ": " + err.Error()
+		}
 	}
 	return ""
 }
@@ -470,7 +503,7 @@ func addCLIEnvironmentDiagnostics(profile provider.Config, result map[string]any
 		}
 		details["active_auth_env"] = activeAuth
 		if len(activeAuth) > 1 {
-			result["warnings"] = []string{"ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN 同时生效；请在 profile/preset 的 env_unset 中删除不使用的一项"}
+			result["warnings"] = []string{"ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN 同时生效；请在对应 profile 的 env 中把不使用的一项设为 null"}
 		}
 	}
 	if len(details) > 0 {
@@ -582,149 +615,102 @@ func runRunRegistryAction(cfg *config.Config, args []string) error {
 	}
 }
 
-func parseRunOptions(runType string, args []string) (agentrun.RunOptions, error) {
+func parseRunOptions(runType string, args []string) (agentrun.RunOptions, []string, error) {
 	options := agentrun.RunOptions{RunType: runType, ExecutionMode: agentrun.ModeManaged, ProviderOverrides: map[string]any{}}
-	var promptParts []string
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-c", "--config":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("%s requires value", args[i-1])
-			}
+		if !strings.HasPrefix(args[i], "-") {
 			options.Profile = args[i]
+			return options, append([]string(nil), args[i+1:]...), nil
+		}
+		switch args[i] {
 		case "--project":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--project requires value")
+				return options, nil, fmt.Errorf("--project requires value")
 			}
 			options.ProjectID = args[i]
 		case "--run-id":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--run-id requires value")
+				return options, nil, fmt.Errorf("--run-id requires value")
 			}
 			options.RunID = args[i]
 		case "--session-id":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--session-id requires value")
+				return options, nil, fmt.Errorf("--session-id requires value")
 			}
 			options.SessionID = args[i]
 		case "--record-mode":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--record-mode requires value")
+				return options, nil, fmt.Errorf("--record-mode requires value")
 			}
 			options.RecordMode = args[i]
 		case "--retention":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--retention requires value")
+				return options, nil, fmt.Errorf("--retention requires value")
 			}
 			options.Retention = args[i]
 		case "--cwd":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--cwd requires value")
+				return options, nil, fmt.Errorf("--cwd requires value")
 			}
 			options.CWD = args[i]
 		case "--prompt-file":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("%s requires value", args[i-1])
+				return options, nil, fmt.Errorf("%s requires value", args[i-1])
 			}
 			options.PromptFile = args[i]
 		case "--deadline-seconds":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("%s requires value", args[i-1])
+				return options, nil, fmt.Errorf("%s requires value", args[i-1])
 			}
 			value, err := strconv.Atoi(args[i])
 			if err != nil {
-				return options, err
+				return options, nil, err
 			}
 			options.DeadlineSeconds = value
 		case "--queue-timeout-seconds":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--queue-timeout-seconds requires value")
+				return options, nil, fmt.Errorf("--queue-timeout-seconds requires value")
 			}
 			value, err := strconv.Atoi(args[i])
 			if err != nil || value < 0 {
-				return options, fmt.Errorf("--queue-timeout-seconds must be a non-negative integer")
+				return options, nil, fmt.Errorf("--queue-timeout-seconds must be a non-negative integer")
 			}
 			options.QueueTimeout = value
 		case "--result-schema":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--result-schema requires value")
+				return options, nil, fmt.Errorf("--result-schema requires value")
 			}
 			options.ResultSchema = args[i]
-		case "--model":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--model requires value")
-			}
-			options.ProviderOverrides["model"] = args[i]
-		case "--reasoning-effort":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("%s requires value", args[i-1])
-			}
-			options.ProviderOverrides["reasoning_effort"] = args[i]
-		case "--image":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--image requires value")
-			}
-			images, _ := options.ProviderOverrides["images"].([]string)
-			options.ProviderOverrides["images"] = append(images, args[i])
-		case "--provider-overrides":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--provider-overrides requires value")
-			}
-			var overrides map[string]any
-			if err := json.Unmarshal([]byte(args[i]), &overrides); err != nil {
-				return options, err
-			}
-			for key, value := range overrides {
-				options.ProviderOverrides[key] = value
-			}
 		case "--allowed-action":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--allowed-action requires value")
+				return options, nil, fmt.Errorf("--allowed-action requires value")
 			}
 			options.AllowedActions = append(options.AllowedActions, args[i])
 		case "--forbidden-action":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("--forbidden-action requires value")
+				return options, nil, fmt.Errorf("--forbidden-action requires value")
 			}
 			options.ForbiddenActions = append(options.ForbiddenActions, args[i])
 		case "--force":
 			options.Force = true
 		case "--json":
-		case "--":
-			options.RawCLIArgs = append(options.RawCLIArgs, args[i+1:]...)
-			i = len(args)
 		default:
-			if strings.HasPrefix(args[i], "-") {
-				return options, fmt.Errorf("unknown %s run option: %s", runType, args[i])
-			}
-			promptParts = append(promptParts, args[i])
+			return options, nil, fmt.Errorf("unknown Runtime option before provider: %s", args[i])
 		}
 	}
-	options.Prompt = strings.TrimSpace(strings.Join(promptParts, " "))
-	if options.Profile == "" {
-		return options, fmt.Errorf("%s run requires -c/--config", runType)
-	}
-	if options.Prompt != "" && strings.TrimSpace(options.PromptFile) != "" {
-		return options, fmt.Errorf("positional prompt and --prompt-file are mutually exclusive")
-	}
-	return options, nil
+	return options, nil, fmt.Errorf("%s run requires a provider as its first positional argument", runType)
 }
 
 func runSessionHistory(cfg *config.Config, args []string) error {
@@ -885,12 +871,12 @@ func validateSessionRuntimeProfile(service *agentrun.Service, runtimeName, profi
 
 func parseSessionStartOptions(args []string) (agentrun.SessionOptions, error) {
 	options := agentrun.SessionOptions{}
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return options, fmt.Errorf("session open requires a profile as its third argument")
-	}
-	options.Profile = args[0]
-	var promptParts []string
-	for i := 1; i < len(args); i++ {
+	for i := 0; i < len(args); i++ {
+		if !strings.HasPrefix(args[i], "-") {
+			options.Profile = args[i]
+			options.RawCLIArgs = append([]string(nil), args[i+1:]...)
+			return options, nil
+		}
 		switch args[i] {
 		case "--project":
 			i++
@@ -954,21 +940,11 @@ func parseSessionStartOptions(args []string) (agentrun.SessionOptions, error) {
 				return options, fmt.Errorf("--retention requires value")
 			}
 			options.Retention = args[i]
-		case "--":
-			options.RawCLIArgs = append(options.RawCLIArgs, args[i+1:]...)
-			i = len(args)
 		default:
-			if strings.HasPrefix(args[i], "-") {
-				return options, fmt.Errorf("unknown session open option: %s", args[i])
-			}
-			promptParts = append(promptParts, args[i])
+			return options, fmt.Errorf("unknown Runtime option before provider: %s", args[i])
 		}
 	}
-	options.Prompt = strings.TrimSpace(strings.Join(promptParts, " "))
-	if options.Prompt != "" && strings.TrimSpace(options.PromptFile) != "" {
-		return options, fmt.Errorf("positional prompt and --prompt-file are mutually exclusive")
-	}
-	return options, nil
+	return options, fmt.Errorf("session open requires a provider as its first positional argument")
 }
 
 func parseRequiredID(args []string, idOption string, valueOptions, boolOptions map[string]bool) (string, error) {
@@ -1017,85 +993,6 @@ func resolvePromptForCLI(path string) (string, string, error) {
 		return "", "", fmt.Errorf("read prompt file: %w", err)
 	}
 	return string(data), absolute, nil
-}
-
-func parseCommandOptions(args []string) (agentrun.CommandOptions, error) {
-	options := agentrun.CommandOptions{Label: "command"}
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			options.Argv = append(options.Argv, args[i+1:]...)
-			break
-		}
-		switch args[i] {
-		case "-c", "--config":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("%s requires value", args[i-1])
-			}
-			options.Profile = args[i]
-		case "--project":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--project requires value")
-			}
-			options.ProjectID = args[i]
-		case "--run-id":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--run-id requires value")
-			}
-			options.RunID = args[i]
-		case "--cwd":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--cwd requires value")
-			}
-			options.CWD = args[i]
-		case "--label":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--label requires value")
-			}
-			options.Label = args[i]
-		case "--input":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--input requires value")
-			}
-			options.Input = args[i]
-		case "--input-file":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("--input-file requires value")
-			}
-			data, err := os.ReadFile(args[i])
-			if err != nil {
-				return options, err
-			}
-			options.Input = string(data)
-		case "--deadline-seconds":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("%s requires value", args[i-1])
-			}
-			value, err := strconv.Atoi(args[i])
-			if err != nil {
-				return options, err
-			}
-			options.DeadlineSeconds = value
-		case "--force":
-			options.Force = true
-		default:
-			return options, fmt.Errorf("unknown run command option: %s", args[i])
-		}
-	}
-	if options.Profile == "" {
-		return options, fmt.Errorf("run command requires a profile")
-	}
-	if len(options.Argv) == 0 {
-		return options, fmt.Errorf("run command argv is required; use -- <command> [args...]")
-	}
-	return options, nil
 }
 
 func parseLoopOptions(args []string) (agentrun.LoopStartOptions, error) {

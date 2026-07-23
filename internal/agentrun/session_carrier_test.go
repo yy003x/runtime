@@ -23,7 +23,7 @@ func TestTerminalCarrierCreatesIndependentRecordedExecution(t *testing.T) {
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'terminal-ok\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":"` + command + `","args":[],"model":"","env":{"TERMINAL_TEST_SECRET":"${TERMINAL_TEST_SECRET}"}},"runtime":{"prompt_delivery":"stdin"}}}`
+	profile := `{"command":"` + command + `","env":{"TERMINAL_TEST_SECRET":"${TERMINAL_TEST_SECRET}"}}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "shell.json"), []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -104,5 +104,13 @@ func TestResolveSessionCarrierRejectsUnsupportedTerminalDriver(t *testing.T) {
 	service := &Service{TerminalDriver: "unknown", DefaultCarrier: "terminal"}
 	if _, err := service.resolveSessionCarrier("terminal"); err == nil || !strings.Contains(err.Error(), "does not support driver") {
 		t.Fatalf("resolveSessionCarrier=%v", err)
+	}
+}
+
+func TestResolveSessionCarrierUsesConfiguredTmuxDefault(t *testing.T) {
+	service := &Service{DefaultCarrier: "tmux"}
+	carrier, err := service.resolveSessionCarrier("")
+	if err != nil || carrier.Name() != "tmux" {
+		t.Fatalf("carrier=%v err=%v", carrier, err)
 	}
 }

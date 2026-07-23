@@ -91,20 +91,12 @@ func NewTmuxBackend(cfg Config, client *daemon.Client) (*providertmux.Backend, e
 		return nil, err
 	}
 	tmux := cfg.CLI.Tmux
-	readyTimeout := tmux.ReadyTimeoutSeconds
-	if tmux.SessionReadyTimeoutSeconds > 0 {
-		readyTimeout = tmux.SessionReadyTimeoutSeconds
-	}
-	readySettle := tmux.SessionReadySettleSeconds
-	if readySettle <= 0 {
-		readySettle = tmux.PromptReadySettleSeconds
-	}
 	return providertmux.New(providertmux.Config{
 		Daemon:        client,
 		SessionName:   tmux.SessionName,
 		PollInterval:  seconds(tmux.PollIntervalSeconds),
-		ReadyTimeout:  seconds(readyTimeout),
-		ReadySettle:   seconds(readySettle),
+		ReadyTimeout:  seconds(tmux.SessionReadyTimeoutSeconds),
+		ReadySettle:   seconds(tmux.SessionReadySettleSeconds),
 		StableTimeout: seconds(tmux.PromptStableTimeoutSeconds),
 		Depends:       daemonDependencies(cfg),
 		Execution:     execution,
@@ -153,18 +145,26 @@ func TmuxShellCommand(cfg Config, extra map[string]string) (string, error) {
 	command := cfg.CLI.Command
 	binary, err := resolveConfiguredBinary(command.Binary)
 	if err != nil {
-		return "", fmt.Errorf("cli.command.binary: %w", err)
+		return "", fmt.Errorf("cli.command: %w", err)
 	}
 	args, err := resolveConfiguredArgs(command.Args)
 	if err != nil {
-		return "", fmt.Errorf("cli.command.args: %w", err)
+		return "", fmt.Errorf("cli.args: %w", err)
+	}
+	model, err := ResolveEnv(command.Model)
+	if err != nil {
+		return "", fmt.Errorf("cli.model: %w", err)
+	}
+	driver := cfg.CLI.Driver
+	if driver == "" {
+		driver = inferDriver(binary)
+	}
+	args, model, _, err = applyConfiguredCLIEffort(driver, args, model, cfg.CLI.Effort)
+	if err != nil {
+		return "", err
 	}
 	argv := append([]string{binary}, args...)
-	if command.Model != "" {
-		model, resolveErr := ResolveEnv(command.Model)
-		if resolveErr != nil {
-			return "", fmt.Errorf("cli.command.model: %w", resolveErr)
-		}
+	if model != "" {
 		argv = append(argv, "--model", model)
 	}
 	return tmuxShellCommandArgv(cfg, argv, extra)
@@ -186,7 +186,6 @@ func AsTmuxSessionProfile(cfg Config) (Config, error) {
 	runtime := cli.Runtime
 	runtime.PromptDelivery = "paste"
 	runtime.PromptArgs = nil
-	runtime.ManagedArgs = nil
 	cli.Executor = ExecutorTmux
 	cli.Runtime = runtime
 	if cli.Tmux == nil {
@@ -196,7 +195,6 @@ func AsTmuxSessionProfile(cfg Config) (Config, error) {
 			PasteBracketed:             pasteBracketed,
 			PollIntervalSeconds:        0.1,
 			PromptStableTimeoutSeconds: 10,
-			SessionWaitReady:           true,
 			SessionReadyTimeoutSeconds: 30,
 			SessionReadySettleSeconds:  0.5,
 			RestartMaxAttempts:         5,
@@ -257,7 +255,7 @@ func tmuxEnvironment(cfg Config, extra map[string]string) (map[string]string, er
 	for key, value := range command.Env {
 		resolved, err := ResolveEnv(value)
 		if err != nil {
-			return nil, fmt.Errorf("cli.command.env.%s: %w", key, err)
+			return nil, fmt.Errorf("cli.env.%s: %w", key, err)
 		}
 		values[key] = resolved
 	}

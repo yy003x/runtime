@@ -27,10 +27,15 @@ func TestBuildNativeToolRuntimeRequiresExplicitAuthorization(t *testing.T) {
 func TestNativeProviderExecutesMockAndPersistsSnapshot(t *testing.T) {
 	provider := nativeProvider{}
 	cfg := Config{ID: "native-mock", Type: TypeNative, Native: &NativeConfig{
-		SystemPrompt: "test", MaxRounds: 2, Mock: &NativeMockConfig{Responses: []string{"native ok"}, DoneAfter: 1},
+		MaxRounds: 2, Mock: &NativeMockConfig{Responses: []string{"native ok"}, DoneAfter: 1},
 	}}
+	if cfg.Native.Persona != "" {
+		t.Fatalf("unexpected implicit persona=%q", cfg.Native.Persona)
+	}
 	snapshotFile := filepath.Join(t.TempDir(), "snapshot.json")
-	prepared, err := provider.Prepare(context.Background(), cfg, Request{Prompt: "hello", RunID: "run-native", SnapshotFile: snapshotFile})
+	prepared, err := provider.Prepare(context.Background(), cfg, Request{
+		Prompt: "hello", RunID: "run-native", SnapshotFile: snapshotFile, PersonaDir: t.TempDir(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

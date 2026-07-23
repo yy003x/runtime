@@ -17,7 +17,7 @@ import (
 
 func TestSubmitExecutesInlineAndListsCompletedRun(t *testing.T) {
 	root := t.TempDir()
-	writeNativeProfile(t, root, "native", 0)
+	writeManagedFixtureProfile(t, root, "native", 0)
 	service := New(root)
 	runID := "task-20260719-000000-submit"
 	result, err := service.Submit(context.Background(), RunOptions{RunType: RunTask, RunID: runID, Profile: "native", ProjectID: "demo", Prompt: "hello"})
@@ -35,7 +35,7 @@ func TestSubmitExecutesInlineAndListsCompletedRun(t *testing.T) {
 
 func TestDispatchQueueExecutesPersistedWork(t *testing.T) {
 	root := t.TempDir()
-	writeNativeProfile(t, root, "native", 0)
+	writeManagedFixtureProfile(t, root, "native", 0)
 	service := New(root)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

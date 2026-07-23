@@ -13,11 +13,10 @@ import (
 )
 
 func TestNativeProviderProducesStandardArtifacts(t *testing.T) {
-	root := nativeTestRoot(t, `{
-  "type":"native",
-  "native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["native ok"],"done_after":1}}
-}`)
-	service := New(root)
+	service := nativeTestService(t, provider.NativeConfig{
+		SystemPrompt: "test", MaxRounds: 1,
+		Mock: &provider.NativeMockConfig{Responses: []string{"native ok"}, DoneAfter: 1},
+	})
 	run, err := service.Run(context.Background(), RunOptions{Profile: "native-test", Prompt: "hello", ExecutionMode: ModeManaged})
 	if err != nil || run.State != StateDone {
 		t.Fatalf("run=%#v err=%v", run, err)
@@ -36,11 +35,10 @@ func TestNativeProviderProducesStandardArtifacts(t *testing.T) {
 }
 
 func TestNativeProviderPatchResumeUsesSameRun(t *testing.T) {
-	root := nativeTestRoot(t, `{
-  "type":"native",
-  "native":{"system_prompt":"test","max_rounds":1,"llm_timeout_seconds":0.03,"mock":{"responses":["recovered"],"done_after":1}}
-}`)
-	service := New(root)
+	service := nativeTestService(t, provider.NativeConfig{
+		SystemPrompt: "test", MaxRounds: 1, LLMTimeoutSeconds: 0.03,
+		Mock: &provider.NativeMockConfig{Responses: []string{"recovered"}, DoneAfter: 1},
+	})
 	run, err := service.Run(context.Background(), RunOptions{Profile: "native-test", Prompt: "timeout", ExecutionMode: ModeManaged, CreateSession: true})
 	if err != nil || run.State != StateBlocked {
 		t.Fatalf("run=%#v err=%v", run, err)
@@ -70,14 +68,10 @@ func TestNativeProviderPatchResumeUsesSameRun(t *testing.T) {
 }
 
 func TestAPIAgentProviderPersistsAndPatchResumesLocalContext(t *testing.T) {
-	root := apiAgentTestRoot(t, `{
-  "type":"api",
-  "api":{
-    "protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNUSED_API_AGENT_KEY}","mock":true,
-    "runtime":{"enabled":true,"max_rounds":2,"llm_timeout_seconds":1}
-  }
-}`)
-	service := New(root)
+	service := apiAgentTestService(t, provider.APIConfig{
+		Protocol: "openai", BaseURL: "https://example.test/v1", Model: "mock", APIKey: "${UNUSED_API_AGENT_KEY}", Mock: true,
+		Runtime: &provider.APIRuntimeConfig{Enabled: true, MaxRounds: 2, LLMTimeoutSeconds: 1},
+	})
 	run, err := service.Run(context.Background(), RunOptions{Profile: "api-agent-test", Prompt: "fail first", ExecutionMode: ModeManaged})
 	if err != nil || run.State != StateBlocked {
 		t.Fatalf("run=%#v err=%v", run, err)
@@ -105,11 +99,10 @@ func TestAPIAgentProviderPersistsAndPatchResumesLocalContext(t *testing.T) {
 }
 
 func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
-	root := nativeTestRoot(t, `{
-  "type":"native",
-  "native":{"system_prompt":"test","max_rounds":1,"llm_timeout_seconds":3,"mock":{"responses":["late"],"latency_milliseconds":1000,"done_after":1}}
-}`)
-	service := New(root)
+	service := nativeTestService(t, provider.NativeConfig{
+		SystemPrompt: "test", MaxRounds: 1, LLMTimeoutSeconds: 3,
+		Mock: &provider.NativeMockConfig{Responses: []string{"late"}, LatencyMilliseconds: 1000, DoneAfter: 1},
+	})
 	type outcome struct {
 		run RunSummary
 		err error
@@ -134,28 +127,24 @@ func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
 	}
 }
 
-func nativeTestRoot(t *testing.T, profile string) string {
+func nativeTestService(t *testing.T, native provider.NativeConfig) *Service {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
-		t.Fatal(err)
+	service := New(root)
+	service.profileOverrides = map[string]provider.Config{
+		"native-test": {ID: "native-test", Type: provider.TypeNative, Native: &native, Raw: map[string]any{"internal_test": "native"}},
 	}
-	if err := os.WriteFile(filepath.Join(root, "configs", "native-test.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return root
+	return service
 }
 
-func apiAgentTestRoot(t *testing.T, profile string) string {
+func apiAgentTestService(t *testing.T, api provider.APIConfig) *Service {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
-		t.Fatal(err)
+	service := New(root)
+	service.profileOverrides = map[string]provider.Config{
+		"api-agent-test": {ID: "api-agent-test", Type: provider.TypeAPI, API: &api, Raw: map[string]any{"internal_test": "api-agent"}},
 	}
-	if err := os.WriteFile(filepath.Join(root, "configs", "api-agent-test.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return root
+	return service
 }
 
 func waitRunState(t *testing.T, service *Service, runType, runID, state string) Status {

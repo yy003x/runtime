@@ -258,7 +258,7 @@ func DecideRecordPolicy(source, runType, executionKind, explicitSessionID, recor
 	}
 	if runType == RunTask && explicitSessionID == "" && source != "http" {
 		decision.Retention = RetentionEphemeral
-		decision.Reason = "one-shot task"
+		decision.Reason = "run without session intent"
 	}
 	if decision.Reason == "" {
 		decision.Reason = "runtime default"

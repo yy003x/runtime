@@ -21,23 +21,25 @@ import (
 var Version = "dev"
 
 type Service struct {
-	Home           string
-	ConfigDir      string
-	PersonaDir     string
-	RunsDir        string
-	StateDir       string
-	paths          layout.Paths
-	DefaultProject string
-	DefaultProfile string
-	RuntimeVersion string
-	MaxConcurrency int
-	MaxQueue       int
-	QueueTimeout   int
-	DefaultCarrier string
-	TerminalDriver string
-	HTTPClient     *http.Client
-	store          Store
-	configErr      error
+	Home             string
+	ConfigDir        string
+	PersonaDir       string
+	RunsDir          string
+	StateDir         string
+	paths            layout.Paths
+	DefaultProject   string
+	DefaultProfile   string
+	RuntimeVersion   string
+	MaxConcurrency   int
+	MaxQueue         int
+	QueueTimeout     int
+	DefaultDeadline  int
+	DefaultCarrier   string
+	TerminalDriver   string
+	HTTPClient       *http.Client
+	store            Store
+	configErr        error
+	profileOverrides map[string]provider.Config
 }
 
 type runProviderSink struct {
@@ -119,7 +121,8 @@ func New(home string) *Service {
 		RunsDir: paths.RunsDir, StateDir: paths.StateDir, paths: paths, DefaultProject: settings.DefaultProject,
 		DefaultProfile: settings.DefaultProfile, MaxConcurrency: settings.MaxConcurrency,
 		MaxQueue: settings.MaxQueue, QueueTimeout: settings.QueueTimeout,
-		DefaultCarrier: settings.Session.DefaultCarrier, TerminalDriver: settings.Session.Terminal.Driver,
+		DefaultDeadline: settings.DefaultDeadline,
+		DefaultCarrier:  settings.Session.DefaultCarrier, TerminalDriver: settings.Session.Terminal.Driver,
 		RuntimeVersion: Version, configErr: err,
 	}
 	return service
@@ -147,6 +150,13 @@ func (s *Service) DaemonClient() *daemon.Client {
 func (s *Service) Profiles() (map[string]provider.Config, error) {
 	if s.configErr != nil {
 		return nil, s.configErr
+	}
+	if s.profileOverrides != nil {
+		profiles := make(map[string]provider.Config, len(s.profileOverrides))
+		for id, profile := range s.profileOverrides {
+			profiles[id] = profile
+		}
+		return profiles, nil
 	}
 	return provider.LoadDir(s.ConfigDir)
 }
@@ -291,6 +301,9 @@ func (s *Service) runImmediate(ctx context.Context, options RunOptions) (RunSumm
 	timeout := options.DeadlineSeconds
 	if timeout == 0 {
 		timeout = profile.TimeoutSeconds
+	}
+	if timeout == 0 {
+		timeout = s.DefaultDeadline
 	}
 	now := time.Now().UTC()
 	request := Request{

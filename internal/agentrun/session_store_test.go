@@ -263,9 +263,9 @@ func TestSessionStoreBlockedRunCanResumeWithoutDuplicateCompletion(t *testing.T)
 }
 
 func TestDecideRecordPolicy(t *testing.T) {
-	oneShot, err := DecideRecordPolicy("cli.task", RunTask, ExecutionCLIManaged, "", "", "")
-	if err != nil || oneShot.Retention != RetentionEphemeral {
-		t.Fatalf("one-shot=%#v err=%v", oneShot, err)
+	standalone, err := DecideRecordPolicy("cli.task", RunTask, ExecutionCLIManaged, "", "", "")
+	if err != nil || standalone.Retention != RetentionEphemeral {
+		t.Fatalf("standalone=%#v err=%v", standalone, err)
 	}
 	managed, err := DecideRecordPolicy("cli.session.run", RunTurn, ExecutionCLIManaged, "session-explicit", "", "")
 	if err != nil || managed.Retention != RetentionStandard || managed.RecordMode != RecordFull {

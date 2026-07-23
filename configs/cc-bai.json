@@ -1,0 +1,22 @@
+{
+  "command": "claude",
+  "args": [
+    "--permission-mode", "bypassPermissions",
+    "--disallowed-tools", "Bash(rm -rf:*)", "Bash(sudo:*)", "Bash(su:*)", "Bash(git push --force:*)"
+  ],
+  "env": {
+    "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip",
+    "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/apps/anthropic",
+    "ANTHROPIC_API_KEY": "${BAILIAN_API_KEY}",
+    "ANTHROPIC_AUTH_TOKEN": null,
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.2",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2",
+    "ANTHROPIC_MODEL": "glm-5.2",
+    "API_TIMEOUT_MS": "300000",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "glm-5.2",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"
+  },
+  "timeout_seconds": 600
+}

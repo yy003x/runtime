@@ -6,7 +6,7 @@
 
 ## 结论
 
-- Provider 实际执行命令的即时预览已经由 `sn-cli config command -c <config>` 提供，不属于本次 Runtime 改造。
+- Provider 实际执行命令的即时预览由 `sn-cli profile command <profile> --mode exec` 提供，不属于本次 Runtime 改造。
 - 当前实时输出缺失发生在 managed 链路：Provider stdout/stderr 会持续写入 Run 的 `output.log`，前台 `Wait()` 只轮询终态，结束后才打印最终结果。
 - 推荐在 AgentRun 层增加可复用的 follow 能力，由 CLI 决定如何展示；不要把 managed 调用改成 direct invocation。
 - 实现 follow 前必须先把 `output.log` 收敛为单调追加。当前日志运行中追加、结束时又被 `writeOutputLog()` 整体覆盖，直接按 byte offset tail 会重复或漏输出。
@@ -14,9 +14,8 @@
 ## 当前链路
 
 ```text
-stdin | sn-cli <profile>
-  -> runCommandProfile()
-  -> runProfile()
+stdin | sn-cli session run <profile>
+  -> runManagedSessionAction()
   -> Service.Run()
   -> Service.Submit()
   -> daemon dispatch
@@ -52,7 +51,7 @@ printf '处理任务' | sn-cli cx
 1. `Submit()` 返回后立即向 stderr 输出一次 `[run:<run_id>] <run_dir>`；如处于队列中，可同时显示 queue position。
 2. Provider 执行期间，把 `output.log` 的新增 stream 内容实时转发到 stderr。
 3. 完成后，stdout 仍只输出一次现有 final text；不得因 follow 再重复打印 final text。
-4. direct invocation，例如 `sn-cli cx`、`sn-cli cx --help`、`sn-cli cx -- ...`，行为完全不变。
+4. direct invocation，例如 `sn-cli cx`、`sn-cli cx --help`、`sn-cli cx exec ...`，行为完全不变。
 
 顶层 profile 不新增 `--follow` 参数：现有路由契约规定首个 flag 属于 direct passthrough，把 `sn-cli cx --follow` 改成 runtime flag 会破坏 direct/managed 边界。
 
@@ -138,8 +137,8 @@ Runtime 同一变更需更新：
 
 Runtime 安装态更新后，Workbench 的 `commit` 再单独完成：
 
-1. 执行前调用 `sn-cli config command -c cx-spark`，立即打印脱敏命令。
-2. 继续使用 stdin managed profile；它将自动获得实时 follow。
+1. 执行前调用 `sn-cli profile command cx --mode exec`，立即打印脱敏命令。
+2. 继续使用 `session run` managed path；它将自动获得实时 follow。
 
 ## 验收标准
 

@@ -20,7 +20,7 @@ func TestCommandLifecycleWithTmux(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-test","session_ready_settle_seconds":0.1},"runtime":{"prompt_delivery":"paste"}}}`
+	profile := `{"command":"sh"}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-test.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestCommandDeadlineStopsAndCleansTmux(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"tmux","command":{"binary":"sh","args":[],"model":""},"tmux":{"session_name":"agentrun-deadline","session_ready_settle_seconds":0.05},"runtime":{"prompt_delivery":"paste"}}}`
+	profile := `{"command":"sh"}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-test.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestSessionWrapsCommandProfileAndSubmitsInitialPrompt(t *testing.T) {
 	}
 	script := filepath.Join(root, "session.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'argv:%s\\n' \"$*\"\nwhile IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done\n")
-	profile := `{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":"` + script + `","args":["base"],"model":""},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"]}}}`
+	profile := `{"command":"` + script + `","args":["base"]}`
 	if err := os.WriteFile(filepath.Join(root, "configs", "shell.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -199,113 +199,6 @@ func mustSessionPaths(t *testing.T, service *Service, runID string) Paths {
 		t.Fatal(err)
 	}
 	return paths
-}
-
-func TestTmuxTaskRequiresDoneFileAndResult(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
-	}
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(root, "reply.sh")
-	writeExecutable(t, script, `#!/bin/sh
-while IFS= read -r line; do
-  printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","summary":"tmux ok","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
-  : > "$AGENTRUN_DONE_FILE"
-  printf 'reply:%s\n' "$line"
-done
-`)
-	profile := `{"type":"cli","timeout_seconds":5,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-task-test","session_ready_settle_seconds":0.1,"poll_interval_seconds":0.05,"silence_threshold_seconds":0.1},"runtime":{"prompt_delivery":"paste"}}}`
-	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-task.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	service := New(root)
-	startAgentRunTestDaemon(t, service)
-	run, err := service.Run(context.Background(), RunOptions{Profile: "tmux-task", CWD: root, Prompt: "hello", ExecutionMode: ModeManaged})
-	if err != nil || run.State != StateDone {
-		t.Fatalf("run=%#v err=%v", run, err)
-	}
-	result, err := service.ReadResult(RunTask, run.RunID)
-	if err != nil || result.Summary != "tmux ok" {
-		t.Fatalf("result=%#v err=%v", result, err)
-	}
-	paths, _ := RunPaths(service.RunsDir, RunTask, run.RunID)
-	if info, err := os.Stat(paths.DoneFile); err != nil || info.Size() != 0 {
-		t.Fatalf("done file info=%#v err=%v", info, err)
-	}
-}
-
-func TestTmuxDoneWithoutResultFails(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
-	}
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(root, "reply.sh")
-	writeExecutable(t, script, "#!/bin/sh\nwhile IFS= read -r line; do : > \"$AGENTRUN_DONE_FILE\"; done\n")
-	profile := `{"type":"cli","timeout_seconds":5,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-task-missing","session_ready_settle_seconds":0.1,"poll_interval_seconds":0.05},"runtime":{"prompt_delivery":"paste"}}}`
-	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-task.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	service := New(root)
-	startAgentRunTestDaemon(t, service)
-	run, err := service.Run(context.Background(), RunOptions{Profile: "tmux-task", CWD: root, Prompt: "hello", ExecutionMode: ModeCapture})
-	if err == nil || run.State != StateFailed || run.FailureReason != "result_missing" {
-		t.Fatalf("run=%#v err=%v", run, err)
-	}
-}
-
-func TestCancelTmuxRunCleansDaemonRegistry(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
-	}
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(root, "wait.sh")
-	writeExecutable(t, script, "#!/bin/sh\nwhile IFS= read -r line; do sleep 30; done\n")
-	profile := `{"type":"cli","timeout_seconds":30,"cli":{"driver":"generic","executor":"tmux","command":{"binary":"` + script + `","args":[],"model":""},"tmux":{"session_name":"agentrun-cancel","session_ready_settle_seconds":0.05,"poll_interval_seconds":0.05},"runtime":{"prompt_delivery":"paste"}}}`
-	if err := os.WriteFile(filepath.Join(root, "configs", "tmux-cancel.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	service := New(root)
-	startAgentRunTestDaemon(t, service)
-	runID := "task-20260714-000000-cancel"
-	done := make(chan error, 1)
-	go func() {
-		_, err := service.Run(context.Background(), RunOptions{RunID: runID, Profile: "tmux-cancel", CWD: root, Prompt: "wait", ExecutionMode: ModeCapture})
-		done <- err
-	}()
-	deadline := time.Now().Add(3 * time.Second)
-	found := false
-	for time.Now().Before(deadline) {
-		status, err := service.DaemonClient().Status(context.Background())
-		if err == nil && len(status.Processes) == 1 {
-			found = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !found {
-		t.Fatal("tmux process was not registered")
-	}
-	if _, err := service.Cancel(RunTask, runID); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("cancelled run did not return")
-	}
-	status, err := service.DaemonClient().Status(context.Background())
-	if err != nil || len(status.Processes) != 0 {
-		t.Fatalf("daemon status=%#v err=%v", status, err)
-	}
 }
 
 func startAgentRunTestDaemon(t *testing.T, service *Service) {

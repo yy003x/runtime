@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,10 +27,7 @@ func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"native","label":"Native Mock","native":{"mock":{"responses":["ok"],"done_after":1}}}`
-	if err := os.WriteFile(filepath.Join(home, "configs", "native-mock.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFixtureCLIProfile(t, home, "fixture", "ok")
 
 	code, output := captureMain(t, []string{"system", "doctor", "--json"})
 	if code != 0 {
@@ -50,7 +49,24 @@ func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
 	}
 }
 
-func TestRuntimeDoctorSuggestsMigrationWhenLegacyResultContractExists(t *testing.T) {
+func TestProfilePublicViewUsesCommandAndAdapter(t *testing.T) {
+	profile := provider.Config{ID: "custom", Type: provider.TypeCLI, CLI: &provider.CLIConfig{
+		Driver: "generic", Executor: provider.ExecutorCommand,
+		Command: provider.CommandConfig{Binary: "/opt/bin/custom-agent", Model: "model"},
+	}}
+	view := profilePublicView(profile, map[string]provider.Config{"custom": profile}, 300)
+	if view["command"] != "/opt/bin/custom-agent" || view["adapter"] != "generic" {
+		t.Fatalf("view=%#v", view)
+	}
+	if _, exists := view["driver"]; exists {
+		t.Fatalf("profile view still exposes legacy driver: %#v", view)
+	}
+	if _, exists := view["executor"]; exists {
+		t.Fatalf("profile view exposes internal executor: %#v", view)
+	}
+}
+
+func TestRuntimeDoctorSuggestsMigrationForLegacyProfileSchema(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SN_CLI_HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
@@ -88,6 +104,36 @@ func TestRuntimeDoctorSuggestsMigrationWhenLegacyResultContractExists(t *testing
 	}
 }
 
+func TestRuntimeDoctorSuggestsMigrationForLegacyRuntimeSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "configs", "runtime.yaml"), []byte("runs_dir: runs/global/runtime\ndefault_profile: fixture\nprovider_config_dir: configs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureCLIProfile(t, home, "fixture", "ok")
+	code, output := captureMain(t, []string{"system", "doctor", "--json"})
+	if code != 0 {
+		t.Fatalf("doctor code=%d output=%q", code, output)
+	}
+	var payload struct {
+		Migration struct {
+			Required bool `json:"required"`
+			Configs  []struct {
+				File string `json:"file"`
+			} `json:"configs"`
+		} `json:"migration"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Migration.Required || len(payload.Migration.Configs) != 1 || payload.Migration.Configs[0].File != "runtime.yaml" {
+		t.Fatalf("payload=%s", output)
+	}
+}
+
 func TestSystemMigrateConfigCleansLegacyFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SN_CLI_HOME", home)
@@ -99,18 +145,29 @@ func TestSystemMigrateConfigCleansLegacyFields(t *testing.T) {
 	if err := os.WriteFile(legacyPath, []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	legacySkillPath := filepath.Join(home, "configs", "skills", "review", "skill.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacySkillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacySkillPath, []byte("name: review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	code, output := captureMain(t, []string{"system", "migrate-config"})
 	if code != 0 {
 		t.Fatalf("migrate-config code=%d output=%q", code, output)
 	}
 	var payload struct {
 		Changed []string `json:"changed_configs"`
+		Copied  []string `json:"copied_resources"`
 	}
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		t.Fatalf("decode migrate output: %v", err)
 	}
 	if len(payload.Changed) != 1 || payload.Changed[0] != filepath.Base(legacyPath) {
 		t.Fatalf("changed=%v", payload.Changed)
+	}
+	if len(payload.Copied) != 1 || payload.Copied[0] != "skills/review/skill.yaml" {
+		t.Fatalf("copied=%v", payload.Copied)
 	}
 	if _, err := os.Stat(legacyPath); err != nil {
 		t.Fatalf("legacy file missing after migrate: %v", err)
@@ -119,35 +176,42 @@ func TestSystemMigrateConfigCleansLegacyFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(body), "result_contract") {
-		t.Fatalf("legacy field not removed: %s", string(body))
+	if strings.Contains(string(body), "result_contract") || strings.Contains(string(body), "label") {
+		t.Fatalf("legacy fields not removed: %s", string(body))
+	}
+	if _, err := os.Stat(legacySkillPath); err != nil {
+		t.Fatalf("legacy skill was deleted: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(home, "resources", "skills", "review", "skill.yaml")); err != nil || string(body) != "name: review\n" {
+		t.Fatalf("migrated skill=%q err=%v", body, err)
 	}
 }
 
-func TestParseRunOptionsMergesTypedOverrides(t *testing.T) {
-	options, err := parseRunOptions(agentrun.RunTask, []string{
-		"-c", "cx", "--model", "first", "--image", "one.png", "--provider-overrides", `{"model":"final","verbosity":"high"}`, "prompt", "--", "--search",
+func TestParseRunOptionsStopsAtProviderAndPreservesProviderTail(t *testing.T) {
+	options, providerArgs, err := parseRunOptions(agentrun.RunTask, []string{
+		"--project", "project", "--session-id", "session-1", "cx",
+		"--model", "final", "--image", "one.png", "--search", "prompt",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.Profile != "cx" || options.Prompt != "prompt" || options.ProviderOverrides["model"] != "final" || options.ProviderOverrides["verbosity"] != "high" {
+	if options.Profile != "cx" || options.ProjectID != "project" || options.SessionID != "session-1" {
 		t.Fatalf("options=%#v", options)
 	}
-	if !reflect.DeepEqual(options.ProviderOverrides["images"], []string{"one.png"}) {
-		t.Fatalf("images=%#v", options.ProviderOverrides["images"])
-	}
-	if !reflect.DeepEqual(options.RawCLIArgs, []string{"--search"}) {
-		t.Fatalf("raw_cli_args=%#v", options.RawCLIArgs)
+	if !reflect.DeepEqual(providerArgs, []string{"--model", "final", "--image", "one.png", "--search", "prompt"}) {
+		t.Fatalf("provider_args=%#v", providerArgs)
 	}
 }
 
 func TestParseRunOptionsAcceptsQueueTimeout(t *testing.T) {
-	options, err := parseRunOptions(agentrun.RunTask, []string{"-c", "cx", "--queue-timeout-seconds", "45", "prompt"})
+	options, providerArgs, err := parseRunOptions(agentrun.RunTask, []string{"--queue-timeout-seconds", "45", "cx", "prompt"})
 	if err != nil || options.QueueTimeout != 45 {
 		t.Fatalf("options=%#v err=%v", options, err)
 	}
-	if _, err := parseRunOptions(agentrun.RunTask, []string{"-c", "cx", "--queue-timeout-seconds", "-1", "prompt"}); err == nil {
+	if !reflect.DeepEqual(providerArgs, []string{"prompt"}) {
+		t.Fatalf("provider_args=%#v", providerArgs)
+	}
+	if _, _, err := parseRunOptions(agentrun.RunTask, []string{"--queue-timeout-seconds", "-1", "cx", "prompt"}); err == nil {
 		t.Fatal("negative queue timeout was accepted")
 	}
 }
@@ -155,21 +219,18 @@ func TestParseRunOptionsAcceptsQueueTimeout(t *testing.T) {
 func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SN_CLI_HOME", home)
-	for _, dir := range []string{"configs", "configs/skills/review", "configs/tools"} {
+	for _, dir := range []string{"configs", "resources/skills/review", "resources/tools"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	profile := `{"type":"native","label":"Native Mock","native":{"system_prompt":"test","max_rounds":2,"mock":{"responses":["ok"],"done_after":1}}}`
-	if err := os.WriteFile(filepath.Join(home, "configs", "native-mock.json"), []byte(profile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	shellProfile := `{"type":"cli","label":"Shell","cli":{"driver":"generic","executor":"command","command":{"binary":"/bin/sh","args":["-c","printf 'ready\\n'; while IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done"],"model":""},"runtime":{"prompt_delivery":"stdin"}}}`
+	writeFixtureCLIProfile(t, home, "native-mock", "ok")
+	shellProfile := `{"command":"/bin/sh","args":["-c","printf 'ready\\n'; while IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done"]}`
 	if err := os.WriteFile(filepath.Join(home, "configs", "shell.json"), []byte(shellProfile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	skill := "name: review\ndescription: review code\nkeywords: [review]\ndefault_profile: native-mock\nprompt_template: 'Review {{input}}'\n"
-	if err := os.WriteFile(filepath.Join(home, "configs", "skills", "review", "skill.yaml"), []byte(skill), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "resources", "skills", "review", "skill.yaml"), []byte(skill), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	candidates, err := capability.OpenMemory(filepath.Join(home, "memory", "candidates.json"))
@@ -184,6 +245,7 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 	commands := [][]string{
 		{}, {"--help"}, {"--version"},
 		{"profile", "list"}, {"profile", "show", "native-mock"}, {"profile", "validate", "native-mock"}, {"profile", "command", "shell"},
+		{"profile", "command", "shell", "--mode", "exec"}, {"profile", "exec", "native-mock", "hello"},
 		{"system", "doctor"}, {"run", "list", "--limit", "5"}, {"run", "reconcile", "--dry-run"},
 		{"tool", "list"}, {"tool", "show", "echo"}, {"tool", "call", "echo", "--args", `{"value":"ok"}`},
 		{"skill", "list"}, {"skill", "show", "review"},
@@ -191,7 +253,7 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 		{"memory", "recall", "runtime"}, {"memory", "list"},
 		{"memory", "list", "--state", "candidate"}, {"memory", "promote", "candidate-1"},
 		{"memory", "remove", "fact-1"},
-		{"session", "run", "native-mock", "--session-id", "session-20260716-165900-cli", "--project", "project", "hello"},
+		{"session", "run", "--session-id", "session-20260716-165900-cli", "--project", "project", "native-mock", "hello"},
 		{"session", "list", "--project", "project"},
 		{"session", "show", "--session-id", "session-20260716-165900-cli"},
 		{"session", "messages", "--session-id", "session-20260716-165900-cli"},
@@ -200,7 +262,7 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 		{"session", "configure", "--session-id", "session-20260716-165900-cli", "--runtime", "terminal", "--profile", "shell"},
 		{"session", "export", "--session-id", "session-20260716-165900-cli", "--output", historyExport},
 		{"system", "update", "--dry-run", "--version", "v1.2.3"},
-		{"session", "run", "native-mock", "--session-id", "session-20260716-170000-clitest", "--run-id", "turn-20260716-170000-clitest", "hello"},
+		{"session", "run", "--session-id", "session-20260716-170000-clitest", "--run-id", "turn-20260716-170000-clitest", "native-mock", "hello"},
 		{"run", "show", "--run-id", "turn-20260716-170000-clitest"},
 		{"run", "logs", "--run-id", "turn-20260716-170000-clitest", "--tail", "5"},
 		{"run", "result", "--run-id", "turn-20260716-170000-clitest"},
@@ -243,7 +305,7 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 		})
 		tmuxCommands := [][]string{
 			{"system", "status"},
-			{"session", "open", "shell", "--carrier", "tmux", "--session-id", "session-20260716-170010-cli", "--run-id", "session-20260716-170010-exec"},
+			{"session", "open", "--carrier", "tmux", "--session-id", "session-20260716-170010-cli", "--run-id", "session-20260716-170010-exec", "shell"},
 			{"session", "show", "--session-id", "session-20260716-170010-cli"},
 			{"session", "send", "--session-id", "session-20260716-170010-cli", "hello"},
 			{"session", "logs", "--session-id", "session-20260716-170010-cli", "--tail", "10"},
@@ -261,12 +323,13 @@ func TestMainCoversLocalControlPlaneCommands(t *testing.T) {
 		t.Fatalf("unknown code=%d output=%q", code, output)
 	}
 	invalidCommands := [][]string{
-		{"profile"}, {"profile", "unknown"}, {"profile", "show"}, {"profile", "command"},
+		{"profile"}, {"profile", "unknown"}, {"profile", "show"}, {"profile", "command"}, {"profile", "exec"},
 		{"profile", "validate", "-c", "native-mock"}, {"profile", "validate", "native-mock", "--provider", "native"},
-		{"profile", "command", "shell", "-c", "other"},
+		{"profile", "command", "shell", "-c", "other"}, {"profile", "command", "shell", "--mode", "unknown"},
+		{"profile", "exec", "missing", "hello"},
 		{"run"}, {"run", "unknown"}, {"run", "show"}, {"run", "command"},
 		{"run", "command", "shell", "-c", "other", "--", "/bin/true"},
-		{"session"}, {"session", "unknown"}, {"session", "list", "extra"}, {"session", "run"}, {"session", "run", "native-mock", "-c", "shell", "hello"}, {"session", "run", "native-mock", "--mode", "capture", "hello"}, {"session", "send"},
+		{"session"}, {"session", "unknown"}, {"session", "list", "extra"}, {"session", "run"}, {"session", "run", "--config", "native-mock", "hello"}, {"session", "run", "--mode", "capture", "native-mock", "hello"}, {"session", "send"},
 		{"system"}, {"system", "unknown"}, {"system", "status", "extra"}, {"system", "update", "--unknown"},
 		{"skill"}, {"skill", "unknown"}, {"skill", "route"}, {"skill", "run-auto"},
 		{"tool"}, {"tool", "unknown"}, {"tool", "schemas"}, {"tool", "open-url"}, {"tool", "describe-external"},
@@ -307,15 +370,12 @@ func TestSessionRunAndSubmitPersistStructuredCrossProfileTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, profile := range []string{"alpha", "beta"} {
-		body := fmt.Sprintf(`{"type":"native","label":%q,"native":{"system_prompt":"test","mock":{"responses":[%q],"done_after":1}}}`, profile, profile+" reply")
-		if err := os.WriteFile(filepath.Join(home, "configs", profile+".json"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFixtureCLIProfile(t, home, profile, profile+" reply")
 	}
 	sessionID := "session-20260721-160000-cross-profile"
 	commands := [][]string{
-		{"session", "run", "alpha", "--session-id", sessionID, "first"},
-		{"session", "submit", "beta", "--session-id", sessionID, "second"},
+		{"session", "run", "--session-id", sessionID, "alpha", "first"},
+		{"session", "submit", "--session-id", sessionID, "beta", "second"},
 	}
 	for _, command := range commands {
 		if code, output := captureMain(t, command); code != 0 {
@@ -340,6 +400,183 @@ func TestSessionRunAndSubmitPersistStructuredCrossProfileTurns(t *testing.T) {
 	}
 }
 
+func TestSessionRunPassesCLIProviderArgsAndRecordsOnlyFinalPrompt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	argvFile := filepath.Join(home, "provider-argv.txt")
+	stdinFile := filepath.Join(home, "provider-stdin.txt")
+	script := filepath.Join(home, "codex")
+	scriptBody := `#!/bin/sh
+printf '%s\n' "$@" > "$SN_TEST_ARGV_FILE"
+cat > "$SN_TEST_STDIN_FILE"
+printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","summary":"routing ok","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, home, "routing", fmt.Sprintf(
+		`{"command":%q,"args":["--base","configured"],"env":{"SN_TEST_ARGV_FILE":%q,"SN_TEST_STDIN_FILE":%q}}`,
+		script,
+		argvFile,
+		stdinFile,
+	))
+
+	sessionID := "session-20260723-120000-routing"
+	runID := "turn-20260723-120001-routing"
+	code, output := captureMain(t, []string{
+		"session", "run",
+		"--session-id", sessionID,
+		"--run-id", runID,
+		"routing",
+		"--skip-git-repo-check",
+		"--model", "next",
+		"reply OK",
+	})
+	if code != 0 {
+		t.Fatalf("session run code=%d output=%q", code, output)
+	}
+
+	argv, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgv := "--base\nconfigured\nexec\n--skip-git-repo-check\n--model\nnext\n"
+	if string(argv) != wantArgv {
+		t.Fatalf("provider argv=%q want=%q", argv, wantArgv)
+	}
+	stdin, err := os.ReadFile(stdinFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(stdin), "reply OK\n\n## AgentRun result contract") {
+		t.Fatalf("provider stdin did not begin with the final prompt and result contract: %q", stdin)
+	}
+
+	paths, err := agentrun.RunPaths(agentrun.New(home).RunsDir, agentrun.RunTurn, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestBody, err := os.ReadFile(paths.RequestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request agentrun.Request
+	if err := json.Unmarshal(requestBody, &request); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(request.RawCLIArgs, []string{"--skip-git-repo-check", "--model", "next"}) {
+		t.Fatalf("request.raw_cli_args=%#v", request.RawCLIArgs)
+	}
+	if _, exists := request.ProviderOverrides["model"]; exists {
+		t.Fatalf("CLI Provider argument was parsed as a Runtime override: %#v", request.ProviderOverrides)
+	}
+
+	view, err := agentrun.NewSessionManager(agentrun.New(home)).Store().View(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Messages) < 1 || view.Messages[0].Role != "user" || view.Messages[0].Content != "reply OK" {
+		t.Fatalf("session messages=%#v", view.Messages)
+	}
+}
+
+func TestSessionRunMapsTypedAPIOptionsWithoutRawCLIArgs(t *testing.T) {
+	t.Setenv("SN_TEST_SESSION_API_KEY", "secret")
+	requests := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Client") != "runtime-test" {
+			t.Errorf("X-Client=%q", request.Header.Get("X-Client"))
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode API payload: %v", err)
+		}
+		requests <- payload
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"API OK"}}]}`)
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	writeCLIProfile(t, home, "api-routing", fmt.Sprintf(
+		`{"protocol":"openai","base_url":%q,"model":"base","api_key":"${SN_TEST_SESSION_API_KEY}","headers":{"X-Client":"runtime-test"}}`,
+		server.URL,
+	))
+	sessionID := "session-20260723-120010-api-routing"
+	runID := "turn-20260723-120011-api-routing"
+	code, output := captureMain(t, []string{
+		"session", "run",
+		"--session-id", sessionID,
+		"--run-id", runID,
+		"api-routing",
+		"--model", "next",
+		"--max-tokens", "77",
+		"--temperature", "0.2",
+		"reply API",
+	})
+	if code != 0 {
+		t.Fatalf("session run code=%d output=%q", code, output)
+	}
+	payload := <-requests
+	if payload["model"] != "next" || payload["max_tokens"] != float64(77) || payload["temperature"] != 0.2 {
+		t.Fatalf("API payload=%#v", payload)
+	}
+	messages, _ := payload["messages"].([]any)
+	message, _ := messages[0].(map[string]any)
+	if message["content"] != "reply API" {
+		t.Fatalf("API messages=%#v", messages)
+	}
+
+	paths, err := agentrun.RunPaths(agentrun.New(home).RunsDir, agentrun.RunTurn, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestBody, err := os.ReadFile(paths.RequestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored agentrun.Request
+	if err := json.Unmarshal(requestBody, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.RawCLIArgs) != 0 || stored.ProviderOverrides["model"] != "next" ||
+		stored.ProviderOverrides["max_tokens"] != float64(77) {
+		t.Fatalf("stored request=%#v", stored)
+	}
+	view, err := agentrun.NewSessionManager(agentrun.New(home)).Store().View(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Messages) != 2 || view.Messages[0].Content != "reply API" || view.Messages[1].Content != "API OK" {
+		t.Fatalf("session messages=%#v", view.Messages)
+	}
+}
+
+func TestSessionRunTreatsEmptyPipeAsNoPrompt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	writeFixtureCLIProfile(t, home, "empty-pipe", "ok")
+	withStdin(t, "", func() {
+		code, output := captureMain(t, []string{
+			"session", "run",
+			"--session-id", "session-20260723-120020-empty-pipe",
+			"--run-id", "turn-20260723-120021-empty-pipe",
+			"empty-pipe", "positional prompt",
+		})
+		if code != 0 {
+			t.Fatalf("session run code=%d output=%q", code, output)
+		}
+	})
+	view, err := agentrun.NewSessionManager(agentrun.New(home)).Store().View("session-20260723-120020-empty-pipe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Messages) < 1 || view.Messages[0].Content != "positional prompt" {
+		t.Fatalf("session messages=%#v", view.Messages)
+	}
+}
+
 func captureMain(t *testing.T, args []string) (int, string) {
 	t.Helper()
 	reader, writer, err := os.Pipe()
@@ -361,19 +598,19 @@ func captureMain(t *testing.T, args []string) (int, string) {
 	return code, string(data)
 }
 
-func TestConfigCommandPreviewsManagedArgvWithoutExecutionAndRedactsSecrets(t *testing.T) {
+func TestConfigCommandPreviewsArgvWithoutExecutionAndRedactsSecrets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SN_CLI_HOME", home)
 	t.Setenv("MY_API_KEY", "environment-secret")
 	if err := os.MkdirAll(filepath.Join(home, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"cli","label":"Preview","cli":{"driver":"generic","executor":"command","command":{"binary":"never-execute","args":["--api-key","literal-secret","--endpoint=https://user:pass@example.test/v1?access=query-secret","environment-secret"],"model":"preview-model"},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"]}}}`
+	profile := `{"command":"codex","args":["--api-key","literal-secret","--endpoint=https://user:pass@example.test/v1?access=query-secret","environment-secret"],"model":"preview-model"}`
 	if err := os.WriteFile(filepath.Join(home, "configs", "preview.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	nativeProfile := `{"type":"native","native":{"mock":{"responses":["ok"],"done_after":1}}}`
-	if err := os.WriteFile(filepath.Join(home, "configs", "native-mock.json"), []byte(nativeProfile), 0o644); err != nil {
+	apiProfile := `{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}"}`
+	if err := os.WriteFile(filepath.Join(home, "configs", "api.json"), []byte(apiProfile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -386,16 +623,24 @@ func TestConfigCommandPreviewsManagedArgvWithoutExecutionAndRedactsSecrets(t *te
 			t.Fatalf("preview leaked %q: %s", secret, output)
 		}
 	}
-	for _, expected := range []string{"never-execute", "--model", "preview-model", "managed", "[REDACTED]"} {
+	for _, expected := range []string{"codex", "--model", "preview-model", "[REDACTED]"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("preview missing %q: %s", expected, output)
 		}
 	}
-	if _, err := exec.LookPath("never-execute"); err == nil {
-		t.Fatal("test binary unexpectedly exists; non-execution assertion is invalid")
+	if !strings.Contains(output, `"mode": "direct"`) || strings.Contains(output, `"exec"`) {
+		t.Fatalf("direct preview selected managed mode: %s", output)
 	}
 
-	if code, output := captureMain(t, []string{"profile", "command", "native-mock"}); code != 1 || !strings.Contains(output, "not a CLI profile") {
+	code, output = captureMain(t, []string{"profile", "command", "preview", "--mode", "exec", "--json"})
+	if code != 0 {
+		t.Fatalf("exec preview code=%d output=%q", code, output)
+	}
+	if !strings.Contains(output, `"mode": "exec"`) || !strings.Contains(output, `"exec"`) {
+		t.Fatalf("exec preview missing managed mode: %s", output)
+	}
+
+	if code, output := captureMain(t, []string{"profile", "command", "api"}); code != 1 || !strings.Contains(output, "not a CLI profile") {
 		t.Fatalf("non-CLI preview code=%d output=%q", code, output)
 	}
 }
@@ -444,30 +689,17 @@ func TestCLIEnvironmentDiagnosticsHonorEnvUnset(t *testing.T) {
 }
 
 func TestParsersRejectRemovedProfileOption(t *testing.T) {
-	if _, err := parseRunOptions(agentrun.RunTask, []string{"--profile", "cx", "hello"}); err == nil {
+	if _, _, err := parseRunOptions(agentrun.RunTask, []string{"--profile", "cx", "hello"}); err == nil {
 		t.Fatal("task run accepted removed --profile option")
 	}
-	if _, err := parseCommandOptions([]string{"--profile", "cx", "--", "true"}); err == nil {
-		t.Fatal("command start accepted removed --profile option")
-	}
 }
 
-func TestParseCommandOptionsPreservesRemainder(t *testing.T) {
-	options, err := parseCommandOptions([]string{"-c", "cx", "--label", "smoke", "--", "printf", "%s", "hello world"})
+func TestParseSessionStartOptionsUsesRuntimePrefixAndPassesProviderArgs(t *testing.T) {
+	options, err := parseSessionStartOptions([]string{"--carrier", "tmux", "--session-id", "session-1", "cx", "--no-alt-screen", "review repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.Profile != "cx" || options.Label != "smoke" || !reflect.DeepEqual(options.Argv, []string{"printf", "%s", "hello world"}) {
-		t.Fatalf("options=%#v", options)
-	}
-}
-
-func TestParseSessionStartOptionsUsesPositionalProfileAndSeparatesRawArgs(t *testing.T) {
-	options, err := parseSessionStartOptions([]string{"cx", "--carrier", "tmux", "--session-id", "session-1", "review", "repo", "--", "--no-alt-screen"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if options.Profile != "cx" || options.Carrier != "tmux" || options.SessionID != "session-1" || options.Prompt != "review repo" || !reflect.DeepEqual(options.RawCLIArgs, []string{"--no-alt-screen"}) {
+	if options.Profile != "cx" || options.Carrier != "tmux" || options.SessionID != "session-1" || options.Prompt != "" || !reflect.DeepEqual(options.RawCLIArgs, []string{"--no-alt-screen", "review repo"}) {
 		t.Fatalf("options=%#v", options)
 	}
 	if _, err := parseSessionStartOptions(nil); err == nil {
@@ -542,6 +774,38 @@ func TestValidateAPIProfileRejectsProgrammaticPlaintextKey(t *testing.T) {
 	profile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{APIKey: "secret"}}
 	result := validateProfile(profile, map[string]provider.Config{"api": profile}, false)
 	if result["ok"] == true || !strings.Contains(fmt.Sprint(result["message"]), "${ENV_VAR}") {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestValidateAPIProfileChecksHeaderEnvironment(t *testing.T) {
+	t.Setenv("SN_TEST_VALIDATE_API_KEY", "secret")
+	const headerEnvironment = "SN_TEST_VALIDATE_HEADER"
+	previous, existed := os.LookupEnv(headerEnvironment)
+	if err := os.Unsetenv(headerEnvironment); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(headerEnvironment, previous)
+		} else {
+			_ = os.Unsetenv(headerEnvironment)
+		}
+	})
+	profile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{
+		Protocol: "openai", BaseURL: "https://example.test", Model: "model",
+		APIKey:  "${SN_TEST_VALIDATE_API_KEY}",
+		Headers: map[string]string{"X-Client": "${" + headerEnvironment + "}"},
+	}}
+	result := validateProfile(profile, map[string]provider.Config{"api": profile}, false)
+	if result["ok"] == true || !strings.Contains(fmt.Sprint(result["message"]), headerEnvironment) {
+		t.Fatalf("result=%#v", result)
+	}
+	if err := os.Setenv(headerEnvironment, "client"); err != nil {
+		t.Fatal(err)
+	}
+	result = validateProfile(profile, map[string]provider.Config{"api": profile}, false)
+	if result["ok"] != true {
 		t.Fatalf("result=%#v", result)
 	}
 }

@@ -65,7 +65,7 @@ func TestLoopRunAgentRequiresAllowedCapability(t *testing.T) {
 
 func TestLoopUsesConfiguredCapabilityRegistry(t *testing.T) {
 	root := t.TempDir()
-	toolsDir := filepath.Join(root, "configs", "tools")
+	toolsDir := filepath.Join(root, "resources", "tools")
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

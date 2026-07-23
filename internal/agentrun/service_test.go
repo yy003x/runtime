@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,34 +103,33 @@ func TestExistingSessionRejectsTurnRetentionOverride(t *testing.T) {
 	}
 }
 
-func TestSessionContextCrossesProvidersAndFreezesTurnProfile(t *testing.T) {
+func TestSessionContextCrossesProfilesAndFreezesTurnProfile(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "capture.sh")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'cli answer\\n'\n")
 	writeProfile(t, root, "capture", script)
-	if err := os.WriteFile(filepath.Join(root, "configs", "native.json"), []byte(`{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["native answer"],"done_after":1}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	contextScript := filepath.Join(root, "context.sh")
+	writeExecutable(t, contextScript, "#!/bin/sh\ncat\n")
+	writeProfile(t, root, "alternate", contextScript)
 	service := New(root)
 	first, err := service.Run(context.Background(), RunOptions{RunID: "task-20260717-140000-cli", Profile: "capture",
 		Prompt: "first question", ExecutionMode: ModeCapture, CreateSession: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.Run(context.Background(), RunOptions{RunID: "turn-20260717-140001-native", RunType: RunTurn,
-		Profile: "native", Prompt: "second question", SessionID: first.SessionID})
+	second, err := service.Run(context.Background(), RunOptions{RunID: "turn-20260717-140001-alternate", RunType: RunTurn,
+		Profile: "alternate", Prompt: "second question", SessionID: first.SessionID, ExecutionMode: ModeCapture})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := os.ReadFile(filepath.Join(second.RunDir, "native-snapshot.json"))
-	if err != nil || !strings.Contains(string(snapshot), "first question") || !strings.Contains(string(snapshot), "cli answer") || !strings.Contains(string(snapshot), "second question") {
-		t.Fatalf("snapshot=%s err=%v", snapshot, err)
+	if !strings.Contains(second.FinalText, "first question") || !strings.Contains(second.FinalText, "cli answer") || !strings.Contains(second.FinalText, "second question") {
+		t.Fatalf("context=%s", second.FinalText)
 	}
 	view, err := NewSessionManager(service).Store().View(first.SessionID)
 	if err != nil || len(view.Turns) != 2 {
 		t.Fatalf("view=%#v err=%v", view, err)
 	}
-	if view.Turns[0].Profile != "capture" || view.Turns[1].Profile != "native" || view.Turns[1].Provider != provider.TypeNative || view.Turns[1].ResultRef == nil {
+	if view.Turns[0].Profile != "capture" || view.Turns[1].Profile != "alternate" || view.Turns[1].Provider != provider.TypeCLI || view.Turns[1].ResultRef == nil {
 		t.Fatalf("turn identity=%#v", view.Turns)
 	}
 }
@@ -251,17 +252,23 @@ func TestManagedRunFailsWithoutRequiredResult(t *testing.T) {
 	}
 }
 
-func TestAPIMockSynthesizesResult(t *testing.T) {
+func TestAPIProfileSynthesizesResult(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("UNSET_TEST_KEY", "mock-key")
+	t.Setenv("TEST_API_KEY", "test-key")
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock-model","api_key":"${UNSET_TEST_KEY}","mock":true}}`
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"api ok"}}]}`))
+	}))
+	defer server.Close()
+	profile := fmt.Sprintf(`{"protocol":"openai","base_url":%q,"model":"test-model","api_key":"${TEST_API_KEY}"}`, server.URL+"/v1")
 	if err := os.WriteFile(filepath.Join(root, "configs", "mock.json"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	service := New(root)
+	service.HTTPClient = server.Client()
 	result, err := service.Run(context.Background(), RunOptions{Profile: "mock", Prompt: "hello"})
 	if err != nil || result.State != StateDone {
 		t.Fatalf("result=%#v err=%v", result, err)
@@ -296,6 +303,25 @@ func TestRunTimeoutIsClassified(t *testing.T) {
 	}
 }
 
+func TestRunUsesRuntimeDefaultDeadline(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "slow-default.sh")
+	writeExecutable(t, script, "#!/bin/sh\nsleep 5\n")
+	writeProfile(t, root, "slow-default", script)
+	if err := os.WriteFile(filepath.Join(root, "configs", "runtime.yaml"), []byte("default_deadline_seconds: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := New(root)
+	result, err := service.Run(context.Background(), RunOptions{Profile: "slow-default", Prompt: "hello"})
+	if err == nil || result.FailureReason != "timeout" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	request, err := service.store.ReadRequest(mustPaths(t, service, result))
+	if err != nil || request.DeadlineSeconds != 1 {
+		t.Fatalf("request=%#v err=%v", request, err)
+	}
+}
+
 func TestEnsureProviderStatusInitializesNilMap(t *testing.T) {
 	status := Status{}
 	values := ensureProviderStatus(&status)
@@ -310,7 +336,7 @@ func TestEnsureProviderStatusInitializesNilMap(t *testing.T) {
 
 func TestRunRejectsConflictingIdempotentRequest(t *testing.T) {
 	root := t.TempDir()
-	writeNativeProfile(t, root, "native", 0)
+	writeManagedFixtureProfile(t, root, "native", 0)
 	service := New(root)
 	runID := "task-20260716-160000-idempotent"
 	first, err := service.Run(context.Background(), RunOptions{RunID: runID, Profile: "native", Prompt: "first"})
@@ -328,7 +354,7 @@ func TestRunRejectsConflictingIdempotentRequest(t *testing.T) {
 
 func TestRunHonorsMaxConcurrencyAcrossServices(t *testing.T) {
 	root := t.TempDir()
-	writeNativeProfile(t, root, "slow", 350)
+	writeManagedFixtureProfile(t, root, "slow", 350)
 	if err := os.WriteFile(filepath.Join(root, "configs", "runtime.yaml"), []byte("default_project: _default\ndefault_profile: slow\nmax_concurrency: 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -403,15 +429,16 @@ func TestStoreDoesNotOverwriteCancelledStatus(t *testing.T) {
 	}
 }
 
-func writeNativeProfile(t *testing.T, root, id string, latencyMilliseconds int) {
+func writeManagedFixtureProfile(t *testing.T, root, id string, latencyMilliseconds int) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := fmt.Sprintf(`{"type":"native","native":{"system_prompt":"test","max_rounds":1,"mock":{"responses":["ok"],"done_after":1,"latency_milliseconds":%d}}}`, latencyMilliseconds)
-	if err := os.WriteFile(filepath.Join(root, "configs", id+".json"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	script := filepath.Join(root, id+"-managed.sh")
+	delay := float64(latencyMilliseconds) / 1000
+	body := fmt.Sprintf(`#!/bin/sh
+sleep %.3f
+printf '{"schema_version":1,"run_id":"%%s","outcome":"succeeded","summary":"ok","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
+`, delay)
+	writeExecutable(t, script, body)
+	writeProfile(t, root, id, script)
 }
 
 func waitForState(t *testing.T, service *Service, runType, runID, state string) {
@@ -432,14 +459,7 @@ func writeProfile(t *testing.T, root, id, script string) {
 	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := map[string]any{
-		"type": "cli",
-		"cli": map[string]any{
-			"driver": "generic", "executor": "command",
-			"command": map[string]any{"binary": script, "args": []string{}, "model": ""},
-			"runtime": map[string]any{"prompt_delivery": "stdin"},
-		},
-	}
+	profile := map[string]any{"command": script}
 	data, _ := json.Marshal(profile)
 	if err := os.WriteFile(filepath.Join(root, "configs", id+".json"), data, 0o644); err != nil {
 		t.Fatal(err)

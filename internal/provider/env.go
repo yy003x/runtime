@@ -78,7 +78,7 @@ func CommandEnvironment(cfg CommandConfig, extra map[string]string) ([]string, e
 	for key, value := range cfg.Env {
 		resolved, err := ResolveEnv(value)
 		if err != nil {
-			return nil, fmt.Errorf("cli.command.env.%s: %w", key, err)
+			return nil, fmt.Errorf("env.%s: %w", key, err)
 		}
 		values[key] = resolved
 	}

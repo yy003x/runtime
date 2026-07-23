@@ -180,13 +180,10 @@ func ExecuteAPI(ctx context.Context, client *http.Client, cfg Config, request AP
 	for name, value := range headers {
 		httpRequest.Header.Set(name, value)
 	}
-	if api.Auth.Header != "" {
-		httpRequest.Header.Set(api.Auth.Header, api.Auth.Prefix+key)
-	} else if request.Protocol == "anthropic" {
-		httpRequest.Header.Set("x-api-key", key)
+	auth := defaultAPIAuth(request.Protocol, api.BaseURL)
+	httpRequest.Header.Set(auth.Header, auth.Prefix+key)
+	if request.Protocol == "anthropic" {
 		httpRequest.Header.Set("anthropic-version", "2023-06-01")
-	} else {
-		httpRequest.Header.Set("Authorization", "Bearer "+key)
 	}
 	response, err := client.Do(httpRequest)
 	if err != nil {
@@ -320,9 +317,18 @@ func resolveAPIKey(profileID string, api *APIConfig) (string, error) {
 func resolveAPIHeaders(headers map[string]string) (map[string]string, error) {
 	resolved := make(map[string]string, len(headers))
 	for name, value := range headers {
+		if !validHTTPHeaderName(name) {
+			return nil, fmt.Errorf("api.headers 包含非法 header 名称 %q", name)
+		}
+		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Proxy-Authorization") || strings.EqualFold(name, "x-api-key") {
+			return nil, fmt.Errorf("api.headers 不得覆盖认证 header %q；请使用 api_key", name)
+		}
 		header, err := ResolveEnv(value)
 		if err != nil {
 			return nil, fmt.Errorf("api.headers.%s: %w", name, err)
+		}
+		if strings.ContainsAny(header, "\r\n") {
+			return nil, fmt.Errorf("api.headers.%s 不得包含换行符", name)
 		}
 		if header != "" {
 			resolved[name] = header

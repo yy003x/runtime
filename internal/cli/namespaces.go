@@ -148,7 +148,7 @@ func watchPublicRun(service *agentrun.Service, runType, runID string, args []str
 
 func runProfileNamespace(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: profile list|show|validate|command")
+		return fmt.Errorf("usage: profile list|show|validate|command|exec")
 	}
 	switch args[0] {
 	case "list":
@@ -160,7 +160,8 @@ func runProfileNamespace(cfg *config.Config, args []string) error {
 		if len(args) != 2 || strings.HasPrefix(args[1], "-") {
 			return fmt.Errorf("profile show requires a profile as its third argument")
 		}
-		profiles, err := agentrun.New(cfg.Home).Profiles()
+		service := agentrun.New(cfg.Home)
+		profiles, err := service.Profiles()
 		if err != nil {
 			return err
 		}
@@ -168,7 +169,7 @@ func runProfileNamespace(cfg *config.Config, args []string) error {
 		if !ok {
 			return fmt.Errorf("unknown profile %q", args[1])
 		}
-		return printJSON(profilePublicView(profile, profiles))
+		return printJSON(profilePublicView(profile, profiles, service.DefaultDeadline))
 	case "validate":
 		rest := args[1:]
 		profileID := ""
@@ -189,27 +190,58 @@ func runProfileNamespace(cfg *config.Config, args []string) error {
 			return fmt.Errorf("profile command requires a profile as its third argument")
 		}
 		jsonOutput := false
-		for _, arg := range args[2:] {
-			if arg != "--json" {
-				return fmt.Errorf("unknown profile command option: %s", arg)
+		mode := "direct"
+		for index := 2; index < len(args); index++ {
+			switch args[index] {
+			case "--json":
+				jsonOutput = true
+			case "--mode":
+				index++
+				if index >= len(args) {
+					return fmt.Errorf("--mode requires value")
+				}
+				mode = args[index]
+			default:
+				return fmt.Errorf("unknown profile command option: %s", args[index])
 			}
-			jsonOutput = true
 		}
-		return printProfileCommand(cfg, args[1], jsonOutput)
+		return printProfileCommand(cfg, args[1], mode, jsonOutput)
+	case "exec":
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fmt.Errorf("profile exec requires a profile as its third argument")
+		}
+		profile, ok := resolveProfile(cfg.Home, args[1])
+		if !ok {
+			return fmt.Errorf("unknown profile %q", args[1])
+		}
+		code, err := runUnrecordedProfile(cfg, profile, args[2:])
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return fmt.Errorf("profile %s exited with code %d", profile.ID, code)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown profile action: %s", args[0])
 	}
 }
 
-func profilePublicView(profile provider.Config, profiles map[string]provider.Config) map[string]any {
+func profilePublicView(profile provider.Config, profiles map[string]provider.Config, defaultDeadline int) map[string]any {
+	deadline := profile.TimeoutSeconds
+	if deadline == 0 {
+		deadline = defaultDeadline
+	}
 	view := map[string]any{
-		"id": profile.ID, "label": profile.Label, "type": profile.Type, "transport": profile.Transport(),
-		"timeout_seconds": profile.TimeoutSeconds,
-		"validation":      validateProfile(profile, profiles, false),
+		"id": profile.ID, "type": profile.Type, "transport": profile.Transport(),
+		"deadline_seconds": deadline,
+		"validation":       validateProfile(profile, profiles, false),
 	}
 	if profile.CLI != nil {
-		view["driver"] = profile.CLI.Driver
-		view["executor"] = profile.CLI.Executor
+		view["command"] = profile.CLI.Command.Binary
+		view["adapter"] = profile.CLI.Driver
+		view["model"] = profile.CLI.Command.Model
+		view["effort"] = profile.CLI.Effort
 	}
 	if profile.API != nil {
 		view["protocol"] = profile.API.Protocol
@@ -243,7 +275,7 @@ func runSystemNamespace(cfg *config.Config, args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("system migrate-config does not accept arguments")
 		}
-		result, err := installbundle.MigrateProfileConfigs(cfg.Paths.ConfigDir)
+		result, err := installbundle.MigrateHome(cfg.Paths.ConfigDir, cfg.Paths.ResourcesDir)
 		if err != nil {
 			return err
 		}
@@ -374,25 +406,39 @@ func runSessionSendByID(ctx context.Context, service *agentrun.Service, args []s
 }
 
 func runManagedSessionAction(cfg *config.Config, action string, args []string) error {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return fmt.Errorf("session %s requires a profile as its third argument", action)
-	}
-	for _, option := range []string{"-c", "--config"} {
-		if hasOptionBeforeSeparator(args[1:], option) {
-			return fmt.Errorf("%s is not supported here; the profile is already %q", option, args[0])
-		}
-	}
-	parseArgs := []string{"-c", args[0]}
-	parseArgs = append(parseArgs, args[1:]...)
-	options, err := parseRunOptions(agentrun.RunTurn, parseArgs)
+	options, providerArgs, err := parseRunOptions(agentrun.RunTurn, args)
 	if err != nil {
 		return err
 	}
-	if err := applyStdinPrompt(&options.Prompt, options.PromptFile); err != nil {
+	profile, ok := resolveProfile(cfg.Home, options.Profile)
+	if !ok {
+		return fmt.Errorf("unknown profile %q", options.Profile)
+	}
+	stdinPrompt, err := readStdinPrompt()
+	if err != nil {
 		return err
 	}
+	prompt, rawArgs, overrides, err := parseSessionProviderInput(
+		profile,
+		providerArgs,
+		strings.TrimSpace(options.PromptFile) != "" || stdinPrompt != "",
+	)
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", profile.ID, err)
+	}
+	options.Prompt = prompt
+	options.RawCLIArgs = rawArgs
+	for name, value := range overrides {
+		options.ProviderOverrides[name] = value
+	}
+	if stdinPrompt != "" {
+		if strings.TrimSpace(options.Prompt) != "" || strings.TrimSpace(options.PromptFile) != "" {
+			return fmt.Errorf("positional prompt, --prompt-file, and stdin are mutually exclusive")
+		}
+		options.Prompt = stdinPrompt
+	}
 	if options.RecordMode == agentrun.RecordOff {
-		return fmt.Errorf("session %s does not allow --record-mode off; use '<profile> <prompt>' for direct execution", action)
+		return fmt.Errorf("session %s does not allow --record-mode off; use 'profile exec <profile> <prompt>' for unrecorded execution", action)
 	}
 	options.Caller = "cli.session." + action
 	options.CreateSession = true
@@ -412,9 +458,6 @@ func runManagedSessionAction(cfg *config.Config, action string, args []string) e
 }
 
 func runSessionOpen(cfg *config.Config, args []string) error {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return fmt.Errorf("session open requires a profile as its third argument")
-	}
 	options, err := parseSessionStartOptions(args)
 	if err != nil {
 		return err

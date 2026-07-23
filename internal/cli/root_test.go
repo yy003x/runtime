@@ -2,31 +2,26 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-runtime/internal/agentrun"
 	"agent-runtime/internal/cli/config"
 	"agent-runtime/internal/provider"
 )
 
-func TestPromptProfilePrintsFinalTextWithoutArtifacts(t *testing.T) {
+func TestDirectCLIProfilePrintsOutputWithoutArtifacts(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `{
-  "type": "api",
-  "api": {
-    "protocol": "openai",
-    "base_url": "https://example.test/v1",
-    "model": "mock-model",
-    "api_key":"${UNSET_TEST_KEY}",
-    "mock": true
-  }
-}`)
+	writeFixtureCLIProfile(t, root, "fake", "direct ok")
 
 	profile, ok := resolveProfile(root, "fake")
 	if !ok {
@@ -39,11 +34,35 @@ func TestPromptProfilePrintsFinalTextWithoutArtifacts(t *testing.T) {
 		}
 	})
 
-	if strings.TrimSpace(stdout) != "[mock openai:mock-model] 5 chars" {
+	if strings.TrimSpace(stdout) != "direct ok" {
 		t.Fatalf("stdout=%q", stdout)
 	}
 	if _, err := os.Stat(filepath.Join(root, "runs")); !os.IsNotExist(err) {
-		t.Fatalf("direct prompt created Run artifacts: %v", err)
+		t.Fatalf("direct CLI created Run artifacts: %v", err)
+	}
+}
+
+func TestProfileExecUsesRuntimeDefaultDeadline(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "slow.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, root, "slow", fmt.Sprintf(`{"command":%q}`, script))
+	if err := os.WriteFile(filepath.Join(root, "configs", "runtime.yaml"), []byte("default_deadline_seconds: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := resolveProfile(root, "slow")
+	if !ok {
+		t.Fatal("resolveProfile(slow)=false")
+	}
+	started := time.Now()
+	code, err := runUnrecordedProfile(&config.Config{Home: root}, profile, []string{"hello"})
+	if err == nil || code != 1 {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	if time.Since(started) > 4*time.Second {
+		t.Fatalf("deadline took too long: %s", time.Since(started))
 	}
 }
 
@@ -65,17 +84,26 @@ func TestDirectTerminalSinkPrefersStructuredFinalText(t *testing.T) {
 func TestSkillRunUsesDirectProfileWithoutArtifacts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SN_CLI_HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, "configs", "skills", "review"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "resources", "skills", "review"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLIProfile(t, home, "native-mock", `{"type":"native","native":{"system_prompt":"test","max_rounds":2,"mock":{"responses":["ok"],"done_after":1}}}`)
-	skill := "name: review\ndescription: review code\ndefault_profile: native-mock\nprompt_template: 'Review {{input}}'\n"
-	if err := os.WriteFile(filepath.Join(home, "configs", "skills", "review", "skill.yaml"), []byte(skill), 0o644); err != nil {
+	argvFile := filepath.Join(home, "skill-argv.txt")
+	script := filepath.Join(home, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SN_TEST_ARGV\"\nprintf 'ok\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	code, output := captureMain(t, []string{"skill", "run", "review", "--input", "main.go"})
+	writeCLIProfile(t, home, "skill-cx", fmt.Sprintf(`{"command":%q,"env":{"SN_TEST_ARGV":%q}}`, script, argvFile))
+	skill := "name: review\ndescription: review code\ndefault_profile: skill-cx\nprompt_template: 'Review {{input}}'\n"
+	if err := os.WriteFile(filepath.Join(home, "resources", "skills", "review", "skill.yaml"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, output := captureMain(t, []string{"skill", "run", "review", "--input", "main.go", "--search"})
 	if code != 0 || strings.TrimSpace(output) != "ok" {
 		t.Fatalf("code=%d output=%q", code, output)
+	}
+	argv, err := os.ReadFile(argvFile)
+	if err != nil || string(argv) != "--search\nReview main.go\n" {
+		t.Fatalf("skill argv=%q err=%v", argv, err)
 	}
 	if files := regularFilesUnder(t, filepath.Join(home, "runs")); len(files) != 0 {
 		t.Fatalf("skill run created Run artifacts: %v", files)
@@ -88,7 +116,8 @@ func TestSkillRunUsesDirectProfileWithoutArtifacts(t *testing.T) {
 
 func TestProfileConfigExists(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}","mock":true},"presets":{"fake-fast":{"overrides":{"model":"fast"}}}}`)
+	writeCLIProfile(t, root, "fake", `{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}"}`)
+	writeCLIProfile(t, root, "fake-fast", `{"protocol":"openai","base_url":"https://example.test/v1","model":"fast","api_key":"${UNSET}"}`)
 
 	if !profileConfigExists(root, "fake") {
 		t.Fatal("profileConfigExists(fake)=false, want true")
@@ -100,9 +129,9 @@ func TestProfileConfigExists(t *testing.T) {
 		t.Fatal("profileConfigExists(missing)=true, want false")
 	}
 	if !profileConfigExists(root, "fake-fast") {
-		t.Fatal("profileConfigExists did not resolve preset")
+		t.Fatal("profileConfigExists did not resolve standalone profile")
 	}
-	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}","mock":true}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "configs", "json.json"), []byte(`{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !profileConfigExists(root, "json") {
@@ -110,51 +139,111 @@ func TestProfileConfigExists(t *testing.T) {
 	}
 }
 
-func TestProfileRouteSeparatesInteractivePromptAndPassthrough(t *testing.T) {
-	tests := []struct {
-		name  string
-		input []string
-		route profileRoute
-		args  []string
-	}{
-		{name: "interactive", route: profileRouteInteractive},
-		{name: "raw", input: []string{"--", "exec", "hello"}, route: profileRoutePassthrough, args: []string{"exec", "hello"}},
-		{name: "prompt", input: []string{"hello", "world"}, route: profileRoutePrompt, args: []string{"hello", "world"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			route, args, err := routeProfileArgs(tt.input)
-			if err != nil || route != tt.route || !reflect.DeepEqual(args, tt.args) {
-				t.Fatalf("route=%q args=%#v err=%v", route, args, err)
-			}
-		})
-	}
-	for _, input := range [][]string{{"run", "hello"}, {"submit", "hello"}} {
-		if _, _, err := routeProfileArgs(input); err == nil {
-			t.Fatalf("removed profile action accepted %#v", input)
-		}
-	}
-}
-
-func TestProfilePromptRejectsHelpLikeTokensBeforeSeparator(t *testing.T) {
-	if _, _, err := parseProfilePrompt([]string{"--help"}); err == nil || !strings.Contains(err.Error(), "must follow --") {
-		t.Fatalf("err=%v", err)
-	}
-}
-
-func TestProfilePromptAcceptsHyphenLeadingPromptWithoutSeparator(t *testing.T) {
-	prompt, rawArgs, err := parseProfilePrompt([]string{"-foo", "-bar"})
+func TestAPIProviderArgsParseTypedOptionsAndFinalPrompt(t *testing.T) {
+	prompt, overrides, err := parseAPIProviderArgs([]string{
+		"--model", "next", "--max-tokens", "2048", "--temperature", "0.2", "--stream", "hello world",
+	})
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if prompt != "-foo -bar" || len(rawArgs) != 0 {
-		t.Fatalf("prompt=%q raw=%v", prompt, rawArgs)
+	if prompt != "hello world" || overrides["model"] != "next" || overrides["max_tokens"] != 2048 || overrides["temperature"] != 0.2 || overrides["stream"] != true {
+		t.Fatalf("prompt=%q overrides=%#v", prompt, overrides)
+	}
+	if _, _, err := parseAPIProviderArgs([]string{"hello", "world"}); err == nil {
+		t.Fatal("API parser accepted an unquoted multi-token prompt")
+	}
+	if _, _, err := parseAPIProviderArgs([]string{"--unknown", "hello"}); err == nil {
+		t.Fatal("API parser accepted an unknown option")
+	}
+}
+
+func TestDirectAPIProfileMapsTypedProviderArgsWithoutArtifacts(t *testing.T) {
+	t.Setenv("SN_TEST_API_KEY", "secret")
+	requests := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Test") != "configured" {
+			t.Errorf("X-Test=%q", request.Header.Get("X-Test"))
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		requests <- payload
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"OK"}}]}`)
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	writeCLIProfile(t, home, "api", fmt.Sprintf(
+		`{"protocol":"openai","base_url":%q,"model":"base","api_key":"${SN_TEST_API_KEY}","headers":{"X-Test":"configured"}}`,
+		server.URL,
+	))
+	profile := mustResolveProfile(t, home, "api")
+	stdout := captureStdout(t, func() {
+		code, err := runUnrecordedProfile(&config.Config{Home: home}, profile, []string{
+			"--model", "next", "--max-tokens", "2048", "--temperature", "0.2", "reply OK",
+		})
+		if err != nil || code != 0 {
+			t.Fatalf("code=%d err=%v", code, err)
+		}
+	})
+	if strings.TrimSpace(stdout) != "OK" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	payload := <-requests
+	if payload["model"] != "next" || payload["max_tokens"] != float64(2048) || payload["temperature"] != 0.2 {
+		t.Fatalf("payload=%#v", payload)
+	}
+	messages, _ := payload["messages"].([]any)
+	message, _ := messages[0].(map[string]any)
+	if message["content"] != "reply OK" {
+		t.Fatalf("messages=%#v", messages)
+	}
+	if files := regularFilesUnder(t, filepath.Join(home, "runs")); len(files) != 0 {
+		t.Fatalf("direct API created Run artifacts: %v", files)
+	}
+}
+
+func TestSessionProviderInputSeparatesContextPromptFromCLITail(t *testing.T) {
+	cliProfile := provider.Config{ID: "cx", Type: provider.TypeCLI, CLI: &provider.CLIConfig{}}
+	prompt, rawArgs, overrides, err := parseSessionProviderInput(
+		cliProfile,
+		[]string{"--skip-git-repo-check", "--model", "next", "reply OK"},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt != "reply OK" || !reflect.DeepEqual(rawArgs, []string{"--skip-git-repo-check", "--model", "next"}) || len(overrides) != 0 {
+		t.Fatalf("prompt=%q raw=%#v overrides=%#v", prompt, rawArgs, overrides)
+	}
+
+	prompt, rawArgs, _, err = parseSessionProviderInput(cliProfile, []string{"--ephemeral"}, true)
+	if err != nil || prompt != "" || !reflect.DeepEqual(rawArgs, []string{"--ephemeral"}) {
+		t.Fatalf("external prompt=%q raw=%#v err=%v", prompt, rawArgs, err)
+	}
+
+	apiProfile := provider.Config{ID: "api-cx", Type: provider.TypeAPI, API: &provider.APIConfig{}}
+	prompt, rawArgs, overrides, err = parseSessionProviderInput(
+		apiProfile,
+		[]string{"--model", "next", "--temperature", "0.2", "reply API"},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt != "reply API" || len(rawArgs) != 0 || overrides["model"] != "next" || overrides["temperature"] != 0.2 {
+		t.Fatalf("API prompt=%q raw=%#v overrides=%#v", prompt, rawArgs, overrides)
+	}
+	if _, _, _, err := parseSessionProviderInput(apiProfile, []string{"--unknown", "reply API"}, false); err == nil {
+		t.Fatal("API session accepted an unknown provider option")
 	}
 }
 
 func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 	root := t.TempDir()
-	writeCLIProfile(t, root, "fake", `{"type":"api","api":{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}","mock":true}}`)
+	writeCLIProfile(t, root, "fake", `{"protocol":"openai","base_url":"https://example.test/v1","model":"mock","api_key":"${UNSET}"}`)
 	stdout := captureStdout(t, func() {
 		if err := printProviders(root); err != nil {
 			t.Fatalf("printProviders returned error: %v", err)
@@ -170,12 +259,22 @@ func TestPrintProvidersUsesInternalRegistry(t *testing.T) {
 
 func TestPrintHelpDocumentsCanonicalNamespacesOnly(t *testing.T) {
 	stdout := captureStdout(t, printHelp)
-	for _, text := range []string{"<profile> [prompt...]", "run list|show", "session run|submit|open", "profile list|show", "system doctor|start|status|stop|restart|migrate-config|update"} {
+	for _, text := range []string{
+		"<profile> [native-cli-args...]",
+		"profile exec <profile> [provider-input...]",
+		"session run|submit [runtime-options...] <profile> [provider-input...]",
+		"session open [runtime-options...] <profile> [native-cli-args...]",
+		"run list|show",
+		"session run|submit|open",
+		"profile list|show|validate|command|exec",
+		"system doctor|start|status|stop|restart|migrate-config|update",
+		"Runtime options must appear before <profile>",
+	} {
 		if !strings.Contains(stdout, text) {
 			t.Fatalf("help missing %q:\n%s", text, stdout)
 		}
 	}
-	for _, removed := range []string{"Legacy aliases", "providers ->", "upgrade ->", "sn-cli task ", "sn-cli history ", "<profile> run|submit", "reconcile|command"} {
+	for _, removed := range []string{"Legacy aliases", "providers ->", "upgrade ->", "sn-cli task ", "sn-cli history ", "<profile> run|submit", "reconcile|command", "<profile> -- [raw-cli-args", "Runtime separator", "CLI receives it literally"} {
 		if strings.Contains(stdout, removed) {
 			t.Fatalf("help contains removed command %q:\n%s", removed, stdout)
 		}
@@ -192,7 +291,7 @@ func TestInteractiveProfilePassesRawArgsWithoutRunArtifacts(t *testing.T) {
 	profile := provider.Config{ID: "direct", Type: provider.TypeCLI, CLI: &provider.CLIConfig{
 		Driver: "generic", Executor: provider.ExecutorCommand,
 		Command: provider.CommandConfig{Binary: script, Args: []string{"common"}, Env: map[string]string{"OUTPUT": output}},
-		Runtime: provider.CLIRuntime{PromptDelivery: "stdin", ManagedArgs: []string{"managed"}},
+		Runtime: provider.CLIRuntime{PromptDelivery: "stdin"},
 	}}
 	code, err := runInteractiveProfile(&config.Config{Home: home}, profile, []string{"--help", "raw value"})
 	if err != nil || code != 0 {
@@ -211,7 +310,7 @@ func TestInteractiveProfilePassesRawArgsWithoutRunArtifacts(t *testing.T) {
 	}
 }
 
-func TestCommandProfileDoubleDashForcesRawArgs(t *testing.T) {
+func TestCommandProfilePassesDoubleDashToNativeCLI(t *testing.T) {
 	home := t.TempDir()
 	output := filepath.Join(home, "argv.txt")
 	script := filepath.Join(home, "tool.sh")
@@ -227,7 +326,7 @@ func TestCommandProfileDoubleDashForcesRawArgs(t *testing.T) {
 		t.Fatalf("code=%d err=%v", code, err)
 	}
 	data, err := os.ReadFile(output)
-	if err != nil || string(data) != "common\nexec\nhello\n" {
+	if err != nil || string(data) != "common\n--\nexec\nhello\n" {
 		t.Fatalf("argv=%q err=%v", data, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "runs")); !os.IsNotExist(err) {
@@ -235,25 +334,22 @@ func TestCommandProfileDoubleDashForcesRawArgs(t *testing.T) {
 	}
 }
 
-func TestCommandProfilePromptUsesManagedArgsWithoutArtifacts(t *testing.T) {
+func TestCommandProfileArgumentsUseNativeDirectModeWithoutArtifacts(t *testing.T) {
 	home := t.TempDir()
-	script := filepath.Join(home, "tool.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s|' \"$*\"\ncat\n"), 0o755); err != nil {
+	output := filepath.Join(home, "argv.txt")
+	script := filepath.Join(home, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SN_TEST_OUTPUT\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLIProfile(t, home, "direct", fmt.Sprintf(`{"type":"cli","cli":{"driver":"generic","executor":"command","command":{"binary":%q,"args":["common"],"model":""},"runtime":{"prompt_delivery":"stdin","managed_args":["managed"]}}}`, script))
-	profile, ok := resolveProfile(home, "direct")
-	if !ok {
-		t.Fatal("resolveProfile(direct)=false")
+	writeCLIProfile(t, home, "direct", fmt.Sprintf(`{"command":%q,"args":["common"],"env":{"SN_TEST_OUTPUT":%q}}`, script, output))
+	profile := mustResolveProfile(t, home, "direct")
+	code, err := runResolvedProfile(&config.Config{Home: home}, profile, []string{"--help", "hello", "world"})
+	if err != nil || code != 0 {
+		t.Fatalf("code=%d err=%v", code, err)
 	}
-	stdout := captureStdout(t, func() {
-		code, err := runResolvedProfile(&config.Config{Home: home}, profile, []string{"hello", "world"})
-		if err != nil || code != 0 {
-			t.Fatalf("code=%d err=%v", code, err)
-		}
-	})
-	if !strings.Contains(stdout, "common managed|hello world") {
-		t.Fatalf("stdout=%q", stdout)
+	argv, err := os.ReadFile(output)
+	if err != nil || string(argv) != "common\n--help\nhello\nworld\n" {
+		t.Fatalf("argv=%q err=%v", argv, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "runs")); !os.IsNotExist(err) {
 		t.Fatalf("direct prompt created Run artifacts: %v", err)
@@ -261,6 +357,90 @@ func TestCommandProfilePromptUsesManagedArgsWithoutArtifacts(t *testing.T) {
 	values, err := agentrun.NewSessionManager(agentrun.New(home)).Store().List(agentrun.SessionFilter{})
 	if err != nil || len(values) != 0 {
 		t.Fatalf("direct prompt created logical sessions: %#v err=%v", values, err)
+	}
+}
+
+func TestPipedStdinDoesNotSelectManagedMode(t *testing.T) {
+	home := t.TempDir()
+	argvFile := filepath.Join(home, "argv.txt")
+	stdinFile := filepath.Join(home, "stdin.txt")
+	script := filepath.Join(home, "codex")
+	content := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARGV_FILE\"\ncat > \"$STDIN_FILE\"\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, home, "direct", fmt.Sprintf(
+		`{"command":%q,"args":["common"],"env":{"ARGV_FILE":%q,"STDIN_FILE":%q}}`,
+		script, argvFile, stdinFile,
+	))
+	profile := mustResolveProfile(t, home, "direct")
+	withStdin(t, "hello from stdin", func() {
+		code, err := runResolvedProfile(&config.Config{Home: home}, profile, nil)
+		if err != nil || code != 0 {
+			t.Fatalf("code=%d err=%v", code, err)
+		}
+	})
+	argv, err := os.ReadFile(argvFile)
+	if err != nil || string(argv) != "common\n" {
+		t.Fatalf("argv=%q err=%v", argv, err)
+	}
+	stdin, err := os.ReadFile(stdinFile)
+	if err != nil || string(stdin) != "hello from stdin" {
+		t.Fatalf("stdin=%q err=%v", stdin, err)
+	}
+	if files := regularFilesUnder(t, filepath.Join(home, "runs")); len(files) != 0 {
+		t.Fatalf("piped direct CLI created Run artifacts: %v", files)
+	}
+}
+
+func TestProfileExecUsesManagedModeWithoutArtifacts(t *testing.T) {
+	home := t.TempDir()
+	script := filepath.Join(home, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s|' \"$*\"\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, home, "batch", fmt.Sprintf(`{"command":%q,"args":["common"]}`, script))
+	profile := mustResolveProfile(t, home, "batch")
+	stdout := captureStdout(t, func() {
+		code, err := runUnrecordedProfile(&config.Config{Home: home}, profile, []string{"hello", "world"})
+		if err != nil || code != 0 {
+			t.Fatalf("code=%d err=%v", code, err)
+		}
+	})
+	if !strings.Contains(stdout, "common exec hello world|") {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	if files := regularFilesUnder(t, filepath.Join(home, "runs")); len(files) != 0 {
+		t.Fatalf("profile exec created Run artifacts: %v", files)
+	}
+	values, err := agentrun.NewSessionManager(agentrun.New(home)).Store().List(agentrun.SessionFilter{})
+	if err != nil || len(values) != 0 {
+		t.Fatalf("profile exec created logical sessions: %#v err=%v", values, err)
+	}
+}
+
+func TestMainDirectCLIAndProfileExecDoNotCreateHistoryRecords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SN_CLI_HOME", home)
+	script := filepath.Join(home, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\nprintf 'ok\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIProfile(t, home, "cx-test", fmt.Sprintf(`{"command":%q}`, script))
+
+	if code, output := captureMain(t, []string{"cx-test", "hello"}); code != 0 || strings.TrimSpace(output) != "ok" {
+		t.Fatalf("direct code=%d output=%q", code, output)
+	}
+	withStdin(t, "hello", func() {
+		if code, output := captureMain(t, []string{"profile", "exec", "cx-test"}); code != 0 || strings.TrimSpace(output) != "ok" {
+			t.Fatalf("exec code=%d output=%q", code, output)
+		}
+	})
+
+	for _, directory := range []string{"runs", "sessions", "history"} {
+		if files := regularFilesUnder(t, filepath.Join(home, directory)); len(files) != 0 {
+			t.Fatalf("%s contains history records: %v", directory, files)
+		}
 	}
 }
 
@@ -286,6 +466,27 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("read stdout pipe: %v", err)
 	}
 	return buf.String()
+}
+
+func withStdin(t *testing.T, content string, fn func()) {
+	t.Helper()
+	original := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = reader
+	defer func() {
+		os.Stdin = original
+		_ = reader.Close()
+	}()
+	fn()
 }
 
 func regularFilesUnder(t *testing.T, root string) []string {
@@ -342,4 +543,40 @@ func writeCLIProfile(t *testing.T, root, name, body string) {
 	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write profile: %v", err)
 	}
+}
+
+func mustResolveProfile(t *testing.T, root, name string) provider.Config {
+	t.Helper()
+	profiles, err := agentrun.New(root).Profiles()
+	if err != nil {
+		t.Fatalf("load profiles: %v", err)
+	}
+	profile, ok := provider.Resolve(profiles, name)
+	if !ok {
+		t.Fatalf("profile %q was not loaded", name)
+	}
+	return profile
+}
+
+func writeFixtureCLIProfile(t *testing.T, root, name, reply string) {
+	t.Helper()
+	script := filepath.Join(root, name+"-fixture")
+	content := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' "$SN_TEST_REPLY"
+if [ -n "$AGENTRUN_RESULT_FILE" ]; then
+  printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","summary":"%s","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" "$SN_TEST_REPLY" > "$AGENTRUN_RESULT_FILE"
+fi
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fixture command: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"command": script,
+		"env":     map[string]string{"SN_TEST_REPLY": reply},
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture profile: %v", err)
+	}
+	writeCLIProfile(t, root, name, string(body))
 }

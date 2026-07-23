@@ -1,33 +1,13 @@
 {
-  "type": "cli",
-  "label": "Claude Opus",
-  "cli": {
-    "driver": "claude",
-    "executor": "command",
-    "command": {
-      "binary": "claude",
-      "args": [],
-      "model": "opus"
-    },
-    "runtime": {
-      "prompt_delivery": "stdin",
-      "managed_args": ["-p"]
-    }
-  },
-  "presets": {
-    "cc-aip": {
-      "label": "Claude Opus（AIP 账号目录）",
-      "cli": {
-        "command": {
-          "env": {
-            "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip",
-            "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn"
-          },
-          "env_unset_append": [
-            "ANTHROPIC_AUTH_TOKEN"
-          ]
-        }
-      }
-    }
+  "command": "claude",
+  "args": [
+    "--dangerously-skip-permissions"
+  ],
+  "env": {
+    "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip",
+    "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn",
+    "ANTHROPIC_API_KEY": "${KMM_API_KEY}",
+    "ANTHROPIC_AUTH_TOKEN": "${KMM_API_KEY}",
+    "ANTHROPIC_MODEL": "claude-fable-5"
   }
 }
