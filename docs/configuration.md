@@ -70,7 +70,7 @@ sn-cli session run --session-id <id> cx --ephemeral "hi"
 
 ## API profile
 
-API profile 固定为四个必填字段，另有可选 headers 与超时：
+API profile 固定为四个必填字段，另有可选 headers、默认最大输出 token 数与超时：
 
 ```json
 {
@@ -82,6 +82,7 @@ API profile 固定为四个必填字段，另有可选 headers 与超时：
     "HTTP-Referer": "https://client.example",
     "X-Client-ID": "${CLIENT_ID}"
   },
+  "max_tokens": 16384,
   "timeout_seconds": 300
 }
 ```
@@ -93,9 +94,10 @@ API profile 固定为四个必填字段，另有可选 headers 与超时：
 | `model` | 请求模型 ID |
 | `api_key` | 只能是完整 `${ENV_VAR}` 引用，禁止明文 |
 | `headers` | 可选固定请求 headers；value 支持 `${VAR}` 展开 |
+| `max_tokens` | 可选的默认最大输出 token 数，必须为正整数 |
 | `timeout_seconds` | 可选的 profile deadline |
 
-认证 header 由 Runtime 根据协议与 endpoint 生成。`headers` 不能覆盖 `Authorization`、`Proxy-Authorization` 或 `x-api-key`。单次请求参数通过调用入口的 typed options 提供。
+认证 header 由 Runtime 根据协议与 endpoint 生成。`headers` 不能覆盖 `Authorization`、`Proxy-Authorization` 或 `x-api-key`。`max_tokens` 沿用 OpenAI/Anthropic-compatible 的 provider 字段名；单次请求通过 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 覆盖，不需要调用方重复传 profile 默认值。Runtime 当前没有独立的输入 token 上限字段。
 
 Runtime 统一规范化 OpenAI 与 Anthropic endpoint：
 
@@ -126,10 +128,37 @@ max_concurrency: 1
 max_queue: 64
 queue_timeout_seconds: 3600
 default_deadline_seconds: 300
+assets:
+  roots:
+    project: /srv/runtime-assets
+llm:
+  mcp_servers:
+    - name: local-tools
+      command: /usr/local/bin/local-mcp
+      args: ["serve"]
+      dir: /srv/runtime-assets
+      env:
+        API_TOKEN: "${LOCAL_MCP_TOKEN}"
+      env_passthrough: [HTTP_PROXY, HTTPS_PROXY]
+      timeout_seconds: 30
 session:
   default_carrier: tmux
   terminal:
     driver: ghostty
 ```
 
-`session.default_carrier` 支持 `tmux|terminal`；`session.terminal.driver` 支持 `ghostty|iterm2`。Runtime 目录由 layout 固定。
+`assets.roots` 是 LLM Runtime 可读取的宿主机绝对目录映射。请求使用
+`asset://project/skills/review/SKILL.md` 这类 URI，不能传绝对路径；Resolver
+还会校验目录穿越和 symlink 越界。未配置 root 时仍可使用 inline 资产。
+
+`llm.mcp_servers` 是 stock `sn-server` 与 `sn-cli llm generate` 可选择的 stdio
+MCP allowlist。`name` 是请求中 `tools.mcp` 使用的稳定名称；`command`、`args`、
+`dir`、`env` 和 `timeout_seconds` 只能由部署配置提供，HTTP 请求不能覆盖。
+`dir` 如存在必须是绝对路径。
+
+MCP 子进程默认只继承 `PATH`、`HOME`、`TMPDIR`、`LANG`、`LC_ALL` 中当前已设置
+的值。额外继承必须列入 `env_passthrough`；显式 `env` 支持与 profile 相同的
+`${VAR}` 展开，引用未设置时 server 启动失败。MCP 只在请求选择对应名称后启动，
+请求结束即关闭。
+
+`session.default_carrier` 支持 `tmux|terminal`；`session.terminal.driver` 支持 `ghostty|iterm2`。Runtime home 目录由 layout 固定，额外 asset root 由部署方显式配置。

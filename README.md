@@ -1,12 +1,19 @@
 # Agent Runtime
 
-本仓库实现自包含的 Go Agent Runtime，并以 `sn-cli` 作为统一终端入口。CLI Provider、API Provider、Session carrier、Run、Loop、memory、skills、tools 和 daemon 共用一套配置、生命周期与运行产物契约。
+本仓库实现自包含的 Go Agent Runtime。`sn-cli` 是统一终端入口；
+`llmruntime` 与 `/v1/llm/generate` 分别提供 Go SDK 和本地 HTTP API。
+Runtime 的主要调用入口是 `sn-cli` command、Go SDK 和本地 HTTP API。
+CLI Provider、API Provider、Session carrier、Run、Loop、memory、skills、
+tools 和 daemon 共用 Provider 与配置契约。
 
 ## 架构
 
 ```text
 cmd/sn-cli             终端入口、Provider 路由、Runtime 控制面、自更新
-cmd/sn-server          HTTP /v1/runs 与 /v1/sessions
+cmd/sn-server          HTTP /v1/llm/generate、/v1/runs 与 /v1/sessions
+runtimeapi             SDK 与 HTTP 共用的结构化 LLM 请求/响应/event
+llmruntime             本地 SDK、context compiler、asset/tool/MCP registry
+runtimeclient          /v1/llm/generate HTTP client
 internal/agentrun      Session、Turn、RunAttempt、Execution 与运行产物
 internal/provider      CLI/API Provider 与 carrier 适配
 internal/executor      进程、TTY、流式输出与信号
@@ -28,7 +35,9 @@ internal/installbundle release 解包、checksum 与配置/资源同步
 - [配置契约](docs/configuration.md)
 - [CLI 路由契约](docs/cli-routing-contract.md)
 - [整合架构](docs/integration-arch.md)
-- [Session、History 与 Context Runtime](docs/SESSION_HISTORY_DESIGN.md)
+- [Session、History 与 Context Runtime](docs/session-history-contract.md)
+- [LLM Runtime 契约](docs/llm-runtime-contract.md)
+- [待实现能力](docs/PENDING.md)
 
 ## 安装
 
@@ -126,13 +135,28 @@ max_concurrency: 1
 max_queue: 64
 queue_timeout_seconds: 3600
 default_deadline_seconds: 300
+assets:
+  roots:
+    project: /srv/runtime-assets
+llm:
+  mcp_servers:
+    - name: local-tools
+      command: /usr/local/bin/local-mcp
+      args: ["serve"]
+      env:
+        API_TOKEN: "${LOCAL_MCP_TOKEN}"
+      timeout_seconds: 30
 session:
   default_carrier: tmux
   terminal:
     driver: ghostty
 ```
 
-`session.default_carrier` 支持 `tmux|terminal`；`session.terminal.driver` 支持 `ghostty|iterm2`。
+`assets.roots` 为可选的 LLM Runtime 资产根目录，供
+`asset://project/...` 引用。`llm.mcp_servers` 是 stock server 可选择的 stdio
+MCP allowlist；请求只能引用 `name`，不能上传 command 或 env。
+`session.default_carrier` 支持 `tmux|terminal`；`session.terminal.driver`
+支持 `ghostty|iterm2`。
 
 ## CLI
 
@@ -179,13 +203,14 @@ sn-cli profile command cx --mode exec --json
 
 ```text
 run      list|show|logs|result|watch|cancel|reconcile
-session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
+session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete|gc
 profile  list|show|validate|command|exec
 system   doctor|start|status|stop|restart|update
 loop     run|list|show|logs|cancel
 skill    list|show|run
 tool     list|show|call
 memory   list|recall|add|remove|promote
+llm      generate
 ```
 
 公共命令最多两层：namespace + action。完整帮助：
@@ -221,6 +246,15 @@ sn-cli session stop --session-id <id>
 ```
 
 tmux 支持重连；terminal 创建独立终端窗口。`session open` 记录 Execution 与 transcript。
+
+ephemeral Session 只通过显式 GC 回收，默认先预览：
+
+```bash
+sn-cli session gc --older-than-hours 24
+sn-cli session gc --older-than-hours 24 --limit 100 --apply
+```
+
+`--apply` 只把符合条件且非 active 的目录移动到 `history/trash`，不会永久删除。
 
 查询与控制 Run：
 
@@ -305,13 +339,81 @@ API profile：
   "headers": {
     "HTTP-Referer": "https://client.example"
   },
+  "max_tokens": 16384,
   "timeout_seconds": 300
 }
 ```
 
 OpenAI 与 Anthropic API profile 共用 endpoint 规范化：`base_url` 末段没有 `vN` 时自动补 `/v1`，已有版本段或完整 endpoint 时不重复追加；最终分别调用 `chat/completions` 与 `messages`。
 
+`max_tokens` 是 API profile 的默认最大输出 token 数。direct、Session、Loop、HTTP Run 与 Go LLM Runtime SDK 都会继承；请求级 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 可以覆盖。Runtime 当前没有独立的输入 token 上限字段。
+
 只有完整 `${VAR}` 引用读取环境变量。未设置的引用会报错；普通字符串保持原值。CLI `env` 的 `null` 值表示从子进程环境删除该变量。Runtime 不读取 `.env` 或 direnv 文件。
+
+## Go LLM Runtime SDK
+
+本地 Go 应用可以直接嵌入 Runtime。调用方需要自行维护业务 Session、Agent
+loop 和 tool call 决策：
+
+```go
+runtime, err := llmruntime.New(llmruntime.Options{
+    ProfileDir: "/srv/sn/configs",
+    AssetRoots: map[string]string{"project": "/srv/runtime-assets"},
+})
+if err != nil {
+    return err
+}
+
+response, err := runtime.Generate(ctx, runtimeapi.Request{
+    Profile: "api-cx",
+    Prompt:  "分析当前请求",
+    Context: runtimeapi.ContextAssets{
+        Skills: []runtimeapi.SkillRef{{
+            AssetRef: runtimeapi.AssetRef{
+                URI: "asset://project/skills/review/SKILL.md",
+            },
+        }},
+        Memory: []runtimeapi.AssetRef{{
+            URI: "asset://project/memory/context.json",
+        }},
+    },
+    Tools: runtimeapi.ToolSelection{
+        Inline: toolSchemas,
+    },
+})
+```
+
+默认 `tool_mode=schema_only`，响应中的 `tool_calls` 由上层 Agent 执行并组织下一
+轮。若 Runtime 需要自行执行工具，启动时使用 `RegisterTool` 或 `RegisterMCP`，
+请求指定 `tool_mode=runtime_execute` 和注册名称。HTTP 调用方使用
+`runtimeclient.New`，请求类型完全相同。
+
+动态 memory 通过 `RegisterMemoryProvider` 注册，请求使用
+`context.recall[].provider` 选择；文件 memory 继续使用 inline 或 `asset://`。
+流式调用使用同一个最终响应契约：
+
+```go
+response, err := runtime.GenerateStream(ctx, request, func(event runtimeapi.Event) error {
+    // output.delta、tool lifecycle、response.completed
+    return consume(event)
+})
+```
+
+同一结构化请求也可直接交给 command，且不创建 AgentRun Session/Run artifact：
+
+```bash
+sn-cli llm generate --request-file request.json
+sn-cli llm generate --request-file request.json --stream
+cat request.json | sn-cli llm generate --request-file -
+```
+
+import path：
+
+```text
+github.com/yy003x/runtime/llmruntime
+github.com/yy003x/runtime/runtimeapi
+github.com/yy003x/runtime/runtimeclient
+```
 
 ## 运行产物
 
@@ -330,7 +432,7 @@ managed Run 位于：
 
 其中包含 `session.json`、`messages.jsonl`、`events.jsonl`、`turns/`、`executions/` 和 `memory/`。
 
-## HTTP Server
+## 本地 HTTP API
 
 ```bash
 make build
@@ -342,13 +444,46 @@ make build
 主要端点：
 
 - `GET /healthz`
+- `POST /v1/llm/generate`
 - `GET|POST /v1/runs`
 - `GET /v1/runs/{run_type}/{run_id}/status|logs|result`
 - `POST /v1/runs/{run_type}/{run_id}/cancel|block|stop|continue|patch-resume`
 - `GET|POST /v1/sessions`
+- `POST /v1/sessions/gc`
 - `GET /v1/sessions/{session_id}`
 - `GET /v1/sessions/{session_id}/messages|events|watch`
 - `POST /v1/sessions/{session_id}/turns`
+
+结构化 LLM 请求示例：
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/llm/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "profile": "api-cx",
+    "prompt": "分析当前请求",
+    "context": {
+      "skills": [
+        {"uri": "asset://project/skills/review/SKILL.md"}
+      ]
+    }
+  }'
+```
+
+流式事件使用 SSE：
+
+```bash
+curl -N http://127.0.0.1:8080/v1/llm/generate \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -d @request.json
+```
+
+Session watch 同样在 `Accept: text/event-stream` 时进入 SSE，并支持
+`after_seq` 或 `Last-Event-ID` 续读。
+
+HTTP 只能读取 `runtime.yaml` 预配置的 asset root，并只能引用进程启动时已注册
+的 tool/MCP；请求不能提交宿主机绝对路径、Go handler 或 MCP command。
 
 ## 构建与验证
 

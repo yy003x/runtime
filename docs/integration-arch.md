@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-Runtime 提供一套稳定的本地 Agent 执行底座：
+Runtime 提供一套稳定的 Agent 执行与 LLM 调用底座：
 
 - `sn-cli` 负责命令路由、Provider 调用、Session 与 Run 控制。
 - `sn-server` 将同一运行能力暴露为 HTTP API。
@@ -10,13 +10,16 @@ Runtime 提供一套稳定的本地 Agent 执行底座：
 - Session 统一管理 CLI、API、tmux 和 terminal 的会话关系。
 - daemon 管理异步队列、长期进程与本地 IPC。
 - memory、skills 和 tools 通过 capability registry 装配。
+- `llmruntime` 为本地 Go 调用方提供 SDK，`runtimeclient` 使用同一
+  `runtimeapi.Request` 通过 HTTP 调用。
+- 上层调用方拥有自己的业务 Session 与 loop；Runtime 不接管具体业务逻辑和编排。
 
 ## 2. 分层与 Owner
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
 │ Entry                                                   │
-│ sn-cli · sn-server                                      │
+│ sn-cli · sn-server · llmruntime SDK · runtimeclient     │
 └──────────────────────────┬──────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────┐
@@ -36,6 +39,20 @@ Runtime 提供一套稳定的本地 Agent 执行底座：
 └─────────────────────────────────────────────────────────┘
 ```
 
+结构化 LLM 请求走一条独立但复用 Provider adapter 的短链：
+
+```text
+runtimeapi.Request
+  -> AssetResolver + Tool/MCP/Memory Registry
+  -> ContextCompiler
+  -> internal/llm canonical request
+  -> OpenAI/Anthropic API 或 CLI adapter
+  -> runtimeapi.Response + ordered Event stream
+```
+
+它不写 AgentRun Session/Run artifact。详细边界见
+[LLM Runtime 契约](llm-runtime-contract.md)。
+
 Owner 规则：
 
 | 领域 | Owner |
@@ -48,6 +65,9 @@ Owner 规则：
 | home 与全部路径 | `internal/layout` |
 | CLI 路由与呈现 | `internal/cli` |
 | HTTP 传输 | `internal/transport` |
+| SDK/HTTP 公共请求类型 | `runtimeapi` |
+| 本地 LLM Runtime、asset 与注册表 | `llmruntime` |
+| 本地 HTTP client | `runtimeclient` |
 
 ## 3. CLI 路由
 
@@ -63,7 +83,7 @@ Owner 规则：
 固定 namespace：
 
 ```text
-run session profile system loop skill tool memory
+run session profile system loop skill tool memory llm
 ```
 
 公共命令最多两层：namespace + action。Provider profile 是顶层动态命令，也可作为 `profile exec`、`session run|submit|open` 的执行目标。
@@ -141,10 +161,12 @@ command model effort args env timeout_seconds
 API 字段：
 
 ```text
-protocol base_url model api_key headers timeout_seconds
+protocol base_url model api_key headers max_tokens timeout_seconds
 ```
 
 loader 使用严格 JSON 解码并拒绝未知字段。配置读取是只读操作。
+
+`max_tokens` 是 API profile 的 provider 默认值。请求级 typed option 优先；Go LLM Runtime SDK 的 `runtimeapi.Request.max_tokens` 为零时继承该值。
 
 ### 4.2 CLI adapter
 
@@ -222,6 +244,10 @@ Session message 是跨 Provider 上下文的事实源。Runtime 根据规范化 
 
 Provider 切换只改变 adapter 与模型配置，不改变 Session/Turn/Execution 的关系。该结构可直接支持 GUI 会话列表、当前对话续轮、运行状态与跨模型上下文。
 
+ephemeral Session 不在启动时自动删除。`session gc` 或
+`POST /v1/sessions/gc` 默认 dry-run；apply 时在 Session lock 内复核状态与
+更新时间，再移动到 `history/trash`。
+
 ## 6. 目录与产物
 
 ```text
@@ -268,6 +294,7 @@ sessions/<YYYY-MM-DD>/<session_id>/
 - `events.jsonl`、`messages.jsonl` 与 `output.log` 只追加。
 - Run registry 支持 list、active 过滤与 reconcile。
 - Session lock 位于 `state/sessions/locks`。
+- Session 删除与 GC 移动到 `history/trash`，不执行永久删除。
 - secret 不进入配置输出、日志或运行产物。
 
 ## 7. 安装与更新
@@ -300,9 +327,18 @@ daemon 通过 UDS 提供状态、启动、停止和队列调度。异步 submit 
 HTTP 与 CLI 共用 `agentrun.Service`：
 
 - `/v1/runs` 创建、查询、日志、结果与控制。
-- `/v1/sessions` 创建、查询、消息、事件、watch 与续轮。
+- `/v1/sessions` 创建、查询、消息、事件、SSE watch、GC 与续轮。
 - `Prefer: respond-async` 提交异步 Run。
 - `system doctor --json` 提供 `contract_version`、features 与 scheduler 健康状态。
+
+结构化 LLM 入口 `POST /v1/llm/generate` 与本地
+`llmruntime.Runtime.Generate/GenerateStream` 共用执行核心，但不创建 Runtime
+Session。调用方可直接传规范化上下文，也可让 Runtime 从已配置 `asset://` root
+加载 prompt、skill 和 memory，或选择进程内注册的 MemoryProvider。HTTP 携带
+`Accept: text/event-stream` 时返回有序 Runtime event。
+
+stock server 从 `runtime.yaml` 静态注册 stdio MCP。请求只能引用 allowlist 名称；
+MCP 按请求惰性启动并关闭，不能从 HTTP 上传 command、env 或 handler。
 
 Capability registry 统一装配：
 
@@ -310,6 +346,21 @@ Capability registry 统一装配：
 - `resources/tools`
 - `memory`
 - workspace
+
+### 8.1 部署边界
+
+当前实现是 local-first Runtime：
+
+- Runtime home、Session Store、history index、queue、文件锁和 daemon UDS 都属于
+  单机事实源；
+- `sn-server` 可作为同一主机进程内/本地网络调用入口，但不提供多副本协调；
+- 多个独立实例应使用独立 Runtime home，由上层服务维护自己的业务 Session 和
+  分布式编排；
+- 当前不承诺共享 Store、共享 Queue、分布式 Lease、共享文件系统锁、SQLite/FTS
+  查询或跨实例 event resume。
+
+若未来需要多副本，必须先抽象 Store/Queue/Lease owner 和一致性契约；不能把当前
+JSON 文件与 `flock` 直接视为分布式实现。
 
 ## 9. 不变式
 
