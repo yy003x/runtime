@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/agentrun"
 )
 
 func TestHTTPRunUsesAgentRunArtifacts(t *testing.T) {
@@ -147,6 +147,76 @@ func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
 	handler.ServeHTTP(messages, httptest.NewRequest(http.MethodGet, "/v1/sessions/session-20260717-130000-http/messages", nil))
 	if !strings.Contains(messages.Body.String(), "hello") || !strings.Contains(messages.Body.String(), "session turn ok") {
 		t.Fatalf("messages=%s", messages.Body.String())
+	}
+}
+
+func TestHTTPSessionWatchStreamsEventsAndSupportsResumeCursor(t *testing.T) {
+	root := t.TempDir()
+	service := agentrun.New(root)
+	store := agentrun.NewSessionManager(service).Store()
+	const sessionID = "session-20260724-120000-watch"
+	if _, err := store.Create(agentrun.SessionRecord{
+		SessionID: sessionID, ProjectID: "project",
+		RecordMode: agentrun.RecordFull, Retention: agentrun.RetentionStandard,
+		CaptureQuality: agentrun.CaptureStructured,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTPHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/sessions/"+sessionID+"/watch?timeout_seconds=1&poll_milliseconds=50",
+		nil,
+	)
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("Last-Event-ID", "0")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.HasPrefix(response.Header().Get("Content-Type"), "text/event-stream") ||
+		!strings.Contains(response.Body.String(), "event: session.event") ||
+		!strings.Contains(response.Body.String(), `"type":"session.created"`) ||
+		!strings.Contains(response.Body.String(), "event: session.end") {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+
+	invalid := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/sessions/"+sessionID+"/watch?timeout_seconds=1",
+		nil,
+	)
+	invalid.Header.Set("Accept", "text/event-stream")
+	invalid.Header.Set("Last-Event-ID", "invalid")
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cursor status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+
+	invalidQuery := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/sessions/"+sessionID+"/watch?after_seq=invalid",
+		nil,
+	)
+	invalidQuery.Header.Set("Accept", "text/event-stream")
+	invalidQueryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidQueryResponse, invalidQuery)
+	if invalidQueryResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid query cursor status=%d body=%s", invalidQueryResponse.Code, invalidQueryResponse.Body.String())
+	}
+}
+
+func TestHTTPSessionGCDefaultsToDryRun(t *testing.T) {
+	handler := NewHTTPHandler(agentrun.New(t.TempDir()))
+	request := httptest.NewRequest(http.MethodPost, "/v1/sessions/gc", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"apply":false`) ||
+		!strings.Contains(response.Body.String(), `"processed":0`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

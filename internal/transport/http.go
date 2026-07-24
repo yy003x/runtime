@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/provider"
+	"github.com/yy003x/runtime/llmruntime"
+	"github.com/yy003x/runtime/runtimeapi"
 )
 
 type HTTPHandler struct {
@@ -21,6 +24,7 @@ type HTTPHandler struct {
 	svc         *agentrun.Service
 	bearerToken string
 	maxBody     int64
+	llmRuntime  *llmruntime.Runtime
 }
 
 const defaultMaxBodyBytes int64 = 1 << 20
@@ -28,6 +32,7 @@ const defaultMaxBodyBytes int64 = 1 << 20
 type HTTPOptions struct {
 	BearerToken  string
 	MaxBodyBytes int64
+	LLMRuntime   *llmruntime.Runtime
 }
 
 type RunRequest struct {
@@ -67,6 +72,12 @@ type SessionCreateRequest struct {
 	Tags       []string `json:"tags,omitempty"`
 }
 
+type SessionGCRequest struct {
+	OlderThanSeconds int  `json:"older_than_seconds,omitempty"`
+	Limit            int  `json:"limit,omitempty"`
+	Apply            bool `json:"apply,omitempty"`
+}
+
 func NewHTTPHandler(service *agentrun.Service) *HTTPHandler {
 	return NewHTTPHandlerWithOptions(service, HTTPOptions{})
 }
@@ -79,6 +90,7 @@ func NewHTTPHandlerWithOptions(service *agentrun.Service, options HTTPOptions) *
 	handler := &HTTPHandler{
 		mux: http.NewServeMux(), svc: service,
 		bearerToken: strings.TrimSpace(options.BearerToken), maxBody: maxBody,
+		llmRuntime: options.LLMRuntime,
 	}
 	handler.routes()
 	return handler
@@ -95,11 +107,55 @@ func (h *HTTPHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 
 func (h *HTTPHandler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
+	h.mux.HandleFunc("POST /v1/llm/generate", h.handleLLMGenerate)
 	h.mux.HandleFunc("GET /v1/runs", h.handleRunList)
 	h.mux.HandleFunc("POST /v1/runs", h.handleRun)
 	h.mux.HandleFunc("/v1/runs/", h.handleRunByID)
 	h.mux.HandleFunc("/v1/sessions", h.handleSessions)
+	h.mux.HandleFunc("POST /v1/sessions/gc", h.handleSessionGC)
 	h.mux.HandleFunc("/v1/sessions/", h.handleSessionByID)
+}
+
+func (h *HTTPHandler) handleLLMGenerate(writer http.ResponseWriter, request *http.Request) {
+	if h.llmRuntime == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, errorResponse{Error: "LLM runtime is unavailable"})
+		return
+	}
+	if !hasJSONContentType(request) {
+		writeJSON(writer, http.StatusUnsupportedMediaType, errorResponse{Error: "Content-Type must be application/json"})
+		return
+	}
+	var input runtimeapi.Request
+	if err := h.decodeJSON(writer, request, &input, false); err != nil {
+		handleDecodeError(writer, err)
+		return
+	}
+	if acceptsEventStream(request) {
+		h.handleLLMGenerateStream(writer, request, input)
+		return
+	}
+	response, err := h.llmRuntime.Generate(request.Context(), input)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (h *HTTPHandler) handleLLMGenerateStream(writer http.ResponseWriter, request *http.Request, input runtimeapi.Request) {
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "streaming is unsupported"})
+		return
+	}
+	prepareSSE(writer)
+	_, _ = h.llmRuntime.GenerateStream(request.Context(), input, func(event runtimeapi.Event) error {
+		if err := writeSSEEvent(writer, event.Type, strconv.FormatInt(event.Sequence, 10), event); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
 }
 
 func (h *HTTPHandler) handleSessions(writer http.ResponseWriter, request *http.Request) {
@@ -194,6 +250,41 @@ func (h *HTTPHandler) handleSessions(writer http.ResponseWriter, request *http.R
 	writeJSON(writer, http.StatusCreated, record)
 }
 
+func (h *HTTPHandler) handleSessionGC(writer http.ResponseWriter, request *http.Request) {
+	if !hasJSONContentType(request) {
+		writeJSON(writer, http.StatusUnsupportedMediaType, errorResponse{Error: "Content-Type must be application/json"})
+		return
+	}
+	var input SessionGCRequest
+	if err := h.decodeJSON(writer, request, &input, true); err != nil {
+		handleDecodeError(writer, err)
+		return
+	}
+	if input.OlderThanSeconds == 0 {
+		input.OlderThanSeconds = 24 * 60 * 60
+	}
+	if input.OlderThanSeconds < 60*60 || input.OlderThanSeconds > 10*365*24*60*60 {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "older_than_seconds must be between 3600 and 315360000"})
+		return
+	}
+	if input.Limit == 0 {
+		input.Limit = 100
+	}
+	if input.Limit < 1 || input.Limit > 1000 {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "limit must be between 1 and 1000"})
+		return
+	}
+	result, err := agentrun.NewSessionManager(h.svc).Store().GC(agentrun.SessionGCOptions{
+		Before: time.Now().UTC().Add(-time.Duration(input.OlderThanSeconds) * time.Second),
+		Limit:  input.Limit, Apply: input.Apply,
+	})
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
 func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(request.URL.Path, "/v1/sessions/"), "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -211,8 +302,25 @@ func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *htt
 	}
 	store := agentrun.NewSessionManager(h.svc).Store()
 	if request.Method == http.MethodGet {
-		after, _ := strconv.ParseInt(request.URL.Query().Get("after_seq"), 10, 64)
-		limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
+		var after int64
+		var limit int
+		if action == "messages" || action == "events" || action == "watch" {
+			var err error
+			after, err = nonNegativeInt64Query(request, "after_seq")
+			if err != nil {
+				writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+				return
+			}
+			limit, err = positiveIntQuery(request, "limit", 0, 1000)
+			if err != nil {
+				writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+				return
+			}
+		}
+		if action == "watch" && acceptsEventStream(request) {
+			h.handleSessionWatch(writer, request, store, sessionID, after, limit)
+			return
+		}
 		switch action {
 		case "show":
 			if err := h.svc.ReconcileSession(request.Context(), sessionID); err != nil {
@@ -279,8 +387,152 @@ func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *htt
 	writeJSON(writer, http.StatusCreated, summary)
 }
 
+func (h *HTTPHandler) handleSessionWatch(
+	writer http.ResponseWriter,
+	request *http.Request,
+	store *agentrun.SessionStore,
+	sessionID string,
+	after int64,
+	limit int,
+) {
+	if _, err := store.Get(sessionID); err != nil {
+		writeJSON(writer, http.StatusNotFound, errorResponse{Error: err.Error()})
+		return
+	}
+	if request.URL.Query().Get("after_seq") == "" {
+		if lastEventID := strings.TrimSpace(request.Header.Get("Last-Event-ID")); lastEventID != "" {
+			value, err := strconv.ParseInt(lastEventID, 10, 64)
+			if err != nil || value < 0 {
+				writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "Last-Event-ID must be a non-negative integer"})
+				return
+			}
+			after = value
+		}
+	}
+	timeoutSeconds, err := positiveIntQuery(request, "timeout_seconds", 30, 300)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	pollMilliseconds, err := positiveIntQuery(request, "poll_milliseconds", 250, 5000)
+	if err != nil || pollMilliseconds < 50 {
+		if err == nil {
+			err = fmt.Errorf("poll_milliseconds must be between 50 and 5000")
+		}
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "streaming is unsupported"})
+		return
+	}
+	prepareSSE(writer)
+	deadline := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Duration(pollMilliseconds) * time.Millisecond)
+	defer poll.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		events, err := store.Events(sessionID, after, limit)
+		if err != nil {
+			_ = writeSSEEvent(writer, "error", "", map[string]string{"error": err.Error()})
+			flusher.Flush()
+			return
+		}
+		for _, event := range events {
+			if err := writeSSEEvent(writer, "session.event", strconv.FormatInt(event.Sequence, 10), event); err != nil {
+				return
+			}
+			after = event.Sequence
+			flusher.Flush()
+		}
+		select {
+		case <-request.Context().Done():
+			return
+		case <-deadline.C:
+			_ = writeSSEEvent(writer, "session.end", "", map[string]any{"after_seq": after, "reason": "timeout"})
+			flusher.Flush()
+			return
+		case <-heartbeat.C:
+			if _, err := io.WriteString(writer, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-poll.C:
+		}
+	}
+}
+
+func positiveIntQuery(request *http.Request, name string, defaultValue, maximum int) (int, error) {
+	raw := request.URL.Query().Get(name)
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 || value > maximum {
+		return 0, fmt.Errorf("%s must be between 1 and %d", name, maximum)
+	}
+	return value, nil
+}
+
+func nonNegativeInt64Query(request *http.Request, name string) (int64, error) {
+	raw := request.URL.Query().Get(name)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return value, nil
+}
+
+func acceptsEventStream(request *http.Request) bool {
+	for _, value := range request.Header.Values("Accept") {
+		for _, mediaType := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(strings.SplitN(mediaType, ";", 2)[0]), "text/event-stream") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func prepareSSE(writer http.ResponseWriter) {
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("X-Accel-Buffering", "no")
+}
+
+func writeSSEEvent(writer io.Writer, event, id string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if event != "" {
+		if _, err := fmt.Fprintf(writer, "event: %s\n", event); err != nil {
+			return err
+		}
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(writer, "id: %s\n", id); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(writer, "data: %s\n\n", data)
+	return err
+}
+
 func (h *HTTPHandler) handleHealth(writer http.ResponseWriter, _ *http.Request) {
-	writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "runtime": h.svc.RuntimeVersion})
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"ok": true, "runtime": h.svc.RuntimeVersion,
+		"features": map[string]bool{"llm_generate": h.llmRuntime != nil},
+	})
 }
 
 func (h *HTTPHandler) handleRun(writer http.ResponseWriter, request *http.Request) {
