@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"agent-runtime/internal/daemon"
-	"agent-runtime/internal/layout"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/daemon"
+	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 var Version = "dev"
@@ -36,6 +36,8 @@ type Service struct {
 	DefaultDeadline  int
 	DefaultCarrier   string
 	TerminalDriver   string
+	AssetRoots       map[string]string
+	MCPServers       []MCPServerSettings
 	HTTPClient       *http.Client
 	store            Store
 	configErr        error
@@ -123,9 +125,36 @@ func New(home string) *Service {
 		MaxQueue: settings.MaxQueue, QueueTimeout: settings.QueueTimeout,
 		DefaultDeadline: settings.DefaultDeadline,
 		DefaultCarrier:  settings.Session.DefaultCarrier, TerminalDriver: settings.Session.Terminal.Driver,
+		AssetRoots:     cloneStringValues(settings.Assets.Roots),
+		MCPServers:     cloneMCPServerSettings(settings.LLM.MCPServers),
 		RuntimeVersion: Version, configErr: err,
 	}
 	return service
+}
+
+func cloneMCPServerSettings(values []MCPServerSettings) []MCPServerSettings {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make([]MCPServerSettings, 0, len(values))
+	for _, value := range values {
+		value.Args = append([]string(nil), value.Args...)
+		value.EnvPassthrough = append([]string(nil), value.EnvPassthrough...)
+		value.Env = cloneStringValues(value.Env)
+		cloned = append(cloned, value)
+	}
+	return cloned
+}
+
+func cloneStringValues(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (s *Service) DaemonConfig() daemon.Config {

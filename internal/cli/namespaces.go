@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func runRunNamespace(cfg *config.Config, args []string) error {
@@ -245,6 +245,9 @@ func profilePublicView(profile provider.Config, profiles map[string]provider.Con
 	if profile.API != nil {
 		view["protocol"] = profile.API.Protocol
 		view["model"] = profile.API.Model
+		if profile.API.MaxTokens > 0 {
+			view["max_tokens"] = profile.API.MaxTokens
+		}
 	}
 	if profile.Native != nil {
 		view["model_profile"] = profile.Native.ModelProfile

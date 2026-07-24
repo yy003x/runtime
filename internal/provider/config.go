@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-runtime/internal/llm"
+	"github.com/yy003x/runtime/internal/llm"
 )
 
 const (
@@ -25,6 +25,7 @@ const (
 var ReservedCommands = map[string]struct{}{
 	"run": {}, "session": {}, "profile": {}, "system": {}, "loop": {},
 	"skill": {}, "tool": {}, "memory": {}, "help": {}, "version": {},
+	"llm": {},
 }
 
 type Config struct {
@@ -113,6 +114,7 @@ type APIConfig struct {
 	Model          string            `json:"model"`
 	APIKey         string            `json:"api_key"`
 	Headers        map[string]string `json:"headers,omitempty"`
+	MaxTokens      int               `json:"max_tokens,omitempty"`
 	Stream         bool              `json:"stream,omitempty"`
 	Mock           bool              `json:"mock,omitempty"`
 	OverridePolicy OverridePolicy    `json:"override_policy,omitempty"`
@@ -168,6 +170,7 @@ type profileDocument struct {
 	BaseURL        string             `json:"base_url,omitempty"`
 	APIKey         string             `json:"api_key,omitempty"`
 	Headers        map[string]string  `json:"headers,omitempty"`
+	MaxTokens      int                `json:"max_tokens,omitempty"`
 }
 
 func (c Config) Transport() string {
@@ -279,9 +282,9 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 	}
 	_, hasCommand := raw["command"]
 	hasAPIIdentity := rawHasAny(raw, "protocol", "base_url", "api_key")
-	hasAPIField := hasAPIIdentity || rawHasAny(raw, "headers")
+	hasAPIField := hasAPIIdentity || rawHasAny(raw, "headers", "max_tokens")
 	if hasCommand && hasAPIField {
-		return Config{}, fmt.Errorf("%s: command 与 protocol/base_url/api_key/headers 不能同时出现", source)
+		return Config{}, fmt.Errorf("%s: command 与 protocol/base_url/api_key/headers/max_tokens 不能同时出现", source)
 	}
 	if hasCommand {
 		cfg.Type = TypeCLI
@@ -303,7 +306,7 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 		cfg.API = &APIConfig{
 			Protocol: strings.TrimSpace(document.Protocol), BaseURL: strings.TrimSpace(document.BaseURL),
 			Model: stringValue(document.Model), APIKey: strings.TrimSpace(document.APIKey),
-			Headers: cloneEnvironment(document.Headers),
+			Headers: cloneEnvironment(document.Headers), MaxTokens: document.MaxTokens,
 		}
 		if err := validateAPI(&cfg, source); err != nil {
 			return Config{}, err
@@ -316,6 +319,12 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 func validateFlatDocumentTypes(raw map[string]any) error {
 	if value, exists := raw["timeout_seconds"]; exists && value == nil {
 		return fmt.Errorf("timeout_seconds 必须是非负整数")
+	}
+	if value, exists := raw["max_tokens"]; exists {
+		number, valid := integerValue(value)
+		if !valid || number <= 0 {
+			return fmt.Errorf("max_tokens 必须是正整数")
+		}
 	}
 	if value, exists := raw["command"]; exists {
 		command, ok := value.(string)
@@ -559,6 +568,9 @@ func validateAPI(cfg *Config, source string) error {
 	}
 	if strings.TrimSpace(api.BaseURL) == "" || strings.TrimSpace(api.Model) == "" || strings.TrimSpace(api.APIKey) == "" {
 		return fmt.Errorf("%s: base_url、model、api_key 均为必填", source)
+	}
+	if api.MaxTokens < 0 {
+		return fmt.Errorf("%s: max_tokens must be >= 0", source)
 	}
 	if _, ok := EnvironmentReferenceName(api.APIKey); !ok {
 		return fmt.Errorf("%s: api_key 必须使用完整的 ${ENV_VAR} 环境变量占位符", source)

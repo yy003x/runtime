@@ -12,12 +12,12 @@ import (
 	"sync"
 	"unicode"
 
-	"agent-runtime/internal/capability"
-	"agent-runtime/internal/llm"
-	"agent-runtime/internal/llm/anthropic"
-	"agent-runtime/internal/llm/openai"
-	"agent-runtime/internal/mcp"
-	nativeengine "agent-runtime/internal/provider/native"
+	"github.com/yy003x/runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/llm"
+	"github.com/yy003x/runtime/internal/llm/anthropic"
+	"github.com/yy003x/runtime/internal/llm/openai"
+	"github.com/yy003x/runtime/internal/mcp"
+	nativeengine "github.com/yy003x/runtime/internal/provider/native"
 )
 
 type apiToolRuntime struct {
@@ -174,11 +174,11 @@ func buildAPIRuntimeClient(prepared PreparedRequest) (nativeengine.Client, error
 	default:
 		return nil, fmt.Errorf("profile %s: unsupported API runtime protocol %q", prepared.Config.ID, api.Protocol)
 	}
-	maxOutputTokens := intValue(prepared.API.EffectiveOptions["max_tokens"], 2048)
+	maxTokens := intValue(prepared.API.EffectiveOptions["max_tokens"], 2048)
 	temperature, _ := numericValue(prepared.API.EffectiveOptions["temperature"])
 	return nativeClientAdapter{
 		client: client, model: strings.TrimSpace(fmt.Sprint(prepared.API.EffectiveOptions["model"])),
-		maxOutputTokens: maxOutputTokens, temperature: temperature,
+		maxTokens: maxTokens, temperature: temperature,
 	}, nil
 }
 

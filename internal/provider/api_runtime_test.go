@@ -13,9 +13,9 @@ import (
 	"sync"
 	"testing"
 
-	"agent-runtime/internal/capability"
-	"agent-runtime/internal/mcp"
-	nativeengine "agent-runtime/internal/provider/native"
+	"github.com/yy003x/runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/mcp"
+	nativeengine "github.com/yy003x/runtime/internal/provider/native"
 )
 
 func TestOpenAIAPIRuntimeExecutesToolAndLoadsSkillMemoryContext(t *testing.T) {
@@ -47,6 +47,9 @@ func TestOpenAIAPIRuntimeExecutesToolAndLoadsSkillMemoryContext(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
+		if body["max_tokens"] != float64(16384) {
+			t.Errorf("max_tokens=%v", body["max_tokens"])
+		}
 		messages, _ := body["messages"].([]any)
 		if calls == 1 {
 			encoded, _ := json.Marshal(messages)
@@ -77,6 +80,7 @@ func TestOpenAIAPIRuntimeExecutesToolAndLoadsSkillMemoryContext(t *testing.T) {
 	t.Setenv("PROVIDER_API_RUNTIME_KEY", "fixture-key")
 	cfg := Config{ID: "openai-agent", Type: TypeAPI, API: &APIConfig{
 		Protocol: "openai", BaseURL: server.URL, Model: "fixture", APIKey: "${PROVIDER_API_RUNTIME_KEY}",
+		MaxTokens: 16384,
 		Runtime: &APIRuntimeConfig{
 			Enabled: true, MaxRounds: 3, AutoRouteSkills: true, Skills: []string{"*"},
 			Memory: &APIMemoryConfig{Enabled: true, TopK: 3},

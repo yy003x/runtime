@@ -12,10 +12,10 @@ type Persona struct {
 }
 
 type ModelPolicy struct {
-	Provider        string  `yaml:"provider"`
-	Model           string  `yaml:"model"`
-	Temperature     float64 `yaml:"temperature"`
-	MaxOutputTokens int     `yaml:"max_output_tokens"`
+	Provider    string  `yaml:"provider"`
+	Model       string  `yaml:"model"`
+	Temperature float64 `yaml:"temperature"`
+	MaxTokens   int     `yaml:"max_tokens"`
 }
 
 type MemoryPolicy struct {

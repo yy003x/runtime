@@ -257,6 +257,9 @@ func prepareAPI(cfg Config, prompt string, overrides map[string]any) (APIRequest
 		"model":  api.Model,
 		"stream": api.Stream,
 	}
+	if api.MaxTokens > 0 {
+		effective["max_tokens"] = api.MaxTokens
+	}
 	for key, value := range overrides {
 		effective[key] = cloneValue(value)
 	}

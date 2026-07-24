@@ -173,6 +173,34 @@ func TestPrepareRejectsLockedOverride(t *testing.T) {
 	}
 }
 
+func TestPrepareAPIUsesProfileMaxTokensAndRequestOverride(t *testing.T) {
+	for _, protocol := range []string{"openai", "anthropic"} {
+		t.Run(protocol, func(t *testing.T) {
+			cfg := Config{ID: protocol, Type: TypeAPI, API: &APIConfig{
+				Protocol: protocol, BaseURL: "https://example.test/v1",
+				Model: "base", APIKey: "${TEST_KEY}", MaxTokens: 16384,
+			}}
+			prepared, err := Prepare(cfg, "hello", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.API.Payload["max_tokens"] != 16384 ||
+				prepared.API.EffectiveOptions["max_tokens"] != 16384 {
+				t.Fatalf("profile default request=%#v", prepared.API)
+			}
+
+			overridden, err := Prepare(cfg, "hello", map[string]any{"max_tokens": 2048})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if overridden.API.Payload["max_tokens"] != 2048 ||
+				overridden.API.EffectiveOptions["max_tokens"] != 2048 {
+				t.Fatalf("overridden request=%#v", overridden.API)
+			}
+		})
+	}
+}
+
 func TestExecuteOpenAIAndAnthropicAPI(t *testing.T) {
 	for _, protocol := range []string{"openai", "anthropic"} {
 		t.Run(protocol, func(t *testing.T) {

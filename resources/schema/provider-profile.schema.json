@@ -61,6 +61,11 @@
           },
           "description": "可选固定请求 header；值支持 ${VAR} 展开。认证 header 由 api_key 与协议推导，不能在此覆盖。"
         },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "API 请求的默认最大输出 token 数；沿用 OpenAI/Anthropic-compatible 的 max_tokens 字段，单次请求可覆盖。"
+        },
         "timeout_seconds": { "type": "integer", "minimum": 0 }
       }
     },

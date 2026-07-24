@@ -4,6 +4,10 @@ max_concurrency: 1
 max_queue: 64
 queue_timeout_seconds: 3600
 default_deadline_seconds: 300
+assets:
+  roots: {}
+llm:
+  mcp_servers: []
 session:
   default_carrier: tmux
   terminal:

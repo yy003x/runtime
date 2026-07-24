@@ -101,6 +101,12 @@ func TestRepositoryProfileTemplatesLoadAsStandaloneProfiles(t *testing.T) {
 			t.Fatalf("missing required repository profile %q", id)
 		}
 	}
+	for _, id := range []string{"api-cc", "api-cx"} {
+		api := profiles[id]
+		if api.TimeoutSeconds != 300 || api.API == nil || api.API.MaxTokens != 16384 {
+			t.Fatalf("%s=%#v", id, api)
+		}
+	}
 
 	originalImagePath, imagePathWasSet := os.LookupEnv("WB_RUNTIME_IMAGE_PATH")
 	if err := os.Unsetenv("WB_RUNTIME_IMAGE_PATH"); err != nil {
@@ -225,7 +231,7 @@ func TestLoadDirRejectsUnknownField(t *testing.T) {
 func TestReservedCommandsReflectCurrentCLI(t *testing.T) {
 	expected := map[string]struct{}{
 		"run": {}, "session": {}, "profile": {}, "system": {}, "loop": {},
-		"skill": {}, "tool": {}, "memory": {}, "help": {}, "version": {},
+		"skill": {}, "tool": {}, "memory": {}, "llm": {}, "help": {}, "version": {},
 	}
 	if !reflect.DeepEqual(ReservedCommands, expected) {
 		t.Fatalf("ReservedCommands=%v want=%v", ReservedCommands, expected)
@@ -254,13 +260,14 @@ func TestLoadDirRejectsUnknownKeysAtEveryLevel(t *testing.T) {
 
 func TestLoadDirInfersAPIProfile(t *testing.T) {
 	dir := t.TempDir()
-	writeConfig(t, dir, "api.json", `{"protocol":"openai","base_url":"https://example.test/v1","model":"gpt-test","api_key":"${TEST_API_KEY}"}`)
+	writeConfig(t, dir, "api.json", `{"protocol":"openai","base_url":"https://example.test/v1","model":"gpt-test","api_key":"${TEST_API_KEY}","max_tokens":16384}`)
 	profiles, err := LoadDir(dir)
 	if err != nil {
 		t.Fatalf("LoadDir: %v", err)
 	}
-	if profiles["api"].Transport() != "api" {
-		t.Fatalf("api transport=%q", profiles["api"].Transport())
+	api := profiles["api"]
+	if api.Transport() != "api" || api.API.MaxTokens != 16384 {
+		t.Fatalf("api=%#v", api)
 	}
 }
 
@@ -300,12 +307,15 @@ func TestLoadDirRejectsUnsafeAndConflictingConfig(t *testing.T) {
 		"invalidHeaderName":  `{"protocol":"openai","base_url":"https://example.test/v1","model":"m","api_key":"${K}","headers":{"Bad Header":"x"}}`,
 		"invalidHeaderValue": `{"protocol":"openai","base_url":"https://example.test/v1","model":"m","api_key":"${K}","headers":{"X-Test":1}}`,
 		"authHeader":         `{"protocol":"openai","base_url":"https://example.test/v1","model":"m","api_key":"${K}","headers":{"Authorization":"secret"}}`,
+		"zeroMaxTokens":      `{"protocol":"openai","base_url":"https://example.test/v1","model":"m","api_key":"${K}","max_tokens":0}`,
+		"fractionMaxTokens":  `{"protocol":"openai","base_url":"https://example.test/v1","model":"m","api_key":"${K}","max_tokens":1.5}`,
 		"nullArgs":           `{"command":"x","args":null}`,
 		"nullEnv":            `{"command":"x","env":null}`,
 		"emptyModel":         `{"command":"x","model":""}`,
 		"invalidEffort":      `{"command":"codex","model":"m","effort":"extreme"}`,
 		"genericEffort":      `{"command":"custom-agent","model":"m","effort":"high"}`,
 		"mixedFamilies":      `{"command":"codex","protocol":"openai","base_url":"x","model":"m","api_key":"${K}"}`,
+		"cliMaxTokens":       `{"command":"codex","max_tokens":100}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"agent-runtime/internal/capability"
-	"agent-runtime/internal/llm"
-	"agent-runtime/internal/llm/anthropic"
-	"agent-runtime/internal/llm/openai"
-	"agent-runtime/internal/persona"
-	nativeengine "agent-runtime/internal/provider/native"
+	"github.com/yy003x/runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/llm"
+	"github.com/yy003x/runtime/internal/llm/anthropic"
+	"github.com/yy003x/runtime/internal/llm/openai"
+	"github.com/yy003x/runtime/internal/persona"
+	nativeengine "github.com/yy003x/runtime/internal/provider/native"
 )
 
 type nativeProvider struct{}
@@ -197,10 +197,10 @@ func buildNativeClient(prepared PreparedRequest) (nativeengine.Client, error) {
 }
 
 type nativeClientAdapter struct {
-	client          llm.Client
-	model           string
-	temperature     float64
-	maxOutputTokens int
+	client      llm.Client
+	model       string
+	temperature float64
+	maxTokens   int
 }
 
 func (a nativeClientAdapter) Generate(ctx context.Context, request nativeengine.Request) (nativeengine.Response, error) {
@@ -221,13 +221,13 @@ func (a nativeClientAdapter) Generate(ctx context.Context, request nativeengine.
 	for _, tool := range request.Tools {
 		tools = append(tools, llm.Tool{Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
 	}
-	maxOutputTokens := a.maxOutputTokens
-	if maxOutputTokens <= 0 {
-		maxOutputTokens = 2048
+	maxTokens := a.maxTokens
+	if maxTokens <= 0 {
+		maxTokens = 2048
 	}
 	response, err := a.client.Generate(ctx, llm.Request{
 		Model: a.model, System: strings.Join(system, "\n\n"), Messages: messages, Tools: tools,
-		Temperature: a.temperature, MaxOutputTokens: maxOutputTokens,
+		Temperature: a.temperature, MaxTokens: maxTokens,
 	})
 	if err != nil {
 		return nativeengine.Response{}, fmt.Errorf("%w: %v", nativeengine.ErrUpstream, err)
