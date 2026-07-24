@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"agent-runtime/internal/provider"
-	providertmux "agent-runtime/internal/provider/tmux"
+	"github.com/yy003x/runtime/internal/provider"
+	providertmux "github.com/yy003x/runtime/internal/provider/tmux"
 )
 
 var errCarrierOperationUnsupported = errors.New("carrier operation is not supported")

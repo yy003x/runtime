@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func TestManagedRunRequiresAndAcceptsResultContract(t *testing.T) {

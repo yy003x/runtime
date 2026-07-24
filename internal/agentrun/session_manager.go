@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/capability"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 type SessionManager struct {

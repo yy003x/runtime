@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agent-runtime/internal/persona"
+	"github.com/yy003x/runtime/internal/persona"
 )
 
 func TestPersonaLoader(t *testing.T) {
@@ -24,7 +24,7 @@ model_policy:
   provider: "openai"
   model: "gpt-test"
   temperature: 0.1
-  max_output_tokens: 512
+  max_tokens: 512
 memory_policy:
   max_context_tokens: 1024
   keep_recent_turns: 4
@@ -47,6 +47,9 @@ response_policy:
 	}
 	if loaded.ModelPolicy.Provider != "openai" {
 		t.Fatalf("unexpected provider: %s", loaded.ModelPolicy.Provider)
+	}
+	if loaded.ModelPolicy.MaxTokens != 512 {
+		t.Fatalf("unexpected max_tokens: %d", loaded.ModelPolicy.MaxTokens)
 	}
 	if persona.RenderSystem(loaded) == "" {
 		t.Fatal("expected rendered system prompt")

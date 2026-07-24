@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/layout"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 // runUnrecordedProfile executes an explicit batch or direct API/native request

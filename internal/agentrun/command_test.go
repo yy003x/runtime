@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-runtime/internal/daemon"
+	"github.com/yy003x/runtime/internal/daemon"
 )
 
 func TestCommandLifecycleWithTmux(t *testing.T) {

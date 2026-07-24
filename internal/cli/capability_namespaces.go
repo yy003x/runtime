@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/capability"
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func newCapabilityRegistry(cfg *config.Config, sessionID string) (*capability.Registry, error) {

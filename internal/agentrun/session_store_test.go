@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func newTestSessionStore(t *testing.T) *SessionStore {

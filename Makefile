@@ -7,8 +7,8 @@ SN_CLI_TAG ?= $(shell git describe --tags --exact-match --match 'v[0-9]*' 2>/dev
 SN_CLI_DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
 SN_CLI_VERSION ?= $(if $(strip $(SN_CLI_TAG)),$(SN_CLI_TAG),v0.0.0-dev+$(SN_CLI_COMMIT))
 SN_CLI_BUILDDATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-RUNTIME_LDFLAGS := -X agent-runtime/internal/agentrun.Version=$(SN_CLI_VERSION)
-SN_CLI_LDFLAGS := $(RUNTIME_LDFLAGS) -X agent-runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X agent-runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X agent-runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X agent-runtime/internal/cli/version.Dirty=$(SN_CLI_DIRTY)
+RUNTIME_LDFLAGS := -X github.com/yy003x/runtime/internal/agentrun.Version=$(SN_CLI_VERSION)
+SN_CLI_LDFLAGS := $(RUNTIME_LDFLAGS) -X github.com/yy003x/runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X github.com/yy003x/runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X github.com/yy003x/runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X github.com/yy003x/runtime/internal/cli/version.Dirty=$(SN_CLI_DIRTY)
 
 GO ?= go
 GOCACHE ?= /tmp/go-build
@@ -34,7 +34,7 @@ fmt:
 	$(GO_ENV) $(GO) fmt ./...
 
 fmt-check:
-	@files="$$(gofmt -l $$(find cmd internal test -name '*.go' -type f))"; if [ -n "$$files" ]; then echo "Go files require formatting:"; echo "$$files"; exit 1; fi
+	@files="$$(gofmt -l $$(find cmd internal llmruntime runtimeapi runtimeclient test -name '*.go' -type f))"; if [ -n "$$files" ]; then echo "Go files require formatting:"; echo "$$files"; exit 1; fi
 
 test:
 	$(GO_ENV) $(GO) test ./...
@@ -93,7 +93,7 @@ dev:
 	pid=""; \
 	trap 'if [[ -n "$$pid" ]]; then kill "$$pid" 2>/dev/null || true; wait "$$pid" 2>/dev/null || true; fi; exit 0' INT TERM EXIT; \
 	while true; do \
-		sig="$$(find cmd internal configs resources -type f \( -name '*.go' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 stat -f '%m %N' | sort | shasum | awk '{print $$1}')"; \
+		sig="$$(find cmd internal llmruntime runtimeapi runtimeclient configs resources -type f \( -name '*.go' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 stat -f '%m %N' | sort | shasum | awk '{print $$1}')"; \
 		if [[ "$$sig" != "$$last_sig" ]]; then \
 			if [[ -n "$$pid" ]]; then \
 				echo "change detected, restarting"; \

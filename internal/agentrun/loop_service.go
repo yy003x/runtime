@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/capability"
 )
 
 type LoopPaths struct {

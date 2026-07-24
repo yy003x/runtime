@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agent-runtime/internal/llm"
-	nativeengine "agent-runtime/internal/provider/native"
+	"github.com/yy003x/runtime/internal/llm"
+	nativeengine "github.com/yy003x/runtime/internal/provider/native"
 )
 
 func TestBuildNativeToolRuntimeRequiresExplicitAuthorization(t *testing.T) {

@@ -1,4 +1,4 @@
-module agent-runtime
+module github.com/yy003x/runtime
 
 go 1.24.0
 

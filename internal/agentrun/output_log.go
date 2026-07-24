@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 const outputStreamMarker = "--- stream ---\n"

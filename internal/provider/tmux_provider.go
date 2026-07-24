@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/daemon"
-	providertmux "agent-runtime/internal/provider/tmux"
+	"github.com/yy003x/runtime/internal/daemon"
+	providertmux "github.com/yy003x/runtime/internal/provider/tmux"
 )
 
 type tmuxProvider struct{}

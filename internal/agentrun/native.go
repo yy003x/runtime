@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch *provider.NativePatch) (RunSummary, error) {

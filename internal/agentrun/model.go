@@ -3,7 +3,7 @@ package agentrun
 import (
 	"time"
 
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 const ContractVersion = 1

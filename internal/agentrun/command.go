@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/provider"
-	providertmux "agent-runtime/internal/provider/tmux"
+	"github.com/yy003x/runtime/internal/provider"
+	providertmux "github.com/yy003x/runtime/internal/provider/tmux"
 )
 
 const commandExitMarker = "__AGENTRUN_COMMAND_EXIT__="

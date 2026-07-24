@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"agent-runtime/internal/cli"
+	"github.com/yy003x/runtime/internal/cli"
 )
 
 func main() {

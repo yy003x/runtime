@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 type requestFingerprintPayload struct {

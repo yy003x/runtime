@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/layout"
 )
 
 func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {

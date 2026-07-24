@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/installbundle"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/installbundle"
 )
 
 type Status struct {
