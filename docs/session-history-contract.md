@@ -90,9 +90,14 @@ Session 独立使用 `idle | active | blocked | archived`，不得把最后一�
 
 保留策略：
 
-- `ephemeral`：一次性任务，后续可由 GC 清理。
+- `ephemeral`：一次性任务；只允许通过显式 GC 回收，不在启动路径静默删除。
 - `standard`：普通多轮会话。
 - `pinned`：明确长期保留。
+
+`session gc` 默认 dry-run，只选择早于 cutoff 且状态为 `idle|archived` 的
+ephemeral Session。`--apply` 在 Session 文件锁内再次核对 retention、更新时间与
+状态，然后把完整目录移动到 `history/trash`；不会直接不可恢复删除，也不会回收
+active/blocked、standard 或 pinned Session。
 
 默认值：
 
@@ -179,6 +184,7 @@ sn-cli session attach --session-id <id>
 sn-cli session configure --session-id <id> --runtime cli --profile cx --record-mode full --retention pinned
 sn-cli session export --session-id <id> --output session.json
 sn-cli session delete --session-id <id>
+sn-cli session gc [--older-than-hours 24] [--limit 100] [--apply]
 
 sn-cli memory list --session-id <id> --state candidate
 sn-cli memory promote candidate-1 --session-id <id>
@@ -198,9 +204,26 @@ GET  /v1/sessions/{session_id}/messages?after_seq=N
 GET  /v1/sessions/{session_id}/events?after_seq=N
 GET  /v1/sessions/{session_id}/watch?after_seq=N
 POST /v1/sessions/{session_id}/turns
+POST /v1/sessions/gc
 ```
 
-`watch` 当前是增量事件读取，不承诺 WebSocket/SSE。UI 用 sequence cursor 轮询即可；后续可在不改变存储契约的情况下增加 SSE。
+`watch` 默认返回一次增量事件快照；请求携带 `Accept: text/event-stream` 时进入
+SSE watch。SSE 使用 Session event `sequence` 作为 `id`，接受 `after_seq` 或
+`Last-Event-ID` 续读，发送 `session.event`、keep-alive comment 和最终
+`session.end`。连接默认 30 秒，调用方应携带最后 sequence 重连；当前不提供
+WebSocket。
+
+`POST /v1/sessions/gc` 请求体：
+
+```json
+{
+  "older_than_seconds": 86400,
+  "limit": 100,
+  "apply": false
+}
+```
+
+默认保留期 24 小时、limit 100、`apply=false`，语义与 CLI 相同。
 
 ## 10. Workbench
 
@@ -219,5 +242,8 @@ POST /v1/sessions/{session_id}/turns
 
 - 顶层 native direct、direct API request、`profile exec` 和 `skill run` 不进入 Session，因此不记录 metadata、transcript 或 Run artifact。
 - tmux/terminal transcript 不是结构化 assistant final text。
-- `history/index.json` 当前是本地可重建 JSON 索引，不承诺 O(log n) 或全文搜索；达到查询压力后可在 Store 接口后替换为 SQLite/FTS。
-- SSE/WebSocket、ephemeral 自动 GC、Provider 专属结构化 TTY adapter 属于后续增强，不得在文档中宣称已完成。
+- `history/index.json` 当前是本地可重建 JSON 索引，不承诺 O(log n) 或全文搜索。
+- Session Store、文件锁、queue 和 watch 都以单机 Runtime home 为边界，不承诺
+  多副本写入、共享文件系统锁或分布式 lease。
+
+未实现能力统一记录在 [PENDING.md](PENDING.md)。

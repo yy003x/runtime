@@ -27,7 +27,7 @@ sn-cli session <run|submit|open> [runtime-options...] <provider> [provider-input
 第一个参数按以下顺序解析：
 
 1. `-h|--help`、`--version`。
-2. 固定 namespace：`run`、`session`、`profile`、`system`、`loop`、`skill`、`tool`、`memory`。
+2. 固定 namespace：`run`、`session`、`profile`、`system`、`loop`、`skill`、`tool`、`memory`、`llm`。
 3. 从 active config `~/.sn/configs/<profile_id>.json` 解析精确 profile ID。
 4. 均未命中时返回 `unknown command`，不得猜测 Provider 或静默降级。
 
@@ -88,7 +88,8 @@ sn-cli api-cx --temperature 0.2 --max-tokens 2048 "hi"
 
 ### 3.1 结果契约与记录 owner
 
-- profile config 只有两种扁平结构：CLI 允许 `command/model/effort/args/env/timeout_seconds`；API 允许 `protocol/base_url/model/api_key/headers/timeout_seconds`。配置加载严格且只读。
+- profile config 只有两种扁平结构：CLI 允许 `command/model/effort/args/env/timeout_seconds`；API 允许 `protocol/base_url/model/api_key/headers/max_tokens/timeout_seconds`。配置加载严格且只读。
+- API profile 的 `max_tokens` 是默认最大输出 token 数；direct、Session、Loop、HTTP Run 与 Go LLM Runtime SDK 共用该默认值。请求级 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 优先。
 - API `base_url` 由 direct、Session、Loop 与 HTTP Run 共用同一 endpoint 解析：末段没有 `vN` 时补 `/v1`，已有版本段时不重复；OpenAI 使用 `chat/completions`，Anthropic 使用 `messages`，已经是完整 endpoint 时保持幂等。
 - native direct、direct API request、`profile exec` 和 `skill run` 不创建 Run/Session artifact，也不注入结果文件契约。
 - `session run|submit` 是 Provider 会话记录的唯一创建入口。CLI 由 Runtime 注入 `result.json` 契约；API 由 Runtime 根据结构化 Provider 结果生成同一规范结果。
@@ -113,18 +114,38 @@ direct、session、tmux 和 terminal carrier 必须使用同一份扁平 `env` �
 
 ```text
 run      list|show|logs|result|watch|cancel|reconcile
-session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
+session  run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete|gc
 profile  list|show|validate|command|exec
 system   doctor|start|status|stop|restart|update
 loop     run|list|show|logs|cancel
 skill    list|show|run
 tool     list|show|call
 memory   list|recall|add|remove|promote
+llm      generate
 ```
 
 namespace 可以有多个二级 action，但不得继续创建 action 下的子命令层。
 
-### 4.1 Run
+### 4.1 Structured LLM
+
+```bash
+sn-cli llm generate --request-file request.json
+sn-cli llm generate --request-file request.json --stream
+cat request.json | sn-cli llm generate --request-file -
+```
+
+`llm generate` 是本地结构化 LLM Runtime 的 command 入口。request file 使用与
+Go SDK、`POST /v1/llm/generate` 相同的 `runtimeapi.Request` JSON 契约，并采用
+严格解码。默认输出最终 `runtimeapi.Response` JSON；`--stream` 每行输出一个
+`runtimeapi.Event` JSON。
+
+文件输入上限 1 MiB，必须是 regular file，拒绝 symlink；`-` 表示从 stdin
+读取，并采用相同大小与严格 JSON 限制。
+
+该 namespace 不创建 AgentRun Session/Run artifact，不改变动态 profile direct、
+`profile exec` 或 `session run|submit` 的参数归属和记录语义。
+
+### 4.2 Run
 
 ```bash
 sn-cli run list --active --project <project> --limit 20
@@ -138,7 +159,7 @@ sn-cli run reconcile --dry-run
 
 `run` 是 Session Turn、carrier Execution 和已有内部 Run 的统一查询控制面。Run 类型必须从持久 registry/request 解析，不得依赖 ID 前缀猜测。Loop 仍由 `loop` namespace 管理。
 
-### 4.2 Session
+### 4.3 Session
 
 Session 是跨 API、CLI、tmux 和 terminal 的逻辑会话 owner，不等于某个 tmux window 或某次 Run。一个 Session 可以包含多个 Turn、RunAttempt 和 Execution；每个 Turn 可以切换 profile/provider，为 GUI 展示和跨模型上下文传递保留稳定底层关系。
 
@@ -161,6 +182,7 @@ sn-cli session attach --session-id <id>
 sn-cli session configure --session-id <id> --retention pinned
 sn-cli session export --session-id <id> --output session.json
 sn-cli session delete --session-id <id>
+sn-cli session gc [--older-than-hours 24] [--limit 100] [--apply]
 ```
 
 - `session run|submit` 创建或复用 logical Session，并产生结构化 Turn、规范化 user/assistant message、RunAttempt 和 Execution；默认 `record_mode=full`、`retention=standard`、`capture_quality=structured`。
@@ -173,8 +195,10 @@ sn-cli session delete --session-id <id>
 - `session open` 只保证 transcript，`capture_quality=transcript_only`，不能将 terminal 文本伪装成结构化 assistant final。
 - `session send|attach` 只在 carrier 支持时执行；terminal 不支持输入注入或重新 attach 时必须明确报错。
 - `session logs|interrupt|stop|attach|send` 使用逻辑 `--session-id` 定位当前 active carrier Execution；Run 级控制仍使用 `run ... --run-id`。
+- `session gc` 只处理超过保留期且非活动的 ephemeral Session，默认 dry-run；
+  `--apply` 仍只移动到可恢复的 `history/trash`，不执行永久删除。
 
-### 4.3 Profile 与 System
+### 4.4 Profile 与 System
 
 ```bash
 sn-cli profile list

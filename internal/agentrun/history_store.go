@@ -911,27 +911,53 @@ func ValidateSessionTags(tags []string) error {
 }
 
 func (s *SessionStore) Trash(sessionID string) (string, error) {
+	trashDir, _, err := s.trashSession(sessionID, nil)
+	return trashDir, err
+}
+
+func (s *SessionStore) trashSession(
+	sessionID string,
+	eligible func(SessionRecord) bool,
+) (string, bool, error) {
 	dir, err := s.sessionDir(sessionID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	root, err := filepath.Abs(s.sessionsDir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	resolved, err := filepath.Abs(dir)
 	if err != nil || resolved == root || !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
-		return "", fmt.Errorf("refuse to trash session outside sessions root")
+		return "", false, fmt.Errorf("refuse to trash session outside sessions root")
 	}
-	if _, err := os.Stat(resolved); err != nil {
-		return "", err
-	}
-	trashDir := filepath.Join(s.historyDir, "trash", time.Now().UTC().Format("20060102-150405"), sessionID)
-	if err := os.MkdirAll(filepath.Dir(trashDir), 0o700); err != nil {
-		return "", err
-	}
-	if err := os.Rename(resolved, trashDir); err != nil {
-		return "", err
+	trashDir := ""
+	trashed := false
+	err = withAdvisoryFileLock(s.lockPath(sessionID), func() error {
+		if _, err := os.Stat(resolved); err != nil {
+			return err
+		}
+		if eligible != nil {
+			record, err := s.readSession(resolved)
+			if err != nil {
+				return err
+			}
+			if !eligible(record) {
+				return nil
+			}
+		}
+		trashDir = filepath.Join(s.historyDir, "trash", time.Now().UTC().Format("20060102-150405"), sessionID)
+		if err := os.MkdirAll(filepath.Dir(trashDir), 0o700); err != nil {
+			return err
+		}
+		if err := os.Rename(resolved, trashDir); err != nil {
+			return err
+		}
+		trashed = true
+		return nil
+	})
+	if err != nil || !trashed {
+		return trashDir, trashed, err
 	}
 	err = withAdvisoryFileLock(s.indexPath()+".lock", func() error {
 		index, loadErr := s.loadIndex()
@@ -942,7 +968,7 @@ func (s *SessionStore) Trash(sessionID string) (string, error) {
 		index.UpdatedAt = time.Now().UTC()
 		return writeJSONAtomic(s.indexPath(), index)
 	})
-	return trashDir, err
+	return trashDir, true, err
 }
 
 func (s *SessionStore) Messages(sessionID string, after int64, limit int) ([]SessionMessage, error) {

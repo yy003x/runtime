@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/capability"
-	"agent-runtime/internal/daemon"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/capability"
+	"github.com/yy003x/runtime/internal/daemon"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
@@ -63,6 +63,14 @@ func TestProfilePublicViewUsesCommandAndAdapter(t *testing.T) {
 	}
 	if _, exists := view["executor"]; exists {
 		t.Fatalf("profile view exposes internal executor: %#v", view)
+	}
+
+	apiProfile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{
+		Protocol: "openai", Model: "model", MaxTokens: 16384,
+	}}
+	apiView := profilePublicView(apiProfile, map[string]provider.Config{"api": apiProfile}, 300)
+	if apiView["max_tokens"] != 16384 {
+		t.Fatalf("api view=%#v", apiView)
 	}
 }
 
@@ -379,7 +387,7 @@ func TestSessionRunMapsTypedAPIOptionsWithoutRawCLIArgs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SN_CLI_HOME", home)
 	writeCLIProfile(t, home, "api-routing", fmt.Sprintf(
-		`{"protocol":"openai","base_url":%q,"model":"base","api_key":"${SN_TEST_SESSION_API_KEY}","headers":{"X-Client":"runtime-test"}}`,
+		`{"protocol":"openai","base_url":%q,"model":"base","api_key":"${SN_TEST_SESSION_API_KEY}","headers":{"X-Client":"runtime-test"},"max_tokens":16384}`,
 		server.URL,
 	))
 	sessionID := "session-20260723-120010-api-routing"
@@ -593,6 +601,28 @@ func TestSessionLifecycleRequiresNamedRunID(t *testing.T) {
 	got, err := parseRequiredID([]string{"--run-id", "session-1"}, "--run-id", nil, nil)
 	if err != nil || got != "session-1" {
 		t.Fatalf("run_id=%q err=%v", got, err)
+	}
+}
+
+func TestParseSessionGCOptionsDefaultsAndValidatesBounds(t *testing.T) {
+	hours, limit, apply, err := parseSessionGCOptions(nil)
+	if err != nil || hours != 24 || limit != 100 || apply {
+		t.Fatalf("defaults hours=%d limit=%d apply=%v err=%v", hours, limit, apply, err)
+	}
+	hours, limit, apply, err = parseSessionGCOptions([]string{
+		"--older-than-hours", "48", "--limit", "3", "--apply",
+	})
+	if err != nil || hours != 48 || limit != 3 || !apply {
+		t.Fatalf("options hours=%d limit=%d apply=%v err=%v", hours, limit, apply, err)
+	}
+	for _, args := range [][]string{
+		{"--older-than-hours", "0"},
+		{"--limit", "0"},
+		{"--unknown"},
+	} {
+		if _, _, _, err := parseSessionGCOptions(args); err == nil {
+			t.Fatalf("invalid options accepted: %v", args)
+		}
 	}
 }
 

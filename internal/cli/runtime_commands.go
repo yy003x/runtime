@@ -16,10 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/daemon"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/daemon"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func runRuntimeDoctor(cfg *config.Config, args []string) error {
@@ -694,7 +694,7 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, []stri
 
 func runSessionHistory(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: session list|show|messages|events|configure|export|delete")
+		return fmt.Errorf("usage: session list|show|messages|events|configure|export|delete|gc")
 	}
 	service := agentrun.New(cfg.Home)
 	store := agentrun.NewSessionManager(service).Store()
@@ -807,9 +807,53 @@ func runSessionHistory(cfg *config.Config, args []string) error {
 			return err
 		}
 		return printJSON(map[string]any{"ok": true, "session_id": sessionID, "trash_path": trash, "recoverable": true})
+	case "gc":
+		hours, limit, apply, err := parseSessionGCOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		result, err := store.GC(agentrun.SessionGCOptions{
+			Before: time.Now().UTC().Add(-time.Duration(hours) * time.Hour),
+			Limit:  limit, Apply: apply,
+		})
+		if err != nil {
+			return err
+		}
+		return printJSON(result)
 	default:
 		return fmt.Errorf("unknown session action: %s", args[0])
 	}
+}
+
+func parseSessionGCOptions(args []string) (hours, limit int, apply bool, err error) {
+	hours, limit = 24, 100
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--older-than-hours":
+			index++
+			if index >= len(args) {
+				return 0, 0, false, fmt.Errorf("--older-than-hours requires value")
+			}
+			hours, err = strconv.Atoi(args[index])
+			if err != nil || hours < 1 || hours > 10*365*24 {
+				return 0, 0, false, fmt.Errorf("--older-than-hours must be between 1 and %d", 10*365*24)
+			}
+		case "--limit":
+			index++
+			if index >= len(args) {
+				return 0, 0, false, fmt.Errorf("--limit requires value")
+			}
+			limit, err = strconv.Atoi(args[index])
+			if err != nil || limit < 1 || limit > 1000 {
+				return 0, 0, false, fmt.Errorf("--limit must be between 1 and 1000")
+			}
+		case "--apply":
+			apply = true
+		default:
+			return 0, 0, false, fmt.Errorf("unknown session gc option: %s", args[index])
+		}
+	}
+	return hours, limit, apply, nil
 }
 
 func validateSessionRuntimeProfile(service *agentrun.Service, runtimeName, profileName string) (string, string, error) {
