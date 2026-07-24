@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-runtime/internal/llm"
+	"github.com/yy003x/runtime/internal/llm"
 )
 
 func TestClientUsesCompatibleChatCompletionsAndParsesToolCall(t *testing.T) {
@@ -34,7 +34,7 @@ func TestClientUsesCompatibleChatCompletionsAndParsesToolCall(t *testing.T) {
 	client := NewClientWithOptions(server.URL+"/v1", "secret", server.Client(), llm.HTTPOptions{Headers: map[string]string{"X-Test": "runtime"}})
 	response, err := client.Generate(context.Background(), llm.Request{
 		Model: "model", System: "system", Messages: []llm.Message{{Role: "user", Content: "hello"}},
-		Tools: []llm.Tool{{Name: "echo", Parameters: map[string]any{"type": "object"}}}, MaxOutputTokens: 128,
+		Tools: []llm.Tool{{Name: "echo", Parameters: map[string]any{"type": "object"}}}, MaxTokens: 128,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -57,5 +57,43 @@ func TestClientRejectsOversizedErrorBody(t *testing.T) {
 	_, err := NewClient(server.URL, "secret", server.Client()).Generate(context.Background(), llm.Request{Model: "model"})
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestClientGenerateStreamEmitsDeltasAndBuildsToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["stream"] != true || request.Header.Get("Accept") != "text/event-stream" {
+			t.Fatalf("request=%#v headers=%v", body, request.Header)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"ok\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4}}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	var deltas []string
+	response, err := NewClient(server.URL, "secret", server.Client()).GenerateStream(
+		context.Background(),
+		llm.Request{Model: "model", Messages: []llm.Message{{Role: "user", Content: "hello"}}},
+		func(event llm.StreamEvent) error {
+			deltas = append(deltas, event.Delta)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(deltas, "") != "Hello" || response.OutputText != "Hello" {
+		t.Fatalf("deltas=%v response=%#v", deltas, response)
+	}
+	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Arguments["value"] != "ok" ||
+		response.InputTokens != 7 || response.OutputTokens != 4 {
+		t.Fatalf("response=%#v", response)
 	}
 }

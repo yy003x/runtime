@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/cli/config"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func TestDirectCLIProfilePrintsOutputWithoutArtifacts(t *testing.T) {
@@ -176,7 +176,7 @@ func TestDirectAPIProfileMapsTypedProviderArgsWithoutArtifacts(t *testing.T) {
 
 	home := t.TempDir()
 	writeCLIProfile(t, home, "api", fmt.Sprintf(
-		`{"protocol":"openai","base_url":%q,"model":"base","api_key":"${SN_TEST_API_KEY}","headers":{"X-Test":"configured"}}`,
+		`{"protocol":"openai","base_url":%q,"model":"base","api_key":"${SN_TEST_API_KEY}","headers":{"X-Test":"configured"},"max_tokens":16384}`,
 		server.URL,
 	))
 	profile := mustResolveProfile(t, home, "api")
@@ -268,6 +268,7 @@ func TestPrintHelpDocumentsCanonicalNamespacesOnly(t *testing.T) {
 		"session run|submit|open",
 		"profile list|show|validate|command|exec",
 		"system doctor|start|status|stop|restart|update",
+		"llm generate --request-file <path|-> [--stream]",
 		"<CLI profile>      native direct execution",
 		"<API profile>      direct typed API request",
 		"--version        Show the Git tag version and build metadata.",

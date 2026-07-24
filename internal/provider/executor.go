@@ -10,10 +10,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
-	"agent-runtime/internal/daemon"
-	"agent-runtime/internal/executor"
-	"agent-runtime/internal/llm"
+	"github.com/yy003x/runtime/internal/daemon"
+	"github.com/yy003x/runtime/internal/executor"
+	"github.com/yy003x/runtime/internal/llm"
 )
 
 type Result struct {
@@ -39,6 +40,41 @@ func ExecuteCLI(ctx context.Context, cfg Config, request CLIRequest, cwd string,
 
 func ExecuteCLIWithObserver(ctx context.Context, cfg Config, request CLIRequest, cwd string, extraEnv map[string]string, observer func(ExecutionInfo)) (Result, error) {
 	return executeCLIStreaming(ctx, cfg, request, cwd, extraEnv, observer, nil, nil, nil)
+}
+
+func ExecuteCLIWithStream(
+	ctx context.Context,
+	cfg Config,
+	request CLIRequest,
+	cwd string,
+	extraEnv map[string]string,
+	stdout func([]byte) error,
+	stderr func([]byte) error,
+) (Result, error) {
+	streamContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var streamErr error
+	var streamMu sync.Mutex
+	forward := func(handler func([]byte) error) func([]byte) {
+		if handler == nil {
+			return nil
+		}
+		return func(value []byte) {
+			streamMu.Lock()
+			defer streamMu.Unlock()
+			if streamErr == nil {
+				streamErr = handler(value)
+				if streamErr != nil {
+					cancel()
+				}
+			}
+		}
+	}
+	result, err := executeCLIStreaming(streamContext, cfg, request, cwd, extraEnv, nil, forward(stdout), forward(stderr), nil)
+	if streamErr != nil {
+		return result, streamErr
+	}
+	return result, err
 }
 
 func ExecuteCLIInteractive(ctx context.Context, cfg Config, request CLIRequest, cwd string, client *daemon.Client) (Result, error) {

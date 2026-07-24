@@ -20,12 +20,12 @@ type ToolCall struct {
 }
 
 type Request struct {
-	Model           string
-	System          string
-	Messages        []Message
-	Tools           []Tool
-	Temperature     float64
-	MaxOutputTokens int
+	Model       string
+	System      string
+	Messages    []Message
+	Tools       []Tool
+	Temperature float64
+	MaxTokens   int
 }
 
 type Response struct {

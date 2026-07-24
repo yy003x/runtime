@@ -7,9 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"agent-runtime/internal/llm"
+	"github.com/yy003x/runtime/internal/llm"
 )
 
 func TestClientRetriesOn529(t *testing.T) {
@@ -31,7 +32,7 @@ func TestClientRetriesOn529(t *testing.T) {
 		}),
 	})
 	response, err := client.Generate(context.Background(), llm.Request{
-		Model: "test-model", System: "system", Messages: []llm.Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 128,
+		Model: "test-model", System: "system", Messages: []llm.Message{{Role: "user", Content: "hello"}}, MaxTokens: 128,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,12 +73,53 @@ func TestClientAvoidsDuplicateV1AndParsesToolUse(t *testing.T) {
 			{Role: "tool", ToolCallID: "one", Content: `{"a":1}`},
 			{Role: "tool", ToolCallID: "two", Content: `{"b":2}`},
 		},
-		Tools: []llm.Tool{{Name: "echo", Parameters: map[string]any{"type": "object"}}}, MaxOutputTokens: 128,
+		Tools: []llm.Tool{{Name: "echo", Parameters: map[string]any{"type": "object"}}}, MaxTokens: 128,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if response.Done || response.FinishReason != "tool_use" || len(response.ToolCalls) != 1 || response.ToolCalls[0].ID != "tool-2" {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestClientGenerateStreamEmitsDeltasAndBuildsToolUse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["stream"] != true || request.Header.Get("Accept") != "text/event-stream" {
+			t.Fatalf("request=%#v headers=%v", body, request.Header)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":8}}}\n\n"))
+		_, _ = writer.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Hi \"}}\n\n"))
+		_, _ = writer.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"there\"}}\n\n"))
+		_, _ = writer.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"echo\",\"input\":{}}}\n\n"))
+		_, _ = writer.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"ok\\\"}\"}}\n\n"))
+		_, _ = writer.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n"))
+		_, _ = writer.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	var deltas []string
+	response, err := NewClient(server.URL, "secret", server.Client()).GenerateStream(
+		context.Background(),
+		llm.Request{Model: "model", Messages: []llm.Message{{Role: "user", Content: "hello"}}, MaxTokens: 64},
+		func(event llm.StreamEvent) error {
+			deltas = append(deltas, event.Delta)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(deltas, "") != "Hi there" || response.OutputText != "Hi there" {
+		t.Fatalf("deltas=%v response=%#v", deltas, response)
+	}
+	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Arguments["value"] != "ok" ||
+		response.InputTokens != 8 || response.OutputTokens != 5 {
 		t.Fatalf("response=%#v", response)
 	}
 }

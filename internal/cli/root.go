@@ -11,11 +11,11 @@ import (
 	"sort"
 	"strings"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/cli/config"
-	snupdate "agent-runtime/internal/cli/update"
-	"agent-runtime/internal/cli/version"
-	"agent-runtime/internal/provider"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/cli/config"
+	snupdate "github.com/yy003x/runtime/internal/cli/update"
+	"github.com/yy003x/runtime/internal/cli/version"
+	"github.com/yy003x/runtime/internal/provider"
 )
 
 func Main(args []string) int {
@@ -52,6 +52,8 @@ func Main(args []string) int {
 		return exit(runToolNamespace(cfg, args[1:]))
 	case "memory":
 		return exit(runMemoryNamespace(cfg, args[1:]))
+	case "llm":
+		return exit(runLLMNamespace(cfg, args[1:]))
 	default:
 		if profile, ok := resolveProfile(cfg.Home, args[0]); ok {
 			code, runErr := runResolvedProfile(cfg, profile, args[1:])
@@ -250,13 +252,14 @@ Usage:
 
 Namespaces:
   sn-cli run list|show|logs|result|watch|cancel|reconcile
-  sn-cli session run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete
+  sn-cli session run|submit|open|list|show|messages|events|logs|send|interrupt|stop|attach|configure|export|delete|gc
   sn-cli profile list|show|validate|command|exec
   sn-cli system doctor|start|status|stop|restart|update
   sn-cli loop run|list|show|logs|cancel
   sn-cli skill list|show|run
   sn-cli tool list|show|call
   sn-cli memory list|recall|add|remove|promote
+  sn-cli llm generate --request-file <path|-> [--stream]
 
 Global flags:
   -h, --help       Show this Runtime help.

@@ -13,9 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"agent-runtime/internal/agentrun"
-	"agent-runtime/internal/layout"
-	"agent-runtime/internal/transport"
+	"github.com/yy003x/runtime/internal/agentrun"
+	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/runtimebootstrap"
+	"github.com/yy003x/runtime/internal/transport"
 )
 
 type serverConfig struct {
@@ -32,14 +33,21 @@ func main() {
 		log.Fatalf("prepare runtime home: %v", err)
 	}
 	service := agentrun.New(paths.Home)
+	llmRuntime, err := runtimebootstrap.New(service)
+	if err != nil {
+		log.Fatalf("initialize LLM runtime: %v", err)
+	}
 	config, err := loadServerConfig(os.Getenv)
 	if err != nil {
 		log.Fatalf("server config: %v", err)
 	}
 
 	server := &http.Server{
-		Addr:              config.Address,
-		Handler:           transport.NewHTTPHandlerWithOptions(service, transport.HTTPOptions{BearerToken: config.BearerToken}),
+		Addr: config.Address,
+		Handler: transport.NewHTTPHandlerWithOptions(service, transport.HTTPOptions{
+			BearerToken: config.BearerToken,
+			LLMRuntime:  llmRuntime,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      10 * time.Minute,
