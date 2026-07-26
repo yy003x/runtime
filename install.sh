@@ -31,7 +31,7 @@ Options:
   --version VERSION    Install a specific release tag; default is latest.
   --install-dir DIR    Symlink directory; default is ~/.local/bin.
   --home DIR           Runtime home; default is ~/.sn.
-  --overwrite-configs  Replace same-name config files; keep extra local files.
+  --overwrite-configs  Replace the config directory with packaged configs.
   --dry-run            Print the resolved install plan without writing files.
   -h, --help           Show this help.
 
@@ -241,6 +241,33 @@ sync_overwrite() {
   done < <(find "$source" -mindepth 1 -print0)
 }
 
+replace_directory() {
+  local source="$1" target="$2" parent name previous
+  [ -d "$source" ] && [ ! -L "$source" ] || die "replacement source is not a directory: $source"
+  parent="$(dirname "$target")"
+  name="$(basename "$target")"
+  previous="$parent/.$name.previous.$$"
+  mkdir -p "$parent"
+  [ ! -e "$previous" ] && [ ! -L "$previous" ] || die "replacement staging path already exists: $previous"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -d "$target" ] && [ ! -L "$target" ] || die "replacement target is not a directory: $target"
+    mv "$target" "$previous"
+  else
+    previous=""
+  fi
+  if mv "$source" "$target"; then
+    chmod 700 "$target"
+    if [ -n "$previous" ]; then
+      rm -rf "$previous"
+    fi
+    return 0
+  fi
+  if [ -n "$previous" ] && [ -d "$previous" ]; then
+    mv "$previous" "$target"
+  fi
+  die "failed to replace directory: $target"
+}
+
 PAYLOAD="$WORK_DIR/payload"
 mkdir -p "$PAYLOAD"
 if [ -n "$LOCAL_BINARY" ]; then
@@ -286,9 +313,15 @@ fi
 
 MERGED_HOME="$WORK_DIR/merged-home"
 mkdir -p "$MERGED_HOME/configs" "$MERGED_HOME/resources"
-preflight_sync "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs"
+if [ "$OVERWRITE_CONFIGS" = "1" ]; then
+  if [ -e "$SN_CLI_HOME/configs" ] || [ -L "$SN_CLI_HOME/configs" ]; then
+    [ -d "$SN_CLI_HOME/configs" ] && [ ! -L "$SN_CLI_HOME/configs" ] || die "sync type conflict at $SN_CLI_HOME/configs"
+  fi
+else
+  preflight_sync "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs"
+fi
 preflight_sync "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources"
-if [ -d "$SN_CLI_HOME/configs" ]; then
+if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -d "$SN_CLI_HOME/configs" ]; then
   sync_missing "$SN_CLI_HOME/configs" "$MERGED_HOME/configs" 1
 fi
 if [ -d "$SN_CLI_HOME/resources" ]; then
@@ -299,15 +332,24 @@ if [ "$OVERWRITE_CONFIGS" = "1" ]; then
 else
   sync_missing "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1
 fi
-sync_missing "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1
+if [ "$OVERWRITE_CONFIGS" = "1" ]; then
+  sync_overwrite "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1 resource
+else
+  sync_missing "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1
+fi
 SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profile list >/dev/null || die "new sn-cli failed config validation"
 
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
-  sync_overwrite "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 config
+  replace_directory "$MERGED_HOME/configs" "$SN_CLI_HOME/configs"
+  log "replaced configs: $SN_CLI_HOME/configs"
 else
   sync_missing "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 config
 fi
-sync_missing "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
+if [ "$OVERWRITE_CONFIGS" = "1" ]; then
+  sync_overwrite "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
+else
+  sync_missing "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
+fi
 for directory in \
   "$SN_CLI_HOME/configs" "$SN_CLI_HOME/resources" "$SN_CLI_HOME/resources/personas" \
   "$SN_CLI_HOME/resources/skills" "$SN_CLI_HOME/resources/tools" "$SN_CLI_HOME/resources/schema" \

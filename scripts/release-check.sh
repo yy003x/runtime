@@ -13,7 +13,7 @@ if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*
 fi
 
 log "[release-check] validating source"
-required_configs=(api-cc.json api-cx.json cc-bai.json cc.json commit.json cx-adv.json cx-image.json cx.json runtime.yaml)
+required_configs=(api-cc.json api-cx.json cc-bai.json cc.json commit.json cx-adv.json cx-deep.json cx-image.json cx-spark.json cx.json runtime.yaml)
 for config in "${required_configs[@]}"; do
   [ -f "$ROOT_DIR/configs/$config" ] || die "missing required config template: $config"
 done
@@ -27,7 +27,7 @@ for schema in provider-profile.schema.json runtime.schema.json; do
 done
 make -C "$ROOT_DIR" fmt-check
 make -C "$ROOT_DIR" test-serial
-env GOCACHE="${GOCACHE:-/tmp/go-build}" GOMODCACHE="${GOMODCACHE:-/tmp/go-mod}" go -C "$ROOT_DIR" vet ./...
+env GOCACHE="${GOCACHE:-$(go env GOCACHE)}" GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}" go -C "$ROOT_DIR" vet ./...
 
 log "[release-check] building assets version=$RELEASE_VERSION"
 make -C "$ROOT_DIR" release-assets SN_CLI_VERSION="$RELEASE_VERSION"
@@ -84,6 +84,7 @@ bash "$ROOT_DIR/install.sh" \
 
 grep -q '"/bin/true"' "$runtime_home/configs/cx.json" || \
   die "default install overwrote an existing config"
+printf '%s\n' 'outdated schema' >"$runtime_home/resources/schema/runtime.schema.json"
 bash "$ROOT_DIR/install.sh" \
   --archive "$archive" \
   --checksums "$DIST_DIR/checksums.txt" \
@@ -92,8 +93,10 @@ bash "$ROOT_DIR/install.sh" \
   --overwrite-configs
 cmp "$ROOT_DIR/configs/cx.json" "$runtime_home/configs/cx.json" >/dev/null || \
   die "--overwrite-configs did not replace the packaged config"
-grep -q '"/bin/true"' "$runtime_home/configs/local-only.json" || \
-  die "--overwrite-configs removed or changed a local-only profile"
+[ ! -e "$runtime_home/configs/local-only.json" ] || \
+  die "--overwrite-configs kept a local-only profile"
+cmp "$ROOT_DIR/resources/schema/runtime.schema.json" "$runtime_home/resources/schema/runtime.schema.json" >/dev/null || \
+  die "--overwrite-configs did not replace a packaged resource"
 
 for directory in personas skills tools schema; do
   [ -d "$runtime_home/resources/$directory" ] || die "missing runtime resource directory: $directory"

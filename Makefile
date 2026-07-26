@@ -11,8 +11,8 @@ RUNTIME_LDFLAGS := -X github.com/yy003x/runtime/internal/agentrun.Version=$(SN_C
 SN_CLI_LDFLAGS := $(RUNTIME_LDFLAGS) -X github.com/yy003x/runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X github.com/yy003x/runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X github.com/yy003x/runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X github.com/yy003x/runtime/internal/cli/version.Dirty=$(SN_CLI_DIRTY)
 
 GO ?= go
-GOCACHE ?= /tmp/go-build
-GOMODCACHE ?= /tmp/go-mod
+GOCACHE ?= $(shell $(GO) env GOCACHE)
+GOMODCACHE ?= $(shell $(GO) env GOMODCACHE)
 GO_ENV = env GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
 .PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor

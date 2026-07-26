@@ -69,11 +69,13 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | \
 make install
 ```
 
-本地安装默认用仓库同名 profile 更新 `~/.sn/configs`，并保留用户额外 profile。只补充缺失配置时：
+本地安装默认用仓库 `configs/` 完整替换 `~/.sn/configs`。需要保留现有配置、只补充缺失项时：
 
 ```bash
 make install SN_CLI_OVERWRITE_CONFIGS=0
 ```
+
+构建默认使用 `go env GOCACHE/GOMODCACHE` 返回的标准缓存目录，仍可通过同名 Make 变量显式覆盖。
 
 ### 网络源码
 
@@ -98,7 +100,7 @@ curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.
 4. 递归补充缺失的 config 与 resource。
 5. 原子替换 `~/.sn/bin/sn-cli`。
 
-文件/目录类型冲突、symlink、特殊文件或配置校验失败都会在替换 binary 前终止。`--overwrite-configs` 只覆盖发行包内同名 config；resource 始终只补缺失项。
+文件/目录类型冲突、symlink、特殊文件或配置校验失败都会在替换 binary 前终止。`--overwrite-configs` 使用发行包内 `configs/` 完整替换 active config 目录，不保留额外或旧版 profile；发行包内同名 resource 同步覆盖，用户额外 resource 保留。
 
 ## Runtime home
 
@@ -522,7 +524,7 @@ make publish
 
 ### install
 
-`make install` 构建并安装当前 checkout，不访问远端、不创建 tag。HEAD 正好有 release tag 时安装正式版本，否则版本为 `v0.0.0-dev+<commit>`。默认覆盖发行包内同名 config，并保留 local-only profile；只补缺失配置时使用 `SN_CLI_OVERWRITE_CONFIGS=0`。
+`make install` 构建并安装当前 checkout 的 HEAD，不访问远端、不创建 tag。HEAD 正好有 release tag 时安装正式版本，否则版本为 `v0.0.0-dev+<commit>`。默认用当前仓库 `configs/` 完整替换 active config 目录，不兼容或保留旧版及 local-only profile；只补缺失配置时使用 `SN_CLI_OVERWRITE_CONFIGS=0`。
 
 ### release
 
