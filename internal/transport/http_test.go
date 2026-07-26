@@ -150,6 +150,39 @@ func TestHTTPSessionHistoryAPIUsesRuntimeStore(t *testing.T) {
 	}
 }
 
+func TestHTTPSessionTurnSupportsRespondAsyncPreference(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeHTTPFixtureProfile(t, root, "native-test", "async session turn")
+	handler := NewHTTPHandler(agentrun.New(root))
+	create := httptest.NewRecorder()
+	createRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/sessions",
+		strings.NewReader(`{"session_id":"session-20260726-130000-async","project_id":"project","runtime":"cli","profile":"native-test"}`),
+	)
+	createRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(create, createRequest)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	turn := httptest.NewRecorder()
+	turnRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/sessions/session-20260726-130000-async/turns",
+		strings.NewReader(`{"run_id":"turn-20260726-130001-async","prompt":"hello"}`),
+	)
+	turnRequest.Header.Set("Content-Type", "application/json")
+	turnRequest.Header.Set("Prefer", "respond-async")
+	handler.ServeHTTP(turn, turnRequest)
+	if turn.Code != http.StatusAccepted ||
+		turn.Header().Get("Preference-Applied") != "respond-async" {
+		t.Fatalf("turn status=%d headers=%v body=%s", turn.Code, turn.Header(), turn.Body.String())
+	}
+}
+
 func TestHTTPSessionWatchStreamsEventsAndSupportsResumeCursor(t *testing.T) {
 	root := t.TempDir()
 	service := agentrun.New(root)

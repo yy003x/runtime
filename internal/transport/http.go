@@ -375,16 +375,28 @@ func (h *HTTPHandler) handleSessionByID(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "profile is required because the Session has no default profile"})
 		return
 	}
-	summary, err := h.svc.Run(request.Context(), agentrun.RunOptions{RunID: input.RunID, RunType: agentrun.RunTurn,
+	options := agentrun.RunOptions{RunID: input.RunID, RunType: agentrun.RunTurn,
 		Profile: input.Profile, ProjectID: input.ProjectID, CWD: input.CWD, Prompt: input.Prompt, PromptFile: input.PromptFile,
 		ExecutionMode: input.ExecutionMode, DeadlineSeconds: input.DeadlineSeconds, ProviderOverrides: input.ProviderOverrides,
 		AllowedActions: input.AllowedActions, ForbiddenActions: input.ForbiddenActions, SessionID: sessionID,
-		RecordMode: input.RecordMode, Retention: input.Retention, InjectedMemory: input.Memory, Caller: "http"})
+		RecordMode: input.RecordMode, Retention: input.Retention, InjectedMemory: input.Memory, Caller: "http"}
+	respondAsync := preferRespondAsync(request.Header.Values("Prefer"))
+	var summary agentrun.RunSummary
+	if respondAsync {
+		summary, err = h.svc.Submit(request.Context(), options)
+	} else {
+		summary, err = h.svc.Run(request.Context(), options)
+	}
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error(), "run": summary})
 		return
 	}
-	writeJSON(writer, http.StatusCreated, summary)
+	status := http.StatusCreated
+	if respondAsync {
+		status = http.StatusAccepted
+		writer.Header().Set("Preference-Applied", "respond-async")
+	}
+	writeJSON(writer, status, summary)
 }
 
 func (h *HTTPHandler) handleSessionWatch(

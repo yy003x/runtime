@@ -235,6 +235,7 @@ func profilePublicView(profile provider.Config, profiles map[string]provider.Con
 		"id": profile.ID, "type": profile.Type, "transport": profile.Transport(),
 		"deadline_seconds": deadline,
 		"validation":       validateProfile(profile, profiles, false),
+		"context":          profile.EffectiveContextCapacity(),
 	}
 	if profile.CLI != nil {
 		view["command"] = profile.CLI.Command.Binary

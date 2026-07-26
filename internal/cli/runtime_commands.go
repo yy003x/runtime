@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -644,6 +646,16 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, []stri
 				return options, nil, fmt.Errorf("%s requires value", args[i-1])
 			}
 			options.PromptFile = args[i]
+		case "--memory-file":
+			i++
+			if i >= len(args) {
+				return options, nil, fmt.Errorf("--memory-file requires value")
+			}
+			values, err := readInjectedMemoryFile(args[i])
+			if err != nil {
+				return options, nil, err
+			}
+			options.InjectedMemory = append(options.InjectedMemory, values...)
 		case "--deadline-seconds":
 			i++
 			if i >= len(args) {
@@ -690,6 +702,38 @@ func parseRunOptions(runType string, args []string) (agentrun.RunOptions, []stri
 		}
 	}
 	return options, nil, fmt.Errorf("%s run requires a provider as its first positional argument", runType)
+}
+
+const maxInjectedMemoryFileBytes int64 = 1 << 20
+
+func readInjectedMemoryFile(path string) ([]provider.InjectedMemory, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat memory file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("memory file must be a regular file")
+	}
+	if info.Size() > maxInjectedMemoryFileBytes {
+		return nil, fmt.Errorf("memory file exceeds %d bytes", maxInjectedMemoryFileBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read memory file: %w", err)
+	}
+	var values []provider.InjectedMemory
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&values); err != nil {
+		return nil, fmt.Errorf("decode memory file: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("memory file must contain one JSON array")
+		}
+		return nil, fmt.Errorf("decode memory file: %w", err)
+	}
+	return values, nil
 }
 
 func runSessionHistory(cfg *config.Config, args []string) error {

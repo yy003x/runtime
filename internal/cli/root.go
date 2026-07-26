@@ -277,6 +277,7 @@ Routing:
   CLI profile        every token after <profile> is passed to the native command
   API profile        --model/--max-tokens/--temperature/--stream and one prompt
   Session options    Runtime options must appear before <profile>
+  Context input      --memory-file <json> injects read-only memory without rewriting the user message
 
 Runtime home:      ${SN_CLI_HOME:-~/.sn}
 Profile configs:   <runtime-home>/configs`)

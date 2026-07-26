@@ -50,7 +50,7 @@ func TestRuntimeDoctorReportsContractVersion(t *testing.T) {
 }
 
 func TestProfilePublicViewUsesCommandAndAdapter(t *testing.T) {
-	profile := provider.Config{ID: "custom", Type: provider.TypeCLI, CLI: &provider.CLIConfig{
+	profile := provider.Config{ID: "custom", Type: provider.TypeCLI, Context: provider.ContextPolicy{SummaryEnabled: true}, CLI: &provider.CLIConfig{
 		Driver: "generic", Executor: provider.ExecutorCommand,
 		Command: provider.CommandConfig{Binary: "/opt/bin/custom-agent", Model: "model"},
 	}}
@@ -64,6 +64,10 @@ func TestProfilePublicViewUsesCommandAndAdapter(t *testing.T) {
 	if _, exists := view["executor"]; exists {
 		t.Fatalf("profile view exposes internal executor: %#v", view)
 	}
+	contextCapacity, ok := view["context"].(provider.ContextCapacity)
+	if !ok || contextCapacity.InputBudgetTokens <= 0 || !contextCapacity.SummaryEnabled {
+		t.Fatalf("profile context=%#v", view["context"])
+	}
 
 	apiProfile := provider.Config{ID: "api", Type: provider.TypeAPI, API: &provider.APIConfig{
 		Protocol: "openai", Model: "model", MaxTokens: 16384,
@@ -71,6 +75,55 @@ func TestProfilePublicViewUsesCommandAndAdapter(t *testing.T) {
 	apiView := profilePublicView(apiProfile, map[string]provider.Config{"api": apiProfile}, 300)
 	if apiView["max_tokens"] != 16384 {
 		t.Fatalf("api view=%#v", apiView)
+	}
+}
+
+func TestParseRunOptionsLoadsInjectedMemoryFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.json")
+	if err := os.WriteFile(path, []byte(`[{"id":"route","type":"workbench_route","content":"{\"skill\":\"wb-work\"}","source":"workbench"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	options, providerArgs, err := parseRunOptions(agentrun.RunTurn, []string{
+		"--memory-file", path, "cx", "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Profile != "cx" || len(options.InjectedMemory) != 1 ||
+		options.InjectedMemory[0].Type != "workbench_route" ||
+		!reflect.DeepEqual(providerArgs, []string{"hello"}) {
+		t.Fatalf("options=%#v provider_args=%#v", options, providerArgs)
+	}
+}
+
+func TestParseRunOptionsRejectsUnsafeInjectedMemoryFiles(t *testing.T) {
+	dir := t.TempDir()
+	unknownField := filepath.Join(dir, "unknown.json")
+	if err := os.WriteFile(
+		unknownField,
+		[]byte(`[{"id":"route","content":"context","unexpected":true}]`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := parseRunOptions(agentrun.RunTurn, []string{
+		"--memory-file", unknownField, "cx", "hello",
+	}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown field err=%v", err)
+	}
+
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "link.json")
+	if err := os.WriteFile(target, []byte(`[]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := parseRunOptions(agentrun.RunTurn, []string{
+		"--memory-file", link, "cx", "hello",
+	}); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink err=%v", err)
 	}
 }
 
