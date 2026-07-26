@@ -33,6 +33,9 @@ Execution(API/cli_managed/tmux/terminal) 与 Turn 正交关联
 │   ├── session.json
 │   ├── messages.jsonl
 │   ├── events.jsonl
+│   ├── context/
+│   │   ├── current.json
+│   │   └── checkpoints/<turn_id>.json
 │   ├── memory/{working.json,candidates.json}
 │   ├── turns/<turn_id>/
 │   │   ├── turn.json
@@ -132,6 +135,8 @@ UI 消息正文已经规范化保存在 `sessions/.../messages.jsonl`，因此 r
 
 tmux 退出时也写公共 `result.json`，但固定标记 `result_kind=execution_summary`、`capture_quality=transcript_only`；该结果只描述执行容器，不冒充模型 final answer。
 
+managed Run 的 `result.json` 用 optional `assistant_message` 承载完整用户可见答复；`contract_version=1` 下 `summary` 保留旧消费者可读取完整内容的兼容语义。Session assistant message 统一读取 `assistant_message || summary`，再按 `TrimSpace` 后最多 512 rune、截断追加单个 `…` 的规则派生 metadata 与列表摘要。`SessionRecord.summary_source` 标记 `from_session_message`；只有旧 import 没有可用 assistant content 时才回退为 `from_imported_summary`。
+
 ## 6. ContextCompiler
 
 每个 managed Turn 写入 `context-manifest.json`，记录：
@@ -142,10 +147,17 @@ tmux 退出时也写公共 `result.json`，但固定标记 `result_kind=executio
 - Skill ID、源路径与内容 digest。
 - Runtime 静态可确定且实际授权的 local Tool schema digest；动态 MCP tools 由 profile config digest 与 Provider lifecycle events 补足。
 - Memory read ID、类型、来源与内容 digest。
+- profile 声明或保守默认的总容量、effective 输出预留、输入预算、压缩阈值、估算输入 token、`capacity_source` 与 `pressure_state`。
+- counted/unknown 静态上下文组件、估算完整性和 estimator source。
+- 触发压缩时的 Session 相对 checkpoint ref、stable JSON digest、覆盖 message sequence range 与异常清洗原因。
 
 manifest 不写 token、secret、cookie、Authorization、完整环境变量或 tool 参数原文。Provider 事件进入 Session history 前再次做敏感 key 脱敏。
 
-Runtime 从最近 14 条规范化 `user/assistant` 消息编译实际 Provider 输入：API 使用结构化 messages，managed CLI 使用带边界标记的 history block。切换 Provider 时重新编译，不复用 Provider 私有 snapshot。
+Runtime 从完整的规范化 `user/assistant` Session 记录投影本轮 Provider 输入：API 使用结构化 messages，managed CLI 使用带边界标记的 history block。切换 Provider 时使用本轮 profile 重新计算容量和投影，不复用 Provider 私有 snapshot。
+
+输入估算包含投影后的历史、当前 prompt、只读 injected memory、managed result contract、可观测 system/skill/runtime memory/local tool schema 和固定 framing；外部 CLI context、动态 MCP schema 与模型 tokenizer 特殊成本作为 unknown component 记录，不以 `0` 冒充已计量。counted 静态组件同时形成只读 snapshot；各 Provider adapter 在 `Prepare` 前复算总 digest，发生漂移时以 `context_inputs_changed` 失败，不沿用旧 projection。Runtime 先检查 hard budget，再检查 70% proactive threshold。阈值以上使用已完成 Turn 的 Session 短摘要生成 `<session_checkpoint>`，优先保留 `keep_recent_turns` 个最近 Turn 原文；主动压缩失败但 raw 仍在预算内时回退 raw。只有 raw 超过预算且 checkpoint 仍无法装入，或此时 `summary_enabled=false`，才返回 `context_overflow`。
+
+checkpoint 写入 `context/checkpoints/<turn_id>.json`，manifest/current 只保存相对 Session root 的 ref；digest 使用 `encoding/json.Marshal(ContextCheckpoint)` compact bytes 的 SHA-256。Session export 携带各 Turn 实际引用的 checkpoint，import 复核 identity/digest 后重写 ref，并只从最新有效 checkpoint 重建 `context/current.json`。旧绝对 ref 仅在仍安全落于同一 Session canonical 路径时可由 export 读取；悬空、越界或不匹配 ref 在导出副本/导入 manifest 中清除并记录 `checkpoint_error`。原始 Session messages 始终保持不变；被 overflow 拒绝的 user input、Turn、Attempt、Execution 和带 `projection_error` 的 manifest 仍完整记录。
 
 managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话，并可读取 `SN_RUNTIME_CONTEXT_MANIFEST`、`SN_RUNTIME_SKILLS_DIR`、`SN_RUNTIME_TOOLS_DIR`、`SN_RUNTIME_MEMORY_FILE`、`SN_RUNTIME_MEMORY_CANDIDATES_FILE`、`SN_RUNTIME_MEMORY_INPUT_FILE`。这些环境变量是复用入口，不赋予绕过 capability permission 的权限。
 
@@ -158,6 +170,7 @@ managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话�
 - working 写入必须显式执行 `sn-cli memory promote <candidate...> --session-id <id>`。
 - memory 条目保留 `source/confidence/expires_at` 等 provenance；已过期条目不会参与 recall。
 - Workbench project/global memory 仍由 Workbench owner 管理，通过 HTTP `memory[]` 只读注入；Runtime 记录 digest 和本次输入快照，不扫描或写回 `ai-workbench/memory`。
+- CLI/BFF 使用 `session run|submit --memory-file <path>` 注入同一类只读 memory。文件必须是最大 1 MiB 的 regular JSON file，且只包含一个 `{id,type?,content,source?}[]`；其内容不得拼入规范化 user message。
 - 用户显式执行 `memory add <id> <content> --session-id <id>` 视为人工确认，可直接写 Session working memory。
 - `memory.delete` 仍是独立权限。
 
@@ -168,6 +181,7 @@ managed Provider 通过 `AGENTRUN_SESSION_ID`、`AGENTRUN_TURN_ID` 关联会话�
 ```bash
 sn-cli session run cx "创建结构化会话"
 sn-cli session submit --session-id <id> cc "切换 Provider 后台继续"
+sn-cli session submit --session-id <id> --memory-file route-memory.json cx
 sn-cli loop run --session-id <id> --input "协同执行" --planner-config api-cx --capability agent.run
 
 sn-cli session open --carrier tmux --session-id <id> cx --no-alt-screen
@@ -230,6 +244,9 @@ WebSocket。
 - `wb.task.sn_cli.SnCLIClient` 是 BFF adapter，只调用 `sn-cli`。
 - UI 会话 list/show/message/stop/configure 不直接读取 `~/.sn`。
 - UI 的 profile list/validate/command preview 来自 `sn-cli profile list|validate|command`，避免 Workbench 配置与实际执行 profile 漂移。
+- UI 创建会话时必须通过 `session submit` 原子提交首个 Turn，不先制造空 Session；后续每个 Turn 独立提交 `runtime/profile`，切换 profile 不修改或丢弃已有上下文。
+- Workbench 路由、project 与 skill 提示通过 `--memory-file` 只读注入，原始用户输入必须原样成为 Session user message。
+- UI 从 Session message metadata 展示该 Turn 实际 `provider/model/profile` 与 artifacts，从 `latest_context` 展示容量、估算用量和 checkpoint 状态。
 - UI 不需要展示或续轮的 batch Agent 任务通过 `sn-cli profile exec <profile> <prompt>` 执行，不产生本地记录；CLI 的 `sn-cli <profile> <args...>` 保留给原生 TTY。需要本地会话展示的任务使用 `sn-cli session run`，形成 standard Session。
 - UI 的 `/api/runtime/runs` 长任务面板通过逻辑 Session 与 `sn-cli session/run` namespace 启动、查询、续轮、日志和停止；Session ID、Run ID 和 Execution ID 分别暴露。
 - binary、args 与 env 由独立的 `sn-cli` profile 声明并校验，BFF 只传 Runtime 允许的结构化参数。

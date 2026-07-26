@@ -244,6 +244,10 @@ Session message 是跨 Provider 上下文的事实源。Runtime 根据规范化 
 
 Provider 切换只改变 adapter 与模型配置，不改变 Session/Turn/Execution 的关系。该结构可直接支持 GUI 会话列表、当前对话续轮、运行状态与跨模型上下文。
 
+每个 profile 可声明 `context_window_tokens`、`reserved_output_tokens`、`keep_recent_turns` 和 `summary_enabled`。Runtime 以本轮 profile 与请求级输出上限的保守最大值计算输入预算，并把当前 prompt、injected memory、managed result contract、可观测 system/skill/memory/tool schema 与 Provider framing 纳入初始请求估算；不可观测的 CLI/MCP/tokenizer 成本明确记录为 unknown component。达到 70% 阈值后可将较早 Turn 的确定性截断摘要投影为可审计 checkpoint，保留完整原始 Session 消息。阈值压缩失败且原始输入仍在预算内时回退原始历史；只有超过 hard budget 且无法压缩时 fail closed。
+
+调用方通过 `session submit --memory-file` 注入只读、带来源的 context snapshot，不改写规范化用户消息。模型完整答复优先写入 `assistant_message`，v1 `summary` 保留完整内容兼容语义；Session 自行派生短摘要。
+
 ephemeral Session 不在启动时自动删除。`session gc` 或
 `POST /v1/sessions/gc` 默认 dry-run；apply 时在 Session lock 内复核状态与
 更新时间，再移动到 `history/trash`。

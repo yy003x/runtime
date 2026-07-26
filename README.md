@@ -231,9 +231,12 @@ sn-cli session run --session-id <id> cx "继续分析"
 sn-cli session submit --session-id <id> cc "后台继续"
 sn-cli session run --session-id <id> api-cx --temperature 0.2 "API 继续分析"
 sn-cli session run --session-id <id> --prompt-file prompt.md cx --ephemeral
+sn-cli session submit --session-id <id> --memory-file route-memory.json cx
 ```
 
 Runtime options 位于 profile 前；CLI profile 后是目标 CLI 参数，API profile 后是 typed options 与 prompt。只有 `session run|submit` 创建结构化 Turn、message、RunAttempt、Execution 和 `result.json`。
+
+`--memory-file` 接受最大 1 MiB 的 `{id,type?,content,source?}[]` JSON regular file，用于 caller-owned（调用方持有）的只读上下文注入；它不会改写 Session 中保存的原始 user message。每个 Turn 都可以选择不同 profile，Runtime 会从同一 Session 重新投影跨 Provider 上下文。
 
 carrier 会话：
 
@@ -346,7 +349,9 @@ API profile：
 
 OpenAI 与 Anthropic API profile 共用 endpoint 规范化：`base_url` 末段没有 `vN` 时自动补 `/v1`，已有版本段或完整 endpoint 时不重复追加；最终分别调用 `chat/completions` 与 `messages`。
 
-`max_tokens` 是 API profile 的默认最大输出 token 数。direct、Session、Loop、HTTP Run 与 Go LLM Runtime SDK 都会继承；请求级 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 可以覆盖。Runtime 当前没有独立的输入 token 上限字段。
+`max_tokens` 是 API profile 的默认最大输出 token 数。direct、Session、Loop、HTTP Run 与 Go LLM Runtime SDK 都会继承；请求级 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 可以覆盖。
+
+CLI/API profile 都可声明 `context_window_tokens`、`reserved_output_tokens`、`keep_recent_turns` 和 `summary_enabled`。`input_budget_tokens` 是唯一硬上限；达到其 70% 时 Runtime 可主动使用已完成 Turn 的确定性截断摘要生成 checkpoint，压缩失败但原始输入仍在预算内时继续使用原始历史。容量未知时采用保守默认值并在 manifest 标记来源。
 
 只有完整 `${VAR}` 引用读取环境变量。未设置的引用会报错；普通字符串保持原值。CLI `env` 的 `null` 值表示从子进程环境删除该变量。Runtime 不读取 `.env` 或 direnv 文件。
 
@@ -431,6 +436,8 @@ managed Run 位于：
 ```
 
 其中包含 `session.json`、`messages.jsonl`、`events.jsonl`、`turns/`、`executions/` 和 `memory/`。
+
+managed `result.json` 的 optional `assistant_message` 是完整用户可见答复；`contract_version=1` 下 `summary` 继续保存兼容完整内容，不能强制改为短摘要。Session 从 `assistant_message || summary` 确定性派生最多 512 rune 的 Turn 摘要；artifacts 作为脱敏后的引用进入 assistant message metadata。
 
 ## 本地 HTTP API
 

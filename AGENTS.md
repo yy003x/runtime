@@ -4,7 +4,7 @@
 
 本仓库实现一个自包含的 Go Agent Runtime，并以 `sn-cli` 作为统一终端入口。
 
-当前目标是与 `/Users/yang/ai-workbench/wb/runtime` 的公开能力和运行契约保持一致，包括：
+本仓库是公开 Runtime 能力与运行契约的权威实现；Workbench 等调用方只能通过公开 CLI、HTTP 或 Go SDK 契约集成。当前能力包括：
 
 - 通过 `configs/<profile_id>.json` 定义 CLI、API 和 tmux provider。
 - 支持 Codex、Claude、OpenAI-compatible 和 Anthropic-compatible adapter。

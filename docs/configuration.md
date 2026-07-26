@@ -42,6 +42,21 @@
 | `env` | 子进程环境；string 表示设置，`null` 表示删除 | 否 |
 | `timeout_seconds` | managed execution 与 direct API request 的 deadline；native direct CLI 由目标程序管理生命周期 | 否 |
 
+## Context 容量
+
+CLI 与 API profile 共用以下可选字段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `context_window_tokens` | Provider/model 的总上下文容量，必须为正整数 |
+| `reserved_output_tokens` | 为本轮输出预留的容量，必须为正整数 |
+| `keep_recent_turns` | 生成 checkpoint 时优先保留原文的最近 Turn 数 |
+| `summary_enabled` | 是否允许历史 checkpoint；设为 `false` 时仅在输入超过 hard budget 时失败 |
+
+`profile_effective_reserved = max(reserved_output_tokens, API max_tokens)`；两者都缺失时为 `8192`。请求级 API `max_tokens` 只会通过 `max(profile_effective_reserved, request max_tokens)` 收紧本轮输入预算，不会因降低输出上限而扩大预算。`input_budget_tokens = context_window_tokens - effective_reserved_output_tokens`，且必须至少为 `2`；非法组合在 profile loader 或 request preflight 阶段以 `invalid_context_capacity` 拒绝，不做 `window/4` 等静默修正。
+
+Runtime 先按 `input_budget_tokens` 判断 hard overflow，再判断 `floor(input_budget_tokens * 70%)` 主动压缩阈值。阈值以上可尝试压缩较早 Turn；压缩失败但原始输入仍不超过 hard budget 时回退原始历史。原始 Session 消息不会被覆盖或删除。未配置总容量时使用保守的 `32768` token，并在 context manifest 标记 `capacity_source=conservative_default`；发行 profile 的真实窗口没有权威声明时不得猜测写入。
+
 顶层 `sn-cli <profile> [args...]` 使用 native direct 模式，不自动增加子命令，所有参数按原生 argv 传递。显式 `profile exec`、`session run|submit`、Loop 与 HTTP Run 才根据 `command` basename 选择 managed adapter：
 
 - `codex`：managed execution 自动增加 `exec`，Provider 后参数作为 Codex 原生 argv。
@@ -97,7 +112,7 @@ API profile 固定为四个必填字段，另有可选 headers、默认最大输
 | `max_tokens` | 可选的默认最大输出 token 数，必须为正整数 |
 | `timeout_seconds` | 可选的 profile deadline |
 
-认证 header 由 Runtime 根据协议与 endpoint 生成。`headers` 不能覆盖 `Authorization`、`Proxy-Authorization` 或 `x-api-key`。`max_tokens` 沿用 OpenAI/Anthropic-compatible 的 provider 字段名；单次请求通过 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 覆盖，不需要调用方重复传 profile 默认值。Runtime 当前没有独立的输入 token 上限字段。
+认证 header 由 Runtime 根据协议与 endpoint 生成。`headers` 不能覆盖 `Authorization`、`Proxy-Authorization` 或 `x-api-key`。`max_tokens` 沿用 OpenAI/Anthropic-compatible 的 provider 字段名；单次请求通过 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 覆盖，不需要调用方重复传 profile 默认值。Provider 输出上限采用请求值；Session 输入预算则按上述保守最大值规则计算。
 
 Runtime 统一规范化 OpenAI 与 Anthropic endpoint：
 

@@ -88,8 +88,9 @@ sn-cli api-cx --temperature 0.2 --max-tokens 2048 "hi"
 
 ### 3.1 结果契约与记录 owner
 
-- profile config 只有两种扁平结构：CLI 允许 `command/model/effort/args/env/timeout_seconds`；API 允许 `protocol/base_url/model/api_key/headers/max_tokens/timeout_seconds`。配置加载严格且只读。
+- profile config 只有两种扁平结构：CLI 允许 `command/model/effort/args/env/timeout_seconds`；API 允许 `protocol/base_url/model/api_key/headers/max_tokens/timeout_seconds`。两类 profile 都允许 `context_window_tokens/reserved_output_tokens/keep_recent_turns/summary_enabled`。配置加载严格且只读。
 - API profile 的 `max_tokens` 是默认最大输出 token 数；direct、Session、Loop、HTTP Run 与 Go LLM Runtime SDK 共用该默认值。请求级 `--max-tokens` 或 `runtimeapi.Request.max_tokens` 优先。
+- `context_window_tokens` 是 profile 的总上下文容量，effective 输出预留取显式 `reserved_output_tokens`、API `max_tokens` 与请求级 `max_tokens` 中的保守最大值；请求 override 降低输出上限不会扩大 profile 输入预算。未声明窗口时 Runtime 使用保守默认值并在 context manifest 标记 `capacity_source=conservative_default`。上下文达到输入预算的 70% 时可生成可审计 checkpoint；阈值本身不导致失败，只有输入超过 hard budget 且无法压缩时才 `context_overflow`。
 - API `base_url` 由 direct、Session、Loop 与 HTTP Run 共用同一 endpoint 解析：末段没有 `vN` 时补 `/v1`，已有版本段时不重复；OpenAI 使用 `chat/completions`，Anthropic 使用 `messages`，已经是完整 endpoint 时保持幂等。
 - native direct、direct API request、`profile exec` 和 `skill run` 不创建 Run/Session artifact，也不注入结果文件契约。
 - `session run|submit` 是 Provider 会话记录的唯一创建入口。CLI 由 Runtime 注入 `result.json` 契约；API 由 Runtime 根据结构化 Provider 结果生成同一规范结果。
@@ -168,6 +169,7 @@ sn-cli session run --session-id <id> cx "继续分析"
 sn-cli session submit --session-id <id> cc "后台继续"
 sn-cli session run --session-id <id> api-cx --temperature 0.2 "API 继续分析"
 sn-cli session run --session-id <id> --prompt-file prompt.md cx --skip-git-repo-check
+sn-cli session submit --session-id <id> --memory-file route-memory.json cx
 sn-cli session open --carrier tmux --session-id <id> cx --no-alt-screen
 sn-cli session open --carrier terminal --session-id <id> cc
 sn-cli session list
@@ -186,7 +188,9 @@ sn-cli session gc [--older-than-hours 24] [--limit 100] [--apply]
 ```
 
 - `session run|submit` 创建或复用 logical Session，并产生结构化 Turn、规范化 user/assistant message、RunAttempt 和 Execution；默认 `record_mode=full`、`retention=standard`、`capture_quality=structured`。
+- `--memory-file` 只允许出现在 profile 前，内容必须是最大 1 MiB 的单个 JSON array，每项为 `{id,type?,content,source?}`。它是调用方筛选后的只读上下文输入：Runtime 记录 digest 和来源，不把内容拼入或改写规范化 user message，也不写回调用方 memory。
 - `session run` 提交成功后立即输出 run 信息并 follow Provider stream，终态输出 `RunSummary`；`session submit` 只返回 pending `RunSummary`。
+- managed `result.json` 的 optional `assistant_message` 保存完整用户可见答复；v1 `summary` 保留完整内容兼容语义。Runtime 内部统一读取 `assistant_message || summary`，Session 再独立派生最多 512 rune 的短摘要。
 - 顶层 CLI profile 与 CLI `skill run` 始终 native direct；API profile 执行 direct request。它们都不创建 Runtime 记录；需要会话记录必须显式使用 `session` namespace。
 - `session open` 创建或复用 logical Session，并新增独立 Execution 和 Run artifact；Session ID、Run ID、Execution ID 不得复用为同一个 ID。
 - `session open <provider>` 未指定 `--carrier` 时读取 `configs/runtime.yaml` 的 `session.default_carrier`；发行默认值是 `tmux`。
