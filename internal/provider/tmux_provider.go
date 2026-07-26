@@ -18,7 +18,10 @@ const DefaultTmuxSessionName = "sn-agent"
 
 func (tmuxProvider) Kind() string { return ExecutorTmux }
 
-func (tmuxProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
+func (tmuxProvider) Prepare(ctx context.Context, cfg Config, req Request) (PreparedRequest, error) {
+	if err := ValidateStaticContextSnapshot(ctx, cfg, req); err != nil {
+		return PreparedRequest{}, err
+	}
 	prepared, err := prepare(cfg, req.Prompt, req.Overrides, req.RawCLIArgs)
 	if err != nil {
 		return PreparedRequest{}, err

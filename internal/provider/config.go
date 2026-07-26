@@ -32,6 +32,7 @@ type Config struct {
 	ID             string          `json:"id"`
 	Type           string          `json:"type"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
+	Context        ContextPolicy   `json:"context"`
 	CLI            *CLIConfig      `json:"cli,omitempty"`
 	API            *APIConfig      `json:"api,omitempty"`
 	Native         *NativeConfig   `json:"native,omitempty"`
@@ -48,6 +49,29 @@ type Dependency struct {
 	Silent   bool   `json:"silent,omitempty"`
 	Optional bool   `json:"optional,omitempty"`
 }
+
+type ContextPolicy struct {
+	ContextWindowTokens  int  `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens int  `json:"reserved_output_tokens,omitempty"`
+	KeepRecentTurns      int  `json:"keep_recent_turns,omitempty"`
+	SummaryEnabled       bool `json:"summary_enabled"`
+}
+
+type ContextCapacity struct {
+	ContextWindowTokens  int    `json:"context_window_tokens"`
+	ReservedOutputTokens int    `json:"reserved_output_tokens"`
+	InputBudgetTokens    int    `json:"input_budget_tokens"`
+	CompactionAtTokens   int    `json:"compaction_at_tokens"`
+	KeepRecentTurns      int    `json:"keep_recent_turns"`
+	SummaryEnabled       bool   `json:"summary_enabled"`
+	CapacitySource       string `json:"capacity_source"`
+}
+
+const (
+	conservativeContextWindowTokens = 32768
+	defaultReservedOutputTokens     = 8192
+	defaultKeepRecentTurns          = 6
+)
 
 type ExecutionConfig struct {
 	AuditProxy bool     `json:"audit_proxy,omitempty"`
@@ -160,17 +184,21 @@ type OverridePolicy struct {
 // command selects a CLI profile, while protocol/base_url/api_key select an API
 // profile. Provider execution and carrier details stay internal.
 type profileDocument struct {
-	TimeoutSeconds int                `json:"timeout_seconds,omitempty"`
-	Command        string             `json:"command,omitempty"`
-	Model          *string            `json:"model,omitempty"`
-	Effort         string             `json:"effort,omitempty"`
-	Args           []string           `json:"args,omitempty"`
-	Env            map[string]*string `json:"env,omitempty"`
-	Protocol       string             `json:"protocol,omitempty"`
-	BaseURL        string             `json:"base_url,omitempty"`
-	APIKey         string             `json:"api_key,omitempty"`
-	Headers        map[string]string  `json:"headers,omitempty"`
-	MaxTokens      int                `json:"max_tokens,omitempty"`
+	TimeoutSeconds       int                `json:"timeout_seconds,omitempty"`
+	ContextWindowTokens  int                `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens int                `json:"reserved_output_tokens,omitempty"`
+	KeepRecentTurns      int                `json:"keep_recent_turns,omitempty"`
+	SummaryEnabled       *bool              `json:"summary_enabled,omitempty"`
+	Command              string             `json:"command,omitempty"`
+	Model                *string            `json:"model,omitempty"`
+	Effort               string             `json:"effort,omitempty"`
+	Args                 []string           `json:"args,omitempty"`
+	Env                  map[string]*string `json:"env,omitempty"`
+	Protocol             string             `json:"protocol,omitempty"`
+	BaseURL              string             `json:"base_url,omitempty"`
+	APIKey               string             `json:"api_key,omitempty"`
+	Headers              map[string]string  `json:"headers,omitempty"`
+	MaxTokens            int                `json:"max_tokens,omitempty"`
 }
 
 func (c Config) Transport() string {
@@ -184,6 +212,55 @@ func (c Config) Transport() string {
 		return ExecutorTmux
 	}
 	return TypeCLI
+}
+
+func (c Config) EffectiveContextCapacity() ContextCapacity {
+	capacity, _ := c.ResolveContextCapacity(nil)
+	return capacity
+}
+
+func (c Config) ResolveContextCapacity(overrides map[string]any) (ContextCapacity, error) {
+	window := c.Context.ContextWindowTokens
+	source := "profile"
+	if window <= 0 {
+		window = conservativeContextWindowTokens
+		source = "conservative_default"
+	}
+	reserved := max(c.Context.ReservedOutputTokens, 0)
+	if c.API != nil {
+		reserved = max(reserved, c.API.MaxTokens)
+	}
+	if reserved <= 0 {
+		reserved = defaultReservedOutputTokens
+	}
+	if value, exists := overrides["max_tokens"]; c.Type == TypeAPI && exists && value != nil {
+		requested, valid := integerValue(value)
+		if !valid || requested <= 0 {
+			return ContextCapacity{}, fmt.Errorf("invalid_provider_override: max_tokens must be a positive integer")
+		}
+		reserved = max(reserved, requested)
+	}
+	inputBudget := window - reserved
+	if inputBudget < 2 {
+		return ContextCapacity{}, fmt.Errorf(
+			"invalid_context_capacity: context_window_tokens=%d and reserved_output_tokens=%d leave input_budget_tokens=%d; require at least 2",
+			window, reserved, inputBudget,
+		)
+	}
+	keepRecent := c.Context.KeepRecentTurns
+	if keepRecent <= 0 {
+		keepRecent = defaultKeepRecentTurns
+	}
+	compactionAt := inputBudget * 70 / 100
+	if compactionAt < 1 {
+		compactionAt = 1
+	}
+	return ContextCapacity{
+		ContextWindowTokens: window, ReservedOutputTokens: reserved,
+		InputBudgetTokens: inputBudget, CompactionAtTokens: compactionAt,
+		KeepRecentTurns: keepRecent, SummaryEnabled: c.Context.SummaryEnabled,
+		CapacitySource: source,
+	}, nil
 }
 
 func LoadDir(dir string) (map[string]Config, error) {
@@ -276,7 +353,17 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 	if err := decoder.Decode(&document); err != nil {
 		return Config{}, fmt.Errorf("%s: parse provider: %w", source, err)
 	}
-	cfg := Config{ID: id, TimeoutSeconds: document.TimeoutSeconds, Raw: cloneMap(raw)}
+	summaryEnabled := true
+	if document.SummaryEnabled != nil {
+		summaryEnabled = *document.SummaryEnabled
+	}
+	cfg := Config{
+		ID: id, TimeoutSeconds: document.TimeoutSeconds, Raw: cloneMap(raw),
+		Context: ContextPolicy{
+			ContextWindowTokens: document.ContextWindowTokens, ReservedOutputTokens: document.ReservedOutputTokens,
+			KeepRecentTurns: document.KeepRecentTurns, SummaryEnabled: summaryEnabled,
+		},
+	}
 	if cfg.TimeoutSeconds < 0 {
 		return Config{}, fmt.Errorf("%s: timeout_seconds must be >= 0", source)
 	}
@@ -296,6 +383,9 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 		if err := validateCLI(&cfg, source); err != nil {
 			return Config{}, err
 		}
+		if _, err := cfg.ResolveContextCapacity(nil); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", source, err)
+		}
 		return cfg, nil
 	}
 	if hasAPIIdentity {
@@ -311,6 +401,9 @@ func normalize(id string, raw map[string]any, source string) (Config, error) {
 		if err := validateAPI(&cfg, source); err != nil {
 			return Config{}, err
 		}
+		if _, err := cfg.ResolveContextCapacity(nil); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", source, err)
+		}
 		return cfg, nil
 	}
 	return Config{}, fmt.Errorf("%s: profile 必须提供 command（CLI）或 protocol/base_url/api_key（API）", source)
@@ -324,6 +417,19 @@ func validateFlatDocumentTypes(raw map[string]any) error {
 		number, valid := integerValue(value)
 		if !valid || number <= 0 {
 			return fmt.Errorf("max_tokens 必须是正整数")
+		}
+	}
+	for _, name := range []string{"context_window_tokens", "reserved_output_tokens", "keep_recent_turns"} {
+		if value, exists := raw[name]; exists {
+			number, valid := integerValue(value)
+			if !valid || number <= 0 {
+				return fmt.Errorf("%s 必须是正整数", name)
+			}
+		}
+	}
+	if value, exists := raw["summary_enabled"]; exists {
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("summary_enabled 必须是 boolean")
 		}
 	}
 	if value, exists := raw["command"]; exists {

@@ -26,7 +26,11 @@
           "description": "native direct 与 managed execution 共用的基础 argv；每个数组元素对应一个 argv token。"
         },
         "env": { "$ref": "#/$defs/environment" },
-        "timeout_seconds": { "type": "integer", "minimum": 0 }
+        "timeout_seconds": { "type": "integer", "minimum": 0 },
+        "context_window_tokens": { "type": "integer", "minimum": 1, "description": "总上下文容量；与 effective 输出预留的跨字段关系由 Runtime loader 校验。" },
+        "reserved_output_tokens": { "type": "integer", "minimum": 1, "description": "显式输出预留；Runtime 与 API max_tokens 取保守最大值，并要求至少留下 2 个 input tokens。" },
+        "keep_recent_turns": { "type": "integer", "minimum": 1 },
+        "summary_enabled": { "type": "boolean", "default": true }
       }
     },
     "api_profile": {
@@ -66,7 +70,11 @@
           "minimum": 1,
           "description": "API 请求的默认最大输出 token 数；沿用 OpenAI/Anthropic-compatible 的 max_tokens 字段，单次请求可覆盖。"
         },
-        "timeout_seconds": { "type": "integer", "minimum": 0 }
+        "timeout_seconds": { "type": "integer", "minimum": 0 },
+        "context_window_tokens": { "type": "integer", "minimum": 1, "description": "总上下文容量；与 effective 输出预留的跨字段关系由 Runtime loader 校验。" },
+        "reserved_output_tokens": { "type": "integer", "minimum": 1, "description": "显式输出预留；Runtime 与 API max_tokens 取保守最大值，并要求至少留下 2 个 input tokens。" },
+        "keep_recent_turns": { "type": "integer", "minimum": 1 },
+        "summary_enabled": { "type": "boolean", "default": true }
       }
     },
     "environment": {

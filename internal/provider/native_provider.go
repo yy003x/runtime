@@ -20,7 +20,10 @@ type nativeProvider struct{}
 
 func (nativeProvider) Kind() string { return TypeNative }
 
-func (nativeProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
+func (nativeProvider) Prepare(ctx context.Context, cfg Config, req Request) (PreparedRequest, error) {
+	if err := ValidateStaticContextSnapshot(ctx, cfg, req); err != nil {
+		return PreparedRequest{}, err
+	}
 	prepared, err := prepare(cfg, req.Prompt, req.Overrides, req.RawCLIArgs)
 	if err != nil {
 		return PreparedRequest{}, err
@@ -128,14 +131,19 @@ func (nativeProvider) Execute(ctx context.Context, prepared PreparedRequest, sin
 }
 
 func nativeInitialContext(ctx context.Context, prepared PreparedRequest) (nativeengine.Context, error) {
-	systemPrompt := strings.TrimSpace(fmt.Sprint(prepared.Native.EffectiveOptions["system_prompt"]))
-	personaID := strings.TrimSpace(fmt.Sprint(prepared.Native.EffectiveOptions["persona"]))
-	if systemPrompt == "" && personaID != "" && prepared.Request.PersonaDir != "" {
-		loaded, err := persona.NewLoader(prepared.Request.PersonaDir).Load(ctx, personaID)
-		if err != nil {
-			return nativeengine.Context{}, fmt.Errorf("load native persona: %w", err)
+	systemPrompt := ""
+	if prepared.Request.StaticContext != nil {
+		systemPrompt = strings.Join(prepared.Request.StaticContext.SystemSections, "\n\n")
+	} else {
+		systemPrompt = strings.TrimSpace(fmt.Sprint(prepared.Native.EffectiveOptions["system_prompt"]))
+		personaID := strings.TrimSpace(fmt.Sprint(prepared.Native.EffectiveOptions["persona"]))
+		if systemPrompt == "" && personaID != "" && prepared.Request.PersonaDir != "" {
+			loaded, err := persona.NewLoader(prepared.Request.PersonaDir).Load(ctx, personaID)
+			if err != nil {
+				return nativeengine.Context{}, fmt.Errorf("load native persona: %w", err)
+			}
+			systemPrompt = persona.RenderSystem(loaded)
 		}
-		systemPrompt = persona.RenderSystem(loaded)
 	}
 	if memory := injectedMemorySection(prepared.Request.InjectedMemory); memory != "" {
 		if systemPrompt != "" {
@@ -253,7 +261,12 @@ func buildNativeToolRuntime(request Request) ([]nativeengine.Tool, nativeengine.
 			continue
 		}
 		available[tool.Name] = tool
-		tools = append(tools, nativeengine.Tool{Name: tool.Name, Description: tool.Description, Parameters: tool.Schema})
+		resolved, included := snapshotTool(request, nativeengine.Tool{
+			Name: tool.Name, Description: tool.Description, Parameters: tool.Schema,
+		})
+		if included {
+			tools = append(tools, resolved)
+		}
 	}
 	if len(tools) == 0 {
 		return nil, nil

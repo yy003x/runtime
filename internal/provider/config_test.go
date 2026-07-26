@@ -68,6 +68,106 @@ func TestLoadDirNormalizesMinimalCLIProfiles(t *testing.T) {
 	if !ok || resolved.ID != "cx" {
 		t.Fatalf("resolution=%#v ok=%v", resolved, ok)
 	}
+	capacity := cx.EffectiveContextCapacity()
+	if capacity.CapacitySource != "conservative_default" || capacity.InputBudgetTokens <= 0 ||
+		!capacity.SummaryEnabled || capacity.KeepRecentTurns != 6 {
+		t.Fatalf("default context capacity=%#v", capacity)
+	}
+}
+
+func TestLoadDirNormalizesExplicitContextPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "small.json", `{
+  "command":"codex",
+  "context_window_tokens":64000,
+  "reserved_output_tokens":8000,
+  "keep_recent_turns":4,
+  "summary_enabled":false
+}`)
+	profiles, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := profiles["small"].EffectiveContextCapacity()
+	if capacity.ContextWindowTokens != 64000 || capacity.ReservedOutputTokens != 8000 ||
+		capacity.InputBudgetTokens != 56000 || capacity.KeepRecentTurns != 4 ||
+		capacity.SummaryEnabled || capacity.CapacitySource != "profile" {
+		t.Fatalf("capacity=%#v", capacity)
+	}
+}
+
+func TestLoadDirRejectsOutputReservationAtOrAboveContextWindow(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "invalid.json", `{
+  "command":"codex",
+  "context_window_tokens":4096,
+  "reserved_output_tokens":4096
+}`)
+	if _, err := LoadDir(dir); err == nil ||
+		!strings.Contains(err.Error(), "invalid_context_capacity") {
+		t.Fatalf("err=%v", err)
+	}
+
+	writeConfig(t, dir, "invalid.json", `{
+  "command":"codex",
+  "reserved_output_tokens":32768
+}`)
+	if _, err := LoadDir(dir); err == nil ||
+		!strings.Contains(err.Error(), "invalid_context_capacity") {
+		t.Fatalf("default window err=%v", err)
+	}
+}
+
+func TestContextCapacityUsesConservativeMaximumAndRequestOverride(t *testing.T) {
+	cfg := Config{
+		ID: "api", Type: TypeAPI,
+		Context: ContextPolicy{
+			ContextWindowTokens:  10000,
+			ReservedOutputTokens: 2000,
+			SummaryEnabled:       true,
+		},
+		API: &APIConfig{MaxTokens: 3000},
+	}
+	base, err := cfg.ResolveContextCapacity(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.ReservedOutputTokens != 3000 || base.InputBudgetTokens != 7000 ||
+		base.CompactionAtTokens != 4900 {
+		t.Fatalf("base=%#v", base)
+	}
+	lower, err := cfg.ResolveContextCapacity(map[string]any{"max_tokens": 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lower != base {
+		t.Fatalf("lower override expanded capacity: base=%#v lower=%#v", base, lower)
+	}
+	higher, err := cfg.ResolveContextCapacity(map[string]any{"max_tokens": 4500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if higher.ReservedOutputTokens != 4500 || higher.InputBudgetTokens != 5500 {
+		t.Fatalf("higher=%#v", higher)
+	}
+	for _, invalid := range []any{0, -1, 1.5, "10"} {
+		if _, err := cfg.ResolveContextCapacity(map[string]any{"max_tokens": invalid}); err == nil ||
+			!strings.Contains(err.Error(), "invalid_provider_override") {
+			t.Fatalf("invalid=%#v err=%v", invalid, err)
+		}
+	}
+	if _, err := cfg.ResolveContextCapacity(map[string]any{"max_tokens": 9999}); err == nil ||
+		!strings.Contains(err.Error(), "invalid_context_capacity") {
+		t.Fatalf("tiny budget err=%v", err)
+	}
+}
+
+func TestLoadDirRejectsSmallWindowWithImplicitDefaultReservation(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "small.json", `{"command":"codex","context_window_tokens":8193}`)
+	if _, err := LoadDir(dir); err == nil || !strings.Contains(err.Error(), "invalid_context_capacity") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestLoadDirUsesGenericAdapterForUnrecognizedCommand(t *testing.T) {

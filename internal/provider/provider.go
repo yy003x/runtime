@@ -45,6 +45,7 @@ type Request struct {
 	TurnID              string
 	Allowed             []string
 	Forbidden           []string
+	StaticContext       *StaticContextSnapshot
 	NativeResume        bool
 	NativePatch         *NativePatch
 }
@@ -123,7 +124,10 @@ type cliProvider struct{}
 
 func (cliProvider) Kind() string { return TypeCLI }
 
-func (cliProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
+func (cliProvider) Prepare(ctx context.Context, cfg Config, req Request) (PreparedRequest, error) {
+	if err := ValidateStaticContextSnapshot(ctx, cfg, req); err != nil {
+		return PreparedRequest{}, err
+	}
 	prepared, err := prepare(cfg, req.Prompt, req.Overrides, req.RawCLIArgs)
 	if err != nil {
 		return PreparedRequest{}, err
@@ -191,7 +195,10 @@ type apiProvider struct{}
 
 func (apiProvider) Kind() string { return TypeAPI }
 
-func (apiProvider) Prepare(_ context.Context, cfg Config, req Request) (PreparedRequest, error) {
+func (apiProvider) Prepare(ctx context.Context, cfg Config, req Request) (PreparedRequest, error) {
+	if err := ValidateStaticContextSnapshot(ctx, cfg, req); err != nil {
+		return PreparedRequest{}, err
+	}
 	prepared, err := Prepare(cfg, req.Prompt, req.Overrides)
 	if err != nil {
 		return PreparedRequest{}, err
