@@ -2,9 +2,6 @@
   "command": "codex",
   "model": "gpt-5.6-sol",
   "effort": "xhigh",
-  "args": [
-    "--search"
-  ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip"
   }
