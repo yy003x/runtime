@@ -357,7 +357,11 @@ func (s *SessionStore) ContextManifestPath(sessionID, turnID string) (string, er
 	return filepath.Join(dir, "turns", turnID, "context-manifest.json"), nil
 }
 
-func (s *SessionStore) CompleteRun(sessionID, turnID, runID, state, failureReason, output string, resultRef *ResultRef) error {
+func (s *SessionStore) CompleteRun(
+	sessionID, turnID, runID, state, failureReason, output string,
+	artifacts []map[string]any,
+	resultRef *ResultRef,
+) error {
 	dir, err := s.sessionDir(sessionID)
 	if err != nil {
 		return err
@@ -391,9 +395,18 @@ func (s *SessionStore) CompleteRun(sessionID, turnID, runID, state, failureReaso
 		}
 		if turn.RecordMode == RecordFull && strings.TrimSpace(output) != "" {
 			record.LastSequence++
+			metadata := map[string]any{
+				"run_id": runID, "capture_quality": turn.CaptureQuality,
+				"runtime": turn.Runtime, "provider": turn.Provider, "profile": turn.Profile, "model": turn.Model,
+			}
+			metadata["summary"] = truncateHistoryText(output, 512)
+			if len(artifacts) > 0 {
+				metadata["artifacts"] = artifacts
+			}
+			metadata = redactMetadata(metadata)
 			message := SessionMessage{SchemaVersion: SessionSchemaVersion, MessageID: newEntryID("message"), SessionID: sessionID,
 				TurnID: turnID, Sequence: record.LastSequence, Timestamp: now, Role: "assistant", Kind: "message", Content: output,
-				Metadata: map[string]any{"run_id": runID, "capture_quality": turn.CaptureQuality}}
+				Metadata: metadata}
 			turn.OutputMessageID = message.MessageID
 			if err := appendJSONL(filepath.Join(dir, "messages.jsonl"), message); err != nil {
 				return err
@@ -416,6 +429,10 @@ func (s *SessionStore) CompleteRun(sessionID, turnID, runID, state, failureReaso
 		record.State, record.UpdatedAt = deriveSessionState(dir), now
 		if turn.RecordMode == RecordFull && state == StateDone && strings.TrimSpace(output) != "" {
 			record.Summary = truncateHistoryText(output, 512)
+			record.SummarySource = "from_session_message"
+		}
+		if record.Summary == "" {
+			record.SummarySource = ""
 		}
 		return s.writeSession(dir, record)
 	})
@@ -645,6 +662,22 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 		}
 		turnIDs[turn.TurnID] = struct{}{}
 	}
+	for turnID := range input.ContextManifests {
+		if _, ok := turnIDs[turnID]; !ok {
+			return SessionRecord{}, fmt.Errorf("invalid_session_import: context manifest references missing turn %s", turnID)
+		}
+	}
+	for turnID := range input.ContextCheckpoints {
+		if err := validateRunID(turnID); err != nil {
+			return SessionRecord{}, fmt.Errorf("checkpoint_ref_invalid: %w", err)
+		}
+		if _, ok := turnIDs[turnID]; !ok {
+			return SessionRecord{}, fmt.Errorf("invalid_session_import: checkpoint_orphan: %s", turnID)
+		}
+		if _, ok := input.ContextManifests[turnID]; !ok {
+			return SessionRecord{}, fmt.Errorf("invalid_session_import: checkpoint_orphan: %s has no manifest", turnID)
+		}
+	}
 	attemptIDs := make(map[string]struct{}, len(input.Attempts))
 	for _, attempt := range input.Attempts {
 		if err := validateRunID(attempt.RunID); err != nil || validateRunID(attempt.TurnID) != nil {
@@ -658,9 +691,28 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 		}
 		attemptIDs[attempt.RunID] = struct{}{}
 	}
+	executionIDs := make(map[string]struct{}, len(input.Executions))
 	for _, execution := range input.Executions {
 		if err := validateRunID(execution.ExecutionID); err != nil {
 			return SessionRecord{}, fmt.Errorf("invalid imported execution_id: %w", err)
+		}
+		if _, exists := executionIDs[execution.ExecutionID]; exists {
+			return SessionRecord{}, fmt.Errorf("duplicate imported execution_id: %s", execution.ExecutionID)
+		}
+		executionIDs[execution.ExecutionID] = struct{}{}
+		for _, turnID := range execution.TurnIDs {
+			if _, ok := turnIDs[turnID]; !ok {
+				return SessionRecord{}, fmt.Errorf(
+					"imported execution %s references missing turn %s", execution.ExecutionID, turnID,
+				)
+			}
+		}
+		for _, runID := range execution.RunIDs {
+			if _, ok := attemptIDs[runID]; !ok {
+				return SessionRecord{}, fmt.Errorf(
+					"imported execution %s references missing run %s", execution.ExecutionID, runID,
+				)
+			}
 		}
 	}
 	if err := s.ensure(); err != nil {
@@ -722,6 +774,7 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 			if input.Messages[index].Timestamp.IsZero() {
 				input.Messages[index].Timestamp = now
 			}
+			input.Messages[index].Metadata = redactMetadata(input.Messages[index].Metadata)
 		}
 		for index := range input.Events {
 			if input.Events[index].Sequence <= 0 {
@@ -731,6 +784,7 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 			if input.Events[index].Timestamp.IsZero() {
 				input.Events[index].Timestamp = now
 			}
+			input.Events[index].Data = redactMetadata(input.Events[index].Data)
 		}
 		record.LastSequence = lastSequence
 		if record.CreatedAt.IsZero() {
@@ -739,9 +793,13 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 		if record.UpdatedAt.IsZero() {
 			record.UpdatedAt = now
 		}
+		record.Summary, record.SummarySource = importedSessionSummary(record.Summary, input.Messages)
 		if err := s.writeSession(dir, record); err != nil {
 			return err
 		}
+		var latestCheckpoint *ContextCheckpoint
+		var latestCheckpointManifest ContextManifest
+		latestCheckpointSequence := -1
 		for _, turn := range input.Turns {
 			turn.SchemaVersion, turn.SessionID = SessionSchemaVersion, record.SessionID
 			turnDir := filepath.Join(dir, "turns", turn.TurnID)
@@ -749,6 +807,25 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 				return err
 			}
 			if manifest, ok := input.ContextManifests[turn.TurnID]; ok {
+				checkpoint, hasCheckpoint := input.ContextCheckpoints[turn.TurnID]
+				if hasCheckpoint {
+					var valid *ContextCheckpoint
+					manifest, valid = normalizeImportedCheckpoint(record.SessionID, turn.TurnID, manifest, checkpoint)
+					if valid != nil {
+						reference, _ := checkpointRelativeRef(turn.TurnID)
+						if err := writeJSONAtomic(filepath.Join(dir, filepath.FromSlash(reference)), *valid); err != nil {
+							return err
+						}
+						if turn.Sequence >= latestCheckpointSequence {
+							copied := *valid
+							latestCheckpoint = &copied
+							latestCheckpointManifest = manifest
+							latestCheckpointSequence = turn.Sequence
+						}
+					}
+				} else if manifest.SummaryRef != "" || manifest.SummaryDigest != "" || manifest.Compacted {
+					manifest = clearInvalidCheckpoint(manifest, "checkpoint_missing")
+				}
 				manifest.SessionID, manifest.TurnID = record.SessionID, turn.TurnID
 				turn.ContextManifest = filepath.Join(turnDir, "context-manifest.json")
 				if err := writeJSONAtomic(turn.ContextManifest, manifest); err != nil {
@@ -758,6 +835,11 @@ func (s *SessionStore) Import(input SessionImport) (SessionRecord, error) {
 				turn.ContextManifest = ""
 			}
 			if err := writeJSONAtomic(filepath.Join(turnDir, "turn.json"), turn); err != nil {
+				return err
+			}
+		}
+		if latestCheckpoint != nil {
+			if err := writeCheckpointCurrent(dir, *latestCheckpoint, latestCheckpointManifest); err != nil {
 				return err
 			}
 		}
@@ -1056,6 +1138,17 @@ func (s *SessionStore) View(sessionID string) (SessionView, error) {
 	sort.Slice(view.Turns, func(i, j int) bool { return view.Turns[i].Sequence < view.Turns[j].Sequence })
 	sort.Slice(view.Attempts, func(i, j int) bool { return view.Attempts[i].StartedAt.Before(view.Attempts[j].StartedAt) })
 	sort.Slice(view.Executions, func(i, j int) bool { return view.Executions[i].StartedAt.Before(view.Executions[j].StartedAt) })
+	for index := len(view.Turns) - 1; index >= 0; index-- {
+		if view.Turns[index].ContextManifest == "" {
+			continue
+		}
+		var manifest ContextManifest
+		if err := readJSON(view.Turns[index].ContextManifest, &manifest); err != nil {
+			return SessionView{}, err
+		}
+		view.LatestContext = &manifest
+		break
+	}
 	return view, nil
 }
 
@@ -1064,9 +1157,13 @@ func (s *SessionStore) Export(sessionID, outputPath string) error {
 	if err != nil {
 		return err
 	}
+	sessionDir, err := s.sessionDir(sessionID)
+	if err != nil {
+		return err
+	}
 	input := SessionImport{SchemaVersion: SessionSchemaVersion, ExportedAt: time.Now().UTC(), Session: view.Session,
 		Turns: view.Turns, Attempts: view.Attempts, Executions: view.Executions, Messages: view.Messages, Events: view.Events,
-		ContextManifests: map[string]ContextManifest{}}
+		ContextManifests: map[string]ContextManifest{}, ContextCheckpoints: map[string]ContextCheckpoint{}}
 	for _, turn := range view.Turns {
 		if turn.ContextManifest == "" {
 			continue
@@ -1074,6 +1171,17 @@ func (s *SessionStore) Export(sessionID, outputPath string) error {
 		var manifest ContextManifest
 		if err := readJSON(turn.ContextManifest, &manifest); err != nil {
 			return err
+		}
+		if manifest.SummaryRef != "" || manifest.SummaryDigest != "" || manifest.Compacted {
+			if manifest.SessionID != sessionID || manifest.TurnID != turn.TurnID {
+				manifest = clearInvalidCheckpoint(manifest, "checkpoint_identity_mismatch")
+			} else {
+				var checkpoint *ContextCheckpoint
+				manifest, checkpoint = normalizeExportedCheckpoint(sessionDir, manifest)
+				if checkpoint != nil {
+					input.ContextCheckpoints[turn.TurnID] = *checkpoint
+				}
+			}
 		}
 		input.ContextManifests[turn.TurnID] = manifest
 	}
@@ -1199,6 +1307,25 @@ func truncateHistoryText(value string, limit int) string {
 	return string(runes[:limit]) + "…"
 }
 
+func importedSessionSummary(existing string, messages []SessionMessage) (string, string) {
+	var latest SessionMessage
+	for _, message := range messages {
+		if message.Role != "assistant" || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		if latest.Content == "" || message.Sequence >= latest.Sequence {
+			latest = message
+		}
+	}
+	if latest.Content != "" {
+		return truncateHistoryText(latest.Content, 512), "from_session_message"
+	}
+	if summary := truncateHistoryText(existing, 512); summary != "" {
+		return summary, "from_imported_summary"
+	}
+	return "", ""
+}
+
 func filterMessages(values []SessionMessage, after int64, limit int) []SessionMessage {
 	out := make([]SessionMessage, 0, len(values))
 	for _, value := range values {
@@ -1242,6 +1369,12 @@ func redactMetadataValue(value any) any {
 		redacted := make([]any, len(typed))
 		for index, item := range typed {
 			redacted[index] = redactMetadataValue(item)
+		}
+		return redacted
+	case []map[string]any:
+		redacted := make([]map[string]any, len(typed))
+		for index, item := range typed {
+			redacted[index] = redactMetadata(item)
 		}
 		return redacted
 	default:

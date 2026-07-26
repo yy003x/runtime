@@ -1,6 +1,10 @@
 package agentrun
 
-import "time"
+import (
+	"time"
+
+	"github.com/yy003x/runtime/internal/provider"
+)
 
 const SessionSchemaVersion = 1
 
@@ -46,6 +50,7 @@ type SessionRecord struct {
 	State          string    `json:"state"`
 	Title          string    `json:"title,omitempty"`
 	Summary        string    `json:"summary,omitempty"`
+	SummarySource  string    `json:"summary_source,omitempty"`
 	CWD            string    `json:"cwd,omitempty"`
 	Runtime        string    `json:"runtime,omitempty"`
 	Profile        string    `json:"profile,omitempty"`
@@ -157,19 +162,54 @@ type ResultRef struct {
 }
 
 type ContextManifest struct {
-	SchemaVersion int                 `json:"schema_version"`
-	SessionID     string              `json:"session_id"`
-	TurnID        string              `json:"turn_id"`
-	CreatedAt     time.Time           `json:"created_at"`
-	CWD           string              `json:"cwd,omitempty"`
-	Profile       string              `json:"profile,omitempty"`
-	ConfigDigest  string              `json:"config_digest,omitempty"`
-	PolicyDigest  string              `json:"policy_digest,omitempty"`
-	MessageRange  SequenceRange       `json:"message_range"`
-	MessageDigest string              `json:"message_digest,omitempty"`
-	Skills        []ContextAssetRef   `json:"skills,omitempty"`
-	Tools         []ContextAssetRef   `json:"tools,omitempty"`
-	MemoryReads   []ContextMemoryRead `json:"memory_reads,omitempty"`
+	SchemaVersion        int                                 `json:"schema_version"`
+	SessionID            string                              `json:"session_id"`
+	TurnID               string                              `json:"turn_id"`
+	CreatedAt            time.Time                           `json:"created_at"`
+	CWD                  string                              `json:"cwd,omitempty"`
+	Profile              string                              `json:"profile,omitempty"`
+	ConfigDigest         string                              `json:"config_digest,omitempty"`
+	PolicyDigest         string                              `json:"policy_digest,omitempty"`
+	MessageRange         SequenceRange                       `json:"message_range"`
+	MessageDigest        string                              `json:"message_digest,omitempty"`
+	SummaryRef           string                              `json:"summary_ref,omitempty"`
+	SummaryDigest        string                              `json:"summary_digest,omitempty"`
+	SummaryDigestKind    string                              `json:"summary_digest_kind,omitempty"`
+	LegacySummaryDigest  string                              `json:"legacy_summary_digest,omitempty"`
+	SummaryRange         SequenceRange                       `json:"summary_range,omitempty"`
+	ContextWindowTokens  int                                 `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens int                                 `json:"reserved_output_tokens,omitempty"`
+	InputBudgetTokens    int                                 `json:"input_budget_tokens,omitempty"`
+	EstimatedInputTokens int                                 `json:"estimated_input_tokens,omitempty"`
+	CompactionAtTokens   int                                 `json:"compaction_at_tokens,omitempty"`
+	KeepRecentTurns      int                                 `json:"keep_recent_turns,omitempty"`
+	SummaryEnabled       bool                                `json:"summary_enabled"`
+	CapacitySource       string                              `json:"capacity_source,omitempty"`
+	Compacted            bool                                `json:"compacted,omitempty"`
+	PressureState        string                              `json:"pressure_state,omitempty"`
+	EstimationComplete   *bool                               `json:"estimation_complete,omitempty"`
+	EstimatorSource      string                              `json:"estimator_source,omitempty"`
+	StaticContextDigest  string                              `json:"static_context_digest,omitempty"`
+	CountedComponents    []provider.ContextEstimateComponent `json:"counted_components,omitempty"`
+	UnknownComponents    []provider.ContextUnknownComponent  `json:"unknown_components,omitempty"`
+	ProjectionError      string                              `json:"projection_error,omitempty"`
+	CheckpointError      string                              `json:"checkpoint_error,omitempty"`
+	Skills               []ContextAssetRef                   `json:"skills,omitempty"`
+	Tools                []ContextAssetRef                   `json:"tools,omitempty"`
+	MemoryReads          []ContextMemoryRead                 `json:"memory_reads,omitempty"`
+}
+
+type ContextCheckpoint struct {
+	SchemaVersion       int           `json:"schema_version"`
+	SessionID           string        `json:"session_id"`
+	TurnID              string        `json:"turn_id"`
+	CreatedAt           time.Time     `json:"created_at"`
+	CoveredMessageRange SequenceRange `json:"covered_message_range"`
+	SourceDigest        string        `json:"source_digest"`
+	Summary             string        `json:"summary"`
+	Profile             string        `json:"profile,omitempty"`
+	EstimatedTokens     int           `json:"estimated_tokens"`
+	OmittedTurns        int           `json:"omitted_turns,omitempty"`
 }
 
 type SequenceRange struct {
@@ -227,12 +267,13 @@ type SessionFilter struct {
 }
 
 type SessionView struct {
-	Session    SessionRecord      `json:"session"`
-	Turns      []TurnRecord       `json:"turns"`
-	Attempts   []RunAttemptRecord `json:"attempts"`
-	Executions []ExecutionRecord  `json:"executions"`
-	Messages   []SessionMessage   `json:"messages"`
-	Events     []SessionEvent     `json:"events"`
+	Session       SessionRecord      `json:"session"`
+	Turns         []TurnRecord       `json:"turns"`
+	Attempts      []RunAttemptRecord `json:"attempts"`
+	Executions    []ExecutionRecord  `json:"executions"`
+	Messages      []SessionMessage   `json:"messages"`
+	Events        []SessionEvent     `json:"events"`
+	LatestContext *ContextManifest   `json:"latest_context,omitempty"`
 }
 
 type RecordDecision struct {
@@ -243,13 +284,14 @@ type RecordDecision struct {
 }
 
 type SessionImport struct {
-	SchemaVersion    int                        `json:"schema_version,omitempty"`
-	ExportedAt       time.Time                  `json:"exported_at,omitempty"`
-	Session          SessionRecord              `json:"session"`
-	Turns            []TurnRecord               `json:"turns,omitempty"`
-	Attempts         []RunAttemptRecord         `json:"attempts,omitempty"`
-	Executions       []ExecutionRecord          `json:"executions,omitempty"`
-	ContextManifests map[string]ContextManifest `json:"context_manifests,omitempty"`
-	Messages         []SessionMessage           `json:"messages,omitempty"`
-	Events           []SessionEvent             `json:"events,omitempty"`
+	SchemaVersion      int                          `json:"schema_version,omitempty"`
+	ExportedAt         time.Time                    `json:"exported_at,omitempty"`
+	Session            SessionRecord                `json:"session"`
+	Turns              []TurnRecord                 `json:"turns,omitempty"`
+	Attempts           []RunAttemptRecord           `json:"attempts,omitempty"`
+	Executions         []ExecutionRecord            `json:"executions,omitempty"`
+	ContextManifests   map[string]ContextManifest   `json:"context_manifests,omitempty"`
+	ContextCheckpoints map[string]ContextCheckpoint `json:"context_checkpoints,omitempty"`
+	Messages           []SessionMessage             `json:"messages,omitempty"`
+	Events             []SessionEvent               `json:"events,omitempty"`
 }

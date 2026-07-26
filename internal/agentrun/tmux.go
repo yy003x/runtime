@@ -359,7 +359,10 @@ func (s *Service) SessionSend(ctx context.Context, runID, text string, submit bo
 	turnID := ""
 	if submit && request.RecordMode != RecordOff {
 		turnID = newRunID(RunTurn)
-		manifest, compileErr := manager.CompileContext(request.SessionID, turnID, request.CWD, profile, text, request.AllowedActions, request.ForbiddenActions)
+		manifest, compileErr := manager.CompileContext(
+			request.SessionID, turnID, request.CWD, profile,
+			text, text, request.AllowedActions, request.ForbiddenActions,
+		)
 		if compileErr != nil {
 			return summary, compileErr
 		}

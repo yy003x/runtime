@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -173,8 +174,36 @@ func validBuiltinResult(raw map[string]any, runID string) bool {
 	if _, ok := raw["summary"].(string); !ok {
 		return false
 	}
-	if _, ok := raw["artifacts"].([]any); !ok {
+	if value, exists := raw["assistant_message"]; exists {
+		if _, ok := value.(string); !ok {
+			return false
+		}
+	}
+	artifacts, ok := raw["artifacts"].([]any)
+	if !ok {
 		return false
+	}
+	for _, value := range artifacts {
+		artifact, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		if artifactType, exists := artifact["type"]; exists {
+			typed, ok := artifactType.(string)
+			if !ok || strings.TrimSpace(typed) == "" {
+				return false
+			}
+		}
+		if path, exists := artifact["path"]; exists {
+			if _, ok := path.(string); !ok {
+				return false
+			}
+		}
+		if uri, exists := artifact["uri"]; exists {
+			if _, ok := uri.(string); !ok {
+				return false
+			}
+		}
 	}
 	if _, ok := raw["errors"].([]any); !ok {
 		return false

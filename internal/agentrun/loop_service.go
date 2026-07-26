@@ -402,10 +402,16 @@ func (s *Service) nextLoopAction(ctx context.Context, request LoopRequest, statu
 		return Action{}, err
 	}
 	var action Action
-	text := strings.TrimSpace(result.Summary)
+	text := strings.TrimSpace(result.SessionMessage())
+	if text == "" {
+		return Action{}, fmt.Errorf("invalid_loop_action: planner result is empty")
+	}
 	text = strings.TrimPrefix(strings.TrimSuffix(text, "```"), "```json")
 	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &action); err != nil {
-		return Action{}, err
+		return Action{}, fmt.Errorf("invalid_loop_action: decode planner result: %w", err)
+	}
+	if !validAction(action) {
+		return Action{}, fmt.Errorf("invalid_loop_action: planner returned unsupported action")
 	}
 	return action, nil
 }
@@ -456,7 +462,8 @@ func (s *Service) finishLoop(paths LoopPaths, status PersistentLoopStatus, outco
 	if outcome != OutcomeSucceeded {
 		errorItems = append(errorItems, map[string]any{"message": message, "outcome": outcome})
 	}
-	result := Result{SchemaVersion: 1, RunID: status.LoopID, Outcome: outcome, Summary: summaryText,
+	result := Result{SchemaVersion: 1, RunID: status.LoopID, Outcome: outcome,
+		AssistantMessage: summaryText, Summary: summaryText,
 		Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}}, Errors: errorItems,
 		Validation: Validation{Commands: []string{}, Passed: outcome == OutcomeSucceeded}}
 	if err := writeLoopJSON(paths.ResultFile, result); err != nil {

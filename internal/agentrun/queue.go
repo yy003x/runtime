@@ -18,12 +18,14 @@ import (
 const queueSchemaVersion = 1
 
 var featureVersions = map[string]int{
-	"artifact_durability": 1,
-	"async_submit":        1,
-	"durable_queue":       1,
-	"run_follow":          1,
-	"run_list":            1,
-	"run_reconcile":       1,
+	"artifact_durability":        1,
+	"async_submit":               1,
+	"durable_queue":              1,
+	"run_follow":                 1,
+	"run_list":                   1,
+	"run_reconcile":              1,
+	"session_context_checkpoint": 1,
+	"session_memory_input":       1,
 }
 
 func SupportedFeatures() map[string]int {

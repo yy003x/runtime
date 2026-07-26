@@ -28,8 +28,14 @@ func TestSubmitExecutesInlineAndListsCompletedRun(t *testing.T) {
 	if err != nil || len(runs) != 1 || runs[0].RunID != runID || runs[0].CompletedAt.IsZero() {
 		t.Fatalf("runs=%#v err=%v", runs, err)
 	}
-	if SupportedFeatures()["durable_queue"] != 1 {
-		t.Fatal("durable_queue feature is missing")
+	for _, feature := range []string{
+		"durable_queue",
+		"session_context_checkpoint",
+		"session_memory_input",
+	} {
+		if SupportedFeatures()[feature] != 1 {
+			t.Fatalf("%s feature is missing", feature)
+		}
 	}
 }
 

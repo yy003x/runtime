@@ -38,6 +38,82 @@ printf 'stdout is only a log\n'
 	}
 }
 
+func TestManagedSessionDerivesSummaryFromFullAssistantMessage(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "provider.sh")
+	writeExecutable(t, script, `#!/bin/sh
+printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","assistant_message":"完整答复正文","summary":"短摘要","artifacts":[{"type":"document","path":"outputs/report.md","label":"报告"}],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
+`)
+	writeProfile(t, root, "managed", script)
+	service := New(root)
+	run, err := service.Run(context.Background(), RunOptions{
+		Profile: "managed", Prompt: "完成任务", ExecutionMode: ModeManaged,
+		CreateSession: true, RecordMode: RecordFull,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	view, err := NewSessionManager(service).Store().View(run.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Messages) != 2 || view.Messages[1].Content != "完整答复正文" {
+		t.Fatalf("messages=%#v", view.Messages)
+	}
+	if view.Session.Summary != "完整答复正文" || view.Messages[1].Metadata["summary"] != "完整答复正文" {
+		t.Fatalf("session=%#v metadata=%#v", view.Session, view.Messages[1].Metadata)
+	}
+	artifacts, ok := view.Messages[1].Metadata["artifacts"].([]any)
+	if !ok || len(artifacts) != 1 {
+		t.Fatalf("artifacts=%#v", view.Messages[1].Metadata["artifacts"])
+	}
+}
+
+func TestManagedSessionCapacityIncludesInjectedMemory(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "provider.sh")
+	writeExecutable(t, script, `#!/bin/sh
+printf '{"schema_version":1,"run_id":"%s","outcome":"succeeded","assistant_message":"ok","summary":"ok","artifacts":[],"errors":[],"validation":{"commands":[],"passed":true}}\n' "$AGENTRUN_RUN_ID" > "$AGENTRUN_RESULT_FILE"
+`)
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, _ := json.Marshal(map[string]any{
+		"command":                script,
+		"context_window_tokens":  2048,
+		"reserved_output_tokens": 512,
+		"summary_enabled":        true,
+	})
+	if err := os.WriteFile(filepath.Join(root, "configs", "small.json"), profile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(root)
+	run, err := service.Run(context.Background(), RunOptions{
+		Profile: "small", Prompt: "继续", ExecutionMode: ModeManaged,
+		CreateSession: true, RecordMode: RecordFull,
+		InjectedMemory: []provider.InjectedMemory{{
+			ID: "large-route-context", Content: strings.Repeat("需要纳入容量估算的上下文", 600),
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "context_overflow") || run.State != StateFailed {
+		t.Fatalf("run=%#v err=%v", run, err)
+	}
+	view, viewErr := NewSessionManager(service).Store().View(run.SessionID)
+	if viewErr != nil {
+		t.Fatal(viewErr)
+	}
+	if len(view.Turns) != 1 || view.Turns[0].State != StateFailed ||
+		len(view.Attempts) != 1 || view.Attempts[0].State != StateFailed ||
+		len(view.Messages) < 1 || view.Messages[0].Role != "user" ||
+		view.Messages[0].Content != "继续" {
+		t.Fatalf("view=%#v", view)
+	}
+	if view.LatestContext == nil ||
+		!strings.Contains(view.LatestContext.ProjectionError, "context_overflow") {
+		t.Fatalf("latest_context=%#v", view.LatestContext)
+	}
+}
+
 func TestManagedOutputLogRemainsAppendOnlyWithoutDuplicatingStream(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "output.log")
@@ -156,6 +232,26 @@ func TestManagedPromptContainsValidBuiltinResultExample(t *testing.T) {
 	}
 }
 
+func TestBuiltinResultArtifactsRemainV1Compatible(t *testing.T) {
+	base := map[string]any{
+		"schema_version": float64(1), "run_id": "task-compatible",
+		"outcome": "succeeded", "summary": "ok",
+		"errors": []any{}, "validation": map[string]any{"commands": []any{}, "passed": true},
+	}
+	base["artifacts"] = []any{map[string]any{"path": "outputs/report.md"}}
+	if !validBuiltinResult(base, "task-compatible") {
+		t.Fatal("v1 artifact without type was rejected")
+	}
+	base["artifacts"] = []any{map[string]any{"type": "", "path": "outputs/report.md"}}
+	if validBuiltinResult(base, "task-compatible") {
+		t.Fatal("empty artifact type was accepted")
+	}
+	base["artifacts"] = []any{map[string]any{"type": "document", "path": true}}
+	if validBuiltinResult(base, "task-compatible") {
+		t.Fatal("non-string artifact path was accepted")
+	}
+}
+
 func TestCaptureSynthesizesResultAndRunIDIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "capture.sh")
@@ -172,8 +268,8 @@ func TestCaptureSynthesizesResultAndRunIDIsIdempotent(t *testing.T) {
 		t.Fatalf("second=%#v err=%v", second, err)
 	}
 	contract, _ := service.store.ReadResult(mustPaths(t, service, first))
-	if contract.Summary != "capture ok" {
-		t.Fatalf("summary=%q", contract.Summary)
+	if contract.Summary != "capture ok" || contract.AssistantMessage != "capture ok" {
+		t.Fatalf("contract=%#v", contract)
 	}
 }
 
@@ -269,9 +365,18 @@ func TestAPIProfileSynthesizesResult(t *testing.T) {
 	}
 	service := New(root)
 	service.HTTPClient = server.Client()
-	result, err := service.Run(context.Background(), RunOptions{Profile: "mock", Prompt: "hello"})
+	result, err := service.Run(context.Background(), RunOptions{
+		Profile: "mock", Prompt: "hello", CreateSession: true,
+		ProviderOverrides: map[string]any{"max_tokens": 12000},
+	})
 	if err != nil || result.State != StateDone {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	view, err := NewSessionManager(service).Store().View(result.SessionID)
+	if err != nil || view.LatestContext == nil ||
+		view.LatestContext.ReservedOutputTokens != 12000 ||
+		view.LatestContext.InputBudgetTokens != 20768 {
+		t.Fatalf("latest_context=%#v err=%v", view.LatestContext, err)
 	}
 }
 

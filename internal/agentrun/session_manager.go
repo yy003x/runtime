@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -45,21 +46,36 @@ func (m *SessionManager) EnsureSession(sessionID, projectID, cwd, title string, 
 		RecordMode: decision.RecordMode, Retention: decision.Retention, CaptureQuality: decision.CaptureQuality})
 }
 
-func (m *SessionManager) BeginRun(request Request, prompt string, profile provider.Config) error {
+func (m *SessionManager) BeginRun(
+	request Request,
+	prompt string,
+	contextPrompt string,
+	profile provider.Config,
+	capacity provider.ContextCapacity,
+	staticEstimate provider.StaticContextEstimate,
+) (contextProjection, error) {
 	if request.RecordMode == RecordOff || request.SessionID == "" {
-		return nil
+		return contextProjection{}, nil
 	}
 	decision := RecordDecision{RecordMode: request.RecordMode, Retention: request.Retention, CaptureQuality: request.CaptureQuality}
 	if _, err := m.EnsureSession(request.SessionID, request.ProjectID, request.CWD, prompt, decision); err != nil {
-		return err
+		return contextProjection{}, err
 	}
 	if _, err := m.store.ConfigureSession(request.SessionID, sessionRuntimeName(request.ExecutionKind, profile), request.ProviderProfile); err != nil {
-		return err
+		return contextProjection{}, err
 	}
-	manifest, err := m.CompileContext(request.SessionID, request.TurnID, request.CWD, profile, prompt, request.AllowedActions, request.ForbiddenActions)
-	if err != nil {
-		return err
-	}
+	manifest, projection, err := m.compileContext(
+		request.SessionID,
+		request.TurnID,
+		request.CWD,
+		profile,
+		capacity,
+		staticEstimate,
+		prompt,
+		contextPrompt,
+		request.AllowedActions,
+		request.ForbiddenActions,
+	)
 	policy, _ := json.Marshal(map[string]any{"allowed_actions": request.AllowedActions, "forbidden_actions": request.ForbiddenActions})
 	manifest.PolicyDigest = digestBytes(policy)
 	manifest.MemoryReads = append(manifest.MemoryReads, request.MemoryReads...)
@@ -68,18 +84,28 @@ func (m *SessionManager) BeginRun(request Request, prompt string, profile provid
 		Profile: request.ProviderProfile, Model: requestModel(request, profile), RecordMode: request.RecordMode,
 		CaptureQuality: request.CaptureQuality,
 	}, prompt, manifest); err != nil {
-		return err
+		return projection, err
 	}
 	execution := ExecutionRecord{ExecutionID: request.ExecutionID, Kind: request.ExecutionKind, Profile: request.ProviderProfile,
 		Provider: request.Provider, State: StateRunning, CaptureQuality: request.CaptureQuality, RunIDs: []string{request.RunID}, TurnIDs: []string{request.TurnID}}
 	if err := m.store.UpsertExecution(request.SessionID, execution); err != nil {
-		return err
+		return projection, err
 	}
-	return m.store.AddAttempt(request.SessionID, RunAttemptRecord{RunID: request.RunID, TurnID: request.TurnID,
-		RunType: request.RunType, ExecutionID: request.ExecutionID, Attempt: 1, Provider: request.Provider, Profile: request.ProviderProfile})
+	if attemptErr := m.store.AddAttempt(request.SessionID, RunAttemptRecord{
+		RunID: request.RunID, TurnID: request.TurnID,
+		RunType: request.RunType, ExecutionID: request.ExecutionID, Attempt: 1,
+		Provider: request.Provider, Profile: request.ProviderProfile,
+	}); attemptErr != nil {
+		return projection, attemptErr
+	}
+	return projection, err
 }
 
-func (m *SessionManager) CompleteRun(request Request, state, failureReason, output string) error {
+func (m *SessionManager) CompleteRun(
+	request Request,
+	state, failureReason, output string,
+	artifacts []map[string]any,
+) error {
 	if request.RecordMode == RecordOff || request.SessionID == "" {
 		return nil
 	}
@@ -90,7 +116,10 @@ func (m *SessionManager) CompleteRun(request Request, state, failureReason, outp
 			resultRef = &ResultRef{RunID: request.RunID, RunType: request.RunType, ResultFile: request.ResultFile, ResultDigest: digest}
 		}
 	}
-	if err := m.store.CompleteRun(request.SessionID, request.TurnID, request.RunID, state, failureReason, output, resultRef); err != nil {
+	if err := m.store.CompleteRun(
+		request.SessionID, request.TurnID, request.RunID, state, failureReason,
+		output, artifacts, resultRef,
+	); err != nil {
 		return err
 	}
 	execution := ExecutionRecord{ExecutionID: request.ExecutionID, Kind: request.ExecutionKind, Profile: request.ProviderProfile,
@@ -110,24 +139,79 @@ func (m *SessionManager) ResumeRun(request Request) error {
 		RunIDs: []string{request.RunID}, TurnIDs: []string{request.TurnID}})
 }
 
-func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile provider.Config, prompt string, allowed, forbidden []string) (ContextManifest, error) {
+func (m *SessionManager) CompileContext(
+	sessionID, turnID, cwd string,
+	profile provider.Config,
+	prompt, contextPrompt string,
+	allowed, forbidden []string,
+) (ContextManifest, error) {
+	capacity, err := profile.ResolveContextCapacity(nil)
+	if err != nil {
+		return ContextManifest{}, err
+	}
+	memoryFile, _ := m.MemoryPaths(sessionID)
+	staticEstimate, err := provider.EstimateStaticContext(context.Background(), profile, provider.ContextEstimateRequest{
+		Prompt: prompt, PersonaDir: m.service.PersonaDir,
+		SkillDir: m.service.paths.SkillsDir, ToolDir: m.service.paths.ToolsDir,
+		MemoryFile: memoryFile, Allowed: allowed, Forbidden: forbidden,
+	})
+	if err != nil {
+		return ContextManifest{}, err
+	}
+	manifest, _, err := m.compileContext(
+		sessionID, turnID, cwd, profile, capacity, staticEstimate,
+		prompt, contextPrompt, allowed, forbidden,
+	)
+	return manifest, err
+}
+
+func (m *SessionManager) compileContext(
+	sessionID, turnID, cwd string,
+	profile provider.Config,
+	capacity provider.ContextCapacity,
+	staticEstimate provider.StaticContextEstimate,
+	prompt, contextPrompt string,
+	allowed, forbidden []string,
+) (ContextManifest, contextProjection, error) {
+	projection, projectionErr := m.projectContext(
+		sessionID, turnID, profile.ID, capacity, staticEstimate, contextPrompt,
+	)
+	effectiveCapacity := projection.Capacity
+	estimationComplete := len(staticEstimate.Unknown) == 0
 	manifest := ContextManifest{SchemaVersion: SessionSchemaVersion, SessionID: sessionID, TurnID: turnID,
-		CreatedAt: time.Now().UTC(), CWD: cwd, Profile: profile.ID, MessageRange: SequenceRange{After: 0, To: 0}}
-	if messages, err := m.contextSessionMessages(sessionID, turnID); err == nil {
-		if len(messages) > 0 {
-			manifest.MessageRange.After = messages[0].Sequence - 1
-			manifest.MessageRange.To = messages[len(messages)-1].Sequence
+		CreatedAt: time.Now().UTC(), CWD: cwd, Profile: profile.ID, MessageRange: SequenceRange{After: 0, To: 0},
+		ContextWindowTokens: effectiveCapacity.ContextWindowTokens, ReservedOutputTokens: effectiveCapacity.ReservedOutputTokens,
+		InputBudgetTokens: effectiveCapacity.InputBudgetTokens, EstimatedInputTokens: projection.EstimatedInputTokens,
+		CompactionAtTokens: effectiveCapacity.CompactionAtTokens, KeepRecentTurns: effectiveCapacity.KeepRecentTurns,
+		SummaryEnabled: effectiveCapacity.SummaryEnabled, CapacitySource: effectiveCapacity.CapacitySource,
+		Compacted: projection.Checkpoint != nil, PressureState: projection.PressureState,
+		EstimationComplete: &estimationComplete, EstimatorSource: "utf8_heuristic_v1",
+		StaticContextDigest: staticEstimate.Snapshot.Digest,
+		CountedComponents:   append([]provider.ContextEstimateComponent(nil), staticEstimate.Counted...),
+		UnknownComponents:   append([]provider.ContextUnknownComponent(nil), staticEstimate.Unknown...),
+	}
+	if len(projection.SourceMessages) > 0 {
+		manifest.MessageRange.After = projection.SourceMessages[0].Sequence - 1
+		manifest.MessageRange.To = projection.SourceMessages[len(projection.SourceMessages)-1].Sequence
+	}
+	if encoded, err := json.Marshal(projection.Messages); err == nil {
+		manifest.MessageDigest = digestBytes(encoded)
+	}
+	if projection.Checkpoint != nil {
+		path, digest, err := m.writeContextCheckpoint(*projection.Checkpoint)
+		if err != nil {
+			return ContextManifest{}, projection, err
 		}
-		normalized := make([]provider.NativeMessage, 0, len(messages))
-		for _, message := range messages {
-			normalized = append(normalized, provider.NativeMessage{Role: message.Role, Content: strings.TrimSpace(message.Content)})
-		}
-		if encoded, err := json.Marshal(normalized); err == nil {
-			manifest.MessageDigest = digestBytes(encoded)
-		}
+		manifest.SummaryRef, manifest.SummaryDigest = path, digest
+		manifest.SummaryDigestKind = "stable_json_sha256"
+		manifest.SummaryRange = projection.Checkpoint.CoveredMessageRange
 	}
 	if encoded, err := json.Marshal(profile.Raw); err == nil {
 		manifest.ConfigDigest = digestBytes(encoded)
+	}
+	if projectionErr != nil {
+		manifest.ProjectionError = projectionErr.Error()
+		return manifest, projection, projectionErr
 	}
 	memoryFile, candidateFile := m.MemoryPaths(sessionID)
 	registry := capability.NewRegistry(capability.RegistryConfig{
@@ -177,21 +261,27 @@ func (m *SessionManager) CompileContext(sessionID, turnID, cwd string, profile p
 			}
 		}
 	}
-	return manifest, nil
+	return manifest, projection, nil
 }
 
 // ContextMessages 返回可跨 Provider 复用的规范化对话消息。
 // transcript、tool event 和当前 Turn 输入不进入下一次模型上下文。
-func (m *SessionManager) ContextMessages(sessionID, excludeTurnID string) ([]provider.NativeMessage, error) {
-	messages, err := m.contextSessionMessages(sessionID, excludeTurnID)
+func (m *SessionManager) ContextMessages(
+	sessionID, excludeTurnID string,
+	profile provider.Config,
+	currentPrompt string,
+) ([]provider.NativeMessage, error) {
+	capacity, err := profile.ResolveContextCapacity(nil)
 	if err != nil {
 		return nil, err
 	}
-	values := make([]provider.NativeMessage, 0, len(messages))
-	for _, message := range messages {
-		values = append(values, provider.NativeMessage{Role: message.Role, Content: strings.TrimSpace(message.Content)})
+	projection, err := m.projectContext(
+		sessionID, excludeTurnID, profile.ID, capacity, provider.StaticContextEstimate{}, currentPrompt,
+	)
+	if err != nil {
+		return nil, err
 	}
-	return values, nil
+	return projection.Messages, nil
 }
 
 func (m *SessionManager) contextSessionMessages(sessionID, excludeTurnID string) ([]SessionMessage, error) {
@@ -209,10 +299,38 @@ func (m *SessionManager) contextSessionMessages(sessionID, excludeTurnID string)
 		}
 		values = append(values, message)
 	}
-	if len(values) > 14 {
-		values = values[len(values)-14:]
-	}
 	return values, nil
+}
+
+func (m *SessionManager) writeContextCheckpoint(checkpoint ContextCheckpoint) (string, string, error) {
+	if err := validateRunID(checkpoint.TurnID); err != nil {
+		return "", "", fmt.Errorf("checkpoint_ref_invalid: %w", err)
+	}
+	dir, err := m.store.sessionDir(checkpoint.SessionID)
+	if err != nil {
+		return "", "", err
+	}
+	contextDir := filepath.Join(dir, "context")
+	checkpointDir := filepath.Join(contextDir, "checkpoints")
+	if err := os.MkdirAll(checkpointDir, 0o700); err != nil {
+		return "", "", err
+	}
+	reference, err := checkpointRelativeRef(checkpoint.TurnID)
+	if err != nil {
+		return "", "", err
+	}
+	path := filepath.Join(dir, filepath.FromSlash(reference))
+	if err := writeJSONAtomic(path, checkpoint); err != nil {
+		return "", "", err
+	}
+	digest := digestContextCheckpoint(checkpoint)
+	manifest := ContextManifest{
+		SummaryRef: reference, SummaryDigest: digest, SummaryDigestKind: checkpointDigestStableJSON,
+	}
+	if err := writeCheckpointCurrent(dir, checkpoint, manifest); err != nil {
+		return "", "", err
+	}
+	return reference, digest, nil
 }
 
 // MemoryPaths 返回 Session 私有的 Runtime memory 路径。Workbench project/global

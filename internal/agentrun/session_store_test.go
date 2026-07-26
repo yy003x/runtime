@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func TestSessionStorePersistsSessionTurnAttemptAndResultRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := &ResultRef{RunID: runID, RunType: RunTask, ResultFile: "/tmp/result.json", ResultDigest: "sha256:test"}
-	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "world", ref); err != nil {
+	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "world", nil, ref); err != nil {
 		t.Fatal(err)
 	}
 	view, err := store.View(sessionID)
@@ -79,6 +80,175 @@ func TestSessionStorePersistsSessionTurnAttemptAndResultRef(t *testing.T) {
 	}
 	if view.Session.Title != "hello" {
 		t.Fatalf("session title=%q", view.Session.Title)
+	}
+	if view.Session.Summary != "world" || view.Messages[1].Metadata["summary"] != "world" ||
+		view.Session.SummarySource != "from_session_message" {
+		t.Fatalf("session summary=%q message metadata=%#v", view.Session.Summary, view.Messages[1].Metadata)
+	}
+}
+
+func TestContextProjectionCompactsOldTurnsAndPersistsAuditableCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	manager := NewSessionManager(New(root))
+	store := manager.Store()
+	sessionID := "session-20260726-120000-context"
+	if _, err := store.Create(SessionRecord{
+		SessionID: sessionID, ProjectID: "project", RecordMode: RecordFull,
+		Retention: RetentionStandard, CaptureQuality: CaptureStructured,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 8; index++ {
+		turnID := fmt.Sprintf("turn-20260726-1200%02d-context", index)
+		runID := fmt.Sprintf("turn-20260726-1201%02d-context", index)
+		executionID := fmt.Sprintf("execution-20260726-1202%02d-context", index)
+		input := fmt.Sprintf("第 %d 轮目标：%s", index, strings.Repeat("需要保留的中文上下文", 24))
+		output := fmt.Sprintf("第 %d 轮完整答复：%s", index, strings.Repeat("完整执行结果", 36))
+		if _, err := store.AddTurn(sessionID, TurnRecord{TurnID: turnID, Profile: "small"}, input, ContextManifest{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.AddAttempt(sessionID, RunAttemptRecord{
+			RunID: runID, RunType: RunTurn, TurnID: turnID, ExecutionID: executionID, Profile: "small",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CompleteRun(
+			sessionID, turnID, runID, StateDone, "", output, nil, nil,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile := provider.Config{
+		ID: "small",
+		Context: provider.ContextPolicy{
+			ContextWindowTokens: 1600, ReservedOutputTokens: 400,
+			KeepRecentTurns: 2, SummaryEnabled: true,
+		},
+	}
+	turnID := "turn-20260726-130000-context"
+	capacity, err := profile.ResolveContextCapacity(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := manager.projectContext(
+		sessionID, turnID, profile.ID, capacity, provider.StaticContextEstimate{}, "继续执行当前任务",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Checkpoint == nil || projection.EstimatedInputTokens > projection.Capacity.InputBudgetTokens {
+		t.Fatalf("projection=%#v", projection)
+	}
+	if len(projection.Messages) < 1 || len(projection.Messages) > 5 ||
+		!strings.Contains(projection.Messages[0].Content, "session_checkpoint") {
+		t.Fatalf("messages=%#v", projection.Messages)
+	}
+	if !strings.Contains(projection.Checkpoint.Summary, "完整答复") {
+		t.Fatalf("checkpoint=%#v", projection.Checkpoint)
+	}
+	manifest, err := manager.CompileContext(
+		sessionID, turnID, root, profile,
+		"继续执行当前任务", "继续执行当前任务", nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Compacted || manifest.SummaryRef == "" || manifest.SummaryDigest == "" ||
+		manifest.EstimatedInputTokens > manifest.InputBudgetTokens {
+		t.Fatalf("manifest=%#v", manifest)
+	}
+	sessionDir, err := store.sessionDir(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionDir, filepath.FromSlash(manifest.SummaryRef))); err != nil {
+		t.Fatalf("checkpoint file: %v", err)
+	}
+	if filepath.IsAbs(manifest.SummaryRef) || manifest.SummaryDigestKind != checkpointDigestStableJSON {
+		t.Fatalf("checkpoint reference=%q kind=%q", manifest.SummaryRef, manifest.SummaryDigestKind)
+	}
+	if _, err := store.AddTurn(
+		sessionID, TurnRecord{TurnID: turnID, Profile: profile.ID},
+		"继续执行当前任务", manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	exportPath := filepath.Join(t.TempDir(), "session-export.json")
+	if err := store.Export(sessionID, exportPath); err != nil {
+		t.Fatal(err)
+	}
+	var exported SessionImport
+	if err := readJSON(exportPath, &exported); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := exported.ContextCheckpoints[turnID]; !ok ||
+		exported.ContextManifests[turnID].SummaryRef != manifest.SummaryRef {
+		t.Fatalf("exported checkpoint=%#v manifest=%#v", exported.ContextCheckpoints, exported.ContextManifests[turnID])
+	}
+	importRoot := t.TempDir()
+	importedStore := NewSessionStore(
+		filepath.Join(importRoot, "sessions"),
+		filepath.Join(importRoot, "history"),
+		filepath.Join(importRoot, "state"),
+	)
+	if _, err := importedStore.Import(exported); err != nil {
+		t.Fatal(err)
+	}
+	importedView, err := importedStore.View(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if importedView.LatestContext == nil || importedView.LatestContext.SummaryRef != manifest.SummaryRef ||
+		importedView.LatestContext.SummaryDigestKind != checkpointDigestStableJSON {
+		t.Fatalf("imported latest context=%#v", importedView.LatestContext)
+	}
+	importedSessionDir, err := importedStore.sessionDir(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(importedSessionDir, filepath.FromSlash(manifest.SummaryRef)),
+		filepath.Join(importedSessionDir, "context", "current.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("imported checkpoint artifact %s: %v", path, err)
+		}
+	}
+}
+
+func TestContextProjectionFailsClosedWhenSummaryIsDisabled(t *testing.T) {
+	root := t.TempDir()
+	manager := NewSessionManager(New(root))
+	store := manager.Store()
+	sessionID := "session-20260726-140000-context"
+	if _, err := store.Create(SessionRecord{
+		SessionID: sessionID, RecordMode: RecordFull, Retention: RetentionStandard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turnID := "turn-20260726-140001-context"
+	if _, err := store.AddTurn(
+		sessionID, TurnRecord{TurnID: turnID},
+		strings.Repeat("超长上下文", 500), ContextManifest{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	profile := provider.Config{
+		ID: "no-summary",
+		Context: provider.ContextPolicy{
+			ContextWindowTokens: 512, ReservedOutputTokens: 128,
+			KeepRecentTurns: 1, SummaryEnabled: false,
+		},
+	}
+	capacity, err := profile.ResolveContextCapacity(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.projectContext(
+		sessionID, "", profile.ID, capacity, provider.StaticContextEstimate{}, "继续",
+	); err == nil ||
+		!strings.Contains(err.Error(), "context_overflow") {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -139,7 +309,7 @@ func TestSessionStoreMetadataModeDoesNotPersistPromptOrOutput(t *testing.T) {
 	if err := store.AddAttempt(sessionID, RunAttemptRecord{RunID: runID, TurnID: turnID, ExecutionID: "execution-meta"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(sessionID, turnID, runID, StateFailed, "failed", "secret output", nil); err != nil {
+	if err := store.CompleteRun(sessionID, turnID, runID, StateFailed, "failed", "secret output", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := store.Messages(sessionID, 0, 0)
@@ -166,7 +336,7 @@ func TestTurnMetadataOverrideDoesNotLeakIntoFullSession(t *testing.T) {
 	if err := store.AddAttempt(sessionID, RunAttemptRecord{RunID: runID, TurnID: turnID, ExecutionID: "execution-turnmeta"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "secret output", nil); err != nil {
+	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "secret output", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	view, err := store.View(sessionID)
@@ -193,6 +363,71 @@ func TestSessionStoreRecursivelyRedactsSensitiveEventMetadata(t *testing.T) {
 	nested, _ := events[len(events)-1].Data["nested"].(map[string]any)
 	if nested["Authorization"] != "[REDACTED]" || nested["safe"] != "value" {
 		t.Fatalf("event data=%#v", events[len(events)-1].Data)
+	}
+}
+
+func TestSessionStoreRedactsResultArtifactsAndImportedMetadata(t *testing.T) {
+	store := newTestSessionStore(t)
+	sessionID := "session-20260717-120003-artifacts"
+	turnID := "turn-20260717-120003-artifacts"
+	runID := "task-20260717-120003-artifacts"
+	if _, err := store.Create(SessionRecord{
+		SessionID: sessionID, RecordMode: RecordFull, Retention: RetentionStandard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddTurn(sessionID, TurnRecord{TurnID: turnID}, "input", ContextManifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddAttempt(sessionID, RunAttemptRecord{
+		RunID: runID, TurnID: turnID, ExecutionID: "execution-20260717-120003-artifacts",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "output", []map[string]any{{
+		"type": "document", "metadata": map[string]any{"access_token": "secret", "safe": "value"},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.View(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, _ := view.Messages[len(view.Messages)-1].Metadata["artifacts"].([]any)
+	artifact, _ := artifacts[0].(map[string]any)
+	nested, _ := artifact["metadata"].(map[string]any)
+	if nested["access_token"] != "[REDACTED]" || nested["safe"] != "value" {
+		t.Fatalf("artifact metadata=%#v", nested)
+	}
+
+	imported := SessionImport{
+		Session: SessionRecord{
+			SessionID:  "session-20260717-120004-import-redact",
+			RecordMode: RecordFull, Retention: RetentionStandard,
+		},
+		Messages: []SessionMessage{{
+			MessageID: "message-import-redact", Sequence: 1, Role: "assistant", Content: "imported",
+			Metadata: map[string]any{"artifacts": []any{map[string]any{"cookie": "secret"}}},
+		}},
+		Events: []SessionEvent{{
+			EventID: "event-import-redact", Sequence: 2, Type: "imported",
+			Data: map[string]any{"Authorization": "secret"},
+		}},
+	}
+	if _, err := store.Import(imported); err != nil {
+		t.Fatal(err)
+	}
+	importedView, err := store.View(imported.Session.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importedArtifacts, _ := importedView.Messages[0].Metadata["artifacts"].([]any)
+	importedArtifact, _ := importedArtifacts[0].(map[string]any)
+	if importedArtifact["cookie"] != "[REDACTED]" ||
+		importedView.Events[0].Data["Authorization"] != "[REDACTED]" ||
+		importedView.Session.Summary != "imported" ||
+		importedView.Session.SummarySource != "from_session_message" {
+		t.Fatalf("imported view=%#v", importedView)
 	}
 }
 
@@ -235,10 +470,10 @@ func TestSessionStoreBlockedRunCanResumeWithoutDuplicateCompletion(t *testing.T)
 	if err := store.AddAttempt(sessionID, RunAttemptRecord{RunID: runID, RunType: RunTurn, TurnID: turnID, ExecutionID: executionID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(sessionID, turnID, runID, StateBlocked, "waiting", "waiting", nil); err != nil {
+	if err := store.CompleteRun(sessionID, turnID, runID, StateBlocked, "waiting", "waiting", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(sessionID, turnID, runID, StateBlocked, "waiting", "waiting", nil); err != nil {
+	if err := store.CompleteRun(sessionID, turnID, runID, StateBlocked, "waiting", "waiting", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ResumeRun(sessionID, turnID, runID); err != nil {
@@ -299,7 +534,8 @@ func TestContextManifestIncludesOnlyAuthorizedRuntimeTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, err := manager.CompileContext(sessionID, "turn-20260717-120005-tools", home,
-		provider.Config{ID: "native", Type: provider.TypeNative}, "hello", []string{"echo", "run-agent"}, nil)
+		provider.Config{ID: "native", Type: provider.TypeNative},
+		"hello", "hello", []string{"echo", "run-agent"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +587,10 @@ func TestSessionStoreExportImportRoundTrip(t *testing.T) {
 	if err := store.UpsertExecution(sessionID, ExecutionRecord{ExecutionID: executionID, Kind: ExecutionAPI, State: StateDone}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteRun(sessionID, turnID, runID, StateDone, "", "world", &ResultRef{RunID: runID, RunType: RunTurn, ResultFile: "/tmp/result.json"}); err != nil {
+	if err := store.CompleteRun(
+		sessionID, turnID, runID, StateDone, "", "world", nil,
+		&ResultRef{RunID: runID, RunType: RunTurn, ResultFile: "/tmp/result.json"},
+	); err != nil {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "session.json")

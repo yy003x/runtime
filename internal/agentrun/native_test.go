@@ -98,6 +98,33 @@ func TestAPIAgentProviderPersistsAndPatchResumesLocalContext(t *testing.T) {
 	}
 }
 
+func TestAPIAgentStaticContextValidationUsesOriginalPromptWithInjectedMemory(t *testing.T) {
+	service := apiAgentTestService(t, provider.APIConfig{
+		Protocol: "openai", BaseURL: "https://example.test/v1",
+		Model: "mock", APIKey: "${UNUSED_API_AGENT_KEY}", Mock: true,
+		Runtime: &provider.APIRuntimeConfig{
+			Enabled: true, MaxRounds: 1,
+			Memory: &provider.APIMemoryConfig{Enabled: true},
+		},
+	})
+	run, err := service.Run(context.Background(), RunOptions{
+		Profile: "api-agent-test", Prompt: "original prompt",
+		ExecutionMode: ModeManaged, CreateSession: true,
+		InjectedMemory: []provider.InjectedMemory{{
+			ID: "route", Content: "caller-owned injected context", Source: "test",
+		}},
+	})
+	if err != nil || run.State != StateDone {
+		t.Fatalf("run=%#v err=%v", run, err)
+	}
+	view, err := NewSessionManager(service).Store().View(run.SessionID)
+	if err != nil || view.LatestContext == nil ||
+		view.LatestContext.StaticContextDigest == "" ||
+		strings.Contains(view.LatestContext.ProjectionError, "context_inputs_changed") {
+		t.Fatalf("latest_context=%#v err=%v", view.LatestContext, err)
+	}
+}
+
 func TestNativeProviderCancelStopsInflightRun(t *testing.T) {
 	service := nativeTestService(t, provider.NativeConfig{
 		SystemPrompt: "test", MaxRounds: 1, LLMTimeoutSeconds: 3,

@@ -109,7 +109,9 @@ func (s *Service) ResumeNative(ctx context.Context, runType, runID string, patch
 	if profile.Type == provider.TypeAPI {
 		snapshotType = "context_snapshot"
 	}
-	contract := Result{SchemaVersion: 1, RunID: runID, Outcome: OutcomeSucceeded, Summary: text,
+	contract := Result{
+		SchemaVersion: 1, RunID: runID, Outcome: OutcomeSucceeded,
+		AssistantMessage: text, Summary: text,
 		Artifacts: []map[string]any{{"type": "log", "path": paths.OutputLog}, {"type": snapshotType, "path": snapshotFile}},
 		Errors:    []map[string]any{}, Validation: Validation{Commands: []string{}, Passed: true}}
 	if err := s.store.WriteResult(paths, contract); err != nil {
@@ -148,7 +150,7 @@ func (s *Service) ControlNative(runType, runID, action, reason string) (RunSumma
 	status, err = s.store.WriteStatus(paths, request, state, failureReason, action, providerStatus)
 	s.updateRegistry(paths, status)
 	eventErr := s.store.Event(paths, request, "provider."+action, map[string]any{"transport": profile.Type, "reason": reason})
-	historyErr := NewSessionManager(s).CompleteRun(request, state, failureReason, failureReason)
+	historyErr := NewSessionManager(s).CompleteRun(request, state, failureReason, failureReason, nil)
 	return summary(paths, status, false), errors.Join(err, eventErr, historyErr)
 }
 

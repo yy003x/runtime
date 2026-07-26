@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"strings"
 	"time"
 
 	"github.com/yy003x/runtime/internal/provider"
@@ -94,15 +95,23 @@ type Status struct {
 }
 
 type Result struct {
-	SchemaVersion  int              `json:"schema_version"`
-	RunID          string           `json:"run_id"`
-	Outcome        string           `json:"outcome"`
-	Summary        string           `json:"summary"`
-	ResultKind     string           `json:"result_kind,omitempty"`
-	CaptureQuality string           `json:"capture_quality,omitempty"`
-	Artifacts      []map[string]any `json:"artifacts"`
-	Errors         []map[string]any `json:"errors"`
-	Validation     Validation       `json:"validation"`
+	SchemaVersion    int              `json:"schema_version"`
+	RunID            string           `json:"run_id"`
+	Outcome          string           `json:"outcome"`
+	AssistantMessage string           `json:"assistant_message,omitempty"`
+	Summary          string           `json:"summary"`
+	ResultKind       string           `json:"result_kind,omitempty"`
+	CaptureQuality   string           `json:"capture_quality,omitempty"`
+	Artifacts        []map[string]any `json:"artifacts"`
+	Errors           []map[string]any `json:"errors"`
+	Validation       Validation       `json:"validation"`
+}
+
+func (r Result) SessionMessage() string {
+	if value := strings.TrimSpace(r.AssistantMessage); value != "" {
+		return value
+	}
+	return strings.TrimSpace(r.Summary)
 }
 
 type Validation struct {
