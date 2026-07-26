@@ -1,8 +1,8 @@
 {
   "protocol": "anthropic",
-  "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-  "model": "qwen3.7-max",
-  "api_key": "${ALIYUN_API_KEY}",
-  "timeout_seconds": 300,
+  "base_url": "https://api.kuaimaai.com.cn",
+  "model": "claude-fable-5",
+  "api_key": "${KMM_API_KEY}",
+  "timeout_seconds": 3000,
   "max_tokens": 16384
 }
