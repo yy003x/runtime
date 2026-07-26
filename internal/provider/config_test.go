@@ -193,17 +193,19 @@ func TestRepositoryProfileTemplatesLoadAsStandaloneProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profiles) != 8 {
-		t.Fatalf("profiles=%d, want 8", len(profiles))
+	if len(profiles) != 10 {
+		t.Fatalf("profiles=%d, want 10", len(profiles))
 	}
-	for _, id := range []string{"api-cc", "api-cx", "cc", "cc-bai", "commit", "cx", "cx-adv", "cx-image"} {
+	for _, id := range []string{
+		"api-cc", "api-cx", "cc", "cc-bai", "commit", "cx", "cx-adv", "cx-deep", "cx-image", "cx-spark",
+	} {
 		if _, exists := profiles[id]; !exists {
 			t.Fatalf("missing required repository profile %q", id)
 		}
 	}
-	for _, id := range []string{"api-cc", "api-cx"} {
+	for id, timeoutSeconds := range map[string]int{"api-cc": 3000, "api-cx": 300} {
 		api := profiles[id]
-		if api.TimeoutSeconds != 300 || api.API == nil || api.API.MaxTokens != 16384 {
+		if api.TimeoutSeconds != timeoutSeconds || api.API == nil || api.API.MaxTokens != 16384 {
 			t.Fatalf("%s=%#v", id, api)
 		}
 	}
@@ -271,7 +273,7 @@ func TestRepositoryProfileTemplatesLoadAsStandaloneProfiles(t *testing.T) {
 			t.Fatalf("%s environment missing resolved CODEX_HOME", id)
 		}
 	}
-	for _, id := range []string{"commit", "cx-adv"} {
+	for _, id := range []string{"commit", "cx-adv", "cx-deep", "cx-spark"} {
 		profile := profiles[id]
 		if profile.CLI == nil || profile.CLI.Command.Env["CODEX_HOME"] != "${HOME}/.codex-ait" {
 			t.Fatalf("%s CODEX_HOME=%#v", id, profile.CLI)
@@ -279,21 +281,21 @@ func TestRepositoryProfileTemplatesLoadAsStandaloneProfiles(t *testing.T) {
 	}
 
 	cxProfile := profiles["cx"]
-	if cxProfile.CLI.Command.Model != "gpt-5.6-sol" || cxProfile.CLI.Effort != "" || strings.Join(cxProfile.CLI.Command.Args, " ") != "--search" {
+	if cxProfile.CLI.Command.Model != "gpt-5.6-sol" || cxProfile.CLI.Effort != "xhigh" || len(cxProfile.CLI.Command.Args) != 0 {
 		t.Fatalf("cx=%#v", cxProfile)
 	}
 	cxRequest, err := Prepare(cxProfile, "review", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cxRequest.CLI.Argv, " "); got != `codex --search --model gpt-5.6-sol exec` {
+	if got := strings.Join(cxRequest.CLI.Argv, " "); got != `codex -c model_reasoning_effort=xhigh --model gpt-5.6-sol exec` {
 		t.Fatalf("cx argv=%q", got)
 	}
 	cxDirect, err := PrepareInteractiveCLI(cxProfile, []string{"review"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cxDirect.Argv, " "); got != `codex --search --model gpt-5.6-sol review` {
+	if got := strings.Join(cxDirect.Argv, " "); got != `codex -c model_reasoning_effort=xhigh --model gpt-5.6-sol review` {
 		t.Fatalf("cx direct argv=%q", got)
 	}
 
@@ -310,7 +312,7 @@ func TestRepositoryProfileTemplatesLoadAsStandaloneProfiles(t *testing.T) {
 	}
 
 	advanced := profiles["cx-adv"]
-	if advanced.CLI.Command.Model != "gpt-5.3-codex-spark" || len(advanced.CLI.Command.Args) != 8 {
+	if advanced.CLI.Command.Model != "gpt-5.6-terra" || len(advanced.CLI.Command.Args) != 8 {
 		t.Fatalf("cx-adv=%#v", advanced)
 	}
 	commit := profiles["commit"]

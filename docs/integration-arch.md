@@ -322,7 +322,7 @@ resources/
 5. 同步 active home。
 6. 原子替换 binary。
 
-默认同步只补缺失项。开发安装可通过 `--overwrite-configs` 更新发行包内同名 profile；本地额外 profile 与 resource 保持不变。
+默认同步只补缺失项。开发安装可通过 `--overwrite-configs` 使用发行包 `configs/` 完整替换 active config 目录，不保留旧版或 local-only profile；发行包内同名 resource 同步覆盖，用户额外 resource 保留。
 
 ## 8. Daemon、HTTP 与 Capability
 
