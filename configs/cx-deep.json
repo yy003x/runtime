@@ -1,0 +1,15 @@
+{
+  "command": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "max",
+  "args": [
+    "--sandbox", "read-only",
+    "--ask-for-approval", "never",
+    "exec", "--ignore-user-config", "--ephemeral",
+    "--color", "never"
+  ],
+  "env": {
+    "CODEX_HOME": "${HOME}/.codex-ait"
+  },
+  "timeout_seconds": 900
+}
