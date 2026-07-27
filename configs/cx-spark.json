@@ -5,7 +5,8 @@
   "args": [
     "--sandbox", "read-only",
     "--ask-for-approval", "never",
-    "exec", "--ignore-user-config", "--ephemeral",
+    "exec", "--skip-git-repo-check",
+    "--ignore-user-config", "--ephemeral",
     "--color", "never"
   ],
   "env": {

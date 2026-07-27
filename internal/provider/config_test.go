@@ -299,6 +299,28 @@ func TestRepositoryProfileTemplatesLoadAsStandaloneProfiles(t *testing.T) {
 		t.Fatalf("cx direct argv=%q", got)
 	}
 
+	for _, testCase := range []struct {
+		id       string
+		wantArgv string
+	}{
+		{
+			id:       "cx-deep",
+			wantArgv: "codex --search --sandbox read-only --ask-for-approval never -c model_reasoning_effort=max exec --skip-git-repo-check --ignore-user-config --ephemeral --color never --model gpt-5.6-sol",
+		},
+		{
+			id:       "cx-spark",
+			wantArgv: "codex --sandbox read-only --ask-for-approval never -c model_reasoning_effort=xhigh exec --skip-git-repo-check --ignore-user-config --ephemeral --color never --model gpt-5.3-codex-spark",
+		},
+	} {
+		request, prepareErr := Prepare(profiles[testCase.id], "review", nil)
+		if prepareErr != nil {
+			t.Fatalf("%s prepare: %v", testCase.id, prepareErr)
+		}
+		if got := strings.Join(request.CLI.Argv, " "); got != testCase.wantArgv {
+			t.Fatalf("%s argv=%q", testCase.id, got)
+		}
+	}
+
 	image := profiles["cx-image"]
 	if image.TimeoutSeconds != 180 || image.CLI.Command.Model != "gpt-5.6-sol" || image.CLI.Effort != "xhigh" {
 		t.Fatalf("cx-image=%#v", image)
