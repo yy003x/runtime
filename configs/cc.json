@@ -1,5 +1,6 @@
 {
-  "command": "claude",
+  "type": "cli",
+  "binary": "claude",
   "args": [
     "--dangerously-skip-permissions"
   ],
@@ -9,5 +10,7 @@
     "ANTHROPIC_API_KEY": "${KMM_API_KEY}",
     "ANTHROPIC_AUTH_TOKEN": "${KMM_API_KEY}",
     "ANTHROPIC_MODEL": "claude-fable-5"
-  }
+  },
+  "transport": "tty",
+  "prompt_delivery": "manual"
 }

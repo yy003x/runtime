@@ -79,7 +79,10 @@ if [ "$DRY_RUN" = "1" ]; then
   log "ref: $REF"
   log "source: $SOURCE_DIR"
   log "binary: $SN_CLI_HOME/bin/sn-cli"
-  log "configs: $SN_CLI_HOME/configs"
+  log "server: $SN_CLI_HOME/bin/sn-server"
+  log "profiles: $SN_CLI_HOME/configs"
+  log "commands: $SN_CLI_HOME/commands"
+  log "runtime config: $SN_CLI_HOME/runtime.json"
   log "resources: $SN_CLI_HOME/resources"
   log "symlink: $INSTALL_DIR/sn-cli"
   exit 0
@@ -135,12 +138,15 @@ for required in go.mod Makefile install.sh configs resources; do
 done
 
 COMMIT="$(git -C "$SOURCE_DIR" rev-parse --short HEAD)"
-log "building sn-cli from $REF ($COMMIT)"
-make -C "$SOURCE_DIR" sn-cli-build
+log "building Runtime from $REF ($COMMIT)"
+make -C "$SOURCE_DIR" build sn-cli-build
 
 bash "$SOURCE_DIR/install.sh" \
   --binary "$SOURCE_DIR/bin/sn-cli" \
+  --server "$SOURCE_DIR/bin/sn-server" \
   --configs "$SOURCE_DIR/configs" \
+  --commands "$SOURCE_DIR/configs/commands" \
+  --runtime-config "$SOURCE_DIR/configs/runtime/runtime.json" \
   --resources "$SOURCE_DIR/resources" \
   --home "$SN_CLI_HOME" \
   --install-dir "$INSTALL_DIR"

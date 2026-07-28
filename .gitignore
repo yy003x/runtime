@@ -2,9 +2,7 @@
 /bin/
 /dist/
 
-# Logs and runtime artifacts
-/logs/
-/runs/
+# Logs and transient files
 *.log
 *.out
 *.pid
@@ -25,6 +23,7 @@ coverage.txt
 Thumbs.db
 .idea/
 .vscode/
+/.claude/
 
 # Go workspace noise
 *.test

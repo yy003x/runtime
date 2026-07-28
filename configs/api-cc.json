@@ -1,8 +1,14 @@
 {
-  "protocol": "anthropic",
-  "base_url": "https://api.kuaimaai.com.cn",
+  "type": "api",
+  "driver": "anthropic-compatible",
+  "endpoint": "https://api.kuaimaai.com.cn/v1/messages",
   "model": "claude-fable-5",
-  "api_key": "${KMM_API_KEY}",
-  "timeout_seconds": 3000,
-  "max_tokens": 16384
+  "auth": {
+    "header": "x-api-key",
+    "from_env": "KMM_API_KEY"
+  },
+  "defaults": {
+    "max_tokens": 16384
+  },
+  "timeout": "50m"
 }

@@ -1,79 +1,90 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/yy003x/runtime/resources/schema/runtime.schema.json",
-  "title": "sn-cli runtime settings",
-  "description": "configs/runtime.yaml 的结构约束。未配置字段使用运行时默认值。",
+  "title": "Runtime vNext Configuration",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "default_project": { "type": "string", "minLength": 1, "default": "_default" },
-    "default_profile": { "type": "string", "minLength": 1, "default": "cx" },
-    "max_concurrency": { "type": "integer", "minimum": 1, "default": 1 },
-    "max_queue": { "type": "integer", "minimum": 1, "default": 64 },
-    "queue_timeout_seconds": { "type": "integer", "minimum": 0, "default": 3600 },
-    "default_deadline_seconds": { "type": "integer", "minimum": 0, "default": 300 },
-    "assets": {
+    "terminal": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "roots": {
-          "type": "object",
-          "description": "LLM Runtime 可通过 asset://<name>/... 读取的绝对目录。",
-          "propertyNames": { "pattern": "^[A-Za-z0-9._-]+$" },
-          "additionalProperties": { "type": "string", "pattern": "^/" },
-          "default": {}
+        "driver": {
+          "enum": ["ghostty", "iterm2"],
+          "default": "ghostty"
         }
       }
     },
-    "llm": {
+    "agent": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mcp_servers": {
+        "tools": {
           "type": "array",
-          "maxItems": 32,
-          "default": [],
+          "uniqueItems": true,
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "command"],
-            "properties": {
-              "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
-              "command": { "type": "string", "minLength": 1 },
-              "args": {
-                "type": "array",
-                "maxItems": 256,
-                "items": { "type": "string" }
-              },
-              "dir": { "type": "string", "pattern": "^/" },
-              "env": {
-                "type": "object",
-                "maxProperties": 256,
-                "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-                "additionalProperties": { "type": "string" }
-              },
-              "env_passthrough": {
-                "type": "array",
-                "maxItems": 256,
-                "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
-              },
-              "timeout_seconds": { "type": "number", "minimum": 0, "maximum": 3600 }
-            }
+            "enum": [
+              "read_file",
+              "list_directory",
+              "write_file",
+              "exec_command"
+            ]
+          },
+          "default": ["read_file", "list_directory"]
+        },
+        "workspace_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/"
           }
+        },
+        "max_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128,
+          "default": 16
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 64
+        },
+        "max_total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_wall_time": {
+          "type": "string",
+          "default": "15m"
         }
       }
     },
-    "session": {
+    "scheduler": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "default_carrier": { "enum": ["tmux", "terminal"], "default": "tmux" },
-        "terminal": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "driver": { "enum": ["ghostty", "iterm2"] }
-          }
+        "workers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 1
+        },
+        "poll_interval": {
+          "type": "string",
+          "default": "250ms"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "settled_retention": {
+          "type": "string",
+          "default": "168h"
         }
       }
     }

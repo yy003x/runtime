@@ -1,17 +1,26 @@
 {
-  "command": "codex",
-  "model": "gpt-5.6-sol",
-  "effort": "max",
+  "type": "cli",
+  "binary": "codex",
   "args": [
     "--search",
-    "--sandbox", "danger-full-access",
-    "--ask-for-approval", "never",
-    "exec", "--skip-git-repo-check",
-    "--ignore-user-config", "--ephemeral",
-    "--color", "never"
+    "--sandbox",
+    "danger-full-access",
+    "--ask-for-approval",
+    "never",
+    "-c",
+    "model_reasoning_effort=max",
+    "exec",
+    "--skip-git-repo-check",
+    "--ignore-user-config",
+    "--ephemeral",
+    "--color",
+    "never",
+    "--model",
+    "gpt-5.6-sol"
   ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-ait"
   },
-  "timeout_seconds": 900
+  "transport": "tty",
+  "prompt_delivery": "argv"
 }

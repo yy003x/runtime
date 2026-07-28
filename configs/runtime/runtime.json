@@ -1,0 +1,21 @@
+{
+  "terminal": {
+    "driver": "ghostty"
+  },
+  "agent": {
+    "tools": [
+      "read_file",
+      "list_directory"
+    ],
+    "max_rounds": 16,
+    "max_tool_calls": 64,
+    "max_wall_time": "15m"
+  },
+  "scheduler": {
+    "workers": 1,
+    "poll_interval": "250ms"
+  },
+  "run": {
+    "settled_retention": "168h"
+  }
+}

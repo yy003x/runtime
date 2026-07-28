@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yy003x/runtime/resources/schema/profile.schema.json",
+  "title": "Runtime Profile",
+  "oneOf": [
+    {
+      "title": "CLI Profile",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "binary",
+        "transport",
+        "prompt_delivery"
+      ],
+      "properties": {
+        "type": {
+          "const": "cli"
+        },
+        "binary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000]+$"
+        },
+        "args": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 262144,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "env": {
+          "type": "object",
+          "maxProperties": 1024,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^=\\u0000]+$"
+          },
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 262144
+          }
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "tty",
+            "tmux",
+            "terminal"
+          ]
+        },
+        "prompt_delivery": {
+          "type": "string",
+          "enum": [
+            "argv",
+            "stdin",
+            "paste",
+            "manual"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport": {
+                "const": "tty"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "prompt_delivery": {
+                "enum": [
+                  "argv",
+                  "stdin",
+                  "manual"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "prompt_delivery": {
+                "enum": [
+                  "argv",
+                  "paste",
+                  "manual"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "API Profile",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "driver",
+        "endpoint",
+        "model",
+        "auth",
+        "timeout"
+      ],
+      "properties": {
+        "type": {
+          "const": "api"
+        },
+        "driver": {
+          "enum": [
+            "openai-compatible",
+            "anthropic-compatible"
+          ]
+        },
+        "endpoint": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "header",
+            "from_env"
+          ],
+          "properties": {
+            "header": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scheme": {
+              "type": "string",
+              "pattern": "^[^\\r\\n\\u0000]+$"
+            },
+            "from_env": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        "headers": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 8192,
+            "pattern": "^[^\\r\\n\\u0000]*$"
+          }
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_completion_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "temperature": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            }
+          }
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 2
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "window_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reserved_output_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "keep_recent_turns": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "summary_enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "driver": {
+                "const": "openai-compatible"
+              }
+            },
+            "required": [
+              "driver"
+            ]
+          },
+          "then": {
+            "properties": {
+              "defaults": {
+                "not": {
+                  "required": [
+                    "max_tokens"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "driver": {
+                "const": "anthropic-compatible"
+              }
+            },
+            "required": [
+              "driver"
+            ]
+          },
+          "then": {
+            "required": [
+              "defaults"
+            ],
+            "properties": {
+              "defaults": {
+                "required": [
+                  "max_tokens"
+                ],
+                "not": {
+                  "required": [
+                    "max_completion_tokens"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

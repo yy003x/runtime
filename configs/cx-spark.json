@@ -1,16 +1,25 @@
 {
-  "command": "codex",
-  "model": "gpt-5.3-codex-spark",
-  "effort": "xhigh",
+  "type": "cli",
+  "binary": "codex",
   "args": [
-    "--sandbox", "read-only",
-    "--ask-for-approval", "never",
-    "exec", "--skip-git-repo-check",
-    "--ignore-user-config", "--ephemeral",
-    "--color", "never"
+    "--sandbox",
+    "read-only",
+    "--ask-for-approval",
+    "never",
+    "-c",
+    "model_reasoning_effort=xhigh",
+    "exec",
+    "--skip-git-repo-check",
+    "--ignore-user-config",
+    "--ephemeral",
+    "--color",
+    "never",
+    "--model",
+    "gpt-5.3-codex-spark"
   ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-ait"
   },
-  "timeout_seconds": 900
+  "transport": "tty",
+  "prompt_delivery": "argv"
 }

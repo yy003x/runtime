@@ -1,8 +1,15 @@
 {
-  "protocol": "openai",
-  "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "type": "api",
+  "driver": "openai-compatible",
+  "endpoint": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
   "model": "qwen3.7-max",
-  "api_key": "${ALIYUN_API_KEY}",
-  "timeout_seconds": 300,
-  "max_tokens": 16384
+  "auth": {
+    "header": "Authorization",
+    "scheme": "Bearer",
+    "from_env": "ALIYUN_API_KEY"
+  },
+  "defaults": {
+    "max_completion_tokens": 16384
+  },
+  "timeout": "5m"
 }

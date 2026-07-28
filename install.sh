@@ -10,7 +10,10 @@ VERSION="${SN_CLI_VERSION:-}"
 LOCAL_ARCHIVE=""
 LOCAL_CHECKSUMS=""
 LOCAL_BINARY=""
+LOCAL_SERVER=""
 LOCAL_CONFIGS=""
+LOCAL_COMMANDS=""
+LOCAL_RUNTIME_CONFIG=""
 LOCAL_RESOURCES=""
 OVERWRITE_CONFIGS=0
 DRY_RUN=0
@@ -24,14 +27,15 @@ Usage:
   bash install.sh [--version VERSION] [--dry-run]
 
 Local package options used by `make install`:
-  --binary FILE --configs DIR --resources DIR [--overwrite-configs]
+  --binary FILE --server FILE --configs DIR --commands DIR
+  --runtime-config FILE --resources DIR [--overwrite-configs]
   --archive FILE [--checksums FILE]
 
 Options:
   --version VERSION    Install a specific release tag; default is latest.
   --install-dir DIR    Symlink directory; default is ~/.local/bin.
   --home DIR           Runtime home; default is ~/.sn.
-  --overwrite-configs  Replace the config directory with packaged configs.
+  --overwrite-configs  Replace profiles, subcommands, runtime.json, and resources.
   --dry-run            Print the resolved install plan without writing files.
   -h, --help           Show this help.
 
@@ -54,7 +58,10 @@ while [ "$#" -gt 0 ]; do
     --archive) [ "$#" -ge 2 ] || die "--archive requires a value"; LOCAL_ARCHIVE="$2"; shift 2 ;;
     --checksums) [ "$#" -ge 2 ] || die "--checksums requires a value"; LOCAL_CHECKSUMS="$2"; shift 2 ;;
     --binary) [ "$#" -ge 2 ] || die "--binary requires a value"; LOCAL_BINARY="$2"; shift 2 ;;
+    --server) [ "$#" -ge 2 ] || die "--server requires a value"; LOCAL_SERVER="$2"; shift 2 ;;
     --configs) [ "$#" -ge 2 ] || die "--configs requires a value"; LOCAL_CONFIGS="$2"; shift 2 ;;
+    --commands) [ "$#" -ge 2 ] || die "--commands requires a value"; LOCAL_COMMANDS="$2"; shift 2 ;;
+    --runtime-config) [ "$#" -ge 2 ] || die "--runtime-config requires a value"; LOCAL_RUNTIME_CONFIG="$2"; shift 2 ;;
     --resources) [ "$#" -ge 2 ] || die "--resources requires a value"; LOCAL_RESOURCES="$2"; shift 2 ;;
     --overwrite-configs) OVERWRITE_CONFIGS=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -96,13 +103,19 @@ if [ "$DRY_RUN" = "1" ]; then
   log "sn-cli install dry-run"
   log "home: $SN_CLI_HOME"
   log "binary: $SN_CLI_HOME/bin/sn-cli"
-  log "configs: $SN_CLI_HOME/configs"
+  log "server: $SN_CLI_HOME/bin/sn-server"
+  log "profiles: $SN_CLI_HOME/configs"
+  log "commands: $SN_CLI_HOME/commands"
+  log "runtime config: $SN_CLI_HOME/runtime.json"
   log "resources: $SN_CLI_HOME/resources"
   log "overwrite configs: $OVERWRITE_CONFIGS"
   log "symlink: $INSTALL_DIR/sn-cli"
   if [ -n "$LOCAL_BINARY" ]; then
     log "source binary: $LOCAL_BINARY"
-    log "source configs: $LOCAL_CONFIGS"
+    log "source server: $LOCAL_SERVER"
+    log "source profiles: $LOCAL_CONFIGS/*.json"
+    log "source commands: $LOCAL_COMMANDS"
+    log "source runtime config: $LOCAL_RUNTIME_CONFIG"
     log "source resources: $LOCAL_RESOURCES"
   elif [ -n "$LOCAL_ARCHIVE" ]; then
     log "source archive: $LOCAL_ARCHIVE"
@@ -116,8 +129,8 @@ fi
 if [ -n "$LOCAL_BINARY" ] && [ -n "$LOCAL_ARCHIVE" ]; then
   die "--binary and --archive are mutually exclusive"
 fi
-if [ -n "$LOCAL_BINARY" ] && { [ -z "$LOCAL_CONFIGS" ] || [ -z "$LOCAL_RESOURCES" ]; }; then
-  die "--binary requires --configs and --resources"
+if [ -n "$LOCAL_BINARY" ] && { [ -z "$LOCAL_SERVER" ] || [ -z "$LOCAL_CONFIGS" ] || [ -z "$LOCAL_COMMANDS" ] || [ -z "$LOCAL_RUNTIME_CONFIG" ] || [ -z "$LOCAL_RESOURCES" ]; }; then
+  die "--binary requires --server, --configs, --commands, --runtime-config, and --resources"
 fi
 
 mkdir -p "$SN_CLI_HOME/tmp"
@@ -272,10 +285,25 @@ PAYLOAD="$WORK_DIR/payload"
 mkdir -p "$PAYLOAD"
 if [ -n "$LOCAL_BINARY" ]; then
   [ -x "$LOCAL_BINARY" ] || die "local binary is not executable: $LOCAL_BINARY"
+  [ -x "$LOCAL_SERVER" ] || die "local server is not executable: $LOCAL_SERVER"
   [ -d "$LOCAL_CONFIGS" ] || die "local configs not found: $LOCAL_CONFIGS"
+  [ -d "$LOCAL_COMMANDS" ] || die "local commands not found: $LOCAL_COMMANDS"
+  [ -f "$LOCAL_RUNTIME_CONFIG" ] && [ ! -L "$LOCAL_RUNTIME_CONFIG" ] || die "local runtime config not found: $LOCAL_RUNTIME_CONFIG"
   [ -d "$LOCAL_RESOURCES" ] || die "local resources not found: $LOCAL_RESOURCES"
   PACKAGE_BINARY="$LOCAL_BINARY"
-  PACKAGE_CONFIGS="$LOCAL_CONFIGS"
+  PACKAGE_SERVER="$LOCAL_SERVER"
+  PACKAGE_CONFIGS="$PAYLOAD/configs"
+  mkdir -p "$PACKAGE_CONFIGS"
+  profile_count=0
+  for profile in "$LOCAL_CONFIGS"/*.json; do
+    [ -f "$profile" ] && [ ! -L "$profile" ] ||
+      die "local configs must contain only regular top-level JSON profiles"
+    cp "$profile" "$PACKAGE_CONFIGS/"
+    profile_count=$((profile_count + 1))
+  done
+  [ "$profile_count" -gt 0 ] || die "local configs contain no JSON profiles"
+  PACKAGE_COMMANDS="$LOCAL_COMMANDS"
+  PACKAGE_RUNTIME_CONFIG="$LOCAL_RUNTIME_CONFIG"
   PACKAGE_RESOURCES="$LOCAL_RESOURCES"
 else
   ARCHIVE_PATH="$LOCAL_ARCHIVE"
@@ -298,63 +326,103 @@ else
   validate_archive_paths "$ARCHIVE_PATH"
   tar -xzf "$ARCHIVE_PATH" -C "$PAYLOAD"
   PACKAGE_BINARY="$PAYLOAD/sn-cli"
+  PACKAGE_SERVER="$PAYLOAD/sn-server"
   PACKAGE_CONFIGS="$PAYLOAD/configs"
+  PACKAGE_COMMANDS="$PAYLOAD/commands"
+  PACKAGE_RUNTIME_CONFIG="$PAYLOAD/runtime.json"
   PACKAGE_RESOURCES="$PAYLOAD/resources"
 fi
 
 [ -x "$PACKAGE_BINARY" ] || die "package has no executable sn-cli"
+[ -x "$PACKAGE_SERVER" ] || die "package has no executable sn-server"
 [ -d "$PACKAGE_CONFIGS" ] || die "package has no configs directory"
+[ -d "$PACKAGE_COMMANDS" ] || die "package has no commands directory"
+[ -f "$PACKAGE_RUNTIME_CONFIG" ] && [ ! -L "$PACKAGE_RUNTIME_CONFIG" ] || die "package has no runtime.json"
 [ -d "$PACKAGE_RESOURCES" ] || die "package has no resources directory"
 
 TARGET_BINARY="$SN_CLI_HOME/bin/sn-cli"
-if [ -e "$TARGET_BINARY" ] || [ -L "$TARGET_BINARY" ]; then
-  [ -f "$TARGET_BINARY" ] && [ ! -L "$TARGET_BINARY" ] || die "binary target is not a regular file: $TARGET_BINARY"
+TARGET_SERVER="$SN_CLI_HOME/bin/sn-server"
+for target in "$TARGET_BINARY" "$TARGET_SERVER"; do
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -f "$target" ] && [ ! -L "$target" ] || die "binary target is not a regular file: $target"
+  fi
+done
+if [ -e "$SN_CLI_HOME/runtime.json" ] || [ -L "$SN_CLI_HOME/runtime.json" ]; then
+  [ -f "$SN_CLI_HOME/runtime.json" ] && [ ! -L "$SN_CLI_HOME/runtime.json" ] || die "runtime config target is not a regular file: $SN_CLI_HOME/runtime.json"
 fi
 
 MERGED_HOME="$WORK_DIR/merged-home"
-mkdir -p "$MERGED_HOME/configs" "$MERGED_HOME/resources"
+mkdir -p "$MERGED_HOME/configs" "$MERGED_HOME/commands" "$MERGED_HOME/resources"
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
-  if [ -e "$SN_CLI_HOME/configs" ] || [ -L "$SN_CLI_HOME/configs" ]; then
-    [ -d "$SN_CLI_HOME/configs" ] && [ ! -L "$SN_CLI_HOME/configs" ] || die "sync type conflict at $SN_CLI_HOME/configs"
-  fi
+  for target in "$SN_CLI_HOME/configs" "$SN_CLI_HOME/commands"; do
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      [ -d "$target" ] && [ ! -L "$target" ] || die "sync type conflict at $target"
+    fi
+  done
 else
   preflight_sync "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs"
+  preflight_sync "$PACKAGE_COMMANDS" "$SN_CLI_HOME/commands"
 fi
 preflight_sync "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources"
 if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -d "$SN_CLI_HOME/configs" ]; then
   sync_missing "$SN_CLI_HOME/configs" "$MERGED_HOME/configs" 1
 fi
-if [ -d "$SN_CLI_HOME/resources" ]; then
+if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -d "$SN_CLI_HOME/commands" ]; then
+  sync_missing "$SN_CLI_HOME/commands" "$MERGED_HOME/commands" 1
+fi
+if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -d "$SN_CLI_HOME/resources" ]; then
   sync_missing "$SN_CLI_HOME/resources" "$MERGED_HOME/resources" 1
 fi
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
-  sync_overwrite "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1 config
+  sync_overwrite "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1 profile
 else
   sync_missing "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1
+fi
+if [ "$OVERWRITE_CONFIGS" = "1" ]; then
+  sync_overwrite "$PACKAGE_COMMANDS" "$MERGED_HOME/commands" 1 command
+else
+  sync_missing "$PACKAGE_COMMANDS" "$MERGED_HOME/commands" 1
 fi
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
   sync_overwrite "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1 resource
 else
   sync_missing "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1
 fi
-SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profile list >/dev/null || die "new sn-cli failed config validation"
+if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -f "$SN_CLI_HOME/runtime.json" ] && [ ! -L "$SN_CLI_HOME/runtime.json" ]; then
+  cp "$SN_CLI_HOME/runtime.json" "$MERGED_HOME/runtime.json"
+else
+  cp "$PACKAGE_RUNTIME_CONFIG" "$MERGED_HOME/runtime.json"
+fi
+SN_CLI_HOME="$MERGED_HOME" "$PACKAGE_BINARY" profile check >/dev/null || die "new sn-cli failed profile validation"
 
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
   replace_directory "$MERGED_HOME/configs" "$SN_CLI_HOME/configs"
-  log "replaced configs: $SN_CLI_HOME/configs"
+  log "replaced profiles: $SN_CLI_HOME/configs"
+  replace_directory "$MERGED_HOME/commands" "$SN_CLI_HOME/commands"
+  log "replaced commands: $SN_CLI_HOME/commands"
 else
-  sync_missing "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 config
+  sync_missing "$PACKAGE_CONFIGS" "$SN_CLI_HOME/configs" 0 profile
+  sync_missing "$PACKAGE_COMMANDS" "$SN_CLI_HOME/commands" 0 command
+fi
+if [ "$OVERWRITE_CONFIGS" = "1" ] || [ ! -e "$SN_CLI_HOME/runtime.json" ]; then
+  runtime_temp="$(mktemp "$SN_CLI_HOME/.runtime.json.install.XXXXXX")"
+  cp "$PACKAGE_RUNTIME_CONFIG" "$runtime_temp"
+  chmod 600 "$runtime_temp"
+  mv -f "$runtime_temp" "$SN_CLI_HOME/runtime.json"
+  log "installed runtime config: $SN_CLI_HOME/runtime.json"
+elif [ -L "$SN_CLI_HOME/runtime.json" ] || [ ! -f "$SN_CLI_HOME/runtime.json" ]; then
+  die "runtime config target is not a regular file: $SN_CLI_HOME/runtime.json"
 fi
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
-  sync_overwrite "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
+  replace_directory "$MERGED_HOME/resources" "$SN_CLI_HOME/resources"
+  log "replaced resources: $SN_CLI_HOME/resources"
 else
   sync_missing "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
 fi
 for directory in \
-  "$SN_CLI_HOME/configs" "$SN_CLI_HOME/resources" "$SN_CLI_HOME/resources/personas" \
-  "$SN_CLI_HOME/resources/skills" "$SN_CLI_HOME/resources/tools" "$SN_CLI_HOME/resources/schema" \
-  "$SN_CLI_HOME/bin" "$SN_CLI_HOME/runs" "$SN_CLI_HOME/daemon" "$SN_CLI_HOME/state" \
-  "$SN_CLI_HOME/logs" "$SN_CLI_HOME/cache"; do
+  "$SN_CLI_HOME/configs" "$SN_CLI_HOME/commands" "$SN_CLI_HOME/resources" \
+  "$SN_CLI_HOME/resources/schema" "$SN_CLI_HOME/bin" "$SN_CLI_HOME/sessions" \
+  "$SN_CLI_HOME/state" "$SN_CLI_HOME/tmp"; do
   if [ -e "$directory" ] || [ -L "$directory" ]; then
     [ -d "$directory" ] && [ ! -L "$directory" ] || die "runtime directory type conflict at $directory"
   else
@@ -367,6 +435,10 @@ NEW_BINARY="$SN_CLI_HOME/bin/.sn-cli.new.$$"
 cp "$PACKAGE_BINARY" "$NEW_BINARY"
 chmod 755 "$NEW_BINARY"
 mv -f "$NEW_BINARY" "$TARGET_BINARY"
+NEW_SERVER="$SN_CLI_HOME/bin/.sn-server.new.$$"
+cp "$PACKAGE_SERVER" "$NEW_SERVER"
+chmod 755 "$NEW_SERVER"
+mv -f "$NEW_SERVER" "$TARGET_SERVER"
 
 LINK="$INSTALL_DIR/sn-cli"
 if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
@@ -377,6 +449,7 @@ ln -s "$TARGET_BINARY" "$NEW_LINK"
 mv -f "$NEW_LINK" "$LINK"
 
 log "installed binary: $TARGET_BINARY"
+log "installed server: $TARGET_SERVER"
 log "installed command: $LINK"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
