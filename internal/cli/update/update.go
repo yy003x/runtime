@@ -30,11 +30,14 @@ type Status struct {
 }
 
 type ApplyResult struct {
-	Version         string   `json:"version"`
-	Archive         string   `json:"archive"`
-	Binary          string   `json:"binary"`
-	CopiedConfigs   []string `json:"copied_configs"`
-	CopiedResources []string `json:"copied_resources"`
+	Version             string   `json:"version"`
+	Archive             string   `json:"archive"`
+	Binary              string   `json:"binary"`
+	ServerBinary        string   `json:"server_binary"`
+	CopiedProfiles      []string `json:"copied_profiles"`
+	CopiedCommands      []string `json:"copied_commands"`
+	CopiedRuntimeConfig bool     `json:"copied_runtime_config"`
+	CopiedResources     []string `json:"copied_resources"`
 }
 
 type state struct {
@@ -128,29 +131,51 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 		return ApplyResult{}, err
 	}
 	binary := filepath.Join(payload, "sn-cli")
-	packagedConfigs := filepath.Join(payload, "configs")
+	serverBinary := filepath.Join(payload, "sn-server")
+	packagedProfiles := filepath.Join(payload, "configs")
+	packagedCommands := filepath.Join(payload, "commands")
+	packagedRuntimeConfig := filepath.Join(payload, "runtime.json")
 	packagedResources := filepath.Join(payload, "resources")
-	if err := validatePayload(binary, packagedConfigs, packagedResources); err != nil {
+	if err := validatePayload(
+		binary, serverBinary, packagedProfiles, packagedCommands,
+		packagedRuntimeConfig, packagedResources,
+	); err != nil {
 		return ApplyResult{}, err
 	}
-	if info, err := os.Lstat(cfg.Paths.Binary); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
-		return ApplyResult{}, fmt.Errorf("binary target is not a regular file: %s", cfg.Paths.Binary)
+	for _, target := range []string{cfg.Paths.Binary, cfg.Paths.ServerBinary} {
+		if info, err := os.Lstat(target); err == nil &&
+			(!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+			return ApplyResult{}, fmt.Errorf(
+				"binary target is not a regular file: %s", target,
+			)
+		} else if err != nil && !os.IsNotExist(err) {
+			return ApplyResult{}, err
+		}
+	}
+	mergedHome := filepath.Join(temporary, "merged-home")
+	mergedProfiles := filepath.Join(mergedHome, "configs")
+	mergedCommands := filepath.Join(mergedHome, "commands")
+	mergedResources := filepath.Join(mergedHome, "resources")
+	for _, directory := range []string{
+		mergedProfiles, mergedCommands, mergedResources,
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return ApplyResult{}, err
+		}
+	}
+	if info, err := os.Stat(cfg.Paths.ConfigDir); err == nil && info.IsDir() {
+		if _, err := installbundle.SyncMissing(cfg.Paths.ConfigDir, mergedProfiles); err != nil {
+			return ApplyResult{}, err
+		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return ApplyResult{}, err
 	}
-	mergedHome := filepath.Join(temporary, "merged-home")
-	mergedConfigs := filepath.Join(mergedHome, "configs")
-	mergedResources := filepath.Join(mergedHome, "resources")
-	if err := os.MkdirAll(mergedConfigs, 0o700); err != nil {
-		return ApplyResult{}, err
-	}
-	if err := os.MkdirAll(mergedResources, 0o700); err != nil {
-		return ApplyResult{}, err
-	}
-	if info, err := os.Stat(cfg.Paths.ConfigDir); err == nil && info.IsDir() {
-		if _, err := installbundle.SyncMissing(cfg.Paths.ConfigDir, mergedConfigs); err != nil {
+	if info, err := os.Stat(cfg.Paths.CommandDir); err == nil && info.IsDir() {
+		if _, err := installbundle.SyncMissing(cfg.Paths.CommandDir, mergedCommands); err != nil {
 			return ApplyResult{}, err
 		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return ApplyResult{}, err
 	}
 	if info, err := os.Stat(cfg.Paths.ResourcesDir); err == nil && info.IsDir() {
 		if _, err := installbundle.SyncMissing(cfg.Paths.ResourcesDir, mergedResources); err != nil {
@@ -159,16 +184,43 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	} else if err != nil && !os.IsNotExist(err) {
 		return ApplyResult{}, err
 	}
-	if _, err := installbundle.SyncMissing(packagedConfigs, mergedConfigs); err != nil {
+	if _, err := installbundle.SyncMissing(packagedProfiles, mergedProfiles); err != nil {
+		return ApplyResult{}, err
+	}
+	if _, err := installbundle.SyncMissing(packagedCommands, mergedCommands); err != nil {
 		return ApplyResult{}, err
 	}
 	if _, err := installbundle.SyncMissing(packagedResources, mergedResources); err != nil {
 		return ApplyResult{}, err
 	}
+	if _, err := copyMissingFile(
+		cfg.Paths.RuntimeConfigFile,
+		filepath.Join(mergedHome, "runtime.json"),
+	); err != nil && !os.IsNotExist(err) {
+		return ApplyResult{}, err
+	}
+	if _, err := copyMissingFile(
+		packagedRuntimeConfig,
+		filepath.Join(mergedHome, "runtime.json"),
+	); err != nil {
+		return ApplyResult{}, err
+	}
 	if err := validateBinary(ctx, binary, mergedHome); err != nil {
 		return ApplyResult{}, err
 	}
-	syncResult, err := installbundle.SyncMissing(packagedConfigs, cfg.Paths.ConfigDir)
+	profileSyncResult, err := installbundle.SyncMissing(
+		packagedProfiles, cfg.Paths.ConfigDir,
+	)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	commandSyncResult, err := installbundle.SyncMissing(packagedCommands, cfg.Paths.CommandDir)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	copiedRuntimeConfig, err := copyMissingFile(
+		packagedRuntimeConfig, cfg.Paths.RuntimeConfigFile,
+	)
 	if err != nil {
 		return ApplyResult{}, err
 	}
@@ -179,9 +231,16 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	if err := installBinary(binary, cfg.Paths.Binary); err != nil {
 		return ApplyResult{}, err
 	}
+	if err := installBinary(serverBinary, cfg.Paths.ServerBinary); err != nil {
+		return ApplyResult{}, err
+	}
 	result := ApplyResult{
 		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
-		CopiedConfigs: syncResult.Copied, CopiedResources: resourceSyncResult.Copied,
+		ServerBinary:        cfg.Paths.ServerBinary,
+		CopiedProfiles:      profileSyncResult.Copied,
+		CopiedCommands:      commandSyncResult.Copied,
+		CopiedRuntimeConfig: copiedRuntimeConfig,
+		CopiedResources:     resourceSyncResult.Copied,
 	}
 	_ = writeState(cfg, Status{CheckedAt: time.Now().UTC(), CurrentVersion: version, LatestVersion: version})
 	return result, nil
@@ -247,13 +306,25 @@ func download(ctx context.Context, client *http.Client, source, target string) e
 	return closeErr
 }
 
-func validatePayload(binary, configs, resources string) error {
-	info, err := os.Stat(binary)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
-		return fmt.Errorf("release archive has no executable sn-cli")
+func validatePayload(
+	binary, serverBinary, profiles, commands, runtimeConfig, resources string,
+) error {
+	for name, path := range map[string]string{
+		"sn-cli": binary, "sn-server": serverBinary,
+	} {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+			return fmt.Errorf("release archive has no executable %s", name)
+		}
 	}
-	if info, err := os.Stat(configs); err != nil || !info.IsDir() {
+	if info, err := os.Stat(profiles); err != nil || !info.IsDir() {
 		return fmt.Errorf("release archive has no configs directory")
+	}
+	if info, err := os.Stat(commands); err != nil || !info.IsDir() {
+		return fmt.Errorf("release archive has no commands directory")
+	}
+	if info, err := os.Stat(runtimeConfig); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("release archive has no runtime.json")
 	}
 	if info, err := os.Stat(resources); err != nil || !info.IsDir() {
 		return fmt.Errorf("release archive has no resources directory")
@@ -261,12 +332,61 @@ func validatePayload(binary, configs, resources string) error {
 	return nil
 }
 
-func validateBinary(ctx context.Context, binary, home string) error {
-	command := exec.CommandContext(ctx, binary, "profile", "list")
-	command.Env = replaceEnv(os.Environ(), "SN_CLI_HOME", home)
-	output, err := command.CombinedOutput()
+func copyMissingFile(source, target string) (bool, error) {
+	sourceInfo, err := os.Lstat(source)
 	if err != nil {
-		return fmt.Errorf("validate new sn-cli: %w: %s", err, strings.TrimSpace(string(output)))
+		return false, err
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.Mode().IsRegular() {
+		return false, fmt.Errorf("source is not a regular file: %s", source)
+	}
+	if targetInfo, err := os.Lstat(target); err == nil {
+		if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.Mode().IsRegular() {
+			return false, fmt.Errorf("target is not a regular file: %s", target)
+		}
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return false, err
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return false, err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(
+		target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sourceInfo.Mode().Perm(),
+	)
+	if err != nil {
+		return false, err
+	}
+	ok := false
+	defer func() {
+		_ = output.Close()
+		if !ok {
+			_ = os.Remove(target)
+		}
+	}()
+	if _, err := io.Copy(output, input); err != nil {
+		return false, err
+	}
+	if err := output.Close(); err != nil {
+		return false, err
+	}
+	ok = true
+	return true, nil
+}
+
+func validateBinary(ctx context.Context, binary, home string) error {
+	for _, args := range [][]string{{"profile", "check"}, {"system", "info"}} {
+		command := exec.CommandContext(ctx, binary, args...)
+		command.Env = replaceEnv(os.Environ(), "SN_CLI_HOME", home)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("validate new sn-cli %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		}
 	}
 	return nil
 }

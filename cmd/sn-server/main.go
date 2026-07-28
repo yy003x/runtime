@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log"
@@ -10,13 +11,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/internal/agentrun"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/transport"
+	transporthttp "github.com/yy003x/runtime/transport/http"
 )
 
 type serverConfig struct {
@@ -24,53 +25,90 @@ type serverConfig struct {
 	BearerToken string
 }
 
+var fixedNamespaces = []string{
+	"profile", "session", "agent", "run", "system", "help", "version",
+}
+
 func main() {
 	paths, err := layout.Resolve()
 	if err != nil {
 		log.Fatalf("resolve runtime home: %v", err)
 	}
-	if err := paths.Ensure(); err != nil {
-		log.Fatalf("prepare runtime home: %v", err)
-	}
-	service := agentrun.New(paths.Home)
-	llmRuntime, err := runtimebootstrap.New(service)
+	cwd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("initialize LLM runtime: %v", err)
+		log.Fatalf("resolve working directory: %v", err)
 	}
+	services, err := runtimebootstrap.LoadServices(paths, cwd, fixedNamespaces...)
+	if err != nil {
+		log.Fatalf("initialize Runtime vNext: %v", err)
+	}
+	defer services.Runs.Close()
 	config, err := loadServerConfig(os.Getenv)
 	if err != nil {
 		log.Fatalf("server config: %v", err)
 	}
-
+	runtimeHandler, err := transporthttp.NewRuntimeHandler(
+		transporthttp.RuntimeServices{
+			Model:            transporthttp.NewHandler(services.Models),
+			Sessions:         services.Sessions,
+			Runs:             services.Runs,
+			AgentBudget:      services.Config.AgentBudget(),
+			SettledRetention: services.Config.SettledRetention(),
+		},
+	)
+	if err != nil {
+		log.Fatalf("build HTTP handler: %v", err)
+	}
+	handler := http.Handler(runtimeHandler)
+	if config.BearerToken != "" {
+		handler = bearerAuth(config.BearerToken, handler)
+	}
 	server := &http.Server{
-		Addr: config.Address,
-		Handler: transport.NewHTTPHandlerWithOptions(service, transport.HTTPOptions{
-			BearerToken: config.BearerToken,
-			LLMRuntime:  llmRuntime,
-		}),
+		Addr: config.Address, Handler: handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      10 * time.Minute,
+		WriteTimeout:      0,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
 	}
-
+	workerContext, cancelWorkers := context.WithCancel(context.Background())
+	var workers sync.WaitGroup
+	for index := 0; index < services.Config.Scheduler.Workers; index++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			workerID := fmt.Sprintf("sn-server-%d-%d", os.Getpid(), worker)
+			err := services.Runs.Worker(
+				workerContext, workerID, services.Config.PollInterval(),
+			)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("worker %s stopped: %v", workerID, err)
+			}
+		}(index + 1)
+	}
+	serveDone := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s", config.Address)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("listen: %v", err)
-		}
+		log.Printf("listening on %s with %d worker(s)", config.Address, services.Config.Scheduler.Workers)
+		serveDone <- server.ListenAndServe()
 	}()
-
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("shutdown: %v", err)
+	var serveErr error
+	select {
+	case <-stop:
+		shutdownContext, cancelShutdown := context.WithTimeout(
+			context.Background(), 10*time.Second,
+		)
+		if err := server.Shutdown(shutdownContext); err != nil {
+			log.Printf("shutdown HTTP: %v", err)
+		}
+		cancelShutdown()
+	case serveErr = <-serveDone:
+	}
+	cancelWorkers()
+	workers.Wait()
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		log.Fatalf("listen: %v", serveErr)
 	}
 }
 
@@ -87,7 +125,9 @@ func loadServerConfig(getenv func(string) string) (serverConfig, error) {
 		return serverConfig{}, fmt.Errorf("HTTP_ADDR must be host:port: %w", err)
 	}
 	if !loopbackHost(host) && config.BearerToken == "" {
-		return serverConfig{}, fmt.Errorf("SN_SERVER_TOKEN is required when HTTP_ADDR is not loopback")
+		return serverConfig{}, fmt.Errorf(
+			"SN_SERVER_TOKEN is required when HTTP_ADDR is not loopback",
+		)
 	}
 	return config, nil
 }
@@ -98,4 +138,21 @@ func loopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func bearerAuth(token string, next http.Handler) http.Handler {
+	expected := []byte("Bearer " + token)
+	return http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		provided := []byte(request.Header.Get("Authorization"))
+		if len(provided) != len(expected) ||
+			subtle.ConstantTimeCompare(provided, expected) != 1 {
+			writer.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }

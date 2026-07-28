@@ -23,10 +23,13 @@ func TestLoadUsesSNCLIHomeWithoutRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Home != home || config.Paths.ConfigDir != filepath.Join(home, "configs") {
+	if config.Home != home ||
+		config.Paths.ConfigDir != filepath.Join(home, "configs") ||
+		config.Paths.CommandDir != filepath.Join(home, "commands") ||
+		config.Paths.RuntimeConfigFile != filepath.Join(home, "runtime.json") {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if _, err := os.Stat(filepath.Join(home, "runs")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "sessions")); err != nil {
 		t.Fatalf("runtime tree not created: %v", err)
 	}
 }

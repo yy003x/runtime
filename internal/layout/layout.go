@@ -10,29 +10,22 @@ import (
 const HomeEnv = "SN_CLI_HOME"
 
 type Paths struct {
-	Home                 string
-	BinDir               string
-	Binary               string
-	ConfigDir            string
-	ResourcesDir         string
-	PersonaDir           string
-	SkillsDir            string
-	ToolsDir             string
-	SchemaDir            string
-	RunsDir              string
-	SessionsDir          string
-	HistoryDir           string
-	DaemonDir            string
-	DaemonLog            string
-	StateDir             string
-	MemoryFile           string
-	MemoryDir            string
-	MemoryCandidatesFile string
-	SessionStateDir      string
-	UpdateStateFile      string
-	LogsDir              string
-	CacheDir             string
-	TmpDir               string
+	Home              string
+	BinDir            string
+	Binary            string
+	ServerBinary      string
+	ConfigDir         string
+	CommandDir        string
+	RuntimeConfigFile string
+	ResourcesDir      string
+	SchemaDir         string
+	SessionsDir       string
+	StateDir          string
+	RunDBFile         string
+	ServerPIDFile     string
+	ServerLogFile     string
+	UpdateStateFile   string
+	TmpDir            string
 }
 
 func Resolve() (Paths, error) {
@@ -67,29 +60,31 @@ func FromHome(home string) (Paths, error) {
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve runtime home %q: %w", home, err)
 	}
-	configDir := filepath.Join(absolute, "configs")
 	resourcesDir := filepath.Join(absolute, "resources")
 	stateDir := filepath.Join(absolute, "state")
-	logsDir := filepath.Join(absolute, "logs")
 	return Paths{
-		Home: absolute, BinDir: filepath.Join(absolute, "bin"), Binary: filepath.Join(absolute, "bin", "sn-cli"),
-		ConfigDir: configDir, ResourcesDir: resourcesDir,
-		PersonaDir: filepath.Join(resourcesDir, "personas"), SkillsDir: filepath.Join(resourcesDir, "skills"),
-		ToolsDir: filepath.Join(resourcesDir, "tools"), SchemaDir: filepath.Join(resourcesDir, "schema"),
-		RunsDir: filepath.Join(absolute, "runs"), SessionsDir: filepath.Join(absolute, "sessions"), HistoryDir: filepath.Join(absolute, "history"),
-		DaemonDir: filepath.Join(absolute, "daemon"), DaemonLog: filepath.Join(logsDir, "daemon.log"),
-		StateDir: stateDir, SessionStateDir: filepath.Join(stateDir, "sessions"),
-		MemoryDir: filepath.Join(absolute, "memory"), MemoryFile: filepath.Join(absolute, "memory", "durable.json"),
-		MemoryCandidatesFile: filepath.Join(absolute, "memory", "candidates.json"), UpdateStateFile: filepath.Join(stateDir, "update.json"),
-		LogsDir: logsDir, CacheDir: filepath.Join(absolute, "cache"), TmpDir: filepath.Join(absolute, "tmp"),
+		Home: absolute, BinDir: filepath.Join(absolute, "bin"),
+		Binary:            filepath.Join(absolute, "bin", "sn-cli"),
+		ServerBinary:      filepath.Join(absolute, "bin", "sn-server"),
+		ConfigDir:         filepath.Join(absolute, "configs"),
+		CommandDir:        filepath.Join(absolute, "commands"),
+		RuntimeConfigFile: filepath.Join(absolute, "runtime.json"),
+		ResourcesDir:      resourcesDir,
+		SchemaDir:         filepath.Join(resourcesDir, "schema"),
+		SessionsDir:       filepath.Join(absolute, "sessions"),
+		StateDir:          stateDir,
+		RunDBFile:         filepath.Join(stateDir, "runtime.db"),
+		ServerPIDFile:     filepath.Join(stateDir, "sn-server.pid"),
+		ServerLogFile:     filepath.Join(stateDir, "sn-server.log"),
+		UpdateStateFile:   filepath.Join(stateDir, "update.json"),
+		TmpDir:            filepath.Join(absolute, "tmp"),
 	}, nil
 }
 
 func (p Paths) Ensure() error {
 	for _, dir := range []string{
-		p.Home, p.BinDir, p.ConfigDir, p.ResourcesDir, p.PersonaDir, p.SkillsDir, p.ToolsDir, p.SchemaDir,
-		p.RunsDir, p.SessionsDir, p.HistoryDir, p.DaemonDir, p.StateDir, p.SessionStateDir,
-		p.MemoryDir, p.LogsDir, p.CacheDir, p.TmpDir,
+		p.Home, p.BinDir, p.ConfigDir, p.CommandDir, p.ResourcesDir,
+		p.SchemaDir, p.SessionsDir, p.StateDir, p.TmpDir,
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create runtime directory %s: %w", dir, err)

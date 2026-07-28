@@ -18,12 +18,14 @@ import (
 	"github.com/yy003x/runtime/internal/layout"
 )
 
-func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {
+func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	archiveName := platformArchiveName(t)
 	archive := makeArchive(t, map[string]archiveFile{
-		"sn-cli":                        {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n"},
-		"configs/runtime.yaml":          {mode: 0o644, content: "default_profile: cx\n"},
-		"configs/new.json":              {mode: 0o644, content: "{\"command\":\"/bin/true\"}\n"},
+		"sn-cli":                        {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n"},
+		"sn-server":                     {mode: 0o755, content: "#!/bin/sh\nprintf server\n"},
+		"configs/new-profile.json":      {mode: 0o644, content: `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"FIXTURE_KEY"},"timeout":"1m"}` + "\n"},
+		"commands/new-command.json":     {mode: 0o644, content: "{\"profile\":\"new-profile\"}\n"},
+		"runtime.json":                  {mode: 0o644, content: "{\"agent\":{}}\n"},
 		"resources/schema/profile.json": {mode: 0o644, content: "packaged-schema\n"},
 	})
 	hash := sha256.Sum256(archive)
@@ -32,40 +34,48 @@ func TestApplyInstallsBinaryAndOnlyMissingConfigs(t *testing.T) {
 	t.Setenv("SN_CLI_RELEASE_BASE_URL", server.URL+"/releases")
 	cfg := testConfig(t)
 	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
-	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "runtime.yaml"), "default_profile: cx\nmax_concurrency: 2\n", 0o600)
-	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "cx.json"), `{"command":"codex","model":"gpt"}`+"\n", 0o600)
+	mustWriteUpdate(t, cfg.Paths.ServerBinary, "old-server\n", 0o755)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"local","auth":{"header":"Authorization","scheme":"Bearer","from_env":"LOCAL_KEY"},"timeout":"1m"}`+"\n", 0o600)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.CommandDir, "local.json"), "{\"profile\":\"local\"}\n", 0o600)
+	mustWriteUpdate(t, cfg.Paths.RuntimeConfigFile, "{\"terminal\":{}}\n", 0o600)
 	result, err := Apply(context.Background(), cfg, "v2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Version != "v2" || len(result.CopiedConfigs) != 1 || result.CopiedConfigs[0] != "new.json" || strings.Join(result.CopiedResources, ",") != "schema/profile.json" {
+	if result.Version != "v2" ||
+		strings.Join(result.CopiedProfiles, ",") != "new-profile.json" ||
+		strings.Join(result.CopiedCommands, ",") != "new-command.json" ||
+		result.CopiedRuntimeConfig ||
+		strings.Join(result.CopiedResources, ",") != "schema/profile.json" {
 		t.Fatalf("result=%#v", result)
 	}
-	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = list ] && exit 0\nprintf new\n")
-	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "runtime.yaml"), "default_profile: cx\nmax_concurrency: 2\n")
-	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new.json"), "{\"command\":\"/bin/true\"}\n")
+	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n")
+	assertUpdateContent(t, cfg.Paths.ServerBinary, "#!/bin/sh\nprintf server\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"local","auth":{"header":"Authorization","scheme":"Bearer","from_env":"LOCAL_KEY"},"timeout":"1m"}`+"\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new-profile.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"FIXTURE_KEY"},"timeout":"1m"}`+"\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.CommandDir, "local.json"), "{\"profile\":\"local\"}\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.CommandDir, "new-command.json"), "{\"profile\":\"new-profile\"}\n")
+	assertUpdateContent(t, cfg.Paths.RuntimeConfigFile, "{\"terminal\":{}}\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "schema", "profile.json"), "packaged-schema\n")
-	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "cx.json"), `{"command":"codex","model":"gpt"}`+"\n")
 }
 
-func TestApplyChecksumFailureKeepsOldBinaryAndConfigs(t *testing.T) {
+func TestApplyChecksumFailureKeepsOldBinariesAndConfiguration(t *testing.T) {
 	archiveName := platformArchiveName(t)
 	archive := makeArchive(t, map[string]archiveFile{
-		"sn-cli":           {mode: 0o755, content: "#!/bin/sh\nexit 0\n"},
-		"configs/new.json": {mode: 0o644, content: "{}\n"},
+		"sn-cli":    {mode: 0o755, content: "#!/bin/sh\nexit 0\n"},
+		"sn-server": {mode: 0o755, content: "#!/bin/sh\nexit 0\n"},
 	})
 	server := releaseServer(t, "v2", archiveName, archive, strings.Repeat("0", 64)+"  "+archiveName+"\n")
 	defer server.Close()
 	t.Setenv("SN_CLI_RELEASE_BASE_URL", server.URL+"/releases")
 	cfg := testConfig(t)
 	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
+	mustWriteUpdate(t, cfg.Paths.ServerBinary, "old-server\n", 0o755)
 	if _, err := Apply(context.Background(), cfg, "v2"); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("error=%v", err)
 	}
 	assertUpdateContent(t, cfg.Paths.Binary, "old\n")
-	if _, err := os.Stat(filepath.Join(cfg.Paths.ConfigDir, "new.json")); !os.IsNotExist(err) {
-		t.Fatalf("checksum failure changed configs: %v", err)
-	}
+	assertUpdateContent(t, cfg.Paths.ServerBinary, "old-server\n")
 }
 
 func TestCheckUsesReleaseAPI(t *testing.T) {

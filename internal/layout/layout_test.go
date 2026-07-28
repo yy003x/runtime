@@ -13,14 +13,18 @@ func TestResolveUsesSNCLIHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths.Home != home || paths.ConfigDir != filepath.Join(home, "configs") || paths.ResourcesDir != filepath.Join(home, "resources") || paths.RunsDir != filepath.Join(home, "runs") {
+	if paths.Home != home || paths.ConfigDir != filepath.Join(home, "configs") ||
+		paths.CommandDir != filepath.Join(home, "commands") ||
+		paths.RuntimeConfigFile != filepath.Join(home, "runtime.json") ||
+		paths.ResourcesDir != filepath.Join(home, "resources") ||
+		paths.RunDBFile != filepath.Join(home, "state", "runtime.db") ||
+		paths.ServerBinary != filepath.Join(home, "bin", "sn-server") ||
+		paths.ServerPIDFile != filepath.Join(home, "state", "sn-server.pid") ||
+		paths.ServerLogFile != filepath.Join(home, "state", "sn-server.log") {
 		t.Fatalf("unexpected paths: %#v", paths)
 	}
-	if paths.PersonaDir != filepath.Join(home, "resources", "personas") || paths.SkillsDir != filepath.Join(home, "resources", "skills") || paths.ToolsDir != filepath.Join(home, "resources", "tools") || paths.SchemaDir != filepath.Join(home, "resources", "schema") {
+	if paths.SchemaDir != filepath.Join(home, "resources", "schema") {
 		t.Fatalf("unexpected resource paths: %#v", paths)
-	}
-	if paths.MemoryFile != filepath.Join(home, "memory", "durable.json") || paths.MemoryCandidatesFile != filepath.Join(home, "memory", "candidates.json") || paths.DaemonLog != filepath.Join(home, "logs", "daemon.log") {
-		t.Fatalf("unexpected state paths: %#v", paths)
 	}
 }
 
@@ -32,7 +36,10 @@ func TestEnsureCreatesPrivateDirectoryTree(t *testing.T) {
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{paths.ConfigDir, paths.ResourcesDir, paths.PersonaDir, paths.SkillsDir, paths.ToolsDir, paths.SchemaDir, paths.RunsDir, paths.SessionsDir, paths.HistoryDir, paths.MemoryDir, paths.DaemonDir, paths.StateDir, paths.SessionStateDir, paths.LogsDir, paths.CacheDir, paths.TmpDir} {
+	for _, dir := range []string{
+		paths.BinDir, paths.ConfigDir, paths.CommandDir, paths.ResourcesDir,
+		paths.SchemaDir, paths.SessionsDir, paths.StateDir, paths.TmpDir,
+	} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Fatal(err)
