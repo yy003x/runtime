@@ -30,7 +30,8 @@ head_tags="$(git -C "$ROOT_DIR" tag --points-at HEAD --list 'v*')"
 [ -z "$head_tags" ] || die "当前 HEAD 已有 release tag ${head_tags%%$'\n'*}；请先产生新的发布提交"
 
 log "[release] tag=$TAG branch=$RELEASE_BRANCH commit=${RELEASE_HEAD:0:7}"
-make -C "$ROOT_DIR" release-check SN_CLI_VERSION="$TAG"
+make --no-print-directory -C "$ROOT_DIR" \
+  V="${V:-0}" release-check SN_CLI_VERSION="$TAG"
 verify_repository_unchanged "release-check"
 
 remote_refs_after="$(remote_tag_refs)" || die "release-check 后重新读取 origin tag 列表失败"

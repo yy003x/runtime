@@ -35,7 +35,7 @@ Options:
   --version VERSION    Install a specific release tag; default is latest.
   --install-dir DIR    Symlink directory; default is ~/.local/bin.
   --home DIR           Runtime home; default is ~/.sn.
-  --overwrite-configs  Replace profiles, subcommands, runtime.json, and resources.
+  --overwrite-configs  Replace profiles, subcommands, and runtime.json.
   --dry-run            Print the resolved install plan without writing files.
   -h, --help           Show this help.
 
@@ -370,9 +370,6 @@ fi
 if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -d "$SN_CLI_HOME/commands" ]; then
   sync_missing "$SN_CLI_HOME/commands" "$MERGED_HOME/commands" 1
 fi
-if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -d "$SN_CLI_HOME/resources" ]; then
-  sync_missing "$SN_CLI_HOME/resources" "$MERGED_HOME/resources" 1
-fi
 if [ "$OVERWRITE_CONFIGS" = "1" ]; then
   sync_overwrite "$PACKAGE_CONFIGS" "$MERGED_HOME/configs" 1 profile
 else
@@ -383,11 +380,7 @@ if [ "$OVERWRITE_CONFIGS" = "1" ]; then
 else
   sync_missing "$PACKAGE_COMMANDS" "$MERGED_HOME/commands" 1
 fi
-if [ "$OVERWRITE_CONFIGS" = "1" ]; then
-  sync_overwrite "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1 resource
-else
-  sync_missing "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1
-fi
+sync_overwrite "$PACKAGE_RESOURCES" "$MERGED_HOME/resources" 1 resource
 if [ "$OVERWRITE_CONFIGS" = "0" ] && [ -f "$SN_CLI_HOME/runtime.json" ] && [ ! -L "$SN_CLI_HOME/runtime.json" ]; then
   cp "$SN_CLI_HOME/runtime.json" "$MERGED_HOME/runtime.json"
 else
@@ -413,12 +406,8 @@ if [ "$OVERWRITE_CONFIGS" = "1" ] || [ ! -e "$SN_CLI_HOME/runtime.json" ]; then
 elif [ -L "$SN_CLI_HOME/runtime.json" ] || [ ! -f "$SN_CLI_HOME/runtime.json" ]; then
   die "runtime config target is not a regular file: $SN_CLI_HOME/runtime.json"
 fi
-if [ "$OVERWRITE_CONFIGS" = "1" ]; then
-  replace_directory "$MERGED_HOME/resources" "$SN_CLI_HOME/resources"
-  log "replaced resources: $SN_CLI_HOME/resources"
-else
-  sync_missing "$PACKAGE_RESOURCES" "$SN_CLI_HOME/resources" 0 resource
-fi
+replace_directory "$MERGED_HOME/resources" "$SN_CLI_HOME/resources"
+log "replaced managed resources: $SN_CLI_HOME/resources"
 for directory in \
   "$SN_CLI_HOME/configs" "$SN_CLI_HOME/commands" "$SN_CLI_HOME/resources" \
   "$SN_CLI_HOME/resources/schema" "$SN_CLI_HOME/bin" "$SN_CLI_HOME/sessions" \
