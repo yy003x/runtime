@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/internal/profileid"
 	"github.com/yy003x/runtime/internal/strictjson"
 )
@@ -69,9 +70,22 @@ func LoadSubcommands(
 		if err := profileid.Validate(value.Profile); err != nil {
 			return nil, fmt.Errorf("%s: profile: %w", path, err)
 		}
-		if _, exists := profiles.Resolve(value.Profile); !exists {
+		entry, exists := profiles.Resolve(value.Profile)
+		if !exists {
 			return nil, fmt.Errorf(
 				"%s: referenced profile %q does not exist", path, value.Profile,
+			)
+		}
+		if entry.Kind != KindCommand || entry.Command == nil {
+			return nil, fmt.Errorf(
+				"%s: shortcut profile %q must be type=cli",
+				path, value.Profile,
+			)
+		}
+		if entry.Command.Transport != command.TransportTTY {
+			return nil, fmt.Errorf(
+				"%s: shortcut profile %q must use transport=tty",
+				path, value.Profile,
 			)
 		}
 		values[id] = value

@@ -24,6 +24,8 @@ type Paths struct {
 	RunDBFile         string
 	ServerPIDFile     string
 	ServerLogFile     string
+	ServerLeaseFile   string
+	ServerLockFile    string
 	UpdateStateFile   string
 	TmpDir            string
 }
@@ -76,6 +78,8 @@ func FromHome(home string) (Paths, error) {
 		RunDBFile:         filepath.Join(stateDir, "runtime.db"),
 		ServerPIDFile:     filepath.Join(stateDir, "sn-server.pid"),
 		ServerLogFile:     filepath.Join(stateDir, "sn-server.log"),
+		ServerLeaseFile:   filepath.Join(stateDir, "sn-server.lease.lock"),
+		ServerLockFile:    filepath.Join(stateDir, "sn-server.lifecycle.lock"),
 		UpdateStateFile:   filepath.Join(stateDir, "update.json"),
 		TmpDir:            filepath.Join(absolute, "tmp"),
 	}, nil

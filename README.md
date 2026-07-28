@@ -15,12 +15,13 @@ sn-cli run ... ───────> Run Harness ──────> SQLite WAL
 
 ## 执行语义
 
-- `sn-cli <command-id> [args...]`：`commands/*.json` 声明的顶层快捷入口，复用
-  对应 Profile 的一次性语义；CLI manual profile 保留原生 TTY、stdio、signal、
-  exit code 和 argv 顺序。
-- `sn-cli profile <profile-id> [input]`：一次性调用。`type=cli` 启动一次 CLI，
-  `type=api` 发起一次 API 请求；不创建 Session 或 durable Run，也不处理
-  tool loop。
+- `sn-cli <command-id> [args...]`：`commands/*.json` 声明的顶层快捷入口，只能
+  映射 CLI/TTY Profile；Profile 固定参数后直接追加调用方 native args，并保留
+  原生 TTY、stdio、signal、exit code 和 argv 顺序。
+- `sn-cli profile <profile-id> [--effort <level>] [input]`：一次性调用。
+  `type=cli` 启动一次 CLI，`type=api` 发起一次 API 请求；不创建 Session 或
+  durable Run，也不处理 tool loop。`--effort` 是 Runtime typed override，
+  只有显式声明 `effort_adapter` 的 CLI Profile 才接受。
 - `sn-cli session run|submit ...`：维护本地 Session、Turn、Message、Event 和
   Execution。model history 投影为结构化 `messages[]`；command history 投影为
   有边界的文本。Session 遇到 tool call 只返回 `requires_action`，不执行工具。
@@ -88,6 +89,8 @@ state/
   runtime.db
   sn-server.pid
   sn-server.log
+  sn-server.lease.lock
+  sn-server.lifecycle.lock
   update.json
 tmp/
 ```
@@ -100,6 +103,7 @@ tmp/
 ```bash
 make check
 make build sn-cli-build
+make V=1 sn-cli-build
 
 runtime_home="$(mktemp -d)"
 install_dir="$(mktemp -d)"
@@ -114,6 +118,10 @@ bash install.sh \
   --install-dir "$install_dir"
 ```
 
+Make 默认只报告 stage、state、result、elapsed 和关键路径；有限任务成功时隐藏
+底层噪声，失败时完整回放。`V=1` 显示安全转义后的真实 argv 并实时透传子命令
+输出；`run`、`dev`、安装及 release/check/publish 编排入口实时输出。
+
 正式 `make install` 会写入 `${SN_CLI_HOME:-~/.sn}`，应由用户显式执行。本仓实现
 不会在测试或 release check 中修改 active `~/.sn`。
 
@@ -121,6 +129,7 @@ bash install.sh \
 
 ```bash
 sn-cli profile list
+sn-cli --json profile list
 sn-cli profile show cx
 sn-cli profile check
 
@@ -134,10 +143,17 @@ sn-cli agent run --profile api-cx "完成这个任务"
 sn-cli run list --state queued
 sn-cli run watch --run-id <run_id>
 sn-cli run gc
-sn-cli system start
-sn-cli system status
-sn-cli system stop
+sn-cli server start
+sn-cli server status
+sn-cli server stop
 ```
+
+管理命令默认输出面向人的紧凑文本；需要稳定机器结果时，把全局 `--json` 放在
+namespace 前，例如 `sn-cli --json server status`。`--json` 不会从 namespace
+后的参数中截获，因此 `sn-cli cx --json` 仍把该参数原样交给目标 CLI。顶层
+shortcut 与 TTY CLI Profile 始终继承目标进程的原生输出，即使写了 leading
+global `--json` 也不伪装成 Runtime JSON；交互式 `session attach` 明确不支持
+machine mode。
 
 顶层 `sn-cli <command-id>` 只从 active `commands/` 加载映射，再到
 `configs/` 解析对应 Profile。source 默认提供 `commit`、`cx`、`cc` 和 `cx-*`；
@@ -165,6 +181,7 @@ make fmt-check
 make test-serial
 make test-race
 go vet ./...
+make make-step-contract-test
 make release-check SN_CLI_VERSION=v0.1.0
 git diff --check
 ```

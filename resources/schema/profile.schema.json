@@ -64,6 +64,13 @@
             "paste",
             "manual"
           ]
+        },
+        "effort_adapter": {
+          "type": "string",
+          "enum": [
+            "codex-config",
+            "claude-flag"
+          ]
         }
       },
       "allOf": [

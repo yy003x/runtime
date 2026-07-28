@@ -174,6 +174,14 @@ func TestLoadSubcommandsRejectsMissingProfileAndFixedNamespace(t *testing.T) {
 			name: "fixed_namespace", fileName: "profile.json",
 			content: `{"profile":"cx"}`, errorText: "fixed namespace",
 		},
+		{
+			name: "api_profile", fileName: "api.json",
+			content: `{"profile":"api-cx"}`, errorText: "type=cli",
+		},
+		{
+			name: "non_tty_profile", fileName: "detached.json",
+			content: `{"profile":"detached"}`, errorText: "transport=tty",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			directory := t.TempDir()
@@ -214,6 +222,10 @@ func testCatalogs(t *testing.T) (*command.Catalog, *model.Catalog) {
 	commands, err := command.NewCatalog(map[string]command.Profile{
 		"cx": {
 			Binary: "codex", Transport: command.TransportTTY,
+			PromptDelivery: command.PromptManual,
+		},
+		"detached": {
+			Binary: "codex", Transport: command.TransportTmux,
 			PromptDelivery: command.PromptManual,
 		},
 	})

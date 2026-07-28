@@ -15,11 +15,18 @@ import (
 	runtime "github.com/yy003x/runtime/run"
 )
 
-func runAgentNamespace(paths layout.Paths, args []string) error {
+func runAgentNamespace(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
 	if len(args) == 0 || args[0] != "run" {
 		return fmt.Errorf("usage: agent run --profile <model-profile-id> [options] <input>")
 	}
 	options, err := parseAgentRun(args[1:])
+	if options.stream {
+		output.beginStream()
+	}
 	if err != nil {
 		return err
 	}
@@ -47,10 +54,8 @@ func runAgentNamespace(paths layout.Paths, args []string) error {
 	}
 	var sink contract.EventSink
 	if options.stream {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetEscapeHTML(false)
 		sink = func(event contract.Event) error {
-			return encoder.Encode(event)
+			return output.writeEvent(event)
 		}
 	}
 	record, runtimeErr := services.Runs.RunNow(
@@ -63,13 +68,35 @@ func runAgentNamespace(paths layout.Paths, args []string) error {
 		},
 		sink,
 	)
-	if err := printJSON(map[string]any{"run": record}); err != nil {
-		return err
-	}
 	if runtimeErr != nil {
 		return runtimeErr
 	}
-	return nil
+	payload := map[string]any{"run": record}
+	if options.stream {
+		return output.writeFinal(payload)
+	}
+	if output.JSON() {
+		return output.writeJSON(payload)
+	}
+	return renderAgentRun(output, record)
+}
+
+func renderAgentRun(output *cliOutput, record runtime.Record) error {
+	var result struct {
+		Outcome struct {
+			State      string            `json:"state"`
+			StopReason string            `json:"stop_reason"`
+			Message    *contract.Message `json:"message"`
+		} `json:"outcome"`
+	}
+	if len(record.Result) > 0 && json.Unmarshal(record.Result, &result) == nil &&
+		result.Outcome.Message != nil &&
+		strings.TrimSpace(result.Outcome.Message.Content) != "" {
+		if err := output.text(result.Outcome.Message.Content); err != nil {
+			return err
+		}
+	}
+	return output.line("Run %s: %s", record.ID, record.State)
 }
 
 type agentRunOptions struct {

@@ -19,6 +19,7 @@ Profile loader 只读 active `configs/*.json`，每份文件必须以 `type=cli|
 {
   "type": "cli",
   "binary": "codex",
+  "effort_adapter": "codex-config",
   "args": ["exec", "--skip-git-repo-check", "--model", "example"],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip",
@@ -34,7 +35,18 @@ Profile loader 只读 active `configs/*.json`，每份文件必须以 `type=cli|
 - `${VAR}` 是唯一插值语法，缺失变量在启动前失败；
 - CLI Profile 没有顶层 `model` 字段；目标 CLI 的模型通过 `args` 中的
   `--model <id>` 等原生参数配置；
+- `effort_adapter` 可选，只允许 `codex-config|claude-flag`。它显式声明
+  `sn-cli profile <id> --effort low|medium|high|xhigh|max` 如何映射到目标 CLI；
+  Runtime 不根据 `binary` 名称推断；
 - 合法组合由 loader 与 `profile.schema.json` 同时约束。
+
+`codex-config` 把 override 追加为两个 argv token：
+`-c model_reasoning_effort=<level>`；`claude-flag` 追加为
+`--effort <level>`。追加位置位于 Profile 固定 `args` 之后、调用方 input 之前，
+因此任务级 typed override 可以覆盖 Profile 默认值。未声明 adapter 的 CLI
+Profile、以及当前 API Profile，使用 `--effort` 时会在启动 Provider 前失败。
+顶层 shortcut（例如 `sn-cli cx ...`）仍透明透传 native argv，不解释 Runtime
+typed override。
 
 `transport` 决定进程在哪里运行：
 
@@ -53,8 +65,11 @@ Profile loader 只读 active `configs/*.json`，每份文件必须以 `type=cli|
 | `paste` | 启动后粘贴 prompt 并回车 | `tmux|terminal` |
 | `manual` | Runtime 不注入 prompt，用户在交互界面输入 | 全部 |
 
-顶层 shortcut 只接受 `tty`。`tmux|terminal` 通过 `profile <id>` 使用。
-macOS terminal driver 支持 `ghostty|iterm2`；launch 成功只代表已创建窗口/会话。
+顶层 shortcut 只接受 `type=cli` 且 `transport=tty` 的 Profile；
+`tmux|terminal` 和 API Profile 通过 `profile <id>` 使用。shortcut 不执行
+`prompt_delivery` 的单 prompt 解析，而是把调用方参数作为 native argv 原样传给
+目标 CLI；`profile <id>` 才按表中的 delivery 规则处理 input。macOS terminal
+driver 支持 `ghostty|iterm2`；launch 成功只代表已创建窗口/会话。
 
 `commit.json` 是普通 CLI Profile：Codex 的 `exec`、model、reasoning 和
 sandbox 都必须写成独立 argv token。`sn-cli commit` 与
@@ -206,8 +221,9 @@ assistant message，因此它适合启动、关联和控制交互 CLI，不适�
 }
 ```
 
-未登记在 `commands/` 中的 Profile 只能通过 `sn-cli profile <id>` 使用。固定
-namespace 不能被映射覆盖，映射到不存在的 Profile 时 loader 失败。
+shortcut 目标必须是 `type=cli` 且 `transport=tty` 的 Profile。未登记在
+`commands/` 中的 Profile 只能通过 `sn-cli profile <id>` 使用。固定 namespace
+不能被映射覆盖；映射到不存在、API、tmux 或 terminal Profile 时 loader 失败。
 
 ## runtime.json
 
@@ -245,5 +261,7 @@ namespace 不能被映射覆盖，映射到不存在的 Profile 时 loader 失�
 - 非 loopback 地址必须设置 token；
 - `SN_CLI_HOME`：active Runtime home。
 
-`sn-cli system start` 只启动 `${SN_CLI_HOME}/bin/sn-server`，PID 和日志位于
-`${SN_CLI_HOME}/state/`。
+`sn-cli server start` 只启动 `${SN_CLI_HOME}/bin/sn-server`。严格 PID 身份、
+进程 lease、生命周期互斥锁和日志均位于 `${SN_CLI_HOME}/state/`；`stop` 只有在
+PID、进程启动标识和 lease 全部匹配时才会发送信号。旧版或损坏的 PID 文件不会被
+兼容读取，也不会被静默忽略；应先确认旧进程已经停止，再按错误提示移除 stale 文件。

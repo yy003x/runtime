@@ -21,13 +21,20 @@ import (
 	"github.com/yy003x/runtime/session"
 )
 
-func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
+func runSessionNamespaceVNext(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: session run|submit|list|show|messages|events|logs|tool-result|send|interrupt|stop|attach|configure|export|delete|gc")
 	}
+	if args[0] == "attach" && output.JSON() {
+		return fmt.Errorf("session attach does not support --json")
+	}
 	switch args[0] {
 	case "run", "submit":
-		return runSessionExecution(paths, args[0], args[1:])
+		return runSessionExecution(paths, args[0], args[1:], output)
 	}
 	services, err := runtimebootstrap.LoadSessionServices(paths, fixedNamespaces...)
 	if err != nil {
@@ -45,7 +52,21 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"sessions": values})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"sessions": values})
+		}
+		if err := output.line("Sessions (%d)", len(values)); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := output.line(
+				"  %s  %s  messages=%d",
+				value.ID, value.State, value.MessageCount,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "show":
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
@@ -55,7 +76,10 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(value)
+		if output.JSON() {
+			return output.writeJSON(value)
+		}
+		return renderSessionSummary(output, value)
 	case "messages":
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
@@ -69,7 +93,24 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"messages": values})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"messages": values})
+		}
+		if err := output.line("Messages (%d)", len(values)); err != nil {
+			return err
+		}
+		for _, value := range values {
+			content := strings.TrimSpace(value.Message.Content)
+			if content == "" && len(value.Message.ToolCalls) > 0 {
+				content = fmt.Sprintf("%d tool call(s)", len(value.Message.ToolCalls))
+			}
+			if err := output.line(
+				"  [%d] %s: %s", value.Sequence, value.Message.Role, content,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "events", "logs":
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
@@ -92,9 +133,26 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 				values = values[len(values)-tail:]
 			}
 		}
-		return printJSON(map[string]any{"events": values})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"events": values})
+		}
+		label := "Events"
+		if args[0] == "logs" {
+			label = "Logs"
+		}
+		if err := output.line("%s (%d)", label, len(values)); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := output.line(
+				"  [%d] %s %s", value.Sequence, value.Type, value.State,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "tool-result":
-		return submitSessionToolResult(services.Sessions, args[1:])
+		return submitSessionToolResult(services.Sessions, args[1:], output)
 	case "configure":
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
@@ -110,9 +168,14 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(value)
+		if output.JSON() {
+			return output.writeJSON(value)
+		}
+		return output.line(
+			"Session %s retention=%s", value.ID, value.Retention,
+		)
 	case "export":
-		return exportSession(services.Sessions, args[1:])
+		return exportSession(services.Sessions, args[1:], output)
 	case "delete":
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
@@ -122,9 +185,14 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{
-			"session_id": sessionID, "moved_to": target, "recoverable": true,
-		})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{
+				"session_id": sessionID, "moved_to": target, "recoverable": true,
+			})
+		}
+		return output.line(
+			"Session %s moved to %s (recoverable)", sessionID, target,
+		)
 	case "gc":
 		hours, err := intOptionValue(args[1:], "--older-than-hours", 24)
 		if err != nil {
@@ -141,9 +209,15 @@ func runSessionNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(value)
+		if output.JSON() {
+			return output.writeJSON(value)
+		}
+		return output.line(
+			"Session GC: candidates=%d moved=%d apply=%t",
+			len(value.Candidates), len(value.Moved), !value.DryRun,
+		)
 	case "attach", "send", "interrupt", "stop":
-		return operateSessionCarrier(services.Sessions, args[0], args[1:])
+		return operateSessionCarrier(services.Sessions, args[0], args[1:], output)
 	default:
 		return fmt.Errorf("unknown session action %q", args[0])
 	}
@@ -163,7 +237,12 @@ type sessionInvocation struct {
 	tokenLimitFlag string
 }
 
-func runSessionExecution(paths layout.Paths, action string, args []string) error {
+func runSessionExecution(
+	paths layout.Paths,
+	action string,
+	args []string,
+	output *cliOutput,
+) error {
 	invocation, err := parseSessionInvocation(args)
 	if err != nil {
 		return err
@@ -192,13 +271,13 @@ func runSessionExecution(paths layout.Paths, action string, args []string) error
 				TerminalDriver: invocation.terminalDriver,
 			},
 		)
-		if err := printJSON(result); err != nil {
-			return err
-		}
 		if runtimeErr != nil {
 			return runtimeErr
 		}
-		return nil
+		if output.JSON() {
+			return output.writeJSON(result)
+		}
+		return renderSessionRunResult(output, result)
 	}
 	if invocation.sessionID == "" {
 		invocation.sessionID, err = session.NewID()
@@ -240,9 +319,15 @@ func runSessionExecution(paths layout.Paths, action string, args []string) error
 	if runtimeErr != nil {
 		return runtimeErr
 	}
-	return printJSON(map[string]any{
-		"run": record, "session_id": invocation.sessionID,
-	})
+	if output.JSON() {
+		return output.writeJSON(map[string]any{
+			"run": record, "session_id": invocation.sessionID,
+		})
+	}
+	return output.line(
+		"Submitted run %s (session=%s, state=%s)",
+		record.ID, invocation.sessionID, record.State,
+	)
 }
 
 func parseSessionInvocation(args []string) (sessionInvocation, error) {
@@ -394,7 +479,11 @@ func validateSessionProfileOptions(
 	return nil
 }
 
-func submitSessionToolResult(service *session.Service, args []string) error {
+func submitSessionToolResult(
+	service *session.Service,
+	args []string,
+	output *cliOutput,
+) error {
 	sessionID, err := requiredOption(args, "--session-id")
 	if err != nil {
 		return err
@@ -438,15 +527,25 @@ func submitSessionToolResult(service *session.Service, args []string) error {
 	if runtimeErr != nil {
 		return runtimeErr
 	}
-	return printJSON(receipt)
+	if output.JSON() {
+		return output.writeJSON(receipt)
+	}
+	return output.line(
+		"Tool result accepted: call=%s message_sequence=%d",
+		receipt.ToolCallID, receipt.MessageSequence,
+	)
 }
 
-func exportSession(service *session.Service, args []string) error {
+func exportSession(
+	service *session.Service,
+	args []string,
+	output *cliOutput,
+) error {
 	sessionID, err := requiredOption(args, "--session-id")
 	if err != nil {
 		return err
 	}
-	output, err := requiredOption(args, "--output")
+	outputPath, err := requiredOption(args, "--output")
 	if err != nil {
 		return err
 	}
@@ -462,17 +561,24 @@ func exportSession(service *session.Service, args []string) error {
 	if err != nil {
 		return err
 	}
-	return writeJSONFile(output, map[string]any{
+	if err := writeJSONFile(outputPath, map[string]any{
 		"schema_version": session.SchemaVersion,
 		"session":        sessionValue, "messages": messages, "events": events,
-	})
+	}); err != nil {
+		return err
+	}
+	return renderSessionExportResult(output, sessionID, outputPath)
 }
 
 func operateSessionCarrier(
 	service *session.Service,
 	action string,
 	args []string,
+	output *cliOutput,
 ) error {
+	if action == "attach" && output.JSON() {
+		return fmt.Errorf("session attach does not support --json")
+	}
 	sessionID, err := requiredOption(args, "--session-id")
 	if err != nil {
 		return err
@@ -522,9 +628,73 @@ func operateSessionCarrier(
 			return fmt.Errorf("tmux stop: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 	}
-	return printJSON(map[string]any{
-		"session_id": sessionID, "action": action, "ok": true,
-	})
+	if output.JSON() {
+		return output.writeJSON(map[string]any{
+			"session_id": sessionID, "action": action, "ok": true,
+		})
+	}
+	return output.line("Session %s: %s completed", sessionID, action)
+}
+
+func renderSessionExportResult(
+	output *cliOutput,
+	sessionID string,
+	outputPath string,
+) error {
+	if output.JSON() {
+		return output.writeJSON(map[string]any{
+			"session_id": sessionID,
+			"output":     outputPath,
+			"exported":   true,
+		})
+	}
+	return output.line("Exported session %s to %s", sessionID, outputPath)
+}
+
+func renderSessionSummary(output *cliOutput, value session.Session) error {
+	if err := output.line("Session: %s", value.ID); err != nil {
+		return err
+	}
+	if err := output.line(
+		"State: %s, retention: %s", value.State, value.Retention,
+	); err != nil {
+		return err
+	}
+	return output.line(
+		"Messages: %d, events: %d", value.MessageCount, value.EventCount,
+	)
+}
+
+func renderSessionRunResult(
+	output *cliOutput,
+	result session.RunResult,
+) error {
+	if result.Message != nil && strings.TrimSpace(result.Message.Content) != "" {
+		if err := output.text(result.Message.Content); err != nil {
+			return err
+		}
+	}
+	if len(result.PendingActions) > 0 {
+		if err := output.line(
+			"Requires action: %d tool call(s)", len(result.PendingActions),
+		); err != nil {
+			return err
+		}
+		for _, call := range result.PendingActions {
+			if err := output.line("  %s  %s", call.Name, call.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if result.LaunchHandle != "" {
+		if err := output.line("Carrier: %s", result.LaunchHandle); err != nil {
+			return err
+		}
+	}
+	return output.line(
+		"Session %s, turn %s: %s",
+		result.SessionID, result.TurnID, result.State,
+	)
 }
 
 func carrierSendInput(args []string) (string, error) {

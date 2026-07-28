@@ -14,12 +14,15 @@ func TestDecodeCommandProfile(t *testing.T) {
 		"args":["-c","model_reasoning_effort=xhigh","${EXTRA_ARG}"],
 		"env":{"CODEX_HOME":"${HOME}/.codex-aip","REMOVE_ME":null},
 		"transport":"tty",
-		"prompt_delivery":"argv"
+		"prompt_delivery":"argv",
+		"effort_adapter":"codex-config"
 	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Binary != "codex" || len(profile.Args) != 3 || profile.Env["REMOVE_ME"] != nil {
+	if profile.Binary != "codex" || len(profile.Args) != 3 ||
+		profile.Env["REMOVE_ME"] != nil ||
+		profile.EffortAdapter != EffortAdapterCodexConfig {
 		t.Fatalf("profile=%#v", profile)
 	}
 	for _, input := range []string{
@@ -28,10 +31,55 @@ func TestDecodeCommandProfile(t *testing.T) {
 		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","args":["${BAD-NAME}"]}`,
 		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","env":{"BAD=NAME":"value"}}`,
 		`{"binary":"codex","transport":"tmux","prompt_delivery":"stdin"}`,
+		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","effort_adapter":"binary-name"}`,
 	} {
 		if _, err := Decode(strings.NewReader(input)); err == nil {
 			t.Fatalf("Decode(%s) returned nil", input)
 		}
+	}
+}
+
+func TestProfileWithEffortUsesExplicitAdapter(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		adapter EffortAdapter
+		want    []string
+	}{
+		{
+			name:    "codex",
+			adapter: EffortAdapterCodexConfig,
+			want:    []string{"fixed", "-c", "model_reasoning_effort=high"},
+		},
+		{
+			name:    "claude",
+			adapter: EffortAdapterClaudeFlag,
+			want:    []string{"fixed", "--effort", "high"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			original := Profile{
+				Args:          []string{"fixed"},
+				EffortAdapter: testCase.adapter,
+			}
+			resolved, err := original.WithEffort(EffortHigh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(resolved.Args, testCase.want) {
+				t.Fatalf("args=%q want=%q", resolved.Args, testCase.want)
+			}
+			if !reflect.DeepEqual(original.Args, []string{"fixed"}) {
+				t.Fatalf("original args mutated: %q", original.Args)
+			}
+		})
+	}
+	unsupported := Profile{}
+	if _, err := unsupported.WithEffort(EffortHigh); err == nil ||
+		!strings.Contains(err.Error(), "does not declare") {
+		t.Fatalf("unsupported error=%v", err)
+	}
+	if _, err := ParseEffort("extreme"); err == nil {
+		t.Fatal("invalid effort was accepted")
 	}
 }
 
@@ -64,6 +112,24 @@ func TestLoadDirUsesFilenameIDsAndRejectsSymlinks(t *testing.T) {
 		if _, err := LoadDir(linkRoot); err == nil {
 			t.Fatal("symlink command profile was accepted")
 		}
+	}
+}
+
+func TestCatalogPreservesEffortAdapter(t *testing.T) {
+	catalog, err := NewCatalog(map[string]Profile{
+		"cx": {
+			Binary:         "codex",
+			Transport:      TransportTTY,
+			PromptDelivery: PromptManual,
+			EffortAdapter:  EffortAdapterCodexConfig,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, exists := catalog.Get("cx")
+	if !exists || profile.EffortAdapter != EffortAdapterCodexConfig {
+		t.Fatalf("profile=%#v exists=%v", profile, exists)
 	}
 }
 

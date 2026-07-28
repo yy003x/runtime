@@ -158,6 +158,112 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
+	t.Run("json_preserves_native_shortcut_and_profile_boundary", func(t *testing.T) {
+		nativeArgs := []string{"--native-flag", "native value", "--json"}
+		for _, test := range []struct {
+			name string
+			args []string
+		}{
+			{
+				name: "shortcut_trailing_json",
+				args: append([]string{"cx"}, nativeArgs...),
+			},
+			{
+				name: "shortcut_leading_global_json",
+				args: append([]string{"--json", "cx"}, nativeArgs...),
+			},
+			{
+				name: "profile_trailing_json",
+				args: append([]string{"profile", "cx"}, nativeArgs...),
+			},
+			{
+				name: "profile_leading_global_json",
+				args: append(
+					[]string{"--json", "profile", "cx"}, nativeArgs...,
+				),
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				capturePath := filepath.Join(t.TempDir(), "capture.json")
+				command := exec.Command(harness.snCLI, test.args...)
+				command.Env = harness.environment(map[string]string{
+					"RUNTIME_GOLDEN_CAPTURE":    capturePath,
+					"RUNTIME_GOLDEN_READ_STDIN": "all",
+					"RUNTIME_GOLDEN_STDOUT":     "native stdout\n",
+					"RUNTIME_GOLDEN_STDERR":     "native stderr\n",
+					"RUNTIME_GOLDEN_EXIT_CODE":  "23",
+				})
+				command.Dir = harness.repoRoot
+				command.Stdin = strings.NewReader("native stdin")
+				var stdout bytes.Buffer
+				var stderr bytes.Buffer
+				command.Stdout = &stdout
+				command.Stderr = &stderr
+				err := command.Run()
+				var exitError *exec.ExitError
+				if !errors.As(err, &exitError) ||
+					exitError.ExitCode() != 23 {
+					t.Fatalf(
+						"exit error=%v stdout=%q stderr=%q",
+						err, stdout.String(), stderr.String(),
+					)
+				}
+				capture, err := ReadCapture(capturePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(capture.Argv) < len(nativeArgs) ||
+					!reflect.DeepEqual(
+						capture.Argv[len(capture.Argv)-len(nativeArgs):],
+						nativeArgs,
+					) {
+					t.Fatalf("argv=%q", capture.Argv)
+				}
+				if capture.Stdin != "native stdin" ||
+					stdout.String() != "native stdout\n" ||
+					stderr.String() != "native stderr\n" {
+					t.Fatalf(
+						"native boundary changed: capture=%#v stdout=%q stderr=%q",
+						capture, stdout.String(), stderr.String(),
+					)
+				}
+			})
+		}
+	})
+
+	t.Run("argv_delivery_shortcut_preserves_multiple_native_args", func(t *testing.T) {
+		nativeArgs := []string{
+			"--native-one", "value one", "--native-two", "value two",
+		}
+		for _, prefix := range [][]string{
+			{"cx-deep"},
+			{"--json", "cx-deep"},
+		} {
+			capturePath := filepath.Join(t.TempDir(), "capture.json")
+			command := exec.Command(
+				harness.snCLI, append(prefix, nativeArgs...)...,
+			)
+			command.Env = harness.environment(map[string]string{
+				"RUNTIME_GOLDEN_CAPTURE": capturePath,
+			})
+			command.Dir = harness.repoRoot
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("run %q: %v output=%q", prefix, err, output)
+			}
+			capture, err := ReadCapture(capturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(capture.Argv) < len(nativeArgs) ||
+				!reflect.DeepEqual(
+					capture.Argv[len(capture.Argv)-len(nativeArgs):],
+					nativeArgs,
+				) {
+				t.Fatalf("prefix=%q argv=%q", prefix, capture.Argv)
+			}
+		}
+	})
+
 	t.Run("target_exit_code_is_preserved", func(t *testing.T) {
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
 		command := exec.Command(harness.snCLI, "cx")

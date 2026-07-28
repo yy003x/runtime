@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/model"
 )
@@ -22,11 +24,13 @@ func TestVNextProfileManagementAggregatesCatalogs(t *testing.T) {
 		{"list"}, {"show", "cx"}, {"show", "api-cx"}, {"check"}, {"check", "cx"},
 	} {
 		output := captureStdout(t, func() {
-			if err := runVNextProfileNamespace(paths, args); err != nil {
+			if err := runVNextProfileNamespace(
+				paths, args, newCLIOutput(true, os.Stdout, os.Stderr),
+			); err != nil {
 				t.Fatalf("args=%q error=%v", args, err)
 			}
 		})
-		if !strings.Contains(output, `"ok": true`) {
+		if !strings.Contains(output, `"ok":true`) {
 			t.Fatalf("args=%q output=%s", args, output)
 		}
 	}
@@ -55,12 +59,16 @@ func TestVNextDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
 	output := captureStdout(t, func() {
-		if err := runVNextProfileNamespace(paths, []string{"api-cx", "hello"}); err != nil {
+		if err := runVNextProfileNamespace(
+			paths,
+			[]string{"api-cx", "hello"},
+			newCLIOutput(true, os.Stdout, os.Stderr),
+		); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(output, `"state": "completed"`) ||
-		!strings.Contains(output, `"content": "OK"`) {
+	if !strings.Contains(output, `"state":"completed"`) ||
+		!strings.Contains(output, `"content":"OK"`) {
 		t.Fatalf("output=%s", output)
 	}
 	for _, name := range []string{"sessions", "runs"} {
@@ -68,6 +76,169 @@ func TestVNextDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
 		if err == nil && len(entries) != 0 {
 			t.Fatalf("%s entries=%v", name, entries)
 		}
+	}
+}
+
+func TestVNextDirectModelHumanOutputPrintsAssistantText(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+		  "id":"req-human",
+		  "model":"fixture",
+		  "choices":[{"message":{"content":"human answer"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	paths := prepareVNextHome(t)
+	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	t.Setenv("MODEL_API_KEY", "secret")
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	output := captureStdout(t, func() {
+		if err := runVNextProfileNamespace(
+			paths,
+			[]string{"api-cx", "hello"},
+			newCLIOutput(false, os.Stdout, os.Stderr),
+		); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if output != "human answer\n" {
+		t.Fatalf("output=%q", output)
+	}
+}
+
+func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(writer, `data: {"id":"req-stream","model":"fixture","choices":[{"delta":{"content":"stream answer"},"finish_reason":"stop"}]}`)
+		fmt.Fprintln(writer, "data: [DONE]")
+	}))
+	defer server.Close()
+	paths := prepareVNextHome(t)
+	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	t.Setenv("MODEL_API_KEY", "secret")
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	output := captureStdout(t, func() {
+		if err := runVNextProfileNamespace(
+			paths,
+			[]string{"api-cx", "--stream", "hello"},
+			newCLIOutput(false, os.Stdout, os.Stderr),
+		); err != nil {
+			t.Fatal(err)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("output=%q", output)
+	}
+	finalCount := 0
+	for index, line := range lines {
+		var value map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &value); err != nil {
+			t.Fatalf("line %d is not compact JSON: %v: %q", index, err, line)
+		}
+		if _, exists := value["state"]; exists {
+			finalCount++
+			if index != len(lines)-1 {
+				t.Fatalf("final is not last: output=%q", output)
+			}
+		}
+	}
+	if finalCount != 1 {
+		t.Fatalf("final_count=%d output=%q", finalCount, output)
+	}
+}
+
+func TestAPIProfileStreamOptionValueDoesNotSelectStreamMode(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if len(body.Messages) < 2 || body.Messages[0].Content != "--stream" {
+			t.Errorf("body=%#v", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+		  "id":"req-system-value",
+		  "model":"fixture",
+		  "choices":[{"message":{"content":"not streamed"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	paths := prepareVNextHome(t)
+	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	t.Setenv("MODEL_API_KEY", "secret")
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	var stdout strings.Builder
+	output := newCLIOutput(false, &stdout, os.Stderr)
+	if err := runVNextProfileNamespace(
+		paths,
+		[]string{"api-cx", "--system", "--stream", "hello"},
+		output,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if output.streamMode || output.streamStarted ||
+		stdout.String() != "not streamed\n" {
+		t.Fatalf(
+			"streamMode=%t streamStarted=%t output=%q",
+			output.streamMode, output.streamStarted, stdout.String(),
+		)
+	}
+}
+
+func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(writer, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	paths := prepareVNextHome(t)
+	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	t.Setenv("MODEL_API_KEY", "secret")
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	var stdout strings.Builder
+	output := newCLIOutput(false, &stdout, os.Stderr)
+	err := runVNextProfileNamespace(
+		paths, []string{"api-cx", "--stream", "hello"}, output,
+	)
+	if err == nil {
+		t.Fatal("expected provider failure")
+	}
+	if !output.streamMode || output.streamStarted || stdout.Len() != 0 {
+		t.Fatalf(
+			"streamMode=%t streamStarted=%t output=%q error=%v",
+			output.streamMode, output.streamStarted, stdout.String(), err,
+		)
 	}
 }
 
@@ -102,6 +273,86 @@ func TestParseDirectModelInputRejectsLegacyModelOverride(t *testing.T) {
 		"api", anthropicProfile, []string{"--max-tokens", "128", "hello"},
 	); err != nil {
 		t.Fatalf("Anthropic max_tokens rejected: %v", err)
+	}
+}
+
+func TestParseCommandProfileInputAppliesGenericEffort(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		profile        runtimecommand.Profile
+		args           []string
+		wantPrompt     string
+		wantNativeArgs []string
+		wantSuffix     []string
+	}{
+		{
+			name: "codex_automatic",
+			profile: runtimecommand.Profile{
+				Args:           []string{"fixed"},
+				PromptDelivery: runtimecommand.PromptArgv,
+				EffortAdapter:  runtimecommand.EffortAdapterCodexConfig,
+			},
+			args:       []string{"--effort", "high", "reply ok"},
+			wantPrompt: "reply ok",
+			wantSuffix: []string{"fixed", "-c", "model_reasoning_effort=high"},
+		},
+		{
+			name: "claude_manual",
+			profile: runtimecommand.Profile{
+				Args:           []string{"fixed"},
+				PromptDelivery: runtimecommand.PromptManual,
+				EffortAdapter:  runtimecommand.EffortAdapterClaudeFlag,
+			},
+			args:           []string{"--effort=max", "--", "--print", "reply ok"},
+			wantNativeArgs: []string{"--print", "reply ok"},
+			wantSuffix:     []string{"fixed", "--effort", "max"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			profile, prompt, nativeArgs, err := parseCommandProfileInput(
+				testCase.profile,
+				testCase.args,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prompt != testCase.wantPrompt ||
+				!reflect.DeepEqual(nativeArgs, testCase.wantNativeArgs) ||
+				!reflect.DeepEqual(profile.Args, testCase.wantSuffix) {
+				t.Fatalf(
+					"profile.args=%q prompt=%q native=%q",
+					profile.Args,
+					prompt,
+					nativeArgs,
+				)
+			}
+		})
+	}
+}
+
+func TestParseCommandProfileInputRejectsUnsupportedOrInvalidEffort(t *testing.T) {
+	profile := runtimecommand.Profile{
+		PromptDelivery: runtimecommand.PromptArgv,
+	}
+	for _, args := range [][]string{
+		{"--effort", "high", "reply ok"},
+		{"--effort", "extreme", "reply ok"},
+		{"--effort", "high", "--effort", "max", "reply ok"},
+	} {
+		if _, _, _, err := parseCommandProfileInput(profile, args); err == nil {
+			t.Fatalf("args=%q returned nil error", args)
+		}
+	}
+}
+
+func TestDirectAPIProfileRecognizesButRejectsEffortWithoutAdapter(t *testing.T) {
+	_, _, err := parseDirectModelInput(
+		"api-cx",
+		vNextTestModelProfile("openai-compatible"),
+		[]string{"--effort", "high", "reply ok"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "API effort adapter") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

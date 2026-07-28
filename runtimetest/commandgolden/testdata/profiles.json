@@ -1,6 +1,6 @@
 {
-  "captured_at": "2026-07-27",
-  "source_head": "99c5aac6c9a64bcba624ba946c3b0bc006c2fa1c",
+  "captured_at": "2026-07-28",
+  "source_head": "3ea8726dfe57e73a01fc99f1f6a5b20cb7519ffb",
   "installed_build": "sn-cli v0.0.0-dev+f2d06d6 (commit f2d06d6, built 2026-07-27T07:33:53Z, dirty, go1.26.4)",
   "profiles": [
     {
@@ -61,6 +61,12 @@
         "sandbox_mode=danger-full-access",
         "-c",
         "approval_policy=never",
+        "exec",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ephemeral",
+        "--color",
+        "never",
         "--model",
         "gpt-5.6-terra"
       ],

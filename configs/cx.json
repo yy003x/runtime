@@ -1,6 +1,7 @@
 {
   "type": "cli",
   "binary": "codex",
+  "effort_adapter": "codex-config",
   "args": [
     "-c",
     "model_reasoning_effort=xhigh",

@@ -26,7 +26,7 @@ type serverConfig struct {
 }
 
 var fixedNamespaces = []string{
-	"profile", "session", "agent", "run", "system", "help", "version",
+	"profile", "session", "agent", "run", "server", "help", "version",
 }
 
 func main() {

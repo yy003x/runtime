@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -11,61 +10,93 @@ import (
 )
 
 var fixedNamespaces = []string{
-	"profile", "session", "agent", "run", "system", "help", "version",
+	"profile", "session", "agent", "run", "server", "help", "version",
 }
 
 func Main(args []string) int {
+	jsonOutput := len(args) > 0 && args[0] == "--json"
+	if jsonOutput {
+		args = args[1:]
+	}
+	output := newCLIOutput(jsonOutput, os.Stdout, os.Stderr)
 	if len(args) == 0 {
-		printHelp()
+		if err := printHelp(output); err != nil {
+			return output.fail(err)
+		}
 		return 0
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
-		printHelp()
+		if err := printHelp(output); err != nil {
+			return output.fail(err)
+		}
 		return 0
 	case "--version", "version":
-		fmt.Println(version.String())
+		if output.JSON() {
+			if err := output.writeJSON(map[string]any{
+				"schema_version":   cliOutputSchemaVersion,
+				"contract_version": cliOutputContractVersion,
+				"version":          version.String(),
+			}); err != nil {
+				return output.fail(err)
+			}
+		} else if err := output.line("%s", version.String()); err != nil {
+			return output.fail(err)
+		}
 		return 0
 	}
 	paths, err := layout.Resolve()
 	if err != nil {
-		return fail(err)
+		return output.fail(err)
 	}
 	switch args[0] {
 	case "profile":
-		return exit(runVNextProfileNamespace(paths, args[1:]))
+		err = runVNextProfileNamespace(paths, args[1:], output)
 	case "session":
-		return exit(runSessionNamespaceVNext(paths, args[1:]))
+		err = runSessionNamespaceVNext(paths, args[1:], output)
 	case "agent":
-		return exit(runAgentNamespace(paths, args[1:]))
+		err = runAgentNamespace(paths, args[1:], output)
 	case "run":
-		return exit(runRunNamespaceVNext(paths, args[1:]))
-	case "system":
-		return exit(runSystemNamespaceVNext(paths, args[1:]))
+		err = runRunNamespaceVNext(paths, args[1:], output)
+	case "server":
+		err = runServerNamespaceVNext(paths, args[1:], output)
+	default:
+		runtime, loadErr := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+		if loadErr != nil {
+			return output.fail(loadErr)
+		}
+		subcommand, exists := runtime.Subcommands.Get(args[0])
+		if !exists {
+			return output.fail(fmt.Errorf("unknown command %q", args[0]))
+		}
+		err = runLoadedVNextShortcut(
+			runtime, subcommand.Profile, args[1:],
+		)
 	}
-	runtime, err := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
-	if err != nil {
-		return fail(err)
-	}
-	subcommand, exists := runtime.Subcommands.Get(args[0])
-	if !exists {
-		return fail(fmt.Errorf("unknown command %q", args[0]))
-	}
-	profileArgs := append([]string{subcommand.Profile}, args[1:]...)
-	return exit(runLoadedVNextProfile(runtime, profileArgs))
+	return output.fail(err)
 }
 
-func printHelp() {
-	fmt.Println(`sn-cli - Runtime vNext
+func printHelp(output *cliOutput) error {
+	if output.JSON() {
+		return output.writeJSON(map[string]any{
+			"schema_version":   cliOutputSchemaVersion,
+			"contract_version": cliOutputContractVersion,
+			"name":             "sn-cli",
+			"version":          version.String(),
+			"namespaces":       fixedNamespaces,
+		})
+	}
+	return output.text(`sn-cli - Runtime vNext
 
 Usage:
   sn-cli <command-id> [native-cli-args...]
-  sn-cli profile <profile-id> [input]
+  sn-cli --json <management-command> [args...]
+  sn-cli profile <profile-id> [--effort <level>] [input]
   sn-cli profile list|show|check
   sn-cli session run|submit [runtime-options] <profile-id> <input>
   sn-cli agent run --profile <model-profile-id> [options] <input>
   sn-cli run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc
-  sn-cli system info|doctor|start|status|stop|update
+  sn-cli server info|doctor|start|status|stop|update
 
 Execution semantics:
   <command-id>       transparent native CLI process replacement; no Runtime record
@@ -78,29 +109,14 @@ Execution semantics:
 Global:
   -h, --help         show this help
   --version          show build version
+  --json             stable machine output; must be the first argument
+
+Profile override:
+  --effort LEVEL     low|medium|high|xhigh|max; requires profile adapter
 
 Runtime home:        ${SN_CLI_HOME:-~/.sn}
 Profiles:            <runtime-home>/configs
 Subcommands:         <runtime-home>/commands
 Sessions:            <runtime-home>/sessions
 Run database:        <runtime-home>/state/runtime.db`)
-}
-
-func exit(err error) int {
-	if err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-func fail(err error) int {
-	fmt.Fprintf(os.Stderr, "error: %v\n", err)
-	return 1
-}
-
-func printJSON(value any) error {
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
 }

@@ -20,7 +20,9 @@ func TestResolveUsesSNCLIHome(t *testing.T) {
 		paths.RunDBFile != filepath.Join(home, "state", "runtime.db") ||
 		paths.ServerBinary != filepath.Join(home, "bin", "sn-server") ||
 		paths.ServerPIDFile != filepath.Join(home, "state", "sn-server.pid") ||
-		paths.ServerLogFile != filepath.Join(home, "state", "sn-server.log") {
+		paths.ServerLogFile != filepath.Join(home, "state", "sn-server.log") ||
+		paths.ServerLeaseFile != filepath.Join(home, "state", "sn-server.lease.lock") ||
+		paths.ServerLockFile != filepath.Join(home, "state", "sn-server.lifecycle.lock") {
 		t.Fatalf("unexpected paths: %#v", paths)
 	}
 	if paths.SchemaDir != filepath.Join(home, "resources", "schema") {

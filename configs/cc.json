@@ -1,6 +1,7 @@
 {
   "type": "cli",
   "binary": "claude",
+  "effort_adapter": "claude-flag",
   "args": [
     "--dangerously-skip-permissions"
   ],

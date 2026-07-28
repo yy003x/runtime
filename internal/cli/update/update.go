@@ -380,7 +380,7 @@ func copyMissingFile(source, target string) (bool, error) {
 }
 
 func validateBinary(ctx context.Context, binary, home string) error {
-	for _, args := range [][]string{{"profile", "check"}, {"system", "info"}} {
+	for _, args := range [][]string{{"profile", "check"}, {"server", "info"}} {
 		command := exec.CommandContext(ctx, binary, args...)
 		command.Env = replaceEnv(os.Environ(), "SN_CLI_HOME", home)
 		output, err := command.CombinedOutput()

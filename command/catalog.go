@@ -98,6 +98,7 @@ func cloneProfile(profile Profile) Profile {
 		Args:           append([]string(nil), profile.Args...),
 		Transport:      profile.Transport,
 		PromptDelivery: profile.PromptDelivery,
+		EffortAdapter:  profile.EffortAdapter,
 	}
 	if profile.Env != nil {
 		result.Env = make(map[string]*string, len(profile.Env))

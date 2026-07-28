@@ -34,13 +34,21 @@ CLI 与 API 仍进入独立领域，不共享执行器。
 - 不创建 Session、Turn 或 durable Run；
 - 不自动 retry、fallback 或 tool loop。
 
+CLI Profile 可以通过显式 `effort_adapter=codex-config|claude-flag` 接受
+`profile <id> --effort low|medium|high|xhigh|max`。这是 Provider-neutral 的
+typed public option；adapter 负责把它变成目标 CLI argv，Runtime 不按 binary
+名称推断。当前未配置 API effort adapter，API Profile 收到该 option 时在请求前
+失败。
+
 source 提供 `commit` CLI Profile 和同名 subcommand 映射。`sn-cli commit` 与
 `sn-cli profile commit` 复用同一配置，均只执行一次 CLI；提交规划使用只读
 sandbox，真正的 Git 写入仍由调用方控制。
 
-顶层动态 command 只接受 `transport=tty`，并用 process replacement 保留目标
-CLI 原生行为。tmux/terminal profile 必须走 `profile <id>`，其返回值只承诺 launch
-handle；`manual` 不自动注入 prompt。
+顶层动态 command 只接受 `type=cli` 且 `transport=tty`，loader 在启动前拒绝
+API、tmux 或 terminal 映射。shortcut 把调用方参数作为 native argv 直接交给
+process replacement，不按 `prompt_delivery` 重解为单个 prompt，并保留目标 CLI
+原生 stdio、signal 与 exit code。tmux/terminal profile 必须走 `profile <id>`，
+其返回值只承诺 launch handle；`manual` 不自动注入 prompt。
 
 ## 3. Canonical Model Contract
 
@@ -143,10 +151,23 @@ profile
 session
 agent
 run
-system
+server
 help
 version
 ```
+
+CLI 管理面默认输出 human 文本；leading global `--json` 选择 machine contract。
+当前 machine contract 为 `contract_version=2`，由 `server info|doctor` 连同
+`schema_version=1`、真实 namespace 和 capability 一起声明。旧版
+`features/scheduler` 不再存在，也不会作为兼容字段伪造。
+
+machine contract 只包装 Runtime 自己拥有输出的 action。TTY CLI Profile、顶层
+shortcut 始终继承目标进程原生 stdio/exit code；`session attach` 是交互式进程
+替换，不支持 global JSON。API Profile `--stream`、`agent --stream` 与
+`run watch` 使用严格 NDJSON：成功的最后一行是唯一 final record；失败不输出
+final，stderr 为单行 contract v2 error。`server info|start` 只声明
+`configured_address`；`server status` 不把当前调用进程的配置冒充运行实例实际
+监听地址。
 
 HTTP：
 

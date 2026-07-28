@@ -29,12 +29,30 @@ const (
 	PromptManual PromptDelivery = "manual"
 )
 
+type Effort string
+
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
+)
+
+type EffortAdapter string
+
+const (
+	EffortAdapterCodexConfig EffortAdapter = "codex-config"
+	EffortAdapterClaudeFlag  EffortAdapter = "claude-flag"
+)
+
 type Profile struct {
 	Binary         string             `json:"binary"`
 	Args           []string           `json:"args,omitempty"`
 	Env            map[string]*string `json:"env,omitempty"`
 	Transport      Transport          `json:"transport"`
 	PromptDelivery PromptDelivery     `json:"prompt_delivery"`
+	EffortAdapter  EffortAdapter      `json:"effort_adapter,omitempty"`
 }
 
 func Decode(reader io.Reader) (Profile, error) {
@@ -119,7 +137,59 @@ func (profile Profile) Validate() error {
 	default:
 		return fmt.Errorf("transport must be tty, tmux, or terminal")
 	}
+	switch profile.EffortAdapter {
+	case "", EffortAdapterCodexConfig, EffortAdapterClaudeFlag:
+	default:
+		return fmt.Errorf(
+			"effort_adapter must be %q or %q",
+			EffortAdapterCodexConfig,
+			EffortAdapterClaudeFlag,
+		)
+	}
 	return nil
+}
+
+func ParseEffort(value string) (Effort, error) {
+	effort := Effort(strings.TrimSpace(value))
+	switch effort {
+	case EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
+		return effort, nil
+	default:
+		return "", fmt.Errorf(
+			"effort must be low, medium, high, xhigh, or max",
+		)
+	}
+}
+
+func (profile Profile) WithEffort(effort Effort) (Profile, error) {
+	if effort == "" {
+		return profile, nil
+	}
+	if _, err := ParseEffort(string(effort)); err != nil {
+		return Profile{}, err
+	}
+	resolved := profile
+	resolved.Args = append([]string(nil), profile.Args...)
+	switch profile.EffortAdapter {
+	case EffortAdapterCodexConfig:
+		resolved.Args = append(
+			resolved.Args,
+			"-c",
+			"model_reasoning_effort="+string(effort),
+		)
+	case EffortAdapterClaudeFlag:
+		resolved.Args = append(resolved.Args, "--effort", string(effort))
+	case "":
+		return Profile{}, fmt.Errorf(
+			"profile does not declare an effort_adapter",
+		)
+	default:
+		return Profile{}, fmt.Errorf(
+			"unsupported effort_adapter %q",
+			profile.EffortAdapter,
+		)
+	}
+	return resolved, nil
 }
 
 func validateReferences(value string) error {

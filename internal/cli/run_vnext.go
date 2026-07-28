@@ -16,9 +16,16 @@ import (
 	"github.com/yy003x/runtime/session"
 )
 
-func runRunNamespaceVNext(paths layout.Paths, args []string) error {
+func runRunNamespaceVNext(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc")
+	}
+	if args[0] == "watch" {
+		output.beginStream()
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -45,7 +52,13 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if runtimeErr != nil {
 			return runtimeErr
 		}
-		return printJSON(record)
+		if output.JSON() {
+			return output.writeJSON(record)
+		}
+		return output.line(
+			"Submitted run %s (%s, state=%s)",
+			record.ID, record.Request.Kind, record.State,
+		)
 	case "get":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -55,7 +68,10 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(record)
+		if output.JSON() {
+			return output.writeJSON(record)
+		}
+		return renderRunRecord(output, record)
 	case "list":
 		state, err := optionString(args[1:], "--state")
 		if err != nil {
@@ -75,7 +91,22 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"runs": records})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"runs": records})
+		}
+		if err := output.line("Runs (%d)", len(records)); err != nil {
+			return err
+		}
+		for _, record := range records {
+			if err := output.line(
+				"  %s  %s  %s  %s",
+				record.ID, record.State, record.Request.Kind,
+				record.Request.ProfileID,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "result":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -85,11 +116,14 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{
-			"run_id": runID, "state": record.State,
-			"result": record.Result, "error": record.Error,
-			"settled_sequence": record.SettledSequence,
-		})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{
+				"run_id": runID, "state": record.State,
+				"result": record.Result, "error": record.Error,
+				"settled_sequence": record.SettledSequence,
+			})
+		}
+		return renderRunResult(output, record)
 	case "events":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -105,7 +139,20 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"events": events})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"events": events})
+		}
+		if err := output.line("Run events (%d)", len(events)); err != nil {
+			return err
+		}
+		for _, event := range events {
+			if err := output.line(
+				"  [%d] %s", event.Sequence, event.Type,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "watch":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -115,16 +162,14 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetEscapeHTML(false)
 		record, err := services.Runs.Watch(
 			context.Background(), runID, after,
-			func(event contract.Event) error { return encoder.Encode(event) },
+			func(event contract.Event) error { return output.writeEvent(event) },
 		)
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"run": record})
+		return output.writeFinal(map[string]any{"run": record})
 	case "cancel":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -134,7 +179,10 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(record)
+		if output.JSON() {
+			return output.writeJSON(record)
+		}
+		return output.line("Run %s: cancellation requested", record.ID)
 	case "resume":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -148,7 +196,10 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(record)
+		if output.JSON() {
+			return output.writeJSON(record)
+		}
+		return output.line("Run %s resumed (state=%s)", record.ID, record.State)
 	case "retry":
 		runID, err := requiredOption(args[1:], "--run-id")
 		if err != nil {
@@ -168,12 +219,20 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if runtimeErr != nil {
 			return runtimeErr
 		}
-		return printJSON(record)
+		if output.JSON() {
+			return output.writeJSON(record)
+		}
+		return output.line(
+			"Retry submitted: %s (retry_of=%s)", record.ID, runID,
+		)
 	case "reconcile":
 		if err := services.Runs.Reconcile(context.Background()); err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"ok": true})
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"ok": true})
+		}
+		return output.line("Run reconciliation completed")
 	case "gc":
 		olderThan := services.Config.SettledRetention()
 		configured, err := optionString(args[1:], "--older-than")
@@ -200,10 +259,80 @@ func runRunNamespaceVNext(paths layout.Paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(result)
+		if output.JSON() {
+			return output.writeJSON(result)
+		}
+		return output.line(
+			"Run GC: candidates=%d deleted=%d apply=%t",
+			len(result.Candidates), len(result.Deleted), result.Applied,
+		)
 	default:
 		return fmt.Errorf("unknown run action %q", args[0])
 	}
+}
+
+func renderRunRecord(output *cliOutput, record runtime.Record) error {
+	if err := output.line("Run: %s", record.ID); err != nil {
+		return err
+	}
+	if err := output.line(
+		"State: %s, kind: %s, profile: %s",
+		record.State, record.Request.Kind, record.Request.ProfileID,
+	); err != nil {
+		return err
+	}
+	if record.Request.SessionID != "" {
+		if err := output.line("Session: %s", record.Request.SessionID); err != nil {
+			return err
+		}
+	}
+	if record.Error != nil {
+		return output.line(
+			"Failure: %s: %s", record.Error.Code, record.Error.Message,
+		)
+	}
+	return nil
+}
+
+func renderRunResult(output *cliOutput, record runtime.Record) error {
+	printedMessage := false
+	var sessionResult session.RunResult
+	if len(record.Result) > 0 &&
+		json.Unmarshal(record.Result, &sessionResult) == nil &&
+		sessionResult.SessionID != "" {
+		if sessionResult.Message != nil &&
+			strings.TrimSpace(sessionResult.Message.Content) != "" {
+			if err := output.text(sessionResult.Message.Content); err != nil {
+				return err
+			}
+			printedMessage = true
+		}
+	}
+	if !printedMessage && len(record.Result) > 0 {
+		var agentResult struct {
+			Outcome struct {
+				Message *contract.Message `json:"message"`
+			} `json:"outcome"`
+		}
+		if json.Unmarshal(record.Result, &agentResult) == nil &&
+			agentResult.Outcome.Message != nil &&
+			strings.TrimSpace(agentResult.Outcome.Message.Content) != "" {
+			if err := output.text(agentResult.Outcome.Message.Content); err != nil {
+				return err
+			}
+		}
+	}
+	if record.Error != nil {
+		if err := output.line(
+			"Error: %s: %s", record.Error.Code, record.Error.Message,
+		); err != nil {
+			return err
+		}
+	}
+	return output.line(
+		"Run %s: %s (settled_sequence=%d)",
+		record.ID, record.State, record.SettledSequence,
+	)
 }
 
 func parseDurableSubmit(
