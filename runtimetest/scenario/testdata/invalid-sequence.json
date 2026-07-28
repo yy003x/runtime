@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "name": "out_of_order",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ]
+      },
+      "events": [
+        {
+          "sequence": 1,
+          "type": "model.started"
+        },
+        {
+          "sequence": 3,
+          "type": "model.completed"
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "content": "hello"
+        },
+        "finish_reason": "stop"
+      }
+    }
+  ]
+}

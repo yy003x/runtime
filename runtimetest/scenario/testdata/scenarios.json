@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "name": "text",
+      "request": {
+        "system": "Answer briefly.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ],
+        "trace": {
+          "labels": {
+            "task": "fixture-text"
+          }
+        }
+      },
+      "events": [
+        {
+          "sequence": 1,
+          "time": "2026-07-27T00:00:00Z",
+          "type": "model.started",
+          "run_id": "random-run",
+          "request_id": "random-request"
+        },
+        {
+          "sequence": 2,
+          "time": "2026-07-27T00:00:01Z",
+          "type": "content.delta",
+          "run_id": "random-run",
+          "text": "hello"
+        },
+        {
+          "sequence": 3,
+          "time": "2026-07-27T00:00:02Z",
+          "type": "model.completed",
+          "run_id": "random-run",
+          "result": {
+            "message": {
+              "role": "assistant",
+              "content": "hello"
+            },
+            "finish_reason": "stop",
+            "usage": {
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "total_tokens": 3,
+              "source": "provider",
+              "completeness": "complete"
+            },
+            "provider": {
+              "name": "faux",
+              "model": "fixture",
+              "request_id": "random-provider-request"
+            }
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "content": "hello"
+        },
+        "finish_reason": "stop",
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 1,
+          "total_tokens": 3,
+          "source": "provider",
+          "completeness": "complete"
+        },
+        "provider": {
+          "name": "faux",
+          "model": "fixture",
+          "request_id": "random-provider-request"
+        }
+      }
+    },
+    {
+      "name": "reasoning_and_tool",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "look up weather"
+          }
+        ],
+        "tools": [
+          {
+            "name": "weather",
+            "description": "Read a forecast",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        ]
+      },
+      "events": [
+        {
+          "sequence": 1,
+          "type": "model.started"
+        },
+        {
+          "sequence": 2,
+          "type": "reasoning.delta",
+          "text": "Need the tool."
+        },
+        {
+          "sequence": 3,
+          "type": "tool.call.started",
+          "tool_call": {
+            "id": "call-1",
+            "name": "weather",
+            "arguments": {}
+          }
+        },
+        {
+          "sequence": 4,
+          "type": "tool.call.arguments.delta",
+          "tool_call_id": "call-1",
+          "text": "{\"city\":\"Shanghai\"}"
+        },
+        {
+          "sequence": 5,
+          "type": "model.completed",
+          "result": {
+            "message": {
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "weather",
+                  "arguments": {
+                    "city": "Shanghai"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_call",
+            "provider": {
+              "name": "faux",
+              "model": "fixture"
+            }
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "name": "weather",
+              "arguments": {
+                "city": "Shanghai"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_call",
+        "provider": {
+          "name": "faux",
+          "model": "fixture"
+        }
+      }
+    },
+    {
+      "name": "rate_limited",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ]
+      },
+      "events": [
+        {
+          "sequence": 1,
+          "type": "model.started"
+        },
+        {
+          "sequence": 2,
+          "type": "run.failed",
+          "error": {
+            "code": "rate_limited",
+            "phase": "provider",
+            "message": "provider returned 429",
+            "retryable": true,
+            "retry_after_ms": 1000,
+            "http_status": 429,
+            "provider": "faux",
+            "request_id": "random-error-request"
+          }
+        },
+        {
+          "sequence": 3,
+          "type": "run.settled"
+        }
+      ],
+      "error": {
+        "code": "rate_limited",
+        "phase": "provider",
+        "message": "provider returned 429",
+        "retryable": true,
+        "retry_after_ms": 1000,
+        "http_status": 429,
+        "provider": "faux",
+        "request_id": "random-error-request"
+      }
+    }
+  ]
+}

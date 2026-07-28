@@ -1,0 +1,391 @@
+{
+  "schema_version": 1,
+  "scripts": [
+    {
+      "name": "text",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "content.delta",
+            "text": "hello"
+          }
+        },
+        {
+          "event": {
+            "sequence": 3,
+            "type": "model.completed"
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "content": "hello"
+        },
+        "finish_reason": "stop",
+        "provider": {
+          "name": "faux",
+          "model": "fixture"
+        }
+      }
+    },
+    {
+      "name": "reasoning",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "reasoning.delta",
+            "text": "checking"
+          }
+        },
+        {
+          "event": {
+            "sequence": 3,
+            "type": "content.delta",
+            "text": "done"
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "content": "done"
+        },
+        "finish_reason": "stop"
+      }
+    },
+    {
+      "name": "single_tool",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "tool.call.started",
+            "tool_call": {
+              "id": "call-1",
+              "name": "weather",
+              "arguments": {}
+            }
+          }
+        },
+        {
+          "event": {
+            "sequence": 3,
+            "type": "tool.call.arguments.delta",
+            "tool_call_id": "call-1",
+            "text": "{\"city\":\"Shanghai\"}"
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "name": "weather",
+              "arguments": {
+                "city": "Shanghai"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_call"
+      }
+    },
+    {
+      "name": "multiple_tools",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "tool.call.started",
+            "tool_call": {
+              "id": "call-1",
+              "name": "weather",
+              "arguments": {
+                "city": "Shanghai"
+              }
+            }
+          }
+        },
+        {
+          "event": {
+            "sequence": 3,
+            "type": "tool.call.started",
+            "tool_call": {
+              "id": "call-2",
+              "name": "time",
+              "arguments": {
+                "zone": "Asia/Shanghai"
+              }
+            }
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "name": "weather",
+              "arguments": {
+                "city": "Shanghai"
+              }
+            },
+            {
+              "id": "call-2",
+              "name": "time",
+              "arguments": {
+                "zone": "Asia/Shanghai"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_call"
+      }
+    },
+    {
+      "name": "invalid_arguments",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "tool.call.arguments.delta",
+            "tool_call_id": "call-1",
+            "text": "{\"city\":"
+          }
+        }
+      ],
+      "error": {
+        "code": "invalid_provider_response",
+        "phase": "provider",
+        "message": "invalid tool arguments",
+        "retryable": false
+      }
+    },
+    {
+      "name": "output_then_error",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "content.delta",
+            "text": "partial"
+          }
+        }
+      ],
+      "error": {
+        "code": "provider_unavailable",
+        "phase": "provider",
+        "message": "connection closed",
+        "retryable": true,
+        "http_status": 503
+      }
+    },
+    {
+      "name": "abort",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        }
+      ],
+      "error": {
+        "code": "cancelled",
+        "phase": "provider",
+        "message": "provider aborted",
+        "retryable": false
+      }
+    },
+    {
+      "name": "timeout",
+      "steps": [
+        {
+          "delay_ms": 250
+        },
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        }
+      ],
+      "result": {
+        "message": {
+          "role": "assistant",
+          "content": "late"
+        },
+        "finish_reason": "stop"
+      }
+    },
+    {
+      "name": "context_budget",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        }
+      ],
+      "error": {
+        "code": "context_overflow",
+        "phase": "agent",
+        "message": "context budget exceeded",
+        "retryable": false
+      }
+    },
+    {
+      "name": "terminal_failure",
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        }
+      ],
+      "error": {
+        "code": "protocol_error",
+        "phase": "provider",
+        "message": "stream terminated",
+        "retryable": true
+      }
+    },
+    {
+      "name": "secret_redaction",
+      "secrets": [
+        "fixture-secret"
+      ],
+      "steps": [
+        {
+          "event": {
+            "sequence": 1,
+            "type": "model.started"
+          }
+        },
+        {
+          "event": {
+            "sequence": 2,
+            "type": "content.delta",
+            "text": "token=fixture-secret"
+          }
+        }
+      ],
+      "error": {
+        "code": "authentication_failed",
+        "phase": "provider",
+        "message": "credential fixture-secret rejected",
+        "retryable": false
+      }
+    }
+  ],
+  "http": [
+    {
+      "name": "fragmented_tool_arguments",
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/event-stream"
+      },
+      "chunks": [
+        "data: {\"delta\":{\"tool\":{\"id\":\"call-1\",\"arguments\":\"{\\\"city\\\":\"}}}\n\n",
+        "data: {\"delta\":{\"tool\":{\"id\":\"call-1\",\"arguments\":\"\\\"Shanghai\\\"}\"}}}\n\n",
+        "data: [DONE]\n\n"
+      ]
+    },
+    {
+      "name": "rate_limited_429",
+      "status": 429,
+      "headers": {
+        "Content-Type": "application/json",
+        "Retry-After": "2"
+      },
+      "chunks": [
+        "{\"error\":\"rate limited\"}\n"
+      ]
+    },
+    {
+      "name": "overloaded_529",
+      "status": 529,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "chunks": [
+        "{\"error\":\"overloaded\"}\n"
+      ]
+    },
+    {
+      "name": "provider_500",
+      "status": 500,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "chunks": [
+        "{\"error\":\"internal\"}\n"
+      ]
+    },
+    {
+      "name": "invalid_sse",
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/event-stream"
+      },
+      "chunks": [
+        "data: not-json\n\n"
+      ]
+    },
+    {
+      "name": "terminal_connection_failure",
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/event-stream"
+      },
+      "chunks": [
+        "data: {\"delta\":{\"content\":\"partial\"}}\n\n"
+      ],
+      "close_early": true
+    }
+  ]
+}

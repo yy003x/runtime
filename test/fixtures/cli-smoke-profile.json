@@ -1,7 +1,0 @@
-{
-  "command": "/bin/sh",
-  "args": [
-    "-c", "printf '{\"schema_version\":1,\"run_id\":\"%s\",\"outcome\":\"succeeded\",\"summary\":\"CLI smoke ok\",\"artifacts\":[],\"errors\":[],\"validation\":{\"commands\":[],\"passed\":true}}\\n' \"$AGENTRUN_RUN_ID\" > \"$AGENTRUN_RESULT_FILE\"; printf 'CLI smoke ok\\n'"
-  ],
-  "timeout_seconds": 30
-}

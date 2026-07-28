@@ -14,33 +14,33 @@ import (
 func TestSyncMissingPreservesExistingAndCopiesRecursively(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "source")
 	target := filepath.Join(t.TempDir(), "target")
-	mustWrite(t, filepath.Join(source, "runtime.yaml"), "packaged")
-	mustWrite(t, filepath.Join(source, "nested", "item.yaml"), "item")
-	mustWrite(t, filepath.Join(target, "runtime.yaml"), "local")
-	mustWrite(t, filepath.Join(target, "extra.yaml"), "extra")
+	mustWrite(t, filepath.Join(source, "runtime.json"), "packaged")
+	mustWrite(t, filepath.Join(source, "nested", "item.json"), "item")
+	mustWrite(t, filepath.Join(target, "runtime.json"), "local")
+	mustWrite(t, filepath.Join(target, "extra.json"), "extra")
 	result, err := SyncMissing(source, target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(result.Copied, ",") != "nested/item.yaml" {
+	if strings.Join(result.Copied, ",") != "nested/item.json" {
 		t.Fatalf("copied=%v", result.Copied)
 	}
-	assertContent(t, filepath.Join(target, "runtime.yaml"), "local")
-	assertContent(t, filepath.Join(target, "nested", "item.yaml"), "item")
-	assertContent(t, filepath.Join(target, "extra.yaml"), "extra")
+	assertContent(t, filepath.Join(target, "runtime.json"), "local")
+	assertContent(t, filepath.Join(target, "nested", "item.json"), "item")
+	assertContent(t, filepath.Join(target, "extra.json"), "extra")
 }
 
 func TestSyncMissingTypeConflictDoesNotPartiallyCopy(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "source")
 	target := filepath.Join(t.TempDir(), "target")
-	mustWrite(t, filepath.Join(source, "a-new.yaml"), "new")
-	mustWrite(t, filepath.Join(source, "nested", "item.yaml"), "item")
+	mustWrite(t, filepath.Join(source, "a-new.json"), "new")
+	mustWrite(t, filepath.Join(source, "nested", "item.json"), "item")
 	mustWrite(t, filepath.Join(target, "nested"), "file-conflict")
 	_, err := SyncMissing(source, target)
 	if err == nil || !strings.Contains(err.Error(), filepath.Join(target, "nested")) {
 		t.Fatalf("error=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(target, "a-new.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(target, "a-new.json")); !os.IsNotExist(err) {
 		t.Fatalf("preflight left partial copy: %v", err)
 	}
 }
