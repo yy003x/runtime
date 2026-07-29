@@ -1,7 +1,9 @@
 {
   "type": "cli",
-  "binary": "claude",
-  "effort_adapter": "claude-flag",
+  "command": "claude",
+  "model": "glm-5.2",
+  "effort": "high",
+  "exec": false,
   "args": [
     "--dangerously-skip-permissions",
     "--permission-mode",
@@ -21,12 +23,8 @@
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2",
     "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-5.2",
-    "ANTHROPIC_MODEL": "glm-5.2",
     "API_TIMEOUT_MS": "300000",
-    "CLAUDE_CODE_EFFORT_LEVEL": "high",
     "CLAUDE_CODE_SUBAGENT_MODEL": "glm-5.2",
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
-  },
-  "transport": "tty",
-  "prompt_delivery": "manual"
+  }
 }

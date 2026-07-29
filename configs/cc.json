@@ -1,7 +1,8 @@
 {
   "type": "cli",
-  "binary": "claude",
-  "effort_adapter": "claude-flag",
+  "command": "claude",
+  "model": "claude-fable-5",
+  "exec": false,
   "args": [
     "--dangerously-skip-permissions"
   ],
@@ -9,9 +10,6 @@
     "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip",
     "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn",
     "ANTHROPIC_API_KEY": "${KMM_API_KEY}",
-    "ANTHROPIC_AUTH_TOKEN": "${KMM_API_KEY}",
-    "ANTHROPIC_MODEL": "claude-fable-5"
-  },
-  "transport": "tty",
-  "prompt_delivery": "manual"
+    "ANTHROPIC_AUTH_TOKEN": "${KMM_API_KEY}"
+  }
 }

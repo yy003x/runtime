@@ -9,79 +9,107 @@ source configs/runtime/runtime.json    → ${SN_CLI_HOME}/runtime.json
 source resources/                      → ${SN_CLI_HOME}/resources/
 ```
 
-Profile loader 只读 active `configs/*.json`，每份文件必须以 `type=cli|api` 明确
-选择执行域；不读取 `commands/` 作为 Profile，不 fallback 到无 `type` 的旧格式或
-`runtime.yaml`。
+Profile loader 只读 active `configs/*.json`。每份文件必须用 `type=cli|api`
+显式选择执行域；不读取 `commands/` 作为 Profile，不 fallback 到无 `type` 的旧
+Profile、`binary/transport/prompt_delivery/effort_adapter` 或 `runtime.yaml`。
 
 ## CLI Profile
 
 ```json
 {
   "type": "cli",
-  "binary": "codex",
-  "effort_adapter": "codex-config",
-  "args": ["exec", "--skip-git-repo-check", "--model", "example"],
+  "command": "codex",
+  "args": ["--skip-git-repo-check"],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip",
     "REMOVE_ME": null
   },
-  "transport": "tty",
-  "prompt_delivery": "argv"
+  "model": "gpt-5.6-sol",
+  "effort": "high",
+  "prompt": "",
+  "exec": false,
+  "cwd": ""
 }
 ```
 
-- `binary`、每个 `args` item 都是独立 argv token，不经过 shell；
-- `env` 继承父进程后覆盖；`null` 删除变量；
-- `${VAR}` 是唯一插值语法，缺失变量在启动前失败；
-- CLI Profile 没有顶层 `model` 字段；目标 CLI 的模型通过 `args` 中的
-  `--model <id>` 等原生参数配置；
-- `effort_adapter` 可选，只允许 `codex-config|claude-flag`。它显式声明
-  `sn-cli profile <id> --effort low|medium|high|xhigh|max` 如何映射到目标 CLI；
-  Runtime 不根据 `binary` 名称推断；
-- 合法组合由 loader 与 `profile.schema.json` 同时约束。
+- `command` 是单个可执行文件名或路径，不经过 shell。首期仅登记
+  `codex`、`claude` adapter，按 `filepath.Base(command)` 选择；
+- `args` 一字符串一 argv token。Profile 中的 option 必须在对应 adapter 的显式
+  grammar 内，不能包含额外 positional prompt；
+- `env` 继承启动环境后覆盖；`null` 删除变量；
+- `${NAME}` 是唯一插值语法。`args/env/cwd` 从进程启动时的 inherited
+  environment snapshot 展开一次，Profile `env` 条目不能彼此引用；
+- `model`、`effort`、`prompt`、`cwd` 可省略，`exec` 默认 `false`；
+- `cwd` 在实际调用时必须解析成可进入目录。CLI ingress 可按 caller cwd 解析相对
+  路径；HTTP CLI executor 只能使用 absolute override 或 Profile absolute `cwd`；
+- `prompt` 使用 file-or-text 规则：若输入指向现有 regular file，则安全读取文件；
+  不存在时按普通字符串；symlink、非 regular file、无效 UTF-8、NUL 或超限失败。
 
-`codex-config` 把 override 追加为两个 argv token：
-`-c model_reasoning_effort=<level>`；`claude-flag` 追加为
-`--effort <level>`。追加位置位于 Profile 固定 `args` 之后、调用方 input 之前，
-因此任务级 typed override 可以覆盖 Profile 默认值。未声明 adapter 的 CLI
-Profile、以及当前 API Profile，使用 `--effort` 时会在启动 Provider 前失败。
-顶层 shortcut（例如 `sn-cli cx ...`）仍透明透传 native argv，不解释 Runtime
-typed override。
+`model`、`effort` 和 `exec` 不直接拼接到配置尾部。adapter 会识别并替换
+`args` 中同类 selector，重建 command/global options、mode selector、mode-only
+options、`--` 和最终 prompt 的正确顺序；重复或无法安全归类的配置 fail closed。
 
-`transport` 决定进程在哪里运行：
+### `sn-cli profile` typed 参数
 
-| 值 | 行为 | 结果捕获 |
-| --- | --- | --- |
-| `tty` | 当前进程或当前 stdio 中执行 | 自动命令可解析 stdout |
-| `tmux` | 创建 detached tmux session | 只有 launch handle，`transcript_only` |
-| `terminal` | macOS 新建 Ghostty/iTerm2 窗口 | 只有 launch handle，`transcript_only` |
+```text
+sn-cli profile <id> \
+  [--model <model>] \
+  [--effort <low|medium|high|xhigh|max>] \
+  [--prompt <file-or-text>] \
+  [--exec|--exec=true|--exec=false] \
+  [--cwd <dir>] \
+  [input]
+```
 
-`prompt_delivery` 决定输入如何交给目标 CLI：
+每个 option 最多一次。`model/effort/exec/cwd` 覆盖 Profile 默认值；
+`--prompt` 是追加输入，不覆盖 Profile prompt。最终 prompt 按以下顺序用换行连接
+非空片段：
 
-| 值 | 行为 | 合法 transport |
-| --- | --- | --- |
-| `argv` | 把 prompt 追加成最后一个 argv token | 全部 |
-| `stdin` | 把 prompt 写入 stdin | `tty` |
-| `paste` | 启动后粘贴 prompt 并回车 | `tmux|terminal` |
-| `manual` | Runtime 不注入 prompt，用户在交互界面输入 | 全部 |
+```text
+Profile prompt → --prompt → piped stdin → positional input
+```
 
-顶层 shortcut 只接受 `type=cli` 且 `transport=tty` 的 Profile；
-`tmux|terminal` 和 API Profile 通过 `profile <id>` 使用。shortcut 不执行
-`prompt_delivery` 的单 prompt 解析，而是把调用方参数作为 native argv 原样传给
-目标 CLI；`profile <id>` 才按表中的 delivery 规则处理 input。macOS terminal
-driver 支持 `ghostty|iterm2`；launch 成功只代表已创建窗口/会话。
+`--exec` 等价于 `--exec=true`，不接受 `--exec true` 这种会消费位置输入的形式。
+`--` 后最多一个 input。每个输入片段和最终 prompt 上限为 96 KiB；Runtime 还会在
+spawn 前校验单 token 与总 argv/env/指针预算。
 
-`commit.json` 是普通 CLI Profile：Codex 的 `exec`、model、reasoning 和
-sandbox 都必须写成独立 argv token。`sn-cli commit` 与
-`sn-cli profile commit` 复用这份配置；默认使用 `read-only` sandbox，因为提交
-规划不拥有文件或 Git 写权限。
+CLI Profile 的两种 mode 都在校验后 process replacement：
+
+- effective `exec=true`：prompt 必须非空；stdin 固定 `/dev/null`；
+- effective `exec=false`：prompt 可为空；非空 prompt 仍是最终 argv token；
+  stdin 不是 TTY 时重新绑定 `/dev/tty`，没有 controlling TTY 则失败。
+
+leading global `--json` 不包装 CLI Profile 的 stdout/stderr/exit code。`exec`
+只选择目标命令的 interactive 或 non-interactive mode，不表示后台运行，也不表示
+在哪个终端承载。
+
+### 顶层 command shortcut
+
+`commands/<id>.json` 只做显式映射：
+
+```json
+{
+  "profile": "cx"
+}
+```
+
+shortcut 目标必须是 `type=cli`。它使用 Profile 的 `command,args,env,model,
+effort,exec,cwd` 构建配置前缀，但忽略 Profile `prompt`，不解析 typed override，
+并把调用方 native argv 和 stdin 原样交给目标命令：
+
+```text
+sn-cli cx --model one-off-model
+```
+
+这里的 `--model` 属于 Codex，不属于 Runtime。固定 namespace 不能被
+`commands/` 覆盖。
+
+`profile list|show|check` 是管理 action。`show` 不展开 secret；`check` 只做静态、
+符号化验证，不解析真实 env/PATH/cwd，不读取 prompt file，也不调用 Provider。
 
 ## API Profile
 
-API Profile 的 `model` 字段没有删除，它是 HTTP 请求必需的模型 ID。CLI Profile
-由目标命令自己的 argv 选择模型，API Profile 则由 Runtime Driver 写入请求体。
-
-OpenAI-compatible Profile 当前对应 Chat Completions：
+API Profile 保持独立 schema，不增加 CLI-only 字段。OpenAI-compatible 示例：
 
 ```json
 {
@@ -108,7 +136,7 @@ OpenAI-compatible Profile 当前对应 Chat Completions：
 }
 ```
 
-Anthropic-compatible Profile 使用 Messages API 的原生字段：
+Anthropic-compatible 使用 Messages API 原生字段：
 
 ```json
 {
@@ -128,108 +156,39 @@ Anthropic-compatible Profile 使用 Messages API 的原生字段：
 }
 ```
 
-Anthropic `x-api-key` 可省略 `scheme`。`endpoint` 必须是完整 HTTPS endpoint。
-`headers` 只允许非 secret literal；认证值只从 `auth.from_env` 获取。
-
-直接调用中的 Provider request option 按 Profile Driver 区分：
+`endpoint` 必须是完整 HTTPS endpoint。`headers` 只允许非 secret literal；
+认证值只从 `auth.from_env` 获取。直接 API Profile 与 API Session Turn 支持：
 
 ```text
-OpenAI-compatible:
-  --max-completion-tokens <n>  → max_completion_tokens
-
-Anthropic-compatible:
-  --max-tokens <n>             → max_tokens
-
-两者共有的 request option:
-  --temperature <0..2>
-  --system <text>
-
-CLI transport option:
-  --stream
-  --request-file <path|->
+OpenAI-compatible: --max-completion-tokens <n>
+Anthropic-compatible: --max-tokens <n>
+共有: --temperature <0..2> --system <text>
+Profile direct only: --stream --request-file <path|->
 ```
 
-`--system` 是 Runtime 的 Provider-neutral 便利参数：OpenAI Driver 将它编码成
-`messages` 中的 `system` message，Anthropic Driver 将它编码成顶层 `system`。
-`--request-file` 读取 Runtime canonical `ModelRequest`，不是原始 OpenAI/Anthropic
-请求体。`--stream` 控制 Runtime 是否把规范化 event 输出为 NDJSON；Driver
-内部始终用 Provider streaming 构建统一 event model，因此它不是原始请求体的
-透传开关。token limit 和 temperature 才由 Driver 写成对应 Provider 字段。
+`--request-file` 读取 Runtime canonical `ModelRequest`，不是原始 Provider
+payload。Driver 内部使用 Provider streaming 构建 canonical event，`--stream`
+只控制 CLI 输出。
 
-如果配置 `context.window_tokens`，输入预算为：
+## Session 与 Tmux
 
-```text
-window_tokens - max(
-  reserved_output_tokens or 8192,
-  driver-specific default token limit
-)
-```
+Session 与 Tmux 不读取 Profile `exec`：
 
-必须至少留下 2 input tokens。当前实现对超预算输入 fail closed，不静默截断原始
-Session message。
+- `sn-cli session run|submit ... <cli-profile> <input>` 固定使用 adapter
+  `exec=true`，由 Session managed subprocess 捕获 canonical
+  stdout/stderr/exit；CLI Turn override 只支持 `--model`、`--effort`、`--cwd`；
+- `sn-cli tmux start ... <cli-profile> [input]` 固定使用 adapter
+  `exec=false`，在专用 tmux server 的 `sn-session` 中创建一个 window；
+- Profile direct 和顶层 shortcut 才使用 Profile `exec` 默认值。
 
-## tmux Profile 与 Session
-
-需要 Runtime 启动并控制 tmux 时，单独配置一个 CLI Profile：
-
-```json
-{
-  "type": "cli",
-  "binary": "codex",
-  "args": [
-    "--model",
-    "gpt-5.6-sol"
-  ],
-  "env": {
-    "CODEX_HOME": "${HOME}/.codex-aip"
-  },
-  "transport": "tmux",
-  "prompt_delivery": "paste"
-}
-```
-
-假设保存为 `configs/cx-tmux.json`，一次不记录的启动使用：
-
-```bash
-sn-cli profile cx-tmux "分析当前仓库"
-```
-
-需要 Session 记录和 carrier 控制时：
-
-```bash
-sn-cli session run cx-tmux "分析当前仓库"
-# 从 JSON 结果取得 session_id
-sn-cli session attach --session-id <session_id>
-sn-cli session send --session-id <session_id> "继续"
-sn-cli session interrupt --session-id <session_id>
-sn-cli session stop --session-id <session_id>
-```
-
-`session run --session-id <id> cx-tmux "..."` 会启动一个新的 tmux execution；
-要继续当前 tmux，使用 `session send`，不要再执行一个 Turn。tmux 只保存
-`transcript_only` 和 launch handle，Runtime 不把 pane transcript 伪装成结构化
-assistant message，因此它适合启动、关联和控制交互 CLI，不适合作为高质量模型
-会话历史来源。
-
-## 顶层子命令
-
-`commands/<id>.json` 只做显式映射，不复制执行配置：
-
-```json
-{
-  "profile": "commit"
-}
-```
-
-shortcut 目标必须是 `type=cli` 且 `transport=tty` 的 Profile。未登记在
-`commands/` 中的 Profile 只能通过 `sn-cli profile <id>` 使用。固定 namespace
-不能被映射覆盖；映射到不存在、API、tmux 或 terminal Profile 时 loader 失败。
+Session 不再提供 `--prompt-file`、`--terminal-driver`、`--command-arg` 或
+`attach/send/interrupt/stop`。输入只来自 piped stdin 和最后一个位置参数。
+Tmux 管理详见 [Tmux 管理契约](tmux-contract.md)。
 
 ## runtime.json
 
 ```json
 {
-  "terminal": {"driver": "ghostty"},
   "agent": {
     "tools": ["read_file", "list_directory"],
     "workspace_roots": ["/absolute/project"],
@@ -248,11 +207,46 @@ shortcut 目标必须是 `type=cli` 且 `transport=tty` 的 Profile。未登记�
 }
 ```
 
-文件缺失时使用代码默认值。文件存在时必须是 regular file、非 symlink、严格 JSON，
-未知字段失败。
+文件缺失时使用代码默认值。存在时必须是 regular file、非 symlink、严格 JSON，
+未知字段失败。`workspace_roots` 未配置时以当前启动 cwd 为唯一 root；默认 tool
+只读，`write_file` 和 `exec_command` 必须显式启用。
 
-`workspace_roots` 未配置时，以当前启动 cwd 为唯一 root。默认 tool 只读；
-`write_file` 和 `exec_command` 需要明确加入 `agent.tools`。
+## 升级 schema
+
+contract v3 同时把 Session fact 和 SQLite `PRAGMA user_version` 提升到 2，不读取
+schema 1，也不自动 migration。普通 network/archive 安装需要在升级前：
+
+1. 用旧 binary 导出需要保留的 Session；
+2. 停止 `sn-server` 和所有 `sn-cli tmux` managed window；
+3. 把 `sessions/` 与 `state/runtime.db*` 移到可恢复备份；
+4. 旧字段 Profile 需要显式备份后使用 `install.sh --overwrite-configs`，或手工改成
+   新 schema；
+5. 再执行当前 release 的 `install.sh`。
+
+安装和 self-update 必须在替换 binary/resources 前完成 active-home preflight。
+`--overwrite-configs` 只授权替换配置，不绕过 live server、Tmux、Session 或 Run
+门禁。v0.1.1 legacy updater 不允许直接激活 contract-v3 release。
+
+根目录 `make install` 是独立的本地源码调试策略，不使用上述数据保留流程，也不
+需要额外 Make 变量。它固定校验并安装完整 source bundle，自动安全停止受管
+`sn-server`，覆盖 source configs，并在 activation journal/guard 仍生效时删除
+`sessions/`、`state/session-locks/`、`state/session-invocations/` 和
+`state/runtime.db{,-wal,-shm,-journal}`。Runtime artifact 完整提交并校验前不删除
+这些状态；成功后不重启 server。该授权不传递给 archive installer 或
+`server update`。
+installer 会在任何目录创建前解析 canonical home/install-dir，并拒绝 install-dir
+位于 Runtime home 内。尚不存在的路径组件只接受 printable ASCII，避免
+case-insensitive filesystem 上无法在无写 dry-run 中证明安全的 Unicode alias；
+已存在的 Unicode ancestor 不受影响。激活后的 command symlink 通过逐路径组件
+no-follow 的 directory descriptor 和 no-clobber `symlinkat` 创建，并再次强制位于
+home 外；已有 regular file、目录或非目标 symlink 均不替换。
+
+激活期间 `${SN_CLI_HOME}/state/activation.guard.json` 与 durable journal 保护 v3
+入口，active `bin/`、`configs/` 还会短暂替换为 regular-file barrier 以阻断
+v0.1.1 的 layout 初始化。恢复只接受 journal 中 exact artifact set、owner
+PID/start-token 与 old/new/guard digest 一致的状态。journal 在
+`committed|rolled_back` terminal phase 仍是入口 barrier，直到目录树、rename、
+guard/journal 删除都按顺序 fsync 完成。
 
 ## Server
 
@@ -261,7 +255,8 @@ shortcut 目标必须是 `type=cli` 且 `transport=tty` 的 Profile。未登记�
 - 非 loopback 地址必须设置 token；
 - `SN_CLI_HOME`：active Runtime home。
 
-`sn-cli server start` 只启动 `${SN_CLI_HOME}/bin/sn-server`。严格 PID 身份、
-进程 lease、生命周期互斥锁和日志均位于 `${SN_CLI_HOME}/state/`；`stop` 只有在
-PID、进程启动标识和 lease 全部匹配时才会发送信号。旧版或损坏的 PID 文件不会被
-兼容读取，也不会被静默忽略；应先确认旧进程已经停止，再按错误提示移除 stale 文件。
+`server start` 只启动 `${SN_CLI_HOME}/bin/sn-server`。PID identity、process lease、
+lifecycle/maintenance lock、日志和升级 guard 位于 `${SN_CLI_HOME}/state/`。
+首次启动和 server 已运行时，human 输出都包含 `pid=<正整数>`；leading-global
+JSON 调用 `sn-cli --json server start` 固定返回 `running=true` 和同一个正整数
+`pid`，供第三方托管。

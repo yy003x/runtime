@@ -5,16 +5,6 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "terminal": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "driver": {
-          "enum": ["ghostty", "iterm2"],
-          "default": "ghostty"
-        }
-      }
-    },
     "agent": {
       "type": "object",
       "additionalProperties": false,

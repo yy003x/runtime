@@ -19,7 +19,7 @@ func TestLoadOverlaysDefaultsAndRejectsUnknownConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.json")
 	if err := os.WriteFile(
 		path,
-		[]byte(`{"terminal":{"driver":"iterm2"},"scheduler":{"workers":2}}`),
+		[]byte(`{"scheduler":{"workers":2}}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestLoadOverlaysDefaultsAndRejectsUnknownConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Terminal.Driver != "iterm2" || value.Scheduler.Workers != 2 ||
+	if value.Scheduler.Workers != 2 ||
 		value.Agent.MaxRounds != 16 || value.Run.SettledRetention != "168h" {
 		t.Fatalf("config=%#v", value)
 	}

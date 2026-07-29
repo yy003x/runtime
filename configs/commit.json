@@ -1,27 +1,23 @@
 {
   "type": "cli",
-  "binary": "codex",
+  "command": "codex",
+  "model": "gpt-5.3-codex-spark",
+  "effort": "xhigh",
+  "exec": true,
   "args": [
     "--sandbox",
     "read-only",
     "--ask-for-approval",
     "never",
     "-c",
-    "model_reasoning_effort=xhigh",
-    "-c",
     "model_verbosity=high",
-    "exec",
     "--skip-git-repo-check",
     "--ignore-user-config",
     "--ephemeral",
     "--color",
-    "never",
-    "--model",
-    "gpt-5.3-codex-spark"
+    "never"
   ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-ait"
-  },
-  "transport": "tty",
-  "prompt_delivery": "argv"
+  }
 }

@@ -1,27 +1,22 @@
 {
   "type": "cli",
-  "binary": "codex",
-  "effort_adapter": "codex-config",
+  "command": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "max",
+  "exec": true,
   "args": [
     "--search",
     "--sandbox",
     "danger-full-access",
     "--ask-for-approval",
     "never",
-    "-c",
-    "model_reasoning_effort=max",
-    "exec",
     "--skip-git-repo-check",
     "--ignore-user-config",
     "--ephemeral",
     "--color",
-    "never",
-    "--model",
-    "gpt-5.6-sol"
+    "never"
   ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-ait"
-  },
-  "transport": "tty",
-  "prompt_delivery": "argv"
+  }
 }

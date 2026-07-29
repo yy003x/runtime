@@ -1,28 +1,23 @@
 {
   "type": "cli",
-  "binary": "codex",
-  "effort_adapter": "codex-config",
+  "command": "codex",
+  "model": "gpt-5.6-terra",
+  "effort": "max",
+  "exec": true,
   "args": [
-    "-c",
-    "model_reasoning_effort=max",
     "-c",
     "model_verbosity=high",
     "-c",
     "sandbox_mode=danger-full-access",
     "-c",
     "approval_policy=never",
-    "exec",
     "--skip-git-repo-check",
     "--ignore-user-config",
     "--ephemeral",
     "--color",
-    "never",
-    "--model",
-    "gpt-5.6-terra"
+    "never"
   ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-ait"
-  },
-  "transport": "tty",
-  "prompt_delivery": "manual"
+  }
 }

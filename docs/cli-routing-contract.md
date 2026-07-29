@@ -1,56 +1,44 @@
 # CLI 路由契约
 
-## 优先级
+## 根路由
 
-1. 可选的 leading global `--json`；
+路由优先级固定为：
+
+1. 可选且只允许位于 argv 第一项的 global `--json`；
 2. `-h|--help|help` 与 `--version|version`；
-3. 固定 namespace：`profile|session|agent|run|server`；
-4. active `commands/<id>.json` 声明的顶层 Profile shortcut；
+3. 固定 namespace：`profile|session|tmux|agent|run|server`；
+4. active `commands/<id>.json` 声明的 CLI Profile shortcut；
 5. 未命中即失败。
 
-固定 namespace 是保留的顶层 subcommand ID；`profile` 的 `list|show|check` 是
-保留 Profile ID。`commands/<id>.json` 必须引用现有、`type=cli` 且
-`transport=tty` 的 `configs/<profile>.json`；API、tmux 和 terminal Profile
-不能登记为顶层 shortcut。root 只消费 argv 第一项的 `--json`；namespace 或
-shortcut 后的同名参数属于目标命令，例如 `sn-cli cx --json` 必须原样透传。
+namespace 或 shortcut 后的 `--json` 不属于 root。例如 `sn-cli cx --json` 会把
+`--json` 原样传给 Codex。固定 namespace 和 `profile list|show|check` 保留 ID
+不能被配置覆盖。
 
 ## Profile
 
 ```text
-sn-cli profile <id> [--effort <level>] [input]
+sn-cli profile <id> [--model M] [--effort E] [--prompt FILE_OR_TEXT]
+                    [--exec|--exec=true|--exec=false] [--cwd DIR] [input]
 sn-cli profile list
 sn-cli profile show <id>
 sn-cli profile check [id]
 ```
 
-不存在 action 层：`exec` 和 `open` 不作为 `profile` 子命令。`type=cli` Profile
-的 argv、transport、prompt delivery 完全由 JSON 决定；`type=api` Profile 只做
-一次 API call。
+不存在 `profile exec|open` action。CLI Profile 在 adapter 校验后 process
+replacement；API Profile 做一次 API call。二者都不创建 Session 或 durable Run。
 
-source 默认提供 `commit` CLI Profile 和同名 subcommand 映射，因此以下两个入口
-使用同一份 Profile：
+CLI Profile prompt 按 Profile `prompt`、`--prompt`、piped stdin、位置 input 合并。
+effective `exec=true` 时 prompt 必须非空，`exec=false` 时允许空 prompt。Runtime
+不把 CLI Profile 的原生 stdout/stderr/exit 包装成 JSON。
+
+顶层 shortcut 使用 Profile `exec`，但忽略 Profile prompt 和 Runtime typed
+parser；调用方 native args/stdin 原样追加。它是唯一硬兼容面：
 
 ```text
-sn-cli commit <input>
-sn-cli profile commit <input>
+sn-cli cx [native-codex-args...]
+sn-cli cc [native-claude-args...]
+sn-cli cx-* [native-codex-args...]
 ```
-
-前者是声明式 shortcut；后者明确表达一次性 Profile 调用。二者都不创建 Session
-或 durable Run。shortcut 会把 command Profile 中的固定 `args` 与调用方提供的
-全部 native args 原样组成最终 argv，不把多个 native args 重新解释为一条
-prompt。
-
-`profile <id>` 的自动 delivery 按配置接收零个或一个 input；`manual` 不注入
-prompt，其后的 native args 全部原样透传。TTY CLI Profile 会直接替换当前进程，
-因此即使使用 leading global `--json`，其 stdout/stderr 和 exit code 仍完全
-属于目标 CLI，不会被 Runtime 包装。
-
-`profile <id>` 保留 `--effort low|medium|high|xhigh|max` 作为 Runtime typed
-override。CLI Profile 必须显式声明 `effort_adapter=codex-config|claude-flag`；
-Runtime 只按 adapter 生成 argv，不读取 `binary` 猜测 Provider。`--` 结束 Runtime
-option 解析；其后内容按该 Profile 的 `prompt_delivery` 处理。顶层 shortcut
-不解析 `--effort`，始终保持 native argv 透明性。API effort adapter 尚未登记时
-明确失败，不把参数静默丢给 HTTP Driver。
 
 ## Session
 
@@ -58,32 +46,48 @@ option 解析；其后内容按该 Profile 的 `prompt_delivery` 处理。顶层
 sn-cli session run [options] <profile-id> <input>
 sn-cli session submit [options] <profile-id> <input>
 sn-cli session list|show|messages|events|logs
+sn-cli session executions --session-id <id>
+sn-cli session execution --session-id <id> --execution-id <id>
+sn-cli session reconcile --session-id <id>
+                         [--terminate|--acknowledge-unknown]
 sn-cli session tool-result
 sn-cli session configure|export|delete|gc
-sn-cli session attach|send|interrupt|stop
 ```
 
-`run` 同步执行并写 Session 文件；`submit` 先创建 durable Run。carrier 操作只支持
-active tmux execution；terminal 不伪装为可控 carrier。`session attach` 会替换为
-交互式 tmux client，只支持 human 模式；`sn-cli --json session attach ...`
-明确失败，不尝试 attach。
+Session 是记录 canonical Turn 的独立领域。API Profile 使用 API executor；CLI
+Profile 固定 adapter `exec=true`，由 managed subprocess 捕获 stdout、stderr 和
+exit，并解码稳定机器输出。Session 不读取 Profile `exec`，也不使用 Tmux。
 
-Profile ID 位于 options 之后、input 之前：
+CLI Session Turn override 只支持 `--model`、`--effort`、`--cwd`。API request
+options 只适用于 API Profile，CLI override 只适用于 CLI Profile。输入来自 piped
+stdin 和最后一个位置参数，合并后必须非空。
+
+`run` 同步等待 terminal result；`submit` 创建 durable Run，并由 worker 执行同一
+Session service。进程已经可能执行但结果未知时，Session 和 Run 进入显式
+reconciliation，不自动重放。
+
+## Tmux
 
 ```text
-sn-cli session run [options] <profile-id> <input>
-sn-cli session run --session-id <id> api-cx "继续"
-sn-cli session run --session-id <id> cx-tmux "启动新的 tmux execution"
+sn-cli tmux start [--model M] [--effort E] [--prompt FILE_OR_TEXT]
+                  [--cwd DIR] <profile-id> [input]
+sn-cli tmux list
+sn-cli tmux show --tmux-id <id>
+sn-cli tmux send --tmux-id <id> <input>
+sn-cli tmux attach --tmux-id <id>
+sn-cli tmux interrupt --tmux-id <id>
+sn-cli tmux stop --tmux-id <id>
 ```
 
-tmux Profile 必须使用 `transport=tmux` 与 `prompt_delivery=paste|argv`；`manual`
-不会接受 Session 自动输入。继续已启动的 tmux 使用 `session send`，而不是再次
-`session run`。tmux execution 只承诺 launch handle 和 `transcript_only`。
+Tmux 是不创建 Runtime Session 的 interactive process manager。`start` 对任意合法
+CLI Profile 固定 adapter `exec=false`，每次在专用 server 的 `sn-session` 中新增
+window；初始 prompt 是最终 argv token，只有后续 `send` 使用安全 paste。
+`attach` 是 human-only，要求 stdin/stdout TTY。
 
 ## Agent 与 Run
 
 ```text
-sn-cli agent run --profile <model-id> [options] <input>
+sn-cli agent run --profile <api-profile-id> [options] <input>
 
 sn-cli run submit --kind agent|session --profile <id> <input>
 sn-cli run get|list|result|events|watch
@@ -91,24 +95,15 @@ sn-cli run cancel|resume|retry|reconcile
 sn-cli run gc [--older-than 168h] [--limit 100] [--apply]
 ```
 
-`agent run` 是同步等待的 durable Agent Run。`run submit` 是 queued execution。
-Agent 不接受 command profile。
+`agent run` 是唯一 API-only model/tool loop。`run submit` 是 durable queue 控制面。
 
 ## 输出
 
-- 普通管理面默认输出 action-aware 的紧凑 human 文本；
-- Runtime 自己拥有输出的管理 action 使用 `sn-cli --json <namespace> ...`
-  输出稳定 JSON，并保留各 action 的业务字段；
-- 非流 JSON 失败时 stdout 为空，stderr 只有一个 compact contract v2 error
-  document，CLI 返回非零；
-- model/Agent `--stream` 输出 NDJSON event，成功时再输出唯一的 compact final
-  record；
-- `run watch` 输出已提交 event 的 NDJSON，成功 terminal 后输出唯一的 compact
-  final record；
-- stream 失败不输出 final；已经完成的 NDJSON 行可以保留，stderr 只输出一个
-  compact contract v2 error，CLI 返回非零；
-- 顶层 command shortcut 和 TTY CLI Profile 完全继承目标进程 stdio 和 exit
-  code，leading global `--json` 不改变这一原生边界；
-- `session attach` 不提供 machine mode；
-- API Profile 非 stream 的 human 输出只返回 assistant text；tool call 或空文本
-  返回可诊断摘要，完整结构使用 leading global `--json` 获取。
+- Runtime 管理 action 默认输出 compact human 文本；
+- leading global `--json` 选择 `schema_version=1`、`contract_version=3` machine
+  contract；
+- 非流失败 stdout 为空，stderr 只有一个 compact v3 error document；
+- stream/watch 输出 NDJSON，成功时最后一行是唯一 final record；失败不输出 final；
+- CLI Profile 和 shortcut 始终继承目标进程 stdout/stderr/exit；
+- `tmux attach` 不支持 machine mode；
+- `tmux list` 在专用 server 不存在时成功返回空集合。

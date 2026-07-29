@@ -1,16 +1,10 @@
 {
   "type": "cli",
-  "binary": "codex",
-  "effort_adapter": "codex-config",
-  "args": [
-    "-c",
-    "model_reasoning_effort=xhigh",
-    "--model",
-    "gpt-5.6-sol"
-  ],
+  "command": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "xhigh",
+  "exec": false,
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip"
-  },
-  "transport": "tty",
-  "prompt_delivery": "manual"
+  }
 }

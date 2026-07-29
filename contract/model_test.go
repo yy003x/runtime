@@ -2,6 +2,7 @@ package contract
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,20 @@ func TestGenerateRequestValidation(t *testing.T) {
 	request.Input.Tools[0].InputSchema = json.RawMessage(`[]`)
 	if err := request.Validate(); err == nil {
 		t.Fatal("array input schema was accepted")
+	}
+}
+
+func TestModelRequestValidationRejectsNonFiniteTemperature(t *testing.T) {
+	for _, temperature := range []float64{
+		math.NaN(), math.Inf(1), math.Inf(-1),
+	} {
+		request := ModelRequest{
+			Messages: []Message{{Role: RoleUser, Content: "hello"}},
+			Options:  GenerateOptions{Temperature: &temperature},
+		}
+		if err := request.Validate(); err == nil {
+			t.Fatalf("temperature %v was accepted", temperature)
+		}
 	}
 }
 

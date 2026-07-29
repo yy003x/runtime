@@ -1,7 +1,4 @@
 {
-  "terminal": {
-    "driver": "ghostty"
-  },
   "agent": {
     "tools": [
       "read_file",

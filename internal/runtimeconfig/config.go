@@ -14,14 +14,9 @@ import (
 const maxConfigBytes int64 = 1 << 20
 
 type Config struct {
-	Terminal  Terminal  `json:"terminal"`
 	Agent     Agent     `json:"agent"`
 	Scheduler Scheduler `json:"scheduler"`
 	Run       Run       `json:"run"`
-}
-
-type Terminal struct {
-	Driver string `json:"driver"`
 }
 
 type Agent struct {
@@ -44,7 +39,6 @@ type Run struct {
 
 func Default() Config {
 	return Config{
-		Terminal: Terminal{Driver: "ghostty"},
 		Agent: Agent{
 			Tools:     []string{"read_file", "list_directory"},
 			MaxRounds: 16, MaxToolCalls: 64, MaxWallTime: "15m",
@@ -76,11 +70,6 @@ func Load(path string) (Config, error) {
 }
 
 func (config Config) Validate() error {
-	switch config.Terminal.Driver {
-	case "ghostty", "iterm2":
-	default:
-		return fmt.Errorf("terminal.driver must be ghostty or iterm2")
-	}
 	if config.Agent.MaxRounds <= 0 || config.Agent.MaxRounds > 128 {
 		return fmt.Errorf("agent.max_rounds must be between 1 and 128")
 	}

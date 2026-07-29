@@ -9,15 +9,13 @@
       "additionalProperties": false,
       "required": [
         "type",
-        "binary",
-        "transport",
-        "prompt_delivery"
+        "command"
       ],
       "properties": {
         "type": {
           "const": "cli"
         },
-        "binary": {
+        "command": {
           "type": "string",
           "minLength": 1,
           "maxLength": 4096,
@@ -28,7 +26,7 @@
           "maxItems": 4096,
           "items": {
             "type": "string",
-            "maxLength": 262144,
+            "maxLength": 98304,
             "pattern": "^[^\\u0000]*$"
           }
         },
@@ -45,67 +43,41 @@
               "string",
               "null"
             ],
-            "maxLength": 262144
+            "maxLength": 98304,
+            "pattern": "^[^\\u0000]*$"
           }
         },
-        "transport": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 98304,
+          "pattern": "^[^\\u0000]+$"
+        },
+        "effort": {
           "type": "string",
           "enum": [
-            "tty",
-            "tmux",
-            "terminal"
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
           ]
         },
-        "prompt_delivery": {
+        "prompt": {
           "type": "string",
-          "enum": [
-            "argv",
-            "stdin",
-            "paste",
-            "manual"
-          ]
+          "maxLength": 98304,
+          "pattern": "^[^\\u0000]*$"
         },
-        "effort_adapter": {
+        "exec": {
+          "type": "boolean",
+          "default": false
+        },
+        "cwd": {
           "type": "string",
-          "enum": [
-            "codex-config",
-            "claude-flag"
-          ]
+          "maxLength": 98304,
+          "pattern": "^[^\\u0000]*$"
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "transport": {
-                "const": "tty"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "prompt_delivery": {
-                "enum": [
-                  "argv",
-                  "stdin",
-                  "manual"
-                ]
-              }
-            }
-          },
-          "else": {
-            "properties": {
-              "prompt_delivery": {
-                "enum": [
-                  "argv",
-                  "paste",
-                  "manual"
-                ]
-              }
-            }
-          }
-        }
-      ]
+      }
     },
     {
       "title": "API Profile",

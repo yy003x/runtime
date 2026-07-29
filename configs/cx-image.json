@@ -1,24 +1,19 @@
 {
   "type": "cli",
-  "binary": "codex",
-  "effort_adapter": "codex-config",
+  "command": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "xhigh",
+  "exec": true,
   "args": [
-    "-c",
-    "model_reasoning_effort=xhigh",
-    "exec",
     "--skip-git-repo-check",
     "--ignore-user-config",
     "--ephemeral",
     "--color",
     "never",
     "--image",
-    "${WB_RUNTIME_IMAGE_PATH}",
-    "--model",
-    "gpt-5.6-sol"
+    "${WB_RUNTIME_IMAGE_PATH}"
   ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip"
-  },
-  "transport": "tty",
-  "prompt_delivery": "argv"
+  }
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/yy003x/runtime/internal/profileid"
@@ -60,9 +61,10 @@ func (request ModelRequest) Validate() error {
 	if request.Options.MaxOutputTokens != nil && *request.Options.MaxOutputTokens <= 0 {
 		return fmt.Errorf("options.max_output_tokens must be positive")
 	}
-	if request.Options.Temperature != nil &&
-		(*request.Options.Temperature < 0 || *request.Options.Temperature > 2) {
-		return fmt.Errorf("options.temperature must be between 0 and 2")
+	if request.Options.Temperature != nil {
+		if err := ValidateTemperature(*request.Options.Temperature); err != nil {
+			return fmt.Errorf("options.temperature: %w", err)
+		}
 	}
 	if len(request.Trace.Labels) > maxLabels {
 		return fmt.Errorf("trace.labels exceed %d items", maxLabels)
@@ -74,6 +76,14 @@ func (request ModelRequest) Validate() error {
 		if len(value) > maxLabelValueBytes {
 			return fmt.Errorf("trace.labels[%q] exceeds %d bytes", key, maxLabelValueBytes)
 		}
+	}
+	return nil
+}
+
+// ValidateTemperature enforces the Provider-neutral sampling range.
+func ValidateTemperature(value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 2 {
+		return fmt.Errorf("must be a finite number between 0 and 2")
 	}
 	return nil
 }
