@@ -35,7 +35,6 @@ type BuildRequest struct {
 	OutputProtocol       OutputProtocol
 	Profile              Profile
 	Overrides            Overrides
-	NativeArgs           []string
 	ArgvPrompt           *string
 	InheritedEnvironment []string
 	InvocationBase       string
@@ -372,25 +371,21 @@ func effectiveTyped(request BuildRequest) (string, Effort, string, error) {
 	return model, effort, cwd, nil
 }
 
-func appendPromptOrNative(argv []string, request BuildRequest) ([]string, error) {
-	if request.ArgvPrompt != nil && len(request.NativeArgs) != 0 {
-		return nil, fmt.Errorf("nativeArgs and argvPrompt are mutually exclusive")
-	}
-	if request.ArgvPrompt != nil {
-		if len(*request.ArgvPrompt) > MaxTokenBytes {
-			return nil, &invocationLimitError{message: fmt.Sprintf(
-				"prompt exceeds %d bytes", MaxTokenBytes,
-			)}
-		}
-		if err := validateTextToken(
-			"prompt", *request.ArgvPrompt, MaxTokenBytes, true,
-		); err != nil {
-			return nil, err
-		}
-		argv = append(argv, "--", *request.ArgvPrompt)
+func appendPrompt(argv []string, request BuildRequest) ([]string, error) {
+	if request.ArgvPrompt == nil {
 		return argv, nil
 	}
-	return append(argv, request.NativeArgs...), nil
+	if len(*request.ArgvPrompt) > MaxTokenBytes {
+		return nil, &invocationLimitError{message: fmt.Sprintf(
+			"prompt exceeds %d bytes", MaxTokenBytes,
+		)}
+	}
+	if err := validateTextToken(
+		"prompt", *request.ArgvPrompt, MaxTokenBytes, true,
+	); err != nil {
+		return nil, err
+	}
+	return append(argv, "--", *request.ArgvPrompt), nil
 }
 
 func oneSelector(

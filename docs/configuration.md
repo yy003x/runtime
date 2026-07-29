@@ -4,14 +4,13 @@
 
 ```text
 source configs/*.json                  → ${SN_CLI_HOME}/configs/*.json
-source configs/commands/*.json         → ${SN_CLI_HOME}/commands/*.json
 source configs/runtime/runtime.json    → ${SN_CLI_HOME}/runtime.json
 source resources/                      → ${SN_CLI_HOME}/resources/
 ```
 
 Profile loader 只读 active `configs/*.json`。每份文件必须用 `type=cli|api`
-显式选择执行域；不读取 `commands/` 作为 Profile，不 fallback 到无 `type` 的旧
-Profile、`binary/transport/prompt_delivery/effort_adapter` 或 `runtime.yaml`。
+显式选择执行域；不存在 command ID 或第二层映射，也不 fallback 到无 `type` 的
+旧 Profile、`binary/transport/prompt_delivery/effort_adapter` 或 `runtime.yaml`。
 
 ## CLI Profile
 
@@ -49,9 +48,17 @@ Profile、`binary/transport/prompt_delivery/effort_adapter` 或 `runtime.yaml`�
 `args` 中同类 selector，重建 command/global options、mode selector、mode-only
 options、`--` 和最终 prompt 的正确顺序；重复或无法安全归类的配置 fail closed。
 
-### `sn-cli profile` typed 参数
+### Profile typed 参数
 
 ```text
+sn-cli <id> \
+  [--model <model>] \
+  [--effort <low|medium|high|xhigh|max>] \
+  [--prompt <file-or-text>] \
+  [--exec|--exec=true|--exec=false] \
+  [--cwd <dir>] \
+  [input]
+
 sn-cli profile <id> \
   [--model <model>] \
   [--effort <low|medium|high|xhigh|max>] \
@@ -61,6 +68,8 @@ sn-cli profile <id> \
   [input]
 ```
 
+两种写法加载同一 Profile，进入同一 typed parser，并产生相同的
+stdout/stderr/exit；顶层写法不是 raw argv passthrough。
 每个 option 最多一次。`model/effort/exec/cwd` 覆盖 Profile 默认值；
 `--prompt` 是追加输入，不覆盖 Profile prompt。最终 prompt 按以下顺序用换行连接
 非空片段：
@@ -83,26 +92,20 @@ leading global `--json` 不包装 CLI Profile 的 stdout/stderr/exit code。`exe
 只选择目标命令的 interactive 或 non-interactive mode，不表示后台运行，也不表示
 在哪个终端承载。
 
-### 顶层 command shortcut
+### 隐式 Profile 与保留 ID
 
-`commands/<id>.json` 只做显式映射：
-
-```json
-{
-  "profile": "cx"
-}
-```
-
-shortcut 目标必须是 `type=cli`。它使用 Profile 的 `command,args,env,model,
-effort,exec,cwd` 构建配置前缀，但忽略 Profile `prompt`，不解析 typed override，
-并把调用方 native argv 和 stdin 原样交给目标命令：
+`sn-cli <profile-id>` 直接解析 `configs/<profile-id>.json`，完全等价于
+`sn-cli profile <profile-id>`。`type=cli|api` 决定使用 command adapter 还是 model
+adapter；不会根据 ID 前缀猜测类型。两种入口都使用 Runtime typed option。例如：
 
 ```text
-sn-cli cx --model one-off-model
+sn-cli cx --model one-off-model "回复 OK"
+sn-cli api-cc "回复 OK"
 ```
 
-这里的 `--model` 属于 Codex，不属于 Runtime。固定 namespace 不能被
-`commands/` 覆盖。
+固定根 namespace `profile|session|tmux|agent|run|server|help|version` 和 Profile
+管理 action `list|show|check` 是保留 Profile ID。`configs/` 出现同名文件时
+loader fail closed；不按路由优先级静默遮蔽。
 
 `profile list|show|check` 是管理 action。`show` 不展开 secret；`check` 只做静态、
 符号化验证，不解析真实 env/PATH/cwd，不读取 prompt file，也不调用 Provider。
@@ -179,7 +182,7 @@ Session 与 Tmux 不读取 Profile `exec`：
   stdout/stderr/exit；CLI Turn override 只支持 `--model`、`--effort`、`--cwd`；
 - `sn-cli tmux start ... <cli-profile> [input]` 固定使用 adapter
   `exec=false`，在专用 tmux server 的 `sn-session` 中创建一个 window；
-- Profile direct 和顶层 shortcut 才使用 Profile `exec` 默认值。
+- 隐式和显式 Profile direct 才使用 Profile `exec` 默认值。
 
 Session 不再提供 `--prompt-file`、`--terminal-driver`、`--command-arg` 或
 `attach/send/interrupt/stop`。输入只来自 piped stdin 和最后一个位置参数。

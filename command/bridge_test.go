@@ -77,7 +77,7 @@ func TestAdapterRejectsRegisteredOptionAsRequiredValue(t *testing.T) {
 	}
 }
 
-func TestBuildCodexInteractiveRemovesExecOnlyAndPreservesNativeArgs(t *testing.T) {
+func TestBuildCodexInteractiveRemovesExecOnlyAndAppendsPrompt(t *testing.T) {
 	root := t.TempDir()
 	commandPath := writeCommandFixture(t, root, "codex")
 	invocation, err := Build(BuildRequest{
@@ -89,7 +89,7 @@ func TestBuildCodexInteractiveRemovesExecOnlyAndPreservesNativeArgs(t *testing.T
 				"--skip-git-repo-check", "--ephemeral", "--json",
 			},
 		},
-		NativeArgs:           []string{"--model", "native-model", "native prompt"},
+		ArgvPrompt:           stringPointer("typed prompt"),
 		InheritedEnvironment: []string{"PATH=" + root},
 		InvocationBase:       root,
 	})
@@ -98,7 +98,7 @@ func TestBuildCodexInteractiveRemovesExecOnlyAndPreservesNativeArgs(t *testing.T
 	}
 	want := []string{
 		commandPath, "--sandbox", "read-only",
-		"--model", "native-model", "native prompt",
+		"--", "typed prompt",
 	}
 	if !reflect.DeepEqual(invocation.Argv, want) {
 		t.Fatalf("argv=%q want=%q", invocation.Argv, want)

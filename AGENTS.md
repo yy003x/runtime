@@ -8,16 +8,17 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 
 执行面固定为：
 
-- `sn-cli <command-id>`：透明 command shortcut，不记录；
-- `sn-cli profile <id>`：一次 command 或 model 调用，不记录；
+- `sn-cli <profile-id>`：隐式 Profile 一次调用，不记录；
+- `sn-cli profile <profile-id>`：与隐式入口完全等价的一次 command 或 model
+  调用，不记录；
 - `sn-cli session ...`：文件型本地执行会话，不自动执行 tool；
 - `sn-cli tmux ...`：固定专用 tmux server/window 的交互进程管理，不进入 Session；
 - `sn-cli agent run`：唯一 API-only Agent Kernel；
 - `sn-cli run ...`：SQLite durable Run 控制面。
 
-唯一硬兼容面是有效 CLI Profile 对应的 `sn-cli cx|cc|cx-*`。不恢复旧
-`profile exec|open`、无 `type` 的旧 Profile、`runtime.yaml`、旧 namespace、旧
-artifact reader 或 shim。
+所有有效 CLI/API Profile 都通过同一 Profile ID 路由，并由 `type=cli|api` 选择
+执行 adapter。不恢复旧 `profile exec|open`、无 `type` 的旧 Profile、
+`runtime.yaml`、旧 namespace、旧 artifact reader、command shortcut 或 shim。
 
 ## 架构边界
 
@@ -40,7 +41,6 @@ source：
 
 ```text
 configs/*.json
-configs/commands/*.json
 configs/runtime/runtime.json
 resources/schema/*.json
 ```
@@ -49,17 +49,15 @@ active home：
 
 ```text
 configs/
-commands/
 runtime.json
 resources/
 sessions/
 state/runtime.db
 ```
 
-`configs/*.json` 是统一 Profile 配置面，必须用 `type=cli|api` 显式分流到独立
-执行领域；`commands/*.json` 只映射顶层子命令到 Profile。args 一字符串一 argv
-token，secret 只从环境变量解析。旧无 `type` Profile 和 `runtime.yaml` 不作为
-fallback。
+`configs/*.json` 是唯一 Profile 配置面，必须用 `type=cli|api` 显式分流到独立
+执行领域；不存在第二层 command ID 映射。args 一字符串一 argv token，secret
+只从环境变量解析。旧无 `type` Profile 和 `runtime.yaml` 不作为 fallback。
 
 ## 同步门禁
 

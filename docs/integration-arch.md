@@ -9,7 +9,7 @@ CLI/HTTP 传入 prompt、correlation ID 和有限 labels，不直接读写
 
 ```text
 Business Orchestrator
-  ├─ one shot ───────> profile <id>
+  ├─ one shot ───────> <id> / profile <id>
   ├─ recorded turn ──> session run|submit
   ├─ interactive TUI > tmux start|send|attach
   └─ tool loop ──────> agent run / run submit
@@ -28,15 +28,17 @@ Runtime Tmux window 只暴露 `tmux_id`，三者不共享 identity 或 storage�
 
 ## 公开入口边界
 
-- `profile <api-id>` ↔ `POST /v1/model/generate`：一次 API model call；
-- `profile <cli-id>`：本机 process replacement，无 HTTP 等价入口；
+- `<api-id>` / `profile <api-id>` ↔ `POST /v1/model/generate`：等价的一次 API
+  model call；
+- `<cli-id>` / `profile <cli-id>`：等价的本机 process replacement，无 HTTP
+  等价入口；
 - `session run|submit` ↔ Session Turn/Run HTTP：记录 canonical Turn；
 - `tmux ...`：本机 human/management CLI，不暴露 HTTP；
 - `agent run` ↔ `POST /v1/agent/run`：durable API-only Agent；
 - `run submit` ↔ `POST /v1/runs`：queued Run。
 
-机器调用 CLI 管理面必须用 leading global `sn-cli --json ...`。CLI Profile 和
-shortcut 是透明目标进程边界，不为获取结构化结果而包装 stdout/stderr。Session
+机器调用 CLI 管理面必须用 leading global `sn-cli --json ...`。隐式和显式 CLI
+Profile 是相同的目标进程边界，不为获取结构化结果而包装 stdout/stderr。Session
 CLI executor 则由 Runtime 自己启动 canonical managed subprocess。
 
 HTTP 不接受 command upload、env、任意 Provider payload 或 tool handler。Server
@@ -64,7 +66,6 @@ absolute request/Profile 配置，不能使用 server 启动 cwd。
 sn-cli
 sn-server
 configs/
-commands/
 runtime.json
 resources/
 ```
@@ -83,7 +84,7 @@ preflight 与激活，不能先分段替换 resources/configs/binary。
 - active Profile、Session fact 和 SQLite schema 与 candidate 兼容。
 
 默认保留合法 active configs，只补缺失模板；`--overwrite-configs` 显式替换
-Profile、subcommand 和 runtime config，但不绕过运行态或 schema 门禁。schema 1
+Profile 和 runtime config，但不绕过运行态或 schema 门禁。schema 1
 必须先用旧版 export，再停服、备份/reset；不自动 migration。
 
 根目录 `make install` 是仅面向本地源码调试的例外策略：固定使用完整 source
@@ -108,5 +109,5 @@ coordinator PID/start-token。journal 自身持续作为入口 barrier；
 创建，失败只报告链接未创建，绝不覆盖现有入口。
 
 release gate 包括 Go format、serial/race tests、vet、跨平台 build/checksum、临时
-home install/upgrade、Profile/Session/Tmux schema preflight、hard-compatible
-shortcut smoke 和 server lifecycle smoke；不得修改 active `~/.sn`。
+home install/upgrade、Profile/Session/Tmux schema preflight、隐式/显式 Profile
+等价 smoke 和 server lifecycle smoke；不得修改 active `~/.sn`。

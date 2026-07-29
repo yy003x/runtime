@@ -34,7 +34,8 @@ adapter。
   context owner 身份，并允许每个 Turn 选择 API 或 CLI executor。
 - 新增独立的 `sn-cli tmux`，在固定 tmux session `sn-session` 中管理多个
   interactive window。
-- 保持顶层 `sn-cli cx|cc|cx-*` 的 native argv 兼容面。
+- 让 `sn-cli <profile-id>` 成为 `sn-cli profile <profile-id>` 的完全等价简写，
+  CLI/API Profile 都由 `type` 选择 adapter。
 
 ### 非目标
 
@@ -62,8 +63,8 @@ adapter。
   `sn-session`，以 live window registry 管理 interactive command。
 - machine envelope 使用 `schema_version=1`、`contract_version=3`；Session fact
   与 SQLite 使用 schema=2，旧 schema 和旧 Profile 字段均 fail closed。
-- 唯一硬兼容面仍是有效 CLI Profile 对应的 `sn-cli cx|cc|cx-*`；未恢复其余旧
-  namespace、旧 Profile 或 shim。
+- `configs/*.json` 是唯一 Profile 配置层；隐式与显式 Profile 入口使用同一个
+  loader、typed parser 和执行 service，不存在 command shortcut 映射。
 
 ## 设计
 
@@ -71,9 +72,8 @@ adapter。
 
 | 入口 | Profile 类型 | effective `exec` | 承载与记录 |
 | --- | --- | --- | --- |
-| `sn-cli <command-id> [native args...]` | `cli` | 使用 Profile `exec`；不解析调用方 native argv | process replacement；不记录；调用方 args 原样追加 |
-| `sn-cli profile <id> ...` | `cli` | Profile 默认值，可被 `--exec` 覆盖 | 参数校验后 process replacement；一次调用，不记录 |
-| `sn-cli profile <id> ...` | `api` | 不适用 | 一次 HTTP model call，不记录 |
+| `sn-cli <id> ...` 或 `sn-cli profile <id> ...` | `cli` | Profile 默认值，可被 `--exec` 覆盖 | 相同 typed 参数校验后 process replacement；一次调用，不记录 |
+| `sn-cli <id> ...` 或 `sn-cli profile <id> ...` | `api` | 不适用 | 相同 typed 参数校验后一次 HTTP model call，不记录 |
 | `sn-cli session run\|submit ...` | `cli` | 固定 `true` | Session 自有 managed subprocess；记录 canonical Turn |
 | `sn-cli session run\|submit ...` | `api` | 不适用 | Session 自有 API executor；记录 canonical Turn |
 | `sn-cli tmux start ...` | `cli` | 固定 `false` | 固定 `sn-session` 中的新 window；不创建 Runtime Session |
@@ -81,15 +81,17 @@ adapter。
 `launch` 不属于 Profile、Session 或 Tmux 的公开配置。`session` 和 `tmux` 不校验、
 不读取 Profile 的 `exec` 默认值，而是由入口固定 effective mode。这样同一 CLI
 Profile 可以分别用于一次 TTY 调用、canonical Session Turn 和长期 Tmux TUI。
-顶层 shortcut 为保持唯一硬兼容面，使用 Profile `exec` 生成配置前缀，但忽略
-Profile `prompt`，也不解析 typed override；调用方 native argv 原样追加。native
-argv 中的 mode selector 只属于目标 CLI 原生命令语义。
+隐式 `sn-cli <id>` 与显式 `sn-cli profile <id>` 加载同一份配置、解析同一组 typed
+参数，并产生相同 stdout/stderr/exit。`type=cli|api` 是唯一 adapter 分流依据。
+固定根 namespace `profile|session|tmux|agent|run|server|help|version` 和 Profile
+管理 action `list|show|check` 都是保留 Profile ID，loader 遇到同名配置即失败。
 
 Runtime machine mode 继续只认 argv 第一项的 leading global `--json`，即
 `sn-cli --json session list`；namespace 后的同名参数绝不被 root 截获。管理命令的
 machine success 与 error 都携带 `schema_version=1`、
-`contract_version=3`。CLI Profile 和顶层 shortcut 即使带 leading global
-`--json` 也仍 process replacement，不把目标 CLI 输出伪装成 Runtime JSON。
+`contract_version=3`。隐式和显式 CLI Profile 即使带 leading global `--json` 也
+仍 process replacement，不把目标 CLI 输出伪装成 Runtime JSON；Profile ID 后的
+`--json` 由 Profile typed parser 拒绝，不透传给目标命令。
 
 ### 2. CLI Profile 协议
 
@@ -132,7 +134,7 @@ CLI Profile 使用以下字段：
   不接受旧字段。
 - API Profile schema 和 Provider driver 保持独立，不增加 CLI-only 字段。
 
-`sn-cli profile` 的 CLI typed 参数为：
+隐式或显式 CLI Profile 的 typed 参数为：
 
 ```text
 --model <model>
@@ -151,7 +153,7 @@ CLI Profile 使用以下字段：
 
 `prompt` 不是 scalar override，而是追加输入源。Profile prompt、`--prompt`、piped
 stdin 和最后一个位置参数按此顺序合并，非空片段用换行连接，最终形成一个 prompt。
-除顶层 shortcut 外，不提供 raw argv passthrough。
+不提供 raw argv passthrough。
 
 - 每个 typed option 最多出现一次；未知 option、超过一个 positional、positional
   后继续出现 option 都 fail closed。`--` 后只能有零或一个 input。
@@ -170,20 +172,16 @@ stdin 和最后一个位置参数按此顺序合并，非空片段用换行连�
 - Profile interactive 只要继承的 stdin 不是真 TTY，就必须把 `/dev/tty` 重新绑定
   为 stdin；没有 controlling TTY 时 fail closed。Profile exec 与 Session canonical child
   固定从 `/dev/null` 读取 stdin，防止目标 CLI 再次消费或拼接调用方 stdin。
-  顶层 shortcut 不聚合输入，完整继承 native stdin。
 
-- typed `sn-cli profile <id>` 的 effective `exec=true` 时 prompt 必须非空；
-  Session 输入也始终非空。该门禁不适用于顶层 shortcut：shortcut 即使 Profile
-  `exec=true` 也允许零 native args，并原样继承目标 CLI 的 stdin 语义。
+- 隐式或显式 Profile 的 effective `exec=true` 时 prompt 必须非空；Session 输入
+  也始终非空。
 - effective `exec=false` 时 prompt 可以为空；非空 prompt 仍作为最终 argv token
   交给当前 TTY 中的 TUI。
 - CLI Profile 无论 `exec` 值都不提供 Runtime `--json` 包装；两种 mode 均在校验后
   process replacement，继承目标进程的 stdout、stderr、signal 和 exit code。
   `exec` 只决定 adapter 生成 interactive 还是非交互 target argv。API Profile
   继续支持 Runtime human/JSON contract。
-- 顶层 shortcut 不读取 Profile `prompt`，也不解析 typed 参数；adapter 根据
-  command、args、env、model、effort、cwd 和 Profile `exec` 生成配置前缀，再把
-  调用方 native args 原样追加。
+- 隐式和显式入口都读取 Profile `prompt`，并按相同优先级应用 typed 参数。
 
 保留 `profile list|show|check`。`show` 只展示未展开配置，禁止显示 resolved env；
 `check` 是纯静态、符号化校验：只验证 schema、引用语法、adapter、option grammar
@@ -199,21 +197,21 @@ prompt file，也不调用 Provider。真实 env/filesystem/argv budget 只在 i
 ```text
 Resolve(command basename) -> Adapter
 Adapter.Build(BuildRequest{
-  mode, outputProtocol, effectiveConfig, nativeArgs, argvPrompt
+  mode, outputProtocol, effectiveConfig, argvPrompt
 }) -> Invocation
 Adapter.Decode(result) -> canonical assistant output
 ```
 
 `mode` 取 `interactive|exec`；`outputProtocol` 取 `native|canonical`。
-interactive 只允许 `native`。Profile 与 shortcut 使用 `native`，Session managed
+interactive 只允许 `native`。隐式和显式 Profile 使用 `native`，Session managed
 exec 固定使用 `canonical`，只有 canonical invocation 的结果才可交给
-`Adapter.Decode`。`nativeArgs` 与 `argvPrompt` 互斥：shortcut 只提供前者，
-Profile、Session 和带初始输入的 Tmux start 只提供后者。
+`Adapter.Decode`。Profile、Session 和带初始输入的 Tmux start 都只提供可空的
+`argvPrompt`。
 
 首期 adapter：
 
 - `codex`
-  - interactive：`codex [global options] [native args...]`
+  - interactive：`codex [global options] [prompt]`
   - exec：`codex [global options] exec [exec options] [prompt]`
   - effort：`-c model_reasoning_effort=<value>`
 - `claude`
@@ -239,7 +237,7 @@ Profile error。adapter 必须：
 - 对无法安全归类的冲突参数 fail closed，不经 shell 猜测。
 
 首期 option registry 至少明确登记并测试以下 scope；表外 option 出现在 Profile
-`args` 时 fail closed，顶层 shortcut 的调用方 `nativeArgs` 则始终不解析：
+`args` 时 fail closed：
 
 | command | command/common scope | exec-only / mode selector | canonical 禁止 |
 | --- | --- | --- | --- |
@@ -623,8 +621,8 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
 
 - `internal/cli` 只负责各 namespace 的 decode/call/encode。
 - `internal/runtimebootstrap` 分别组装 Profile、Session 和 Tmux service。
-- `fixedNamespaces` 增加 `tmux`；已有 `commands/tmux.json` 成为明确冲突，不提供
-  alias 或 shim。
+- `fixedNamespaces` 包含 `profile|session|tmux|agent|run|server|help|version`；
+  与 `list|show|check` 一起成为保留 Profile ID，不提供 alias 或 shim。
 - `runtime.json` 删除不再使用的 terminal driver 配置。
 - `resources/tmux.conf` 与 `resources/release.json` 分别保存无 secret 的固定
   bootstrap config 和 activation epoch/minimum-updater contract；active home 只新增
@@ -664,8 +662,8 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
   当前 executable identity 不等于该 `SN_CLI_HOME/bin/sn-cli`；active home 中同名
   manifest 不能覆盖 candidate manifest，也不提供可由环境伪造的 token bypass。
   普通已安装 binary 的 `server info` 不受 staged gate 影响。release test 使用真实
-  v0.1.1 updater fixture 证明两个 binary、受管 resource file、configs、commands
-  和 `runtime.json` 均未变化。不可反向修复的 v0.1.1 `config.Load()` 会在 staged
+  v0.1.1 updater fixture 证明两个 binary、受管 resource file、configs 和
+  `runtime.json` 均未变化。不可反向修复的 v0.1.1 `config.Load()` 会在 staged
   gate 前 materialize 它固定的空目录；测试只允许已知空 legacy directory，禁止
   其中出现任何数据。
 - 新版 `install.sh` 与后续 updater 不自己分段复制后再换 binary，而是把已校验 payload
@@ -707,7 +705,7 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
 
 ### 7. 关键取舍
 
-- 由入口固定 execution owner：Profile/shortcut process replacement，Session
+- 由入口固定 execution owner：隐式/显式 Profile process replacement，Session
   managed child，Tmux managed window；只让 Profile `exec` 表达 target CLI mode，
   排除无实际消费者的 `launch`。
 - Tmux 以 tmux server/window options 作为 live source of truth，排除独立 durable

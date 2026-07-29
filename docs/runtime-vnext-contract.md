@@ -7,7 +7,7 @@
 
 | 领域 | Owner | 负责 | 不负责 |
 | --- | --- | --- | --- |
-| Profile facade | `profile/` | 配置加载、类型分流、shortcut 映射 | 执行、历史 |
+| Profile facade | `profile/` | 唯一配置目录加载、类型分流、ID 解析 | 执行、历史 |
 | Command adapter | `command/` | CLI grammar、effective argv/env/cwd | Session/Tmux 状态 |
 | Model Core | `model/`、`contract/` | 单次 canonical model call | tool loop、存储 |
 | API Driver | `provider/*` | HTTP/SSE codec、Provider error | retry、tool、Session |
@@ -22,7 +22,7 @@
 唯一 composition root。`agent/` 不读 Profile 或数据库；Provider driver 每次只做
 一次 HTTP attempt；CLI/HTTP 不拼装独立历史。
 
-## 2. Profile、shortcut 与 command adapter
+## 2. Profile 与 command adapter
 
 Profile 位于 `configs/<id>.json`，必须以 `type=cli|api` 分流。CLI Profile 字段：
 
@@ -31,15 +31,15 @@ command args env model effort prompt exec cwd
 ```
 
 不接受 `binary`、`transport`、`prompt_delivery` 或 `effort_adapter`。API Profile
-保持自己的 Provider schema。`commands/<id>.json` 只引用现有 CLI Profile。
+保持自己的 Provider schema。不存在 command ID、shortcut 映射或 raw/native argv
+passthrough。
 
 执行矩阵：
 
 | 入口 | effective mode | 执行 owner | 记录 |
 | --- | --- | --- | --- |
-| `sn-cli <command-id>` | Profile `exec` | process replacement | 无 |
-| `sn-cli profile <id>` CLI | Profile/`--exec` | process replacement | 无 |
-| `sn-cli profile <id>` API | API | Model Core | 无 |
+| `sn-cli <id>` 或 `sn-cli profile <id>` CLI | Profile/`--exec` | process replacement | 无 |
+| `sn-cli <id>` 或 `sn-cli profile <id>` API | API | Model Core | 无 |
 | `sn-cli session run|submit` CLI | 固定 exec | Session child | Turn/Execution |
 | `sn-cli session run|submit` API | API | Session executor | Turn/Execution |
 | `sn-cli tmux start` | 固定 interactive | Tmux window | 无 Session |
@@ -53,12 +53,16 @@ Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Cla
 - 识别并替换 model、effort、exec 和 canonical-output selector；
 - 对重复、stateful、改变 final shape 或无法安全归类的配置 fail closed；
 - Profile/Session/Tmux 输入用 `--` 结束 options，并保证 prompt 为最终 argv token；
-- shortcut 的 native args 不解析，按原顺序追加；
 - spawn 前校验 env expansion、cwd、PATH、单 token 与总 argv/env budget。
 
 Profile `prompt`、typed `--prompt`、piped stdin、位置 input 按顺序合并。CLI Profile
 exec prompt 必须非空；interactive 可为空。两种 mode 都 process replacement，
 leading global `--json` 不包装其原生输出。
+
+`sn-cli <id>` 与 `sn-cli profile <id>` 使用同一 Profile loader、typed parser、
+执行 service 和输出语义。固定根 namespace
+`profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理 action
+`list|show|check`，都是保留 Profile ID；loader 遇到冲突即失败。
 
 `profile check` 是纯静态校验，不解析真实 env/PATH/cwd，不读取 prompt file。
 
@@ -186,7 +190,7 @@ profile session tmux agent run server help version
 ```
 
 Runtime machine contract 为 `schema_version=1`、`contract_version=3`。
-CLI Profile/shortcut 和 `tmux attach` 不属于 machine wrapper。
+隐式或显式 CLI Profile 和 `tmux attach` 不属于 machine wrapper。
 
 HTTP 使用同一 application service，严格拒绝未知字段并限制 request size。Session
 新增 execution query 与 reconcile route；HTTP 不提供 Tmux 控制，也不能上传
@@ -222,5 +226,6 @@ Session、Session private state 和 `runtime.db*`，然后解除 journal。安�
 `server update` 获得。
 
 vNext 不读取旧 Profile 字段、旧 Session carrier、旧 Session/SQLite schema、旧
-Run artifact、旧 SDK contract 或旧 namespace shim。唯一硬兼容面是有效 CLI
-Profile 对应的 `sn-cli cx|cc|cx-*` 原生命令执行。
+Run artifact、旧 SDK contract、command shortcut 或旧 namespace shim。所有有效
+CLI/API Profile 都同时支持 `sn-cli <id>` 和 `sn-cli profile <id>`，并由
+`type=cli|api` 选择 adapter。

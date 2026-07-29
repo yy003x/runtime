@@ -4,8 +4,9 @@ Runtime vNext 是一个本地优先的 Go Agent Runtime。它把一次命令/模
 canonical Session、长期 Tmux TUI、Agent loop 和 durable Run 分成独立边界。
 
 ```text
-sn-cli profile <id> ──┬─ command ─> Command Bridge ─> CLI process
-                      └─ model ───> Model Core ─────> HTTP/SSE
+sn-cli <id> ──────────┐
+sn-cli profile <id> ──┴─┬─ type=cli ─> Command Bridge ─> CLI process
+                        └─ type=api ─> Model Core ─────> HTTP/SSE
 
 sn-cli session ... ───> Session Service ──> command or model
 sn-cli tmux ... ───────> Tmux Service ─────> interactive command window
@@ -15,13 +16,13 @@ sn-cli run ... ───────> Run Harness ──────> SQLite WAL
 
 ## 执行语义
 
-- `sn-cli <command-id> [args...]`：顶层 shortcut。使用 Profile 的 typed 固定配置和
-  `exec` mode，但调用方 native args 不由 Runtime 解析；保留原生 stdin/stdout/
-  stderr、signal、exit code 和 argv 兼容。
-- `sn-cli profile <profile-id> [typed-options] [input]`：一次性调用。
+- `sn-cli <profile-id> [typed-options] [input]` 与
+  `sn-cli profile <profile-id> [typed-options] [input]`：完全等价的一次性 Profile
+  调用，加载同一份 `configs/<profile-id>.json` 并使用同一套 typed parser。
   CLI Profile 支持 `--model`、`--effort`、`--prompt`、`--exec[=true|false]` 和
   `--cwd`；Runtime 通过 command adapter 生成确定 argv 后 process replacement。
-  API Profile 仍发起一次 HTTP model call。两者都不创建 Session 或 durable Run。
+  API Profile 根据自己的 typed 参数发起一次 HTTP model call。`type=cli|api`
+  决定 adapter；两者都不创建 Session 或 durable Run。
 - `sn-cli session run|submit ...`：维护本地 Session、Turn、Message、Event 和
   Execution。API history 投影为结构化 `messages[]`；CLI history 由 Session 自己
   投影，并固定在 managed subprocess 中以 `exec=true` 捕获机器协议、exit 和
@@ -70,7 +71,6 @@ cmd/
   sn-server/
 configs/
   *.json                source CLI/API Profile
-  commands/             source 顶层子命令映射
   runtime/runtime.json  source runtime template
 resources/
   schema/               严格 JSON Schema
@@ -91,7 +91,6 @@ bin/
   sn-cli
   sn-server
 configs/
-commands/
 resources/schema/
 resources/tmux.conf
 resources/release.json
@@ -125,7 +124,6 @@ bash install.sh \
   --binary ./bin/sn-cli \
   --server ./bin/sn-server \
   --configs ./configs \
-  --commands ./configs/commands \
   --runtime-config ./configs/runtime/runtime.json \
   --resources ./resources \
   --home "$runtime_home" \
@@ -138,7 +136,7 @@ Make 默认只报告 stage、state、result、elapsed 和关键路径；有限�
 
 正式 `make install` 会写入 `${SN_CLI_HOME:-~/.sn}`，应由用户显式执行。它是本地
 源码调试的固定覆盖入口：先校验当前 checkout 的完整 candidate，再安全停止受管
-`sn-server`，用 source profiles、commands、runtime config 和 resources 替换
+`sn-server`，用 source profiles、runtime config 和 resources 替换
 active 内容，并丢弃旧 `sessions/`、Session 私有状态和
 `state/runtime.db*`。成功后不会自动重启 server。本仓测试和 release check 只在
 临时 `SN_CLI_HOME` 验证该流程，不修改 active `~/.sn`。
@@ -165,6 +163,7 @@ sn-cli profile check
 
 sn-cli commit "为当前改动生成提交计划"
 sn-cli profile commit --effort high "只执行一次提交规划"
+sn-cli api-cx "只调用一次模型"
 sn-cli profile api-cx "只调用一次模型"
 sn-cli session run api-cx "保留这次会话"
 sn-cli session submit cx-deep "后台执行并记录"
@@ -185,17 +184,23 @@ sn-cli server upgrade-check
 
 管理命令默认输出面向人的紧凑文本；需要稳定机器结果时，把全局 `--json` 放在
 namespace 前，例如 `sn-cli --json server status`。`--json` 不会从 namespace
-后的参数中截获，因此 `sn-cli cx --json` 仍把该参数原样交给目标 CLI。顶层
-shortcut 与 CLI Profile 始终继承目标进程的原生输出，即使写了 leading global
-`--json` 也不伪装成 Runtime JSON；`tmux attach` 是 human-only。
+或 Profile ID 后的参数中截获，因此 `sn-cli cx --json` 由 Profile typed parser
+处理并作为未知 option 拒绝，不会透传给目标 CLI。隐式和显式 CLI Profile 始终
+继承目标进程的原生输出，即使写了 leading global `--json` 也不伪装成 Runtime
+JSON；API Profile 则遵守 Runtime human/JSON contract；`tmux attach` 是
+human-only。
 `server start` 首次启动和已运行的幂等分支都会返回相同的正整数 `pid`；第三方托管
 应使用 `sn-cli --json server start` 读取该 PID。
 
-顶层 `sn-cli <command-id>` 只从 active `commands/` 加载映射，再到
-`configs/` 解析对应 Profile。source 默认提供 `commit`、`cx`、`cc` 和 `cx-*`；
-其中 `cx|cc|cx-*` 是硬兼容入口。shortcut 的调用方参数保持 native；显式
-`profile <id>` 则只接受 Runtime typed option 和最终 input，由 Codex/Claude adapter
-处理 model、effort、mode selector 与 command/subcommand 参数顺序。
+顶层 `sn-cli <profile-id>` 直接从 active `configs/` 加载同名 Profile，等价于
+`sn-cli profile <profile-id>`。两种写法都只接受该 Profile 类型的 Runtime typed
+option 和最终 input；CLI Profile 由 Codex/Claude adapter 处理 model、effort、
+mode selector 与 command/subcommand 参数顺序，API Profile 由配置的 Provider
+adapter 执行。不存在 command ID、shortcut 映射或 raw/native argv passthrough。
+
+固定根 namespace `profile|session|tmux|agent|run|server|help|version`，以及
+Profile 管理 action `list|show|check`，都是保留 Profile ID。loader 在启动执行前
+拒绝同名配置，避免隐式入口与显式 `profile <id>` 产生不同解释。
 
 API token limit 使用 Driver 对应的协议名：OpenAI-compatible Chat Completions
 使用 `--max-completion-tokens`，Anthropic-compatible 使用 `--max-tokens`。

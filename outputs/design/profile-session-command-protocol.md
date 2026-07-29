@@ -2,8 +2,15 @@
 
 ## 当前状态
 
-- readiness：clarifying
-- 用户授权：discussion-only；本文件只保存讨论结论，不是正式设计或实施授权
+- readiness：superseded
+- 用户授权：本文件只保存历史讨论，不是当前契约或实施依据
+- 后续决策：当前正式契约以
+  `documents/designs/contracts/profile-session-tmux-protocol.md` 为准。其中
+  `configs/*.json` 是唯一 Profile 配置层，`sn-cli <profile-id>` 完全等价于
+  `sn-cli profile <profile-id>`，并由 `type=cli|api` 选择 adapter；不存在
+  command shortcut 或 raw/native argv passthrough
+
+以下内容保留当时讨论快照，其中的未决项和与正式契约冲突的结论均已失效。
 
 ## 已确认上下文
 

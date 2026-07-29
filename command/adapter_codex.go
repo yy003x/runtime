@@ -78,7 +78,7 @@ func (codexAdapter) Build(request BuildRequest) (Invocation, error) {
 			}
 		}
 	}
-	argv, err = appendPromptOrNative(argv, request)
+	argv, err = appendPrompt(argv, request)
 	if err != nil {
 		return Invocation{}, err
 	}

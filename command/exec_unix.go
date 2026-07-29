@@ -19,8 +19,8 @@ const (
 )
 
 // ReplaceProcess replaces the Runtime process with an already-built target
-// invocation. Profile, shortcut, Session, and Tmux choose stdin ownership
-// explicitly at their ingress.
+// invocation. Profile, Session, and Tmux choose stdin ownership explicitly at
+// their ingress.
 func ReplaceProcess(resolved Invocation, stdinMode StdinMode) error {
 	if len(resolved.Argv) == 0 {
 		return fmt.Errorf("invocation argv is empty")

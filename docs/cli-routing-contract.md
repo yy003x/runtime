@@ -7,16 +7,19 @@
 1. 可选且只允许位于 argv 第一项的 global `--json`；
 2. `-h|--help|help` 与 `--version|version`；
 3. 固定 namespace：`profile|session|tmux|agent|run|server`；
-4. active `commands/<id>.json` 声明的 CLI Profile shortcut；
+4. active `configs/<id>.json` 声明的 CLI 或 API Profile；
 5. 未命中即失败。
 
-namespace 或 shortcut 后的 `--json` 不属于 root。例如 `sn-cli cx --json` 会把
-`--json` 原样传给 Codex。固定 namespace 和 `profile list|show|check` 保留 ID
-不能被配置覆盖。
+namespace 或 Profile ID 后的 `--json` 不属于 root。例如 `sn-cli cx --json` 会
+进入 Profile typed parser，并因未知 option 失败，而不会原样传给 Codex。固定根
+namespace `profile|session|tmux|agent|run|server|help|version` 和 Profile 管理
+action `list|show|check` 都是保留 Profile ID，不能被配置覆盖。
 
 ## Profile
 
 ```text
+sn-cli <id> [--model M] [--effort E] [--prompt FILE_OR_TEXT]
+            [--exec|--exec=true|--exec=false] [--cwd DIR] [input]
 sn-cli profile <id> [--model M] [--effort E] [--prompt FILE_OR_TEXT]
                     [--exec|--exec=true|--exec=false] [--cwd DIR] [input]
 sn-cli profile list
@@ -24,21 +27,16 @@ sn-cli profile show <id>
 sn-cli profile check [id]
 ```
 
+`sn-cli <id>` 与 `sn-cli profile <id>` 加载同一份 Profile、使用同一套 typed
+parser，并返回相同 stdout/stderr/exit。`type=cli|api` 选择 command 或 model
+adapter，不通过 Profile ID 或单独映射推断。
+
 不存在 `profile exec|open` action。CLI Profile 在 adapter 校验后 process
 replacement；API Profile 做一次 API call。二者都不创建 Session 或 durable Run。
 
 CLI Profile prompt 按 Profile `prompt`、`--prompt`、piped stdin、位置 input 合并。
 effective `exec=true` 时 prompt 必须非空，`exec=false` 时允许空 prompt。Runtime
 不把 CLI Profile 的原生 stdout/stderr/exit 包装成 JSON。
-
-顶层 shortcut 使用 Profile `exec`，但忽略 Profile prompt 和 Runtime typed
-parser；调用方 native args/stdin 原样追加。它是唯一硬兼容面：
-
-```text
-sn-cli cx [native-codex-args...]
-sn-cli cc [native-claude-args...]
-sn-cli cx-* [native-codex-args...]
-```
 
 ## Session
 
@@ -104,6 +102,6 @@ sn-cli run gc [--older-than 168h] [--limit 100] [--apply]
   contract；
 - 非流失败 stdout 为空，stderr 只有一个 compact v3 error document；
 - stream/watch 输出 NDJSON，成功时最后一行是唯一 final record；失败不输出 final；
-- CLI Profile 和 shortcut 始终继承目标进程 stdout/stderr/exit；
+- 隐式和显式 CLI Profile 始终继承目标进程 stdout/stderr/exit；
 - `tmux attach` 不支持 machine mode；
 - `tmux list` 在专用 server 不存在时成功返回空集合。

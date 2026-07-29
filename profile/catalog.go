@@ -52,7 +52,7 @@ type apiConfig struct {
 	model.Profile
 }
 
-func Load(configDir string) (*Catalog, error) {
+func Load(configDir string, reservedIDs ...string) (*Catalog, error) {
 	info, err := os.Lstat(configDir)
 	if err != nil {
 		return nil, fmt.Errorf("inspect profile config directory: %w", err)
@@ -69,6 +69,8 @@ func Load(configDir string) (*Catalog, error) {
 	})
 	commands := make(map[string]command.Profile)
 	models := make(map[string]model.Profile)
+	allReservedIDs := append([]string(nil), ReservedIDs...)
+	allReservedIDs = append(allReservedIDs, reservedIDs...)
 	for _, file := range files {
 		name := file.Name()
 		if file.IsDir() || file.Type()&os.ModeSymlink != 0 ||
@@ -81,7 +83,7 @@ func Load(configDir string) (*Catalog, error) {
 		if err := profileid.Validate(id); err != nil {
 			return nil, fmt.Errorf("profile config file %q: %w", name, err)
 		}
-		if contains(ReservedIDs, id) {
+		if contains(allReservedIDs, id) {
 			return nil, fmt.Errorf("profile %q conflicts with a reserved profile ID", id)
 		}
 		kind, cliProfile, apiProfile, err := loadFile(filepath.Join(configDir, name))
@@ -95,11 +97,11 @@ func Load(configDir string) (*Catalog, error) {
 			models[id] = apiProfile
 		}
 	}
-	commandCatalog, err := command.NewCatalog(commands, ReservedIDs...)
+	commandCatalog, err := command.NewCatalog(commands, allReservedIDs...)
 	if err != nil {
 		return nil, err
 	}
-	modelCatalog, err := model.NewCatalog(models, ReservedIDs...)
+	modelCatalog, err := model.NewCatalog(models, allReservedIDs...)
 	if err != nil {
 		return nil, err
 	}

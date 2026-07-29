@@ -106,7 +106,17 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 			errorText: "unknown field",
 		},
 		{
-			name: "reserved", fileName: "show.json",
+			name: "reserved_show", fileName: "show.json",
+			content:   `{"type":"cli","command":"codex"}`,
+			errorText: "reserved profile ID",
+		},
+		{
+			name: "reserved_list", fileName: "list.json",
+			content:   `{"type":"cli","command":"codex"}`,
+			errorText: "reserved profile ID",
+		},
+		{
+			name: "reserved_check", fileName: "check.json",
 			content:   `{"type":"cli","command":"codex"}`,
 			errorText: "reserved profile ID",
 		},
@@ -146,82 +156,26 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 	}
 }
 
-func TestLoadSubcommandsMapsOnlyDeclaredNames(t *testing.T) {
-	configDir := filepath.Join(t.TempDir(), "configs")
-	commandDir := filepath.Join(t.TempDir(), "commands")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(commandDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(configDir, "commit.json"),
-		[]byte(`{"type":"cli","command":"codex","exec":true}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(commandDir, "commit.json"),
-		[]byte(`{"profile":"commit"}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	profiles, err := Load(configDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	subcommands, err := LoadSubcommands(commandDir, profiles, "profile")
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, exists := subcommands.Get("commit")
-	if !exists || value.Profile != "commit" {
-		t.Fatalf("subcommand=%#v exists=%v", value, exists)
-	}
-	if _, exists := subcommands.Get("other"); exists {
-		t.Fatal("undeclared profile became a top-level subcommand")
-	}
-}
-
-func TestLoadSubcommandsRejectsMissingProfileAndFixedNamespace(t *testing.T) {
-	commands, models := testCatalogs(t)
-	profiles, err := NewCatalog(commands, models)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, testCase := range []struct {
-		name      string
-		fileName  string
-		content   string
-		errorText string
-	}{
-		{
-			name: "missing_profile", fileName: "missing.json",
-			content: `{"profile":"missing"}`, errorText: "does not exist",
-		},
-		{
-			name: "fixed_namespace", fileName: "profile.json",
-			content: `{"profile":"cx"}`, errorText: "fixed namespace",
-		},
-		{
-			name: "api_profile", fileName: "api.json",
-			content: `{"profile":"api-cx"}`, errorText: "type=cli",
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			directory := t.TempDir()
+func TestLoadRejectsCallerReservedProfileID(t *testing.T) {
+	for _, id := range []string{"profile", "session", "tmux", "agent"} {
+		t.Run(id, func(t *testing.T) {
+			configDir := filepath.Join(t.TempDir(), "configs")
+			if err := os.MkdirAll(configDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(
-				filepath.Join(directory, testCase.fileName),
-				[]byte(testCase.content),
+				filepath.Join(configDir, id+".json"),
+				[]byte(`{"type":"cli","command":"codex"}`),
 				0o600,
 			); err != nil {
 				t.Fatal(err)
 			}
-			_, err := LoadSubcommands(directory, profiles, "profile")
-			if err == nil || !strings.Contains(err.Error(), testCase.errorText) {
+			_, err := Load(
+				configDir, "profile", "session", "tmux", "agent",
+			)
+			if err == nil || !strings.Contains(
+				err.Error(), "reserved profile ID",
+			) {
 				t.Fatalf("error=%v", err)
 			}
 		})
