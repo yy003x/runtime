@@ -42,18 +42,10 @@ required_profiles=(api-cc.json api-cx.json cc-bai.json cc.json commit.json cx-ad
 for profile in "${required_profiles[@]}"; do
   [ -f "$ROOT_DIR/configs/$profile" ] || die "missing profile: $profile"
 done
-required_commands=(cc-bai.json cc.json commit.json cx-adv.json cx-deep.json cx-image.json cx-spark.json cx.json)
-for command in "${required_commands[@]}"; do
-  [ -f "$ROOT_DIR/configs/commands/$command" ] || die "missing subcommand: $command"
-done
 unexpected_config_entries="$(find "$ROOT_DIR/configs" -mindepth 1 -maxdepth 1 \
-  ! -name commands ! -name runtime ! -name '*.json' -print -quit)"
+  ! -name runtime ! -name '*.json' -print -quit)"
 [ -z "$unexpected_config_entries" ] || die "unexpected configs entry: $unexpected_config_entries"
-unexpected="$(find "$ROOT_DIR/configs/commands" -mindepth 1 -maxdepth 1 \
-  \( ! -type f -o ! -name '*.json' \) -print -quit)"
-[ -z "$unexpected" ] ||
-  die "configs/commands only accepts JSON files: $unexpected"
-for schema in profile.schema.json subcommand.schema.json runtime.schema.json; do
+for schema in profile.schema.json runtime.schema.json; do
   [ -f "$ROOT_DIR/resources/schema/$schema" ] || die "missing resource schema: $schema"
 done
 [ -f "$ROOT_DIR/resources/release.json" ] ||
@@ -82,6 +74,10 @@ done
 for asset in "${expected_assets[@]:1}"; do
   awk -v name="$asset" '$2 == name || $2 == "*" name {found=1} END {exit !found}' \
     "$DIST_DIR/checksums.txt" || die "checksum missing for $asset"
+  if tar -tzf "$DIST_DIR/$asset" |
+    grep -Eq '(^|/)commands(/|$)'; then
+    die "release asset retained the removed commands directory: $asset"
+  fi
 done
 checksum_log="$(mktemp)"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -271,11 +267,11 @@ fi
 grep -q '"binary"' "$runtime_home/configs/local-only.json" ||
   die "failed preflight changed a legacy profile"
 grep -q '"local-only"' "$runtime_home/commands/local-only.json" ||
-  die "failed preflight changed a legacy subcommand"
+  die "failed preflight changed obsolete commands state"
 grep -q '"binary"' "$runtime_home/configs/cx.json" ||
   die "failed preflight changed a same-name legacy profile"
 grep -q '"local-only"' "$runtime_home/commands/cx.json" ||
-  die "failed preflight changed a same-name subcommand"
+  die "failed preflight changed same-name obsolete commands state"
 grep -q '"iterm2"' "$runtime_home/runtime.json" ||
   die "failed preflight changed runtime.json"
 grep -q 'outdated schema' "$runtime_home/resources/schema/runtime.schema.json" ||
@@ -292,14 +288,12 @@ bash "$ROOT_DIR/install.sh" \
   --install-dir "$install_dir" \
   --overwrite-configs
 
-[ ! -e "$runtime_home/commands/local-only.json" ] ||
-  die "--overwrite-configs kept a local-only subcommand"
+[ ! -e "$runtime_home/commands" ] ||
+  die "--overwrite-configs kept the obsolete commands directory"
 [ ! -e "$runtime_home/configs/local-only.json" ] ||
   die "--overwrite-configs kept a local-only profile"
 cmp "$ROOT_DIR/configs/cx.json" "$runtime_home/configs/cx.json" >/dev/null ||
   die "--overwrite-configs did not replace a same-name profile"
-cmp "$ROOT_DIR/configs/commands/cx.json" "$runtime_home/commands/cx.json" >/dev/null ||
-  die "--overwrite-configs did not replace a same-name subcommand"
 cmp "$ROOT_DIR/configs/runtime/runtime.json" "$runtime_home/runtime.json" >/dev/null ||
   die "--overwrite-configs did not replace runtime.json"
 cmp "$ROOT_DIR/resources/schema/runtime.schema.json" \
@@ -311,6 +305,7 @@ cmp "$ROOT_DIR/resources/tmux.conf" \
 
 printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
   >"$runtime_home/configs/local-only.json"
+mkdir -p "$runtime_home/commands"
 printf '%s\n' '{"profile":"local-only"}' >"$runtime_home/commands/local-only.json"
 printf '%s\n' '{"type":"cli","command":"codex","exec":false,"prompt":"local-default"}' \
   >"$runtime_home/configs/cx.json"
@@ -328,6 +323,8 @@ grep -q '"local-default"' "$runtime_home/configs/cx.json" ||
   die "default install overwrote a current same-name profile"
 grep -q '"max_rounds":7' "$runtime_home/runtime.json" ||
   die "default install overwrote a current runtime.json"
+[ ! -e "$runtime_home/commands" ] ||
+  die "default install kept the obsolete commands directory"
 cmp "$ROOT_DIR/resources/schema/runtime.schema.json" \
   "$runtime_home/resources/schema/runtime.schema.json" >/dev/null ||
   die "default install did not refresh managed resources"
@@ -337,7 +334,6 @@ legacy_merged="$temp_root/legacy-merged"
 mkdir -p "$legacy_payload" "$legacy_merged"
 tar -xzf "$archive" -C "$legacy_payload"
 cp -R "$legacy_payload/configs" "$legacy_merged/configs"
-cp -R "$legacy_payload/commands" "$legacy_merged/commands"
 cp -R "$legacy_payload/resources" "$legacy_merged/resources"
 cp "$legacy_payload/runtime.json" "$legacy_merged/runtime.json"
 active_digest_before="$(sha256_file "$runtime_home/bin/sn-cli")"
@@ -390,7 +386,6 @@ legacy_before="$temp_root/legacy-active-before"
 mkdir -p "$legacy_before"
 cp -R "$runtime_home/bin" "$legacy_before/bin"
 cp -R "$runtime_home/configs" "$legacy_before/configs"
-cp -R "$runtime_home/commands" "$legacy_before/commands"
 cp -R "$runtime_home/resources" "$legacy_before/resources"
 cp "$runtime_home/runtime.json" "$legacy_before/runtime.json"
 if SN_CLI_HOME="$runtime_home" \
@@ -407,8 +402,8 @@ cmp "$legacy_before/bin/sn-server" "$runtime_home/bin/sn-server" >/dev/null ||
   die "v0.1.1 updater changed sn-server"
 diff -qr "$legacy_before/configs" "$runtime_home/configs" >/dev/null ||
   die "v0.1.1 updater changed active profiles"
-diff -qr "$legacy_before/commands" "$runtime_home/commands" >/dev/null ||
-  die "v0.1.1 updater changed active subcommands"
+[ ! -e "$runtime_home/commands" ] ||
+  die "v0.1.1 updater recreated the obsolete commands directory"
 cmp "$legacy_before/runtime.json" "$runtime_home/runtime.json" >/dev/null ||
   die "v0.1.1 updater changed runtime.json"
 for legacy_directory in personas skills tools; do
@@ -508,7 +503,7 @@ grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*3' "$system_stderr" ||
 
 direct_home="$temp_root/direct-home"
 direct_bin="$direct_home/fake-bin"
-mkdir -p "$direct_home/configs" "$direct_home/commands" "$direct_bin"
+mkdir -p "$direct_home/configs" "$direct_bin"
 # macOS platform binaries can be killed by AMFI after being copied to a new
 # path. Keep the signed executable at its system path while exposing the
 # adapter fixture under the expected command name.
@@ -518,15 +513,22 @@ printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
   >"$direct_home/configs/cx.json"
 printf '%s\n' '{"type":"cli","command":"codex","args":["--search"],"exec":true}' \
   >"$direct_home/configs/commit.json"
-printf '%s\n' '{"profile":"cx"}' >"$direct_home/commands/cx.json"
-printf '%s\n' '{"profile":"commit"}' >"$direct_home/commands/commit.json"
 direct_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
-  "$install_dir/sn-cli" cx release-smoke)"
-[ "$direct_output" = "release-smoke" ] || die "hard-compatible cx direct command failed"
+  "$install_dir/sn-cli" cx --exec release-smoke)"
+explicit_direct_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
+  "$install_dir/sn-cli" profile cx --exec release-smoke)"
+[ "$direct_output" = "$explicit_direct_output" ] ||
+  die "implicit cx Profile argv differed from explicit profile cx"
+[ "$direct_output" = "exec -- release-smoke" ] ||
+  die "implicit cx Profile did not use typed prompt argv: $direct_output"
 commit_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
   "$install_dir/sn-cli" commit direct-smoke)"
-[ "$commit_output" = "--search exec direct-smoke" ] ||
-  die "commit direct command failed"
+explicit_commit_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
+  "$install_dir/sn-cli" profile commit direct-smoke)"
+[ "$commit_output" = "$explicit_commit_output" ] ||
+  die "implicit commit Profile argv differed from explicit profile commit"
+[ "$commit_output" = "--search exec -- direct-smoke" ] ||
+  die "implicit commit Profile did not use typed exec argv: $commit_output"
 profile_commit_output="$(
   printf '%s' 'profile-smoke' |
     PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
@@ -640,7 +642,6 @@ local_source_args=(
   --binary "$legacy_payload/sn-cli"
   --server "$legacy_payload/sn-server"
   --configs "$legacy_payload/configs"
-  --commands "$legacy_payload/commands"
   --runtime-config "$legacy_payload/runtime.json"
   --resources "$legacy_payload/resources"
   --home "$local_source_home"
@@ -671,9 +672,12 @@ printf '%s\n' \
   '{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual"}' \
   >"$local_source_home/configs/cx.json"
 mkdir -p \
+  "$local_source_home/commands" \
   "$local_source_home/sessions/_system" \
   "$local_source_home/state/session-locks" \
   "$local_source_home/state/session-invocations"
+printf '%s\n' '{"profile":"cx"}' \
+  >"$local_source_home/commands/cx.json"
 printf '%s\n' '{"schema_version":1,"sessions":[]}' \
   >"$local_source_home/sessions/_system/index.json"
 printf '%s\n' legacy \
@@ -693,6 +697,8 @@ printf '%s\n' "$local_status" |
   die "local source install kept the stopped server pid record"
 cmp "$ROOT_DIR/configs/cx.json" "$local_source_home/configs/cx.json" >/dev/null ||
   die "local source install did not replace active profiles"
+[ ! -e "$local_source_home/commands" ] ||
+  die "local source install kept the obsolete commands directory"
 for reset_path in \
   "$local_source_home/sessions" \
   "$local_source_home/state/session-locks" \

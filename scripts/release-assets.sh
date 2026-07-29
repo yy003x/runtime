@@ -17,7 +17,7 @@ for platform in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
   arch="${platform#*/}"
   stage="dist/.stage-$os-$arch"
 
-  mkdir -p "$stage/configs" "$stage/commands" "$stage/resources"
+  mkdir -p "$stage/configs" "$stage/resources"
   env \
     GOCACHE="$GOCACHE" \
     GOMODCACHE="$GOMODCACHE" \
@@ -33,11 +33,10 @@ for platform in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
     GOARCH="$arch" \
     "$GO" build -o "$stage/sn-server" ./cmd/sn-server
   cp configs/*.json "$stage/configs/"
-  cp -R configs/commands/. "$stage/commands/"
   cp configs/runtime/runtime.json "$stage/runtime.json"
   cp -R resources/. "$stage/resources/"
   COPYFILE_DISABLE=1 tar -czf "dist/sn-cli-$os-$arch.tar.gz" \
-    -C "$stage" sn-cli sn-server configs commands runtime.json resources
+    -C "$stage" sn-cli sn-server configs runtime.json resources
   rm -rf "$stage"
 done
 

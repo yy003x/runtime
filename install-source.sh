@@ -81,7 +81,6 @@ if [ "$DRY_RUN" = "1" ]; then
   log "binary: $SN_CLI_HOME/bin/sn-cli"
   log "server: $SN_CLI_HOME/bin/sn-server"
   log "profiles: $SN_CLI_HOME/configs"
-  log "commands: $SN_CLI_HOME/commands"
   log "runtime config: $SN_CLI_HOME/runtime.json"
   log "resources: $SN_CLI_HOME/resources"
   log "symlink: $INSTALL_DIR/sn-cli"
@@ -145,7 +144,6 @@ bash "$SOURCE_DIR/install.sh" \
   --binary "$SOURCE_DIR/bin/sn-cli" \
   --server "$SOURCE_DIR/bin/sn-server" \
   --configs "$SOURCE_DIR/configs" \
-  --commands "$SOURCE_DIR/configs/commands" \
   --runtime-config "$SOURCE_DIR/configs/runtime/runtime.json" \
   --resources "$SOURCE_DIR/resources" \
   --home "$SN_CLI_HOME" \

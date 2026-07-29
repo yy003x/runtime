@@ -174,7 +174,6 @@ local_install_bin="$scratch/local-bin"
 local_candidate_args="$scratch/local-candidate.args"
 mkdir -p \
   "$local_bundle/configs" \
-  "$local_bundle/commands" \
   "$local_bundle/resources" \
   "$local_install_bin"
 printf '%s\n' \
@@ -185,14 +184,12 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$local_bundle/sn-server"
 chmod 755 "$local_bundle/sn-cli" "$local_bundle/sn-server"
 printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
   >"$local_bundle/configs/cx.json"
-printf '%s\n' '{"profile":"cx"}' >"$local_bundle/commands/cx.json"
 printf '%s\n' '{}' >"$local_bundle/runtime.json"
 printf '%s\n' '{}' >"$local_bundle/resources/release.json"
 local_source_args=(
   --binary "$local_bundle/sn-cli"
   --server "$local_bundle/sn-server"
   --configs "$local_bundle/configs"
-  --commands "$local_bundle/commands"
   --runtime-config "$local_bundle/runtime.json"
   --resources "$local_bundle/resources"
   --home "$local_install_home"
