@@ -97,7 +97,6 @@ func TestDurableAgentPersistsToolLoopAndSessionProjection(t *testing.T) {
 	}
 	sessions, err := session.NewService(session.ServiceOptions{
 		Store: sessionStore, Profiles: profiles, Models: generator,
-		Commands: runtimecommand.NewRunner(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -279,8 +278,7 @@ func buildAgentProfiles(t *testing.T, withCommand bool) *profile.Catalog {
 	commandValues := map[string]runtimecommand.Profile{}
 	if withCommand {
 		commandValues["cli"] = runtimecommand.Profile{
-			Binary: "/bin/true", Transport: runtimecommand.TransportTTY,
-			PromptDelivery: runtimecommand.PromptArgv,
+			Command: "codex",
 		}
 	}
 	commands, err := runtimecommand.NewCatalog(commandValues)

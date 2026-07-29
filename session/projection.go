@@ -23,7 +23,8 @@ type projection struct {
 
 func buildProjection(
 	entry profile.Entry,
-	sessionID, turnID, runID, executionID, taskID, input string,
+	sessionID, turnID, runID, executionID, taskID string,
+	request RunRequest,
 	records []MessageRecord,
 	now time.Time,
 ) (projection, *contract.RuntimeError) {
@@ -37,16 +38,6 @@ func buildProjection(
 			contract.ErrorInternal, "encode canonical messages",
 		)
 	}
-	configValue := any(entry.Command)
-	if entry.Kind == profile.KindModel {
-		configValue = entry.Model
-	}
-	configJSON, err := json.Marshal(configValue)
-	if err != nil {
-		return projection{}, sessionRuntimeError(
-			contract.ErrorInternal, "encode profile configuration",
-		)
-	}
 	estimatedTokens := estimateTokens(messageJSON)
 	manifest := ContextManifest{
 		SchemaVersion:         SchemaVersion,
@@ -57,13 +48,16 @@ func buildProjection(
 		TaskID:                taskID,
 		ProfileID:             entry.ID,
 		ProfileKind:           entry.Kind,
-		ConfigDigest:          digest(configJSON),
+		ConfigDigest:          requestConfigDigest(request, entry),
+		RequestDigest:         requestDigest(request),
+		BasePromptDigest:      requestBasePromptDigest(request),
+		CWD:                   request.CWD,
 		MessageDigest:         digest(messageJSON),
 		EstimatedTokens:       estimatedTokens,
 		EstimatorCompleteness: "partial",
 		CapacitySource:        "unbounded",
 		PressureState:         "normal",
-		CurrentInputDigest:    digest([]byte(input)),
+		CurrentInputDigest:    digest([]byte(request.Input)),
 		CreatedAt:             now,
 	}
 	if len(records) > 0 {
@@ -101,7 +95,7 @@ func buildProjection(
 		}
 		return projection{modelMessages: messages, manifest: manifest}, nil
 	}
-	prompt := projectCLIHistory(sessionID, records, input)
+	prompt := projectCLIHistory(sessionID, records, request.Input)
 	if len(prompt) > maxCLIProjectionBytes {
 		return projection{}, sessionRuntimeError(
 			contract.ErrorContextOverflow,

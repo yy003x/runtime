@@ -3,9 +3,12 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/identity"
@@ -53,6 +56,19 @@ func (service *Service) Submit(
 	ctx context.Context,
 	request Request,
 ) (Record, *contract.RuntimeError) {
+	if executor, exists := service.executors[request.Kind]; exists {
+		if preparer, ok := executor.(RequestPreparer); ok {
+			prepared, err := preparer.Prepare(ctx, cloneRequest(request))
+			if err != nil {
+				var runtimeErr *contract.RuntimeError
+				if errors.As(err, &runtimeErr) {
+					return Record{}, runtimeErr
+				}
+				return Record{}, runError(contract.ErrorInvalidRequest, err.Error())
+			}
+			request = prepared
+		}
+	}
 	if runtimeErr := service.validateRequest(request); runtimeErr != nil {
 		return Record{}, runtimeErr
 	}
@@ -62,6 +78,9 @@ func (service *Service) Submit(
 	}
 	value, err := service.store.Create(ctx, runID, cloneRequest(request))
 	if err != nil {
+		if errors.Is(err, ErrSessionRunOpen) {
+			return Record{}, runError(contract.ErrorConflict, err.Error())
+		}
 		return Record{}, runError(contract.ErrorInternal, err.Error())
 	}
 	return value, nil
@@ -129,15 +148,39 @@ func (service *Service) execute(
 	record Record,
 	sink contract.EventSink,
 ) (Record, *contract.RuntimeError) {
+	privateRequest, err := service.store.PrivateRequest(ctx, record.ID)
+	if err != nil {
+		runtimeErr := runError(
+			contract.ErrorInternal,
+			"load private execution request: "+err.Error(),
+		)
+		value, settleErr := service.store.Settle(
+			context.WithoutCancel(ctx), record.ID, StateFailed, nil, runtimeErr,
+		)
+		if settleErr != nil {
+			return Record{}, runError(
+				contract.ErrorInternal,
+				"settle Run after private request failure: "+settleErr.Error(),
+			)
+		}
+		return value, runtimeErr
+	}
+	record.Request.PrivateRequest = privateRequest
 	executor, exists := service.executors[record.Request.Kind]
 	if !exists {
 		runtimeErr := runError(
 			contract.ErrorInvalidRequest,
 			fmt.Sprintf("no executor is registered for run kind %q", record.Request.Kind),
 		)
-		value, _ := service.store.Settle(
+		value, settleErr := service.store.Settle(
 			context.WithoutCancel(ctx), record.ID, StateFailed, nil, runtimeErr,
 		)
+		if settleErr != nil {
+			return Record{}, runError(
+				contract.ErrorInternal,
+				"settle Run after executor lookup failure: "+settleErr.Error(),
+			)
+		}
 		return value, runtimeErr
 	}
 	runContext, cancel := context.WithCancel(ctx)
@@ -285,8 +328,96 @@ func (service *Service) Resume(
 	return service.store.Resume(ctx, runID, append([]byte(nil), input...))
 }
 
+func (service *Service) Retry(
+	ctx context.Context,
+	runID string,
+) (Record, *contract.RuntimeError) {
+	previous, err := service.store.Get(ctx, runID)
+	if err != nil {
+		return Record{}, runError(contract.ErrorInvalidRequest, err.Error())
+	}
+	if !previous.State.Terminal() {
+		return Record{}, runError(
+			contract.ErrorConflict, "only terminal runs can be retried",
+		)
+	}
+	privateRequest, err := service.store.PrivateRequest(ctx, runID)
+	if err != nil {
+		return Record{}, runError(contract.ErrorInternal, err.Error())
+	}
+	request := previous.Request
+	request.PrivateRequest = privateRequest
+	request.RetryOf = runID
+	request.Resume = nil
+	return service.Submit(ctx, request)
+}
+
 func (service *Service) Reconcile(ctx context.Context) error {
 	return service.store.Reconcile(ctx)
+}
+
+func (service *Service) ReconcileRun(
+	ctx context.Context,
+	runID string,
+) (Record, *contract.RuntimeError) {
+	record, err := service.store.Get(ctx, runID)
+	if err != nil {
+		return Record{}, runError(contract.ErrorInvalidRequest, err.Error())
+	}
+	if record.State.Terminal() && record.Request.Kind == KindSession {
+		return record, nil
+	}
+	if record.State != StateNeedsReconciliation {
+		return Record{}, runError(
+			contract.ErrorConflict,
+			fmt.Sprintf("run %s is %s, not needs_reconciliation", runID, record.State),
+		)
+	}
+	executor, exists := service.executors[record.Request.Kind]
+	if !exists {
+		return Record{}, runError(
+			contract.ErrorInvalidRequest,
+			fmt.Sprintf("no executor is registered for run kind %q", record.Request.Kind),
+		)
+	}
+	reconciler, ok := executor.(ReconcileExecutor)
+	if !ok {
+		return Record{}, runError(
+			contract.ErrorConflict,
+			fmt.Sprintf("run kind %q does not support explicit reconciliation", record.Request.Kind),
+		)
+	}
+	outcome := reconciler.Reconcile(ctx, record)
+	switch outcome.State {
+	case StateCompleted, StateFailed, StateCancelled:
+		value, settleErr := service.store.Settle(
+			context.WithoutCancel(ctx), record.ID, outcome.State,
+			outcome.Result, outcome.Error,
+		)
+		if settleErr != nil {
+			current, getErr := service.store.Get(
+				context.WithoutCancel(ctx), record.ID,
+			)
+			if getErr == nil && current.State.Terminal() {
+				return current, nil
+			}
+			return Record{}, runError(contract.ErrorInternal, settleErr.Error())
+		}
+		return value, nil
+	case StateNeedsReconciliation:
+		if outcome.Error != nil {
+			return record, outcome.Error
+		}
+		return record, runError(
+			contract.ErrorConflict,
+			"executor outcome is still unknown",
+		)
+	default:
+		return Record{}, runError(
+			contract.ErrorInternal,
+			fmt.Sprintf("reconciler returned invalid state %q", outcome.State),
+		)
+	}
 }
 
 func (service *Service) GC(
@@ -322,11 +453,22 @@ func (service *Service) validateRequest(
 	if len(request.Input) > 1<<20 {
 		return runError(contract.ErrorInvalidRequest, "input exceeds 1048576 bytes")
 	}
+	if !utf8.ValidString(request.Input) ||
+		strings.ContainsRune(request.Input, '\x00') ||
+		!utf8.ValidString(request.TaskID) ||
+		strings.ContainsRune(request.TaskID, '\x00') {
+		return runError(
+			contract.ErrorInvalidRequest,
+			"input and task_id must be UTF-8 without NUL",
+		)
+	}
 	if len(request.Labels) > 32 {
 		return runError(contract.ErrorInvalidRequest, "labels exceed 32 items")
 	}
 	for key, value := range request.Labels {
-		if key == "" || len(key) > 64 || len(value) > 512 {
+		if key == "" || len(key) > 64 || len(value) > 512 ||
+			!utf8.ValidString(key) || strings.ContainsRune(key, '\x00') ||
+			!utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {
 			return runError(contract.ErrorInvalidRequest, "labels exceed size limits")
 		}
 	}
@@ -342,8 +484,8 @@ func (service *Service) validateRequest(
 }
 
 func cloneRequest(value Request) Request {
-	value.CommandArgs = append([]string(nil), value.CommandArgs...)
 	value.Resume = append([]byte(nil), value.Resume...)
+	value.PrivateRequest = append([]byte(nil), value.PrivateRequest...)
 	if value.Labels != nil {
 		labels := make(map[string]string, len(value.Labels))
 		for key, current := range value.Labels {

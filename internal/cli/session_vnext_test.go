@@ -3,31 +3,58 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
-	"github.com/yy003x/runtime/internal/layout"
 	runtimemodel "github.com/yy003x/runtime/model"
 	runtimeprofile "github.com/yy003x/runtime/profile"
 	"github.com/yy003x/runtime/session"
 )
 
-func TestCarrierSendInputDoesNotTreatOptionValueAsInput(t *testing.T) {
-	if _, err := carrierSendInput([]string{"--session-id", "session_deadbeef"}); err == nil {
-		t.Fatal("accepted missing send input")
-	}
-	value, err := carrierSendInput([]string{
-		"--session-id", "session_deadbeef", "继续",
+func TestSessionInvocationUsesTypedCLIOverridesAndRejectsCarrierOptions(t *testing.T) {
+	value, err := parseSessionInvocation([]string{
+		"--model", "gpt-5.6-sol", "--effort", "high",
+		"--cwd", "work", "cx", "继续",
 	})
-	if err != nil || value != "继续" {
-		t.Fatalf("value=%q error=%v", value, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := carrierSendInput([]string{
-		"--session-id", "session_deadbeef", "one", "two",
-	}); err == nil {
-		t.Fatal("accepted more than one positional input")
+	if value.model != "gpt-5.6-sol" || value.effort != "high" ||
+		value.cwd != "work" || value.profileID != "cx" ||
+		value.input != "继续" {
+		t.Fatalf("value=%#v", value)
+	}
+	for _, option := range []string{
+		"--prompt-file", "--terminal-driver", "--command-arg",
+	} {
+		if _, err := parseSessionInvocation(
+			[]string{option, "value", "cx", "input"},
+		); err == nil {
+			t.Fatalf("accepted removed option %s", option)
+		}
+	}
+	if _, err := parseSessionInvocation([]string{
+		"--effort", "high", "--effort", "low", "cx", "input",
+	}); err == nil || !strings.Contains(err.Error(), "only be used once") {
+		t.Fatalf("duplicate option error=%v", err)
+	}
+	if _, err := parseSessionInvocation([]string{
+		"--model", "--effort", "high", "cx", "input",
+	}); err == nil || !strings.Contains(err.Error(), "--model requires value") {
+		t.Fatalf("missing value error=%v", err)
+	}
+	for _, args := range [][]string{
+		{"--retention", "forever", "cx", "input"},
+		{"--effort", "extreme", "cx", "input"},
+		{"--model", "", "cx", "input"},
+		{"--temperature", "NaN", "api-cx", "input"},
+	} {
+		if _, err := parseSessionInvocation(args); err == nil {
+			t.Fatalf("accepted invalid invocation args=%#v", args)
+		}
 	}
 }
 
@@ -73,36 +100,6 @@ func TestSessionExportJSONReturnsBusinessResult(t *testing.T) {
 	}
 }
 
-func TestSessionAttachRejectsJSONBeforeInteractiveLookup(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	output := newCLIOutput(true, &stdout, &stderr)
-	err := runSessionNamespaceVNext(
-		layout.Paths{},
-		[]string{"attach", "--session-id", "session_1"},
-		output,
-	)
-	if err == nil {
-		t.Fatal("JSON attach was accepted")
-	}
-	if exitCode := output.fail(err); exitCode != 1 || stdout.Len() != 0 {
-		t.Fatalf("exit=%d stdout=%q", exitCode, stdout.String())
-	}
-	var payload struct {
-		ContractVersion int `json:"contract_version"`
-		Error           struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.ContractVersion != 2 ||
-		payload.Error.Message != "session attach does not support --json" {
-		t.Fatalf("payload=%#v", payload)
-	}
-}
-
 func TestSessionTokenLimitFlagMatchesModelDriver(t *testing.T) {
 	openAIInvocation, err := parseSessionInvocation([]string{
 		"--max-completion-tokens", "128", "api-cx", "hello",
@@ -134,6 +131,116 @@ func TestSessionTokenLimitFlagMatchesModelDriver(t *testing.T) {
 		invalidInvocation, openAIProfiles,
 	); err == nil || !strings.Contains(err.Error(), "--max-completion-tokens") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestSessionReconcileOptionsAreStrictAndMutuallyExclusive(t *testing.T) {
+	sessionID, options, err := parseSessionReconcileOptions([]string{
+		"--session-id", "session_11111111111111111111111111111111",
+		"--terminate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID == "" || !options.Terminate ||
+		options.AcknowledgeUnknown {
+		t.Fatalf("sessionID=%q options=%#v", sessionID, options)
+	}
+	for _, args := range [][]string{
+		{"--session-id", sessionID, "--unknown"},
+		{"--session-id", sessionID, "--terminate", "--terminate"},
+		{
+			"--session-id", sessionID,
+			"--terminate", "--acknowledge-unknown",
+		},
+	} {
+		if _, _, err := parseSessionReconcileOptions(args); err == nil {
+			t.Fatalf("accepted args=%#v", args)
+		}
+	}
+}
+
+func TestSessionManagementOptionsRejectUnknownDuplicateAndTrailingArgs(
+	t *testing.T,
+) {
+	for _, args := range [][]string{
+		{"--session-id", "session_1", "--unknown"},
+		{"--session-id", "session_1", "--session-id", "session_2"},
+		{"--session-id", "session_1", "trailing"},
+		{"--session-id", "--apply"},
+	} {
+		if err := validateManagementArgs(
+			args, []string{"--session-id"}, []string{"--apply"},
+		); err == nil {
+			t.Fatalf("accepted args=%#v", args)
+		}
+	}
+	if err := validateManagementArgs(
+		[]string{
+			"--session-id", "session_1", "--after-seq", "2", "--apply",
+		},
+		[]string{"--session-id", "--after-seq"},
+		[]string{"--apply"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "-1", "not-a-number"} {
+		if _, err := intOptionValue(
+			[]string{"--tail", value}, "--tail", 120,
+		); err == nil {
+			t.Fatalf("accepted non-positive tail %q", value)
+		}
+	}
+}
+
+func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
+	t *testing.T,
+) {
+	paths := prepareVNextHome(t)
+	for _, args := range [][]string{
+		{"unknown"},
+		{"run", "--unknown"},
+		{"list", "--state", "unknown"},
+		{"list", "--state", ""},
+		{"gc", "--limit", "1001"},
+		{"gc", "--limit", ""},
+		{"gc", "--older-than-hours", "2562048"},
+		{"gc", "--older-than-hours", ""},
+		{"show", "--session-id", "session_1", "trailing"},
+		{
+			"tool-result",
+			"--session-id", "session_1",
+			"--turn-id", "turn_1",
+			"--tool-call-id", "call_1",
+			"--idempotency-key", "key_1",
+			"--content", "",
+			"--content-file", "result.txt",
+		},
+	} {
+		output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
+		if err := runSessionNamespaceVNext(paths, args, output); err == nil {
+			t.Fatalf("accepted args=%#v", args)
+		}
+		if _, err := os.Stat(paths.SessionsDir); !os.IsNotExist(err) {
+			t.Fatalf(
+				"invalid args=%#v bootstrapped Session state: %v",
+				args, err,
+			)
+		}
+	}
+}
+
+func TestSessionManagementPreflightAcceptsBoundedFilters(t *testing.T) {
+	for _, args := range [][]string{
+		{"list", "--state", "idle"},
+		{
+			"gc", "--older-than-hours", "2562047",
+			"--limit", "1000", "--apply",
+		},
+	} {
+		if err := validateSessionManagementInvocation(args); err != nil {
+			t.Fatalf("args=%#v error=%v", args, err)
+		}
 	}
 }
 

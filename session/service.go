@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
@@ -20,21 +21,19 @@ import (
 const maxSessionInputBytes = 1 << 20
 
 type Service struct {
-	store          *Store
-	profiles       *profile.Catalog
-	models         model.Generator
-	commands       *runtimecommand.Runner
-	now            func() time.Time
-	terminalDriver string
+	store    *Store
+	profiles *profile.Catalog
+	models   model.Generator
+	now      func() time.Time
+	environ  []string
 }
 
 type ServiceOptions struct {
-	Store          *Store
-	Profiles       *profile.Catalog
-	Models         model.Generator
-	Commands       *runtimecommand.Runner
-	Now            func() time.Time
-	TerminalDriver string
+	Store    *Store
+	Profiles *profile.Catalog
+	Models   model.Generator
+	Now      func() time.Time
+	Environ  []string
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -47,17 +46,24 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if options.Models == nil {
 		return nil, fmt.Errorf("model generator is required")
 	}
-	if options.Commands == nil {
-		options.Commands = runtimecommand.NewRunner()
-	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Service{
+	environ := options.Environ
+	if environ == nil {
+		environ = os.Environ()
+	}
+	service := &Service{
 		store: options.Store, profiles: options.Profiles, models: options.Models,
-		commands: options.Commands, now: options.Now,
-		terminalDriver: options.TerminalDriver,
-	}, nil
+		now: options.Now, environ: append([]string(nil), environ...),
+	}
+	if err := service.cleanupInvocationManifests(); err != nil {
+		return nil, fmt.Errorf("clean private invocation manifests: %w", err)
+	}
+	if err := service.reconcileStaleSessions(); err != nil {
+		return nil, fmt.Errorf("reconcile Session store: %w", err)
+	}
+	return service, nil
 }
 
 func (service *Service) Run(
@@ -74,6 +80,11 @@ func (service *Service) Run(
 	if err := validateRunRequest(request, entry); err != nil {
 		return RunResult{}, sessionRuntimeError(contract.ErrorInvalidRequest, err.Error())
 	}
+	prepared, runtimeErr := service.prepareRunRequest(request, entry)
+	if runtimeErr != nil {
+		return RunResult{}, runtimeErr
+	}
+	request = prepared
 	if request.RunID != "" && request.SessionID == "" {
 		return RunResult{}, sessionRuntimeError(
 			contract.ErrorInvalidRequest,
@@ -82,7 +93,7 @@ func (service *Service) Run(
 	}
 	if request.RunID != "" {
 		existing, found, runtimeErr := service.findExistingRun(
-			request.SessionID, request.RunID, entry, request.Input,
+			request.SessionID, request.RunID, entry, request,
 		)
 		if runtimeErr != nil || found && existing.result.State != TurnRunning {
 			return existing.result, runtimeErr
@@ -161,7 +172,7 @@ func NewID() (string, error) {
 func (service *Service) findExistingRun(
 	sessionID, runID string,
 	entry profile.Entry,
-	input string,
+	request RunRequest,
 ) (startedExecution, bool, *contract.RuntimeError) {
 	if err := identity.Validate(sessionID, "session"); err != nil {
 		return startedExecution{}, false, sessionRuntimeError(
@@ -176,8 +187,6 @@ func (service *Service) findExistingRun(
 	var started startedExecution
 	found := false
 	var runtimeErr *contract.RuntimeError
-	var recoveryTurn *Turn
-	var recoveryAssistant *contract.Message
 	err := service.store.withLock(sessionID, func() error {
 		turnsDir := filepath.Join(service.store.sessionDir(sessionID), "turns")
 		entries, err := os.ReadDir(turnsDir)
@@ -206,6 +215,16 @@ func (service *Service) findExistingRun(
 				)
 				return nil
 			}
+			if turn.RequestDigest != requestDigest(request) ||
+				turn.ConfigDigest != requestConfigDigest(request, entry) ||
+				turn.BasePromptDigest != requestBasePromptDigest(request) ||
+				turn.CWD != request.CWD {
+				runtimeErr = sessionRuntimeError(
+					contract.ErrorConflict,
+					"run_id was already used with different effective request",
+				)
+				return nil
+			}
 			messages, err := service.store.messages(sessionID)
 			if err != nil {
 				return err
@@ -218,13 +237,6 @@ func (service *Service) findExistingRun(
 					assistant = &current
 				}
 			}
-			if turn.State == TurnRunning && assistant != nil {
-				currentTurn := turn
-				currentAssistant := cloneContractMessage(*assistant)
-				recoveryTurn = &currentTurn
-				recoveryAssistant = &currentAssistant
-				return nil
-			}
 			started = startedExecution{
 				ids: executionIDs{
 					session: sessionID, turn: turn.ID, run: runID,
@@ -232,16 +244,18 @@ func (service *Service) findExistingRun(
 				},
 				result: service.resultFromTurn(turn, assistant),
 			}
+			execution, err := service.store.loadExecution(
+				sessionID, turn.ExecutionID,
+			)
+			if err != nil {
+				return err
+			}
+			started.result.ExitCode = execution.ExitCode
 			if turn.State == TurnRunning {
-				built, projectionErr := buildProjection(
-					entry, sessionID, turn.ID, runID, turn.ExecutionID,
-					turn.TaskID, input, messages, service.now().UTC(),
+				runtimeErr = sessionRuntimeError(
+					contract.ErrorConflict,
+					"run_id already has an active or unknown-outcome execution",
 				)
-				if projectionErr != nil {
-					runtimeErr = projectionErr
-					return nil
-				}
-				started.projection = built
 			}
 			return nil
 		}
@@ -252,44 +266,7 @@ func (service *Service) findExistingRun(
 			contract.ErrorInternal, err.Error(),
 		)
 	}
-	if recoveryTurn != nil {
-		recovered, recoverErr := service.recoverAssistant(
-			recoveryTurn, recoveryAssistant, entry,
-		)
-		started.result = recovered
-		return started, true, recoverErr
-	}
 	return started, found, runtimeErr
-}
-
-func (service *Service) recoverAssistant(
-	turn *Turn,
-	assistant *contract.Message,
-	entry profile.Entry,
-) (RunResult, *contract.RuntimeError) {
-	ids := executionIDs{
-		session: turn.SessionID, turn: turn.ID, run: turn.RunID,
-		execution: turn.ExecutionID,
-	}
-	if entry.Kind == profile.KindModel {
-		finishReason := contract.FinishStop
-		if len(assistant.ToolCalls) > 0 {
-			finishReason = contract.FinishToolCall
-		}
-		return service.finishModelResult(ids, contract.ModelResult{
-			Message: *assistant, FinishReason: finishReason,
-		}, false)
-	}
-	return service.finishCommandResult(
-		ids,
-		runtimecommand.ExecutionResult{
-			State: "completed", Stdout: assistant.Content,
-			CaptureQuality: "parsed",
-		},
-		CaptureParsed,
-		entry,
-		false,
-	)
 }
 
 func (service *Service) resultFromTurn(
@@ -355,8 +332,37 @@ func (service *Service) begin(
 			ID:            ids.turn, SessionID: ids.session, RunID: ids.run,
 			ExecutionID: ids.execution, TaskID: request.TaskID,
 			ProfileID: entry.ID, ProfileKind: entry.Kind,
-			State: TurnRunning, CreatedAt: now, UpdatedAt: now,
+			RequestDigest:    requestDigest(request),
+			ConfigDigest:     requestConfigDigest(request, entry),
+			BasePromptDigest: requestBasePromptDigest(request),
+			CWD:              request.CWD,
+			State:            TurnRunning, CreatedAt: now, UpdatedAt: now,
 			ToolResults: make(map[string]ToolResultReceipt),
+		}
+		ownerStartToken, err := processStartToken(os.Getpid())
+		if err != nil {
+			return fmt.Errorf("record Session owner identity: %w", err)
+		}
+		execution := Execution{
+			SchemaVersion: SchemaVersion, ID: ids.execution,
+			SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
+			ProfileID: entry.ID, ProfileKind: entry.Kind,
+			State:         ExecutionSpawnIntent,
+			RequestDigest: turn.RequestDigest, ConfigDigest: turn.ConfigDigest,
+			BasePromptDigest: turn.BasePromptDigest, CWD: turn.CWD,
+			Process: &ProcessIdentity{
+				OwnerPID: os.Getpid(), OwnerStartToken: ownerStartToken,
+			},
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := service.store.writeSession(sessionValue); err != nil {
+			return err
+		}
+		if err := service.store.writeTurn(turn); err != nil {
+			return err
+		}
+		if err := service.store.writeExecution(execution); err != nil {
+			return err
 		}
 		if err := service.store.appendMessage(&sessionValue, MessageRecord{
 			Time: now, TurnID: ids.turn, RunID: ids.run,
@@ -371,9 +377,6 @@ func (service *Service) begin(
 		}); err != nil {
 			return err
 		}
-		if err := service.store.writeTurn(turn); err != nil {
-			return err
-		}
 		if err := service.store.writeSession(sessionValue); err != nil {
 			return err
 		}
@@ -383,7 +386,7 @@ func (service *Service) begin(
 		}
 		built, beginError = buildProjection(
 			entry, ids.session, ids.turn, ids.run, ids.execution,
-			request.TaskID, request.Input, messages, now,
+			request.TaskID, request, messages, now,
 		)
 		if beginError != nil {
 			return service.failStarted(&sessionValue, &turn, beginError, now)
@@ -444,17 +447,30 @@ func (service *Service) failStarted(
 	runtimeErr *contract.RuntimeError,
 	now time.Time,
 ) error {
+	execution, err := service.store.loadExecution(
+		sessionValue.ID, turn.ExecutionID,
+	)
+	if err != nil {
+		return err
+	}
 	turn.State = TurnFailed
 	turn.Error = runtimeErr
 	turn.UpdatedAt = now
 	sessionValue.State = SessionIdle
 	sessionValue.ActiveTurnID = ""
 	sessionValue.UpdatedAt = now
+	execution.State = ExecutionSettled
+	execution.Outcome = OutcomeFailed
+	execution.Error = runtimeErr
+	execution.UpdatedAt = now
 	if err := service.store.appendEvent(sessionValue, EventRecord{
 		Time: now, Type: "turn.failed", TurnID: turn.ID,
 		RunID: turn.RunID, ExecutionID: turn.ExecutionID,
 		State: string(TurnFailed), Error: runtimeErr,
 	}); err != nil {
+		return err
+	}
+	if err := service.store.writeExecution(execution); err != nil {
 		return err
 	}
 	if err := service.store.writeTurn(*turn); err != nil {
@@ -469,6 +485,10 @@ func (service *Service) runModel(
 	request RunRequest,
 	entry profile.Entry,
 ) (RunResult, *contract.RuntimeError) {
+	if err := service.markExecutionRunning(started.ids); err != nil {
+		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
+		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+	}
 	generateRequest := contract.GenerateRequest{
 		ModelProfile: entry.ID,
 		Input: contract.ModelRequest{
@@ -490,57 +510,104 @@ func (service *Service) runModel(
 		},
 	)
 	if runtimeErr != nil {
-		result := service.finishFailure(started.ids, runtimeErr, CaptureStructured, "http")
+		result := service.finishFailure(started.ids, runtimeErr)
 		return result, runtimeErr
 	}
 	return service.finishModel(started.ids, modelResult)
+}
+
+func (service *Service) markExecutionRunning(ids executionIDs) error {
+	return service.store.withLock(ids.session, func() error {
+		execution, err := service.store.loadExecution(
+			ids.session, ids.execution,
+		)
+		if err != nil {
+			return err
+		}
+		execution.State = ExecutionRunning
+		execution.UpdatedAt = service.now().UTC()
+		return service.store.writeExecution(execution)
+	})
 }
 
 func (service *Service) runCommand(
 	ctx context.Context,
 	started startedExecution,
 	request RunRequest,
-	entry profile.Entry,
+	_ profile.Entry,
 ) (RunResult, *contract.RuntimeError) {
-	executionResult, err := service.commands.Execute(ctx, *entry.Command, runtimecommand.ExecutionRequest{
-		Args: request.CommandArgs, Prompt: started.projection.commandPrompt,
-		CWD: request.CWD, TerminalDriver: firstNonEmpty(
-			request.TerminalDriver, service.terminalDriver,
-		),
+	if request.Snapshot == nil {
+		runtimeErr := sessionRuntimeError(
+			contract.ErrorInternal, "CLI execution snapshot is missing",
+		)
+		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+	}
+	prompt := joinPromptFragments(
+		request.Snapshot.BasePrompt, started.projection.commandPrompt,
+	)
+	modelValue := request.Snapshot.Model
+	effortValue := runtimecommand.Effort(request.Snapshot.Effort)
+	cwdValue := request.Snapshot.CWD
+	var modelOverride *string
+	if modelValue != "" {
+		modelOverride = &modelValue
+	}
+	var effortOverride *runtimecommand.Effort
+	if effortValue != "" {
+		effortOverride = &effortValue
+	}
+	invocation, err := runtimecommand.Build(runtimecommand.BuildRequest{
+		Mode: runtimecommand.ModeExec, OutputProtocol: runtimecommand.OutputCanonical,
+		Profile: request.Snapshot.Profile,
+		Overrides: runtimecommand.Overrides{
+			Model: modelOverride, Effort: effortOverride, CWD: &cwdValue,
+		},
+		ArgvPrompt: &prompt, InheritedEnvironment: service.environ,
+		InvocationBase: request.Snapshot.CWD,
 	})
 	if err != nil {
+		var runtimeErr *contract.RuntimeError
+		if errors.As(err, &runtimeErr) {
+			safe := *runtimeErr
+			safe.Message = "build CLI canonical invocation failed"
+			return service.finishFailure(started.ids, &safe), &safe
+		}
+		runtimeErr = sessionRuntimeError(
+			contract.ErrorInvalidRequest,
+			"build CLI canonical invocation failed",
+		)
+		runtimeErr.Phase = contract.PhaseTransport
+		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+	}
+	var turn Turn
+	if err := service.store.withLock(started.ids.session, func() error {
+		var loadErr error
+		_, turn, loadErr = service.loadActive(started.ids)
+		return loadErr
+	}); err != nil {
 		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
-		runtimeErr.Phase = contract.PhaseTransport
-		return service.finishFailure(
-			started.ids, runtimeErr, CaptureTranscriptOnly, string(entry.Command.Transport),
-		), runtimeErr
+		return service.finishFailure(started.ids, runtimeErr), runtimeErr
 	}
-	quality := CaptureParsed
-	if executionResult.CaptureQuality == "transcript_only" {
-		quality = CaptureTranscriptOnly
-	}
-	if executionResult.ExitCode != 0 {
-		runtimeErr := sessionRuntimeError(
-			contract.ErrorInternal,
-			fmt.Sprintf("command exited with status %d", executionResult.ExitCode),
-		)
-		runtimeErr.Phase = contract.PhaseTransport
-		result := service.finishFailure(
-			started.ids, runtimeErr, quality, string(entry.Command.Transport),
-		)
-		result.ExitCode = executionResult.ExitCode
+	executionResult := service.executeManagedCLI(
+		ctx, started.ids, turn, invocation,
+	)
+	result, runtimeErr := service.finishManagedCommand(
+		started.ids, executionResult,
+	)
+	if runtimeErr != nil {
 		return result, runtimeErr
 	}
-	return service.finishCommand(started.ids, executionResult, quality, entry)
+	return result, nil
 }
 
-func firstNonEmpty(values ...string) string {
+func joinPromptFragments(values ...string) string {
+	var fragments []string
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
+		if value != "" {
+			fragments = append(fragments, value)
 		}
 	}
-	return ""
+	return strings.Join(fragments, "\n")
 }
 
 func (service *Service) recordModelEvent(ids executionIDs, event contract.Event) error {
@@ -615,13 +682,16 @@ func (service *Service) finishModelResult(
 		turn.UpdatedAt = now
 		sessionValue.ActiveTurnID = ""
 		sessionValue.UpdatedAt = now
-		execution := Execution{
-			SchemaVersion: SchemaVersion, ID: ids.execution,
-			SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
-			ProfileID: turn.ProfileID, ProfileKind: turn.ProfileKind,
-			Transport: "http", State: turn.State,
-			CaptureQuality: CaptureStructured, CreatedAt: turn.CreatedAt, UpdatedAt: now,
+		execution, err := service.store.loadExecution(
+			ids.session, ids.execution,
+		)
+		if err != nil {
+			return err
 		}
+		execution.State = ExecutionSettled
+		execution.Outcome = OutcomeCompleted
+		execution.Error = nil
+		execution.UpdatedAt = now
 		if err := service.store.appendEvent(&sessionValue, EventRecord{
 			Time: now, Type: "turn.settled", TurnID: ids.turn,
 			RunID: ids.run, ExecutionID: ids.execution, State: string(turn.State),
@@ -646,36 +716,26 @@ func (service *Service) finishModelResult(
 	return result, nil
 }
 
-func (service *Service) finishCommand(
+func (service *Service) finishManagedCommand(
 	ids executionIDs,
-	executionResult runtimecommand.ExecutionResult,
-	quality CaptureQuality,
-	entry profile.Entry,
+	executionResult managedResult,
 ) (RunResult, *contract.RuntimeError) {
-	return service.finishCommandResult(ids, executionResult, quality, entry, true)
-}
-
-func (service *Service) finishCommandResult(
-	ids executionIDs,
-	executionResult runtimecommand.ExecutionResult,
-	quality CaptureQuality,
-	entry profile.Entry,
-	appendAssistant bool,
-) (RunResult, *contract.RuntimeError) {
+	turnState := TurnCompleted
+	if executionResult.outcome == OutcomeCancelled {
+		turnState = TurnCancelled
+	} else if executionResult.runtimeErr != nil {
+		turnState = TurnFailed
+	}
 	result := RunResult{
 		SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
-		ExecutionID: ids.execution, State: TurnCompleted,
-		CaptureQuality: quality, LaunchHandle: executionResult.LaunchHandle,
-		ExitCode: executionResult.ExitCode,
+		ExecutionID: ids.execution, State: turnState,
+		CaptureQuality: CaptureStructured,
+		ExitCode:       executionResult.exitCode, Error: executionResult.runtimeErr,
 	}
-	if executionResult.State == "submitted" {
-		result.State = TurnSubmitted
-	}
-	if quality == CaptureParsed &&
-		strings.TrimSpace(executionResult.Stdout) != "" {
+	if turnState == TurnCompleted {
 		message := contract.Message{
 			Role:    contract.RoleAssistant,
-			Content: strings.TrimSpace(executionResult.Stdout),
+			Content: executionResult.assistant,
 		}
 		result.Message = &message
 	}
@@ -685,7 +745,7 @@ func (service *Service) finishCommandResult(
 		if err != nil {
 			return err
 		}
-		if appendAssistant && result.Message != nil {
+		if result.Message != nil {
 			if err := service.store.appendMessage(&sessionValue, MessageRecord{
 				Time: now, TurnID: ids.turn, RunID: ids.run,
 				ExecutionID: ids.execution, ProfileID: turn.ProfileID,
@@ -694,24 +754,41 @@ func (service *Service) finishCommandResult(
 				return err
 			}
 		}
-		turn.State = result.State
-		turn.CaptureQuality = quality
+		turn.State = turnState
+		turn.Error = executionResult.runtimeErr
+		turn.CaptureQuality = CaptureStructured
 		turn.UpdatedAt = now
 		sessionValue.State = SessionIdle
 		sessionValue.ActiveTurnID = ""
 		sessionValue.UpdatedAt = now
-		execution := Execution{
-			SchemaVersion: SchemaVersion, ID: ids.execution,
-			SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
-			ProfileID: entry.ID, ProfileKind: entry.Kind,
-			Transport: string(entry.Command.Transport), State: result.State,
-			CaptureQuality: quality, LaunchHandle: executionResult.LaunchHandle,
-			ExitCode:  executionResult.ExitCode,
-			CreatedAt: turn.CreatedAt, UpdatedAt: now,
+		execution, err := service.store.loadExecution(
+			ids.session, ids.execution,
+		)
+		if err != nil {
+			return err
+		}
+		execution.State = ExecutionSettled
+		execution.Outcome = executionResult.outcome
+		execution.RequestDigest = turn.RequestDigest
+		execution.ConfigDigest = turn.ConfigDigest
+		execution.BasePromptDigest = turn.BasePromptDigest
+		execution.CWD = turn.CWD
+		execution.ExitCode = executionResult.exitCode
+		execution.Signal = executionResult.signal
+		execution.Stdout = executionResult.stdout
+		execution.Stderr = executionResult.stderr
+		execution.Error = executionResult.runtimeErr
+		execution.UpdatedAt = now
+		eventType := "turn.settled"
+		if turnState == TurnFailed {
+			eventType = "turn.failed"
+		} else if turnState == TurnCancelled {
+			eventType = "turn.cancelled"
 		}
 		if err := service.store.appendEvent(&sessionValue, EventRecord{
-			Time: now, Type: "turn.settled", TurnID: ids.turn,
-			RunID: ids.run, ExecutionID: ids.execution, State: string(result.State),
+			Time: now, Type: eventType, TurnID: ids.turn,
+			RunID: ids.run, ExecutionID: ids.execution,
+			State: string(turnState), Error: executionResult.runtimeErr,
 		}); err != nil {
 			return err
 		}
@@ -730,19 +807,17 @@ func (service *Service) finishCommandResult(
 		return result, runtimeErr
 	}
 	_ = service.store.rebuildIndex()
-	return result, nil
+	return result, executionResult.runtimeErr
 }
 
 func (service *Service) finishFailure(
 	ids executionIDs,
 	runtimeErr *contract.RuntimeError,
-	quality CaptureQuality,
-	transport string,
 ) RunResult {
 	result := RunResult{
 		SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
 		ExecutionID: ids.execution, State: TurnFailed,
-		CaptureQuality: quality, Error: runtimeErr,
+		CaptureQuality: CaptureStructured, Error: runtimeErr,
 	}
 	err := service.store.withLock(ids.session, func() error {
 		now := service.now().UTC()
@@ -752,18 +827,21 @@ func (service *Service) finishFailure(
 		}
 		turn.State = TurnFailed
 		turn.Error = runtimeErr
-		turn.CaptureQuality = quality
+		turn.CaptureQuality = CaptureStructured
 		turn.UpdatedAt = now
 		sessionValue.State = SessionIdle
 		sessionValue.ActiveTurnID = ""
 		sessionValue.UpdatedAt = now
-		execution := Execution{
-			SchemaVersion: SchemaVersion, ID: ids.execution,
-			SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
-			ProfileID: turn.ProfileID, ProfileKind: turn.ProfileKind,
-			Transport: transport, State: TurnFailed, CaptureQuality: quality,
-			CreatedAt: turn.CreatedAt, UpdatedAt: now,
+		execution, err := service.store.loadExecution(
+			ids.session, ids.execution,
+		)
+		if err != nil {
+			return err
 		}
+		execution.State = ExecutionSettled
+		execution.Outcome = OutcomeFailed
+		execution.Error = runtimeErr
+		execution.UpdatedAt = now
 		if err := service.store.appendEvent(&sessionValue, EventRecord{
 			Time: now, Type: "turn.failed", TurnID: ids.turn,
 			RunID: ids.run, ExecutionID: ids.execution,
@@ -815,18 +893,52 @@ func validateRunRequest(request RunRequest, entry profile.Entry) error {
 	if len(request.Input) > maxSessionInputBytes {
 		return fmt.Errorf("input exceeds %d bytes", maxSessionInputBytes)
 	}
+	if !utf8.ValidString(request.Input) ||
+		strings.ContainsRune(request.Input, '\x00') {
+		return fmt.Errorf("input must be UTF-8 without NUL")
+	}
 	if len(request.TaskID) > 512 {
 		return fmt.Errorf("task_id exceeds 512 bytes")
+	}
+	if !utf8.ValidString(request.TaskID) ||
+		strings.ContainsRune(request.TaskID, '\x00') {
+		return fmt.Errorf("task_id must be UTF-8 without NUL")
 	}
 	switch request.Retention {
 	case "", RetentionEphemeral, RetentionStandard, RetentionPinned:
 	default:
 		return fmt.Errorf("unsupported retention %q", request.Retention)
 	}
-	if entry.Kind == profile.KindCommand &&
-		entry.Command.PromptDelivery == runtimecommand.PromptManual {
+	hasModelOptions := request.ModelOptions.MaxOutputTokens != nil ||
+		request.ModelOptions.Temperature != nil
+	if request.ModelOptions.MaxOutputTokens != nil &&
+		*request.ModelOptions.MaxOutputTokens <= 0 {
+		return fmt.Errorf("model_options.max_output_tokens must be positive")
+	}
+	if request.ModelOptions.Temperature != nil {
+		if err := contract.ValidateTemperature(
+			*request.ModelOptions.Temperature,
+		); err != nil {
+			return fmt.Errorf("model_options.temperature: %w", err)
+		}
+	}
+	if entry.Kind == profile.KindCommand {
+		if hasModelOptions {
+			return fmt.Errorf(
+				"API model options are invalid for CLI profile %q", entry.ID,
+			)
+		}
+		if request.Effort != "" {
+			if _, err := runtimecommand.ParseEffort(request.Effort); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if request.Model != "" || request.Effort != "" || request.CWD != "" ||
+		request.Snapshot != nil {
 		return fmt.Errorf(
-			"command profile %q uses manual prompt delivery and cannot accept session input",
+			"model, effort, cwd, and CLI snapshot are invalid for API profile %q",
 			entry.ID,
 		)
 	}

@@ -42,6 +42,33 @@ func TestRuntimeHandlerSessionAndAgentShareServices(t *testing.T) {
 		!strings.Contains(turn.Body.String(), `"state":"completed"`) {
 		t.Fatalf("turn status=%d body=%s", turn.Code, turn.Body.String())
 	}
+	var turnResult session.RunResult
+	if err := json.Unmarshal(turn.Body.Bytes(), &turnResult); err != nil {
+		t.Fatal(err)
+	}
+	executions := performJSON(
+		t, handler, http.MethodGet,
+		"/v1/sessions/"+sessionValue.ID+"/executions", "",
+	)
+	if executions.Code != http.StatusOK ||
+		!strings.Contains(executions.Body.String(), turnResult.ExecutionID) {
+		t.Fatalf(
+			"executions status=%d body=%s",
+			executions.Code, executions.Body.String(),
+		)
+	}
+	execution := performJSON(
+		t, handler, http.MethodGet,
+		"/v1/sessions/"+sessionValue.ID+"/executions/"+turnResult.ExecutionID,
+		"",
+	)
+	if execution.Code != http.StatusOK ||
+		!strings.Contains(execution.Body.String(), `"state":"settled"`) {
+		t.Fatalf(
+			"execution status=%d body=%s",
+			execution.Code, execution.Body.String(),
+		)
+	}
 	agentResponse := performJSON(
 		t, handler, http.MethodPost, "/v1/agent/run",
 		`{"profile_id":"api","input":"finish"}`,
@@ -103,6 +130,66 @@ func TestRuntimeHandlerRejectsUnknownRunFields(t *testing.T) {
 	}
 }
 
+func TestRuntimeHandlerDurableSessionCarriesModelOptionsAndRedactsPrivateSnapshot(
+	t *testing.T,
+) {
+	handler, services := newRuntimeHandlerTest(t)
+	response := performJSON(
+		t, handler, http.MethodPost, "/v1/runs",
+		`{
+			"kind":"session",
+			"profile_id":"api",
+			"input":"hello",
+			"model_options":{"max_output_tokens":42,"temperature":0.25}
+		}`,
+	)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var record runtime.Record
+	if err := json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Request.ModelOptions.MaxOutputTokens == nil ||
+		*record.Request.ModelOptions.MaxOutputTokens != 42 ||
+		record.Request.ModelOptions.Temperature == nil ||
+		*record.Request.ModelOptions.Temperature != 0.25 {
+		t.Fatalf("request=%#v", record.Request)
+	}
+	stored, err := services.Get(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("private_request")) ||
+		bytes.Contains(data, []byte("base_prompt")) {
+		t.Fatalf("public Run response leaked private request: %s", data)
+	}
+	privateResponse := performJSON(
+		t, handler, http.MethodPost, "/v1/runs",
+		`{
+			"kind":"session",
+			"profile_id":"cli",
+			"input":"hello",
+			"cwd":"/"
+		}`,
+	)
+	if privateResponse.Code != http.StatusAccepted {
+		t.Fatalf(
+			"private status=%d body=%s",
+			privateResponse.Code, privateResponse.Body.String(),
+		)
+	}
+	if strings.Contains(
+		privateResponse.Body.String(), "http-private-base-prompt",
+	) || strings.Contains(privateResponse.Body.String(), "private_request") {
+		t.Fatalf("private snapshot leaked: %s", privateResponse.Body.String())
+	}
+}
+
 func newRuntimeHandlerTest(
 	t *testing.T,
 ) (*RuntimeHandler, *runtime.Service) {
@@ -110,8 +197,8 @@ func newRuntimeHandlerTest(
 	commandCatalog, err := runtimecommand.NewCatalog(
 		map[string]runtimecommand.Profile{
 			"cli": {
-				Binary: "/bin/true", Transport: runtimecommand.TransportTTY,
-				PromptDelivery: runtimecommand.PromptManual,
+				Command: "codex",
+				Prompt:  "http-private-base-prompt",
 			},
 		},
 	)
@@ -151,7 +238,6 @@ func newRuntimeHandlerTest(
 	}
 	sessions, err := session.NewService(session.ServiceOptions{
 		Store: sessionStore, Profiles: profiles, Models: generator,
-		Commands: runtimecommand.NewRunner(),
 	})
 	if err != nil {
 		t.Fatal(err)

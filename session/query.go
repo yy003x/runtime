@@ -1,12 +1,14 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/identity"
@@ -105,13 +107,29 @@ func (service *Service) Events(
 func (service *Service) LatestExecution(
 	sessionID string,
 ) (Execution, error) {
-	if err := identity.Validate(sessionID, "session"); err != nil {
+	values, err := service.Executions(sessionID)
+	if err != nil {
 		return Execution{}, err
 	}
-	var latest Execution
+	if len(values) == 0 {
+		return Execution{}, fmt.Errorf("session %s has no execution", sessionID)
+	}
+	return values[0], nil
+}
+
+func (service *Service) Executions(
+	sessionID string,
+) ([]Execution, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return nil, err
+	}
+	var values []Execution
 	err := service.store.withLock(sessionID, func() error {
 		directory := filepath.Join(service.store.sessionDir(sessionID), "executions")
 		entries, err := os.ReadDir(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -120,20 +138,98 @@ func (service *Service) LatestExecution(
 				filepath.Ext(entry.Name()) != ".json" {
 				continue
 			}
-			var current Execution
-			if err := readStrictJSON(filepath.Join(directory, entry.Name()), &current); err != nil {
+			current, err := service.store.loadExecution(
+				sessionID, strings.TrimSuffix(entry.Name(), ".json"),
+			)
+			if err != nil {
 				return err
 			}
-			if current.UpdatedAt.After(latest.UpdatedAt) {
-				latest = current
-			}
-		}
-		if latest.ID == "" {
-			return fmt.Errorf("session %s has no execution", sessionID)
+			values = append(values, current)
 		}
 		return nil
 	})
-	return latest, err
+	sort.Slice(values, func(left, right int) bool {
+		if values[left].UpdatedAt.Equal(values[right].UpdatedAt) {
+			return values[left].ID < values[right].ID
+		}
+		return values[left].UpdatedAt.After(values[right].UpdatedAt)
+	})
+	return values, err
+}
+
+func (service *Service) Execution(
+	sessionID, executionID string,
+) (Execution, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return Execution{}, err
+	}
+	if err := identity.Validate(executionID, "execution"); err != nil {
+		return Execution{}, err
+	}
+	var value Execution
+	err := service.store.withLock(sessionID, func() error {
+		var err error
+		value, err = service.store.loadExecution(sessionID, executionID)
+		return err
+	})
+	return value, err
+}
+
+func (service *Service) ResultForRun(
+	sessionID, runID string,
+) (RunResult, bool, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return RunResult{}, false, err
+	}
+	if err := identity.Validate(runID, "run"); err != nil {
+		return RunResult{}, false, err
+	}
+	var result RunResult
+	found := false
+	err := service.store.withLock(sessionID, func() error {
+		entries, err := os.ReadDir(
+			filepath.Join(service.store.sessionDir(sessionID), "turns"),
+		)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			turn, err := service.store.loadTurn(sessionID, entry.Name())
+			if err != nil {
+				return err
+			}
+			if turn.RunID != runID {
+				continue
+			}
+			messages, err := service.store.messages(sessionID)
+			if err != nil {
+				return err
+			}
+			var assistant *contract.Message
+			for _, message := range messages {
+				if message.TurnID == turn.ID &&
+					message.Message.Role == contract.RoleAssistant {
+					current := message.Message
+					assistant = &current
+				}
+			}
+			result = service.resultFromTurn(turn, assistant)
+			execution, err := service.store.loadExecution(
+				sessionID, turn.ExecutionID,
+			)
+			if err != nil {
+				return err
+			}
+			result.ExitCode = execution.ExitCode
+			found = true
+			return nil
+		}
+		return nil
+	})
+	return result, found, err
 }
 
 func (service *Service) SubmitToolResult(
@@ -156,6 +252,15 @@ func (service *Service) SubmitToolResult(
 	if len(input.Content) > maxSessionInputBytes || len(input.IdempotencyKey) > 256 {
 		return ToolResultReceipt{}, sessionRuntimeError(
 			contract.ErrorInvalidRequest, "tool result exceeds size limits",
+		)
+	}
+	if !utf8.ValidString(input.Content) ||
+		strings.ContainsRune(input.Content, '\x00') ||
+		!utf8.ValidString(input.IdempotencyKey) ||
+		strings.ContainsRune(input.IdempotencyKey, '\x00') {
+		return ToolResultReceipt{}, sessionRuntimeError(
+			contract.ErrorInvalidRequest,
+			"tool result content and idempotency_key must be UTF-8 without NUL",
 		)
 	}
 	var receipt ToolResultReceipt

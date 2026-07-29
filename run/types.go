@@ -6,11 +6,16 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/contract"
 )
+
+var ErrSessionRunOpen = errors.New("session already has a nonterminal durable Run")
+
+const MaxPrivateRequestBytes = 256 << 10
 
 type Kind string
 
@@ -47,14 +52,23 @@ type Request struct {
 	SessionID        string                   `json:"session_id,omitempty"`
 	SessionRetention string                   `json:"session_retention,omitempty"`
 	TaskID           string                   `json:"task_id,omitempty"`
-	CommandArgs      []string                 `json:"command_args,omitempty"`
+	Model            string                   `json:"model,omitempty"`
+	Effort           string                   `json:"effort,omitempty"`
 	CWD              string                   `json:"cwd,omitempty"`
-	TerminalDriver   string                   `json:"terminal_driver,omitempty"`
 	ModelOptions     contract.GenerateOptions `json:"model_options,omitempty"`
 	AgentBudget      agent.Budget             `json:"agent_budget,omitempty"`
 	Labels           map[string]string        `json:"labels,omitempty"`
 	RetryOf          string                   `json:"retry_of,omitempty"`
 	Resume           json.RawMessage          `json:"resume,omitempty"`
+	RequestDigest    string                   `json:"request_digest,omitempty"`
+	ConfigDigest     string                   `json:"config_digest,omitempty"`
+	BasePromptDigest string                   `json:"base_prompt_digest,omitempty"`
+
+	// PrivateRequest is a store-only execution snapshot. It is persisted in the
+	// dedicated private_request_json column and must never be serialized by a
+	// public CLI/HTTP DTO, event, log, or error.
+	PrivateRequest json.RawMessage `json:"-"`
+	InvocationBase string          `json:"-"`
 }
 
 type Record struct {
@@ -133,9 +147,22 @@ type Executor interface {
 	Execute(context.Context, Record, contract.EventSink) ExecutionOutcome
 }
 
+// RequestPreparer freezes executor-private inputs before a durable Run is
+// created. The returned Request is what is validated and persisted.
+type RequestPreparer interface {
+	Prepare(context.Context, Request) (Request, error)
+}
+
+// ReconcileExecutor resolves an executor-owned needs_reconciliation record
+// without replaying the original execution.
+type ReconcileExecutor interface {
+	Reconcile(context.Context, Record) ExecutionOutcome
+}
+
 type Store interface {
 	Create(context.Context, string, Request) (Record, error)
 	Get(context.Context, string) (Record, error)
+	PrivateRequest(context.Context, string) (json.RawMessage, error)
 	List(context.Context, ListFilter) ([]Record, error)
 	Start(context.Context, string) (Record, error)
 	Claim(context.Context, string) (Record, bool, error)

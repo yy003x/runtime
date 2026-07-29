@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
-	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
@@ -27,14 +29,14 @@ func runSessionNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: session run|submit|list|show|messages|events|logs|tool-result|send|interrupt|stop|attach|configure|export|delete|gc")
-	}
-	if args[0] == "attach" && output.JSON() {
-		return fmt.Errorf("session attach does not support --json")
+		return fmt.Errorf("usage: session run|submit|list|show|messages|events|logs|executions|execution|reconcile|tool-result|configure|export|delete|gc")
 	}
 	switch args[0] {
 	case "run", "submit":
 		return runSessionExecution(paths, args[0], args[1:], output)
+	}
+	if err := validateSessionManagementInvocation(args); err != nil {
+		return err
 	}
 	services, err := runtimebootstrap.LoadSessionServices(paths, fixedNamespaces...)
 	if err != nil {
@@ -42,6 +44,11 @@ func runSessionNamespaceVNext(
 	}
 	switch args[0] {
 	case "list":
+		if err := validateManagementArgs(
+			args[1:], []string{"--state"}, nil,
+		); err != nil {
+			return err
+		}
 		state, err := optionString(args[1:], "--state")
 		if err != nil {
 			return err
@@ -68,6 +75,11 @@ func runSessionNamespaceVNext(
 		}
 		return nil
 	case "show":
+		if err := validateManagementArgs(
+			args[1:], []string{"--session-id"}, nil,
+		); err != nil {
+			return err
+		}
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
 			return err
@@ -77,10 +89,15 @@ func runSessionNamespaceVNext(
 			return err
 		}
 		if output.JSON() {
-			return output.writeJSON(value)
+			return output.writeJSON(map[string]any{"session": value})
 		}
 		return renderSessionSummary(output, value)
 	case "messages":
+		if err := validateManagementArgs(
+			args[1:], []string{"--session-id", "--after-seq"}, nil,
+		); err != nil {
+			return err
+		}
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
 			return err
@@ -112,6 +129,15 @@ func runSessionNamespaceVNext(
 		}
 		return nil
 	case "events", "logs":
+		valueOptions := []string{"--session-id", "--after-seq"}
+		if args[0] == "logs" {
+			valueOptions = append(valueOptions, "--tail")
+		}
+		if err := validateManagementArgs(
+			args[1:], valueOptions, nil,
+		); err != nil {
+			return err
+		}
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
 			return err
@@ -151,9 +177,88 @@ func runSessionNamespaceVNext(
 			}
 		}
 		return nil
+	case "executions":
+		if err := validateManagementArgs(
+			args[1:], []string{"--session-id"}, nil,
+		); err != nil {
+			return err
+		}
+		sessionID, err := requiredOption(args[1:], "--session-id")
+		if err != nil {
+			return err
+		}
+		values, err := services.Sessions.Executions(sessionID)
+		if err != nil {
+			return err
+		}
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"executions": values})
+		}
+		if err := output.line("Executions (%d)", len(values)); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := output.line(
+				"  %s  %s  %s", value.ID, value.State, value.Outcome,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	case "execution":
+		if err := validateManagementArgs(
+			args[1:],
+			[]string{"--session-id", "--execution-id"}, nil,
+		); err != nil {
+			return err
+		}
+		sessionID, err := requiredOption(args[1:], "--session-id")
+		if err != nil {
+			return err
+		}
+		executionID, err := requiredOption(args[1:], "--execution-id")
+		if err != nil {
+			return err
+		}
+		value, err := services.Sessions.Execution(sessionID, executionID)
+		if err != nil {
+			return err
+		}
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"execution": value})
+		}
+		return output.line(
+			"Execution %s: state=%s outcome=%s",
+			value.ID, value.State, value.Outcome,
+		)
+	case "reconcile":
+		sessionID, reconcileOptions, err := parseSessionReconcileOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		value, runtimeErr := services.Sessions.Reconcile(
+			context.Background(), sessionID, reconcileOptions,
+		)
+		if runtimeErr != nil {
+			return runtimeErr
+		}
+		if output.JSON() {
+			return output.writeJSON(map[string]any{
+				"reconciliation": value,
+			})
+		}
+		return output.line(
+			"Session %s reconciled: turn=%s state=%s",
+			value.SessionID, value.TurnID, value.State,
+		)
 	case "tool-result":
 		return submitSessionToolResult(services.Sessions, args[1:], output)
 	case "configure":
+		if err := validateManagementArgs(
+			args[1:], []string{"--session-id", "--retention"}, nil,
+		); err != nil {
+			return err
+		}
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
 			return err
@@ -169,7 +274,7 @@ func runSessionNamespaceVNext(
 			return err
 		}
 		if output.JSON() {
-			return output.writeJSON(value)
+			return output.writeJSON(map[string]any{"session": value})
 		}
 		return output.line(
 			"Session %s retention=%s", value.ID, value.Retention,
@@ -177,6 +282,11 @@ func runSessionNamespaceVNext(
 	case "export":
 		return exportSession(services.Sessions, args[1:], output)
 	case "delete":
+		if err := validateManagementArgs(
+			args[1:], []string{"--session-id"}, nil,
+		); err != nil {
+			return err
+		}
 		sessionID, err := requiredOption(args[1:], "--session-id")
 		if err != nil {
 			return err
@@ -194,16 +304,27 @@ func runSessionNamespaceVNext(
 			"Session %s moved to %s (recoverable)", sessionID, target,
 		)
 	case "gc":
-		hours, err := intOptionValue(args[1:], "--older-than-hours", 24)
+		if err := validateManagementArgs(
+			args[1:],
+			[]string{"--older-than-hours", "--limit"},
+			[]string{"--apply"},
+		); err != nil {
+			return err
+		}
+		olderThan, err := durationHoursOption(
+			args[1:], "--older-than-hours", 24*time.Hour,
+		)
 		if err != nil {
 			return err
 		}
-		limit, err := intOptionValue(args[1:], "--limit", 100)
+		limit, err := boundedIntOptionValue(
+			args[1:], "--limit", 100, 1000,
+		)
 		if err != nil {
 			return err
 		}
 		value, err := services.Sessions.GC(session.GCOptions{
-			OlderThan: time.Duration(hours) * time.Hour,
+			OlderThan: olderThan,
 			Limit:     limit, Apply: hasFlag(args[1:], "--apply"),
 		})
 		if err != nil {
@@ -216,11 +337,218 @@ func runSessionNamespaceVNext(
 			"Session GC: candidates=%d moved=%d apply=%t",
 			len(value.Candidates), len(value.Moved), !value.DryRun,
 		)
-	case "attach", "send", "interrupt", "stop":
-		return operateSessionCarrier(services.Sessions, args[0], args[1:], output)
 	default:
 		return fmt.Errorf("unknown session action %q", args[0])
 	}
+}
+
+func validateSessionManagementInvocation(args []string) error {
+	action := args[0]
+	actionArgs := args[1:]
+	switch action {
+	case "list":
+		if err := validateManagementArgs(
+			actionArgs, []string{"--state"}, nil,
+		); err != nil {
+			return err
+		}
+		state, err := optionString(actionArgs, "--state")
+		if err != nil {
+			return err
+		}
+		if state == "" && optionProvided(actionArgs, "--state") {
+			return fmt.Errorf(
+				"--state must be idle, active, blocked, or archived",
+			)
+		}
+		return validateSessionStateFilter(session.SessionState(state))
+	case "show", "executions", "delete":
+		if err := validateManagementArgs(
+			actionArgs, []string{"--session-id"}, nil,
+		); err != nil {
+			return err
+		}
+		_, err := requiredOption(actionArgs, "--session-id")
+		return err
+	case "messages", "events":
+		if err := validateManagementArgs(
+			actionArgs, []string{"--session-id", "--after-seq"}, nil,
+		); err != nil {
+			return err
+		}
+		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+			return err
+		}
+		_, err := uintOption(actionArgs, "--after-seq", 0)
+		return err
+	case "logs":
+		if err := validateManagementArgs(
+			actionArgs,
+			[]string{"--session-id", "--after-seq", "--tail"}, nil,
+		); err != nil {
+			return err
+		}
+		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+			return err
+		}
+		if _, err := uintOption(actionArgs, "--after-seq", 0); err != nil {
+			return err
+		}
+		_, err := intOptionValue(actionArgs, "--tail", 120)
+		return err
+	case "execution":
+		if err := validateManagementArgs(
+			actionArgs,
+			[]string{"--session-id", "--execution-id"}, nil,
+		); err != nil {
+			return err
+		}
+		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+			return err
+		}
+		_, err := requiredOption(actionArgs, "--execution-id")
+		return err
+	case "reconcile":
+		_, _, err := parseSessionReconcileOptions(actionArgs)
+		return err
+	case "tool-result":
+		if err := validateManagementArgs(
+			actionArgs,
+			[]string{
+				"--session-id", "--turn-id", "--tool-call-id",
+				"--idempotency-key", "--content", "--content-file",
+			},
+			[]string{"--error"},
+		); err != nil {
+			return err
+		}
+		for _, name := range []string{
+			"--session-id", "--turn-id", "--tool-call-id",
+			"--idempotency-key",
+		} {
+			if _, err := requiredOption(actionArgs, name); err != nil {
+				return err
+			}
+		}
+		if optionProvided(actionArgs, "--content") &&
+			optionProvided(actionArgs, "--content-file") {
+			return fmt.Errorf(
+				"--content and --content-file are mutually exclusive",
+			)
+		}
+		return nil
+	case "configure":
+		if err := validateManagementArgs(
+			actionArgs, []string{"--session-id", "--retention"}, nil,
+		); err != nil {
+			return err
+		}
+		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+			return err
+		}
+		retention, err := requiredOption(actionArgs, "--retention")
+		if err != nil {
+			return err
+		}
+		return validateSessionRetention(session.Retention(retention))
+	case "export":
+		if err := validateManagementArgs(
+			actionArgs, []string{"--session-id", "--output"}, nil,
+		); err != nil {
+			return err
+		}
+		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+			return err
+		}
+		_, err := requiredOption(actionArgs, "--output")
+		return err
+	case "gc":
+		if err := validateManagementArgs(
+			actionArgs,
+			[]string{"--older-than-hours", "--limit"},
+			[]string{"--apply"},
+		); err != nil {
+			return err
+		}
+		if _, err := durationHoursOption(
+			actionArgs, "--older-than-hours", 24*time.Hour,
+		); err != nil {
+			return err
+		}
+		_, err := boundedIntOptionValue(
+			actionArgs, "--limit", 100, 1000,
+		)
+		return err
+	default:
+		return fmt.Errorf("unknown session action %q", action)
+	}
+}
+
+func validateSessionStateFilter(state session.SessionState) error {
+	switch state {
+	case "", session.SessionIdle, session.SessionActive,
+		session.SessionBlocked, session.SessionArchived:
+		return nil
+	default:
+		return fmt.Errorf(
+			"--state must be idle, active, blocked, or archived",
+		)
+	}
+}
+
+func validateSessionRetention(retention session.Retention) error {
+	switch retention {
+	case session.RetentionEphemeral, session.RetentionStandard,
+		session.RetentionPinned:
+		return nil
+	default:
+		return fmt.Errorf(
+			"--retention must be ephemeral, standard, or pinned",
+		)
+	}
+}
+
+func parseSessionReconcileOptions(
+	args []string,
+) (string, session.ReconcileOptions, error) {
+	var sessionID string
+	var options session.ReconcileOptions
+	seen := make(map[string]bool)
+	for index := 0; index < len(args); index++ {
+		current := args[index]
+		if seen[current] {
+			return "", options, fmt.Errorf(
+				"session reconcile option %s may only be used once",
+				current,
+			)
+		}
+		seen[current] = true
+		switch current {
+		case "--session-id":
+			index++
+			if index >= len(args) || strings.HasPrefix(args[index], "-") {
+				return "", options, fmt.Errorf("--session-id requires value")
+			}
+			sessionID = args[index]
+		case "--terminate":
+			options.Terminate = true
+		case "--acknowledge-unknown":
+			options.AcknowledgeUnknown = true
+		default:
+			return "", options, fmt.Errorf(
+				"unknown session reconcile option %s", current,
+			)
+		}
+	}
+	if sessionID == "" {
+		return "", options, fmt.Errorf("--session-id is required")
+	}
+	if options.Terminate && options.AcknowledgeUnknown {
+		return "", options, fmt.Errorf(
+			"--terminate and --acknowledge-unknown are mutually exclusive",
+		)
+	}
+	return sessionID, options, nil
 }
 
 type sessionInvocation struct {
@@ -229,10 +557,9 @@ type sessionInvocation struct {
 	retention      session.Retention
 	profileID      string
 	input          string
-	promptFile     string
+	model          string
+	effort         string
 	cwd            string
-	terminalDriver string
-	commandArgs    []string
 	modelOptions   contract.GenerateOptions
 	tokenLimitFlag string
 }
@@ -248,27 +575,35 @@ func runSessionExecution(
 		return err
 	}
 	if action == "run" {
-		services, err := runtimebootstrap.LoadSessionServices(paths, fixedNamespaces...)
+		callerCWD, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		if invocation.terminalDriver == "" {
-			invocation.terminalDriver = services.Config.Terminal.Driver
+		if invocation.cwd != "" && !filepath.IsAbs(invocation.cwd) {
+			invocation.cwd = filepath.Join(callerCWD, invocation.cwd)
+		}
+		services, err := runtimebootstrap.LoadSessionServices(paths, fixedNamespaces...)
+		if err != nil {
+			return err
 		}
 		if err := validateSessionProfileOptions(
 			invocation, services.Profiles,
 		); err != nil {
 			return err
 		}
+		runContext, stop := signal.NotifyContext(
+			context.Background(), os.Interrupt, syscall.SIGTERM,
+		)
+		defer stop()
 		result, runtimeErr := services.Sessions.Run(
-			context.Background(),
+			runContext,
 			session.RunRequest{
 				SessionID: invocation.sessionID, TaskID: invocation.taskID,
 				ProfileID: invocation.profileID, Input: invocation.input,
-				CommandArgs: invocation.commandArgs, CWD: invocation.cwd,
-				Retention:      invocation.retention,
-				ModelOptions:   invocation.modelOptions,
-				TerminalDriver: invocation.terminalDriver,
+				Model: invocation.model, Effort: invocation.effort,
+				CWD: invocation.cwd, InvocationBase: callerCWD,
+				Retention:    invocation.retention,
+				ModelOptions: invocation.modelOptions,
 			},
 		)
 		if runtimeErr != nil {
@@ -285,21 +620,18 @@ func runSessionExecution(
 			return err
 		}
 	}
-	cwd := invocation.cwd
-	if cwd == "" {
-		cwd, err = os.Getwd()
-		if err != nil {
-			return err
-		}
+	callerCWD, err := os.Getwd()
+	if err != nil {
+		return err
 	}
-	services, err := runtimebootstrap.LoadServices(paths, cwd, fixedNamespaces...)
+	if invocation.cwd != "" && !filepath.IsAbs(invocation.cwd) {
+		invocation.cwd = filepath.Join(callerCWD, invocation.cwd)
+	}
+	services, err := runtimebootstrap.LoadServices(paths, callerCWD, fixedNamespaces...)
 	if err != nil {
 		return err
 	}
 	defer services.Runs.Close()
-	if invocation.terminalDriver == "" {
-		invocation.terminalDriver = services.Config.Terminal.Driver
-	}
 	if err := validateSessionProfileOptions(
 		invocation, services.Profiles,
 	); err != nil {
@@ -311,9 +643,10 @@ func runSessionExecution(
 			Kind: runtime.KindSession, ProfileID: invocation.profileID,
 			Input: invocation.input, SessionID: invocation.sessionID,
 			SessionRetention: string(invocation.retention),
-			TaskID:           invocation.taskID, CommandArgs: invocation.commandArgs,
-			CWD: cwd, TerminalDriver: invocation.terminalDriver,
-			ModelOptions: invocation.modelOptions,
+			TaskID:           invocation.taskID, Model: invocation.model,
+			Effort: invocation.effort, CWD: invocation.cwd,
+			InvocationBase: callerCWD,
+			ModelOptions:   invocation.modelOptions,
 		},
 	)
 	if runtimeErr != nil {
@@ -332,6 +665,7 @@ func runSessionExecution(
 
 func parseSessionInvocation(args []string) (sessionInvocation, error) {
 	value := sessionInvocation{retention: session.RetentionStandard}
+	seen := make(map[string]bool)
 	index := 0
 	for index < len(args) {
 		current := args[index]
@@ -340,49 +674,59 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 			index++
 			break
 		}
+		if seen[current] {
+			return value, fmt.Errorf("session option %s may only be used once", current)
+		}
+		seen[current] = true
 		switch current {
 		case "--session-id":
 			index++
-			if index >= len(args) {
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
 				return value, fmt.Errorf("--session-id requires value")
 			}
 			value.sessionID = args[index]
 		case "--task-id":
 			index++
-			if index >= len(args) {
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
 				return value, fmt.Errorf("--task-id requires value")
 			}
 			value.taskID = args[index]
 		case "--retention":
 			index++
-			if index >= len(args) {
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
 				return value, fmt.Errorf("--retention requires value")
 			}
 			value.retention = session.Retention(args[index])
-		case "--prompt-file":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--prompt-file requires value")
+			if err := validateSessionRetention(value.retention); err != nil {
+				return value, err
 			}
-			value.promptFile = args[index]
+		case "--model":
+			index++
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
+				return value, fmt.Errorf("--model requires value")
+			}
+			value.model = args[index]
+		case "--effort":
+			index++
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
+				return value, fmt.Errorf("--effort requires value")
+			}
+			if _, err := runtimecommand.ParseEffort(args[index]); err != nil {
+				return value, err
+			}
+			value.effort = args[index]
 		case "--cwd":
 			index++
-			if index >= len(args) {
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
 				return value, fmt.Errorf("--cwd requires value")
 			}
 			value.cwd = args[index]
-		case "--terminal-driver":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--terminal-driver requires value")
-			}
-			value.terminalDriver = args[index]
-		case "--command-arg":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--command-arg requires value")
-			}
-			value.commandArgs = append(value.commandArgs, args[index])
 		case "--max-completion-tokens", "--max-tokens":
 			if value.tokenLimitFlag != "" {
 				return value, fmt.Errorf(
@@ -392,7 +736,8 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 			}
 			value.tokenLimitFlag = current
 			index++
-			if index >= len(args) {
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
 				return value, fmt.Errorf("%s requires value", current)
 			}
 			tokenLimit, err := strconv.ParseInt(args[index], 10, 64)
@@ -402,11 +747,13 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 			value.modelOptions.MaxOutputTokens = &tokenLimit
 		case "--temperature":
 			index++
-			if index >= len(args) {
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
 				return value, fmt.Errorf("--temperature requires value")
 			}
 			current, err := strconv.ParseFloat(args[index], 64)
-			if err != nil || current < 0 || current > 2 {
+			if err != nil || math.IsNaN(current) || math.IsInf(current, 0) ||
+				current < 0 || current > 2 {
 				return value, fmt.Errorf("--temperature must be between 0 and 2")
 			}
 			value.modelOptions.Temperature = &current
@@ -421,30 +768,29 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 	if len(args[index:]) > 1 {
 		return value, fmt.Errorf("session input must be one quoted argument")
 	}
+	stdinInput, err := readDirectStdin()
+	if err != nil {
+		return value, err
+	}
+	var positionalInput string
 	if len(args[index:]) == 1 {
-		value.input = args[index]
+		positionalInput = args[index]
 	}
-	if value.promptFile != "" {
-		if value.input != "" {
-			return value, fmt.Errorf("--prompt-file and positional input are mutually exclusive")
-		}
-		input, err := readPromptFile(value.promptFile)
-		if err != nil {
-			return value, err
-		}
-		value.input = input
-	}
-	if value.input == "" {
-		input, err := readDirectStdin()
-		if err != nil {
-			return value, err
-		}
-		value.input = input
-	}
+	value.input = joinNonEmptyInput(stdinInput, positionalInput)
 	if strings.TrimSpace(value.input) == "" {
 		return value, fmt.Errorf("session input is required")
 	}
 	return value, nil
+}
+
+func joinNonEmptyInput(values ...string) string {
+	var fragments []string
+	for _, value := range values {
+		if value != "" {
+			fragments = append(fragments, value)
+		}
+	}
+	return strings.Join(fragments, "\n")
 }
 
 func validateSessionProfileOptions(
@@ -457,14 +803,29 @@ func validateSessionProfileOptions(
 	}
 	hasModelOptions := invocation.modelOptions.MaxOutputTokens != nil ||
 		invocation.modelOptions.Temperature != nil
-	if !hasModelOptions {
+	if entry.Kind == runtimeprofile.KindCommand {
+		if hasModelOptions {
+			return fmt.Errorf(
+				"API model request options are invalid for CLI profile %q",
+				invocation.profileID,
+			)
+		}
+		if invocation.effort != "" {
+			if _, err := runtimecommand.ParseEffort(invocation.effort); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
-	if entry.Kind != runtimeprofile.KindModel || entry.Model == nil {
+	if invocation.model != "" || invocation.effort != "" ||
+		invocation.cwd != "" {
 		return fmt.Errorf(
-			"model request options are invalid for command profile %q",
+			"--model, --effort, and --cwd are invalid for API profile %q",
 			invocation.profileID,
 		)
+	}
+	if !hasModelOptions {
+		return nil
 	}
 	if invocation.tokenLimitFlag == "" {
 		return nil
@@ -484,6 +845,16 @@ func submitSessionToolResult(
 	args []string,
 	output *cliOutput,
 ) error {
+	if err := validateManagementArgs(
+		args,
+		[]string{
+			"--session-id", "--turn-id", "--tool-call-id",
+			"--idempotency-key", "--content", "--content-file",
+		},
+		[]string{"--error"},
+	); err != nil {
+		return err
+	}
 	sessionID, err := requiredOption(args, "--session-id")
 	if err != nil {
 		return err
@@ -508,7 +879,8 @@ func submitSessionToolResult(
 	if err != nil {
 		return err
 	}
-	if content != "" && contentFile != "" {
+	if optionProvided(args, "--content") &&
+		optionProvided(args, "--content-file") {
 		return fmt.Errorf("--content and --content-file are mutually exclusive")
 	}
 	if contentFile != "" {
@@ -541,6 +913,11 @@ func exportSession(
 	args []string,
 	output *cliOutput,
 ) error {
+	if err := validateManagementArgs(
+		args, []string{"--session-id", "--output"}, nil,
+	); err != nil {
+		return err
+	}
 	sessionID, err := requiredOption(args, "--session-id")
 	if err != nil {
 		return err
@@ -561,79 +938,18 @@ func exportSession(
 	if err != nil {
 		return err
 	}
+	executions, err := service.Executions(sessionID)
+	if err != nil {
+		return err
+	}
 	if err := writeJSONFile(outputPath, map[string]any{
 		"schema_version": session.SchemaVersion,
 		"session":        sessionValue, "messages": messages, "events": events,
+		"executions": executions,
 	}); err != nil {
 		return err
 	}
 	return renderSessionExportResult(output, sessionID, outputPath)
-}
-
-func operateSessionCarrier(
-	service *session.Service,
-	action string,
-	args []string,
-	output *cliOutput,
-) error {
-	if action == "attach" && output.JSON() {
-		return fmt.Errorf("session attach does not support --json")
-	}
-	sessionID, err := requiredOption(args, "--session-id")
-	if err != nil {
-		return err
-	}
-	execution, err := service.LatestExecution(sessionID)
-	if err != nil {
-		return err
-	}
-	if execution.Transport != "tmux" || execution.LaunchHandle == "" {
-		return fmt.Errorf(
-			"session %s does not have a controllable tmux carrier", sessionID,
-		)
-	}
-	target := execution.LaunchHandle
-	sessionTarget := strings.SplitN(target, ":", 2)[0]
-	switch action {
-	case "attach":
-		path, err := exec.LookPath("tmux")
-		if err != nil {
-			return err
-		}
-		return syscall.Exec(path, []string{"tmux", "attach-session", "-t", sessionTarget}, os.Environ())
-	case "send":
-		input, err := carrierSendInput(args)
-		if err != nil {
-			return err
-		}
-		if input == "" {
-			return fmt.Errorf("session send requires input")
-		}
-		buffer := "sn-session-" + strconv.Itoa(os.Getpid())
-		for _, commandArgs := range [][]string{
-			{"set-buffer", "-b", buffer, "--", input},
-			{"paste-buffer", "-d", "-b", buffer, "-t", target},
-			{"send-keys", "-t", target, "Enter"},
-		} {
-			if output, err := exec.Command("tmux", commandArgs...).CombinedOutput(); err != nil {
-				return fmt.Errorf("tmux %s: %w: %s", commandArgs[0], err, strings.TrimSpace(string(output)))
-			}
-		}
-	case "interrupt":
-		if output, err := exec.Command("tmux", "send-keys", "-t", target, "C-c").CombinedOutput(); err != nil {
-			return fmt.Errorf("tmux interrupt: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-	case "stop":
-		if output, err := exec.Command("tmux", "kill-session", "-t", sessionTarget).CombinedOutput(); err != nil {
-			return fmt.Errorf("tmux stop: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-	}
-	if output.JSON() {
-		return output.writeJSON(map[string]any{
-			"session_id": sessionID, "action": action, "ok": true,
-		})
-	}
-	return output.line("Session %s: %s completed", sessionID, action)
 }
 
 func renderSessionExportResult(
@@ -686,37 +1002,10 @@ func renderSessionRunResult(
 			}
 		}
 	}
-	if result.LaunchHandle != "" {
-		if err := output.line("Carrier: %s", result.LaunchHandle); err != nil {
-			return err
-		}
-	}
 	return output.line(
 		"Session %s, turn %s: %s",
 		result.SessionID, result.TurnID, result.State,
 	)
-}
-
-func carrierSendInput(args []string) (string, error) {
-	var positional []string
-	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "--session-id":
-			index++
-			if index >= len(args) {
-				return "", fmt.Errorf("--session-id requires value")
-			}
-		default:
-			if strings.HasPrefix(args[index], "-") {
-				return "", fmt.Errorf("unknown session send option %s", args[index])
-			}
-			positional = append(positional, args[index])
-		}
-	}
-	if len(positional) != 1 {
-		return "", fmt.Errorf("session send requires one quoted input")
-	}
-	return positional[0], nil
 }
 
 func readPromptFile(path string) (string, error) {
@@ -779,6 +1068,44 @@ func requiredOption(args []string, name string) (string, error) {
 	return value, nil
 }
 
+func validateManagementArgs(
+	args []string,
+	valueOptions []string,
+	flagOptions []string,
+) error {
+	values := make(map[string]struct{}, len(valueOptions))
+	for _, name := range valueOptions {
+		values[name] = struct{}{}
+	}
+	flags := make(map[string]struct{}, len(flagOptions))
+	for _, name := range flagOptions {
+		flags[name] = struct{}{}
+	}
+	seen := make(map[string]bool, len(args))
+	for index := 0; index < len(args); index++ {
+		name := args[index]
+		if seen[name] {
+			return fmt.Errorf(
+				"option %s may only be used once", name,
+			)
+		}
+		if _, ok := flags[name]; ok {
+			seen[name] = true
+			continue
+		}
+		if _, ok := values[name]; !ok {
+			return fmt.Errorf("unknown option %s", name)
+		}
+		seen[name] = true
+		index++
+		if index >= len(args) ||
+			strings.HasPrefix(args[index], "--") {
+			return fmt.Errorf("%s requires value", name)
+		}
+	}
+	return nil
+}
+
 func optionString(args []string, name string) (string, error) {
 	for index, value := range args {
 		if value == name {
@@ -793,21 +1120,89 @@ func optionString(args []string, name string) (string, error) {
 
 func uintOption(args []string, name string, fallback uint64) (uint64, error) {
 	value, err := optionString(args, name)
-	if err != nil || value == "" {
+	if err != nil {
 		return fallback, err
+	}
+	if value == "" {
+		if optionProvided(args, name) {
+			return 0, fmt.Errorf("%s requires value", name)
+		}
+		return fallback, nil
 	}
 	return strconv.ParseUint(value, 10, 64)
 }
 
 func intOptionValue(args []string, name string, fallback int) (int, error) {
 	value, err := optionString(args, name)
-	if err != nil || value == "" {
+	if err != nil {
 		return fallback, err
 	}
-	return strconv.Atoi(value)
+	if value == "" {
+		if optionProvided(args, name) {
+			return 0, fmt.Errorf("%s requires value", name)
+		}
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+func boundedIntOptionValue(
+	args []string,
+	name string,
+	fallback int,
+	maximum int,
+) (int, error) {
+	value, err := intOptionValue(args, name, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if value > maximum {
+		return 0, fmt.Errorf(
+			"%s must be between 1 and %d", name, maximum,
+		)
+	}
+	return value, nil
+}
+
+func durationHoursOption(
+	args []string,
+	name string,
+	fallback time.Duration,
+) (time.Duration, error) {
+	value, err := optionString(args, name)
+	if err != nil {
+		return fallback, err
+	}
+	if value == "" {
+		if optionProvided(args, name) {
+			return 0, fmt.Errorf("%s requires value", name)
+		}
+		return fallback, nil
+	}
+	hours, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || hours == 0 {
+		return 0, fmt.Errorf(
+			"%s must be a positive integer that fits a duration", name,
+		)
+	}
+	duration, err := time.ParseDuration(value + "h")
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf(
+			"%s must be a positive integer that fits a duration", name,
+		)
+	}
+	return duration, nil
 }
 
 func hasFlag(args []string, name string) bool {
+	return optionProvided(args, name)
+}
+
+func optionProvided(args []string, name string) bool {
 	for _, value := range args {
 		if value == name {
 			return true

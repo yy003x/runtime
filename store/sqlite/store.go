@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	schemaVersion   = 1
+	schemaVersion   = 2
 	maxPayloadBytes = 4 << 20
 )
 
@@ -60,6 +60,22 @@ func Open(path string, options Options) (*Store, error) {
 			return nil, fmt.Errorf("%s: %w", statement, err)
 		}
 	}
+	var existingVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&existingVersion); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if existingVersion != 0 && existingVersion != schemaVersion {
+		db.Close()
+		return nil, fmt.Errorf(
+			"unsupported Runtime database schema %d; expected %d",
+			existingVersion, schemaVersion,
+		)
+	}
+	if err := quickCheck(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	var journalMode string
 	if err := db.QueryRow("PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
 		db.Close()
@@ -73,6 +89,14 @@ func Open(path string, options Options) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := validateRunRows(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("restrict SQLite permissions: %w", err)
+	}
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -83,6 +107,32 @@ func Open(path string, options Options) (*Store, error) {
 		return nil, fmt.Errorf("reconcile SQLite Run Store: %w", err)
 	}
 	return store, nil
+}
+
+func quickCheck(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA quick_check")
+	if err != nil {
+		return fmt.Errorf("check Runtime database integrity: %w", err)
+	}
+	defer rows.Close()
+	var results []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return fmt.Errorf("check Runtime database integrity: %w", err)
+		}
+		results = append(results, value)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("check Runtime database integrity: %w", err)
+	}
+	if len(results) != 1 || !strings.EqualFold(results[0], "ok") {
+		return fmt.Errorf(
+			"Runtime database integrity check failed: %s",
+			strings.Join(results, "; "),
+		)
+	}
+	return nil
 }
 
 func migrate(db *sql.DB) error {
@@ -108,8 +158,10 @@ func migrate(db *sql.DB) error {
 		`CREATE TABLE runs (
 			run_id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
+			session_id TEXT,
 			state TEXT NOT NULL,
 			request_json BLOB NOT NULL,
+			private_request_json BLOB,
 			result_json BLOB,
 			error_json BLOB,
 			pause_json BLOB,
@@ -120,6 +172,11 @@ func migrate(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX runs_state_created ON runs(state, created_at)`,
+		`CREATE UNIQUE INDEX runs_one_open_session
+		   ON runs(session_id)
+		 WHERE kind = 'session'
+		   AND session_id IS NOT NULL
+		   AND state IN ('queued', 'running', 'paused', 'needs_reconciliation')`,
 		`CREATE TABLE events (
 			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
 			sequence INTEGER NOT NULL,
@@ -174,6 +231,77 @@ func migrate(db *sql.DB) error {
 	return tx.Commit()
 }
 
+func validateRunRows(db *sql.DB) error {
+	rows, err := db.Query(
+		`SELECT run_id, kind, session_id, state, request_json,
+		        private_request_json, settled_sequence
+		   FROM runs`,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var runID string
+		var kind runtime.Kind
+		var sessionID sql.NullString
+		var state runtime.State
+		var requestJSON, privateJSON []byte
+		var settledSequence uint64
+		if err := rows.Scan(
+			&runID, &kind, &sessionID, &state, &requestJSON,
+			&privateJSON, &settledSequence,
+		); err != nil {
+			return err
+		}
+		if err := identity.Validate(runID, "run"); err != nil {
+			return fmt.Errorf("Runtime database has invalid run_id: %w", err)
+		}
+		switch kind {
+		case runtime.KindAgent, runtime.KindSession:
+		default:
+			return fmt.Errorf(
+				"run %s has unsupported kind %q", runID, kind,
+			)
+		}
+		switch state {
+		case runtime.StateQueued, runtime.StateRunning, runtime.StatePaused,
+			runtime.StateNeedsReconciliation:
+			if settledSequence != 0 {
+				return fmt.Errorf(
+					"nonterminal run %s has settled_sequence=%d",
+					runID, settledSequence,
+				)
+			}
+		case runtime.StateCompleted, runtime.StateFailed, runtime.StateCancelled:
+			if settledSequence == 0 {
+				return fmt.Errorf(
+					"terminal run %s has no settled_sequence", runID,
+				)
+			}
+		default:
+			return fmt.Errorf(
+				"run %s has unsupported state %q", runID, state,
+			)
+		}
+		var request runtime.Request
+		if err := decodeStrict(requestJSON, &request); err != nil {
+			return fmt.Errorf("run %s request: %w", runID, err)
+		}
+		if request.Kind != kind ||
+			request.SessionID != sessionID.String {
+			return fmt.Errorf(
+				"run %s request identity does not match indexed columns",
+				runID,
+			)
+		}
+		if _, err := marshalPrivateRequest(privateJSON); err != nil {
+			return fmt.Errorf("run %s private request: %w", runID, err)
+		}
+	}
+	return rows.Err()
+}
+
 func (store *Store) Create(
 	ctx context.Context,
 	runID string,
@@ -186,20 +314,56 @@ func (store *Store) Create(
 	if err != nil {
 		return runtime.Record{}, err
 	}
+	privateRequestJSON, err := marshalPrivateRequest(request.PrivateRequest)
+	if err != nil {
+		return runtime.Record{}, err
+	}
 	now := store.now().UTC()
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return runtime.Record{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
+	if request.Kind == runtime.KindSession {
+		var existing string
+		err := tx.QueryRowContext(
+			ctx,
+			`SELECT run_id
+			   FROM runs
+			  WHERE kind = ? AND session_id = ?
+			    AND state IN (?, ?, ?, ?)
+			  LIMIT 1`,
+			runtime.KindSession, request.SessionID,
+			runtime.StateQueued, runtime.StateRunning, runtime.StatePaused,
+			runtime.StateNeedsReconciliation,
+		).Scan(&existing)
+		if err == nil {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: session %s is owned by run %s",
+				runtime.ErrSessionRunOpen, request.SessionID, existing,
+			)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return runtime.Record{}, err
+		}
+	}
 	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO runs (
-			run_id, kind, state, request_json, retry_of, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		runID, request.Kind, runtime.StateQueued, requestJSON,
+			run_id, kind, session_id, state, request_json,
+			private_request_json, retry_of, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, request.Kind, nullString(request.SessionID),
+		runtime.StateQueued, requestJSON, nullableBytes(privateRequestJSON),
 		nullString(request.RetryOf), formatTime(now), formatTime(now),
 	); err != nil {
+		if request.Kind == runtime.KindSession &&
+			strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: session %s",
+				runtime.ErrSessionRunOpen, request.SessionID,
+			)
+		}
 		return runtime.Record{}, err
 	}
 	if _, err := tx.ExecContext(
@@ -230,6 +394,27 @@ func (store *Store) Get(
 		   FROM runs WHERE run_id = ?`,
 		runID,
 	))
+}
+
+func (store *Store) PrivateRequest(
+	ctx context.Context,
+	runID string,
+) (json.RawMessage, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return nil, err
+	}
+	var value []byte
+	if err := store.db.QueryRowContext(
+		ctx,
+		`SELECT private_request_json FROM runs WHERE run_id = ?`,
+		runID,
+	).Scan(&value); err != nil {
+		return nil, err
+	}
+	if _, err := marshalPrivateRequest(value); err != nil {
+		return nil, err
+	}
+	return cloneBytes(value), nil
 }
 
 func (store *Store) List(
@@ -720,7 +905,8 @@ func (store *Store) Settle(
 		return runtime.Record{}, fmt.Errorf("run %s is already settled", runID)
 	}
 	if current != runtime.StateRunning && current != runtime.StateQueued &&
-		current != runtime.StatePaused {
+		current != runtime.StatePaused &&
+		current != runtime.StateNeedsReconciliation {
 		return runtime.Record{}, fmt.Errorf(
 			"run %s in state %s cannot settle as %s", runID, current, state,
 		)
@@ -894,19 +1080,23 @@ func (store *Store) Reconcile(ctx context.Context) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	rows, err := tx.QueryContext(
-		ctx, `SELECT run_id FROM runs WHERE state = ?`, runtime.StateRunning,
+		ctx, `SELECT run_id, kind FROM runs WHERE state = ?`, runtime.StateRunning,
 	)
 	if err != nil {
 		return err
 	}
-	var runIDs []string
+	type runningRun struct {
+		id   string
+		kind runtime.Kind
+	}
+	var running []runningRun
 	for rows.Next() {
-		var runID string
-		if err := rows.Scan(&runID); err != nil {
+		var value runningRun
+		if err := rows.Scan(&value.id, &value.kind); err != nil {
 			rows.Close()
 			return err
 		}
-		runIDs = append(runIDs, runID)
+		running = append(running, value)
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -915,7 +1105,33 @@ func (store *Store) Reconcile(ctx context.Context) error {
 		return err
 	}
 	now := formatTime(store.now().UTC())
-	for _, runID := range runIDs {
+	for _, current := range running {
+		runID := current.id
+		if current.kind == runtime.KindSession {
+			runtimeErr := &contract.RuntimeError{
+				Code: contract.ErrorConflict, Phase: contract.PhaseRun,
+				Message: "Session execution outcome is unknown after process restart",
+			}
+			errorJSON, err := marshalNullable(runtimeErr)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(
+				ctx,
+				`UPDATE runs
+				    SET state = ?, error_json = ?, updated_at = ?
+				  WHERE run_id = ?`,
+				runtime.StateNeedsReconciliation, errorJSON, now, runID,
+			); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(
+				ctx, `DELETE FROM queue WHERE run_id = ?`, runID,
+			); err != nil {
+				return err
+			}
+			continue
+		}
 		var started int
 		if err := tx.QueryRowContext(
 			ctx,
@@ -1176,6 +1392,22 @@ func marshalNullable(value any) ([]byte, error) {
 		return nil, nil
 	}
 	return marshalPayload(value)
+}
+
+func marshalPrivateRequest(value json.RawMessage) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	if len(value) > runtime.MaxPrivateRequestBytes {
+		return nil, fmt.Errorf(
+			"private request exceeds %d bytes",
+			runtime.MaxPrivateRequestBytes,
+		)
+	}
+	if !json.Valid(value) {
+		return nil, fmt.Errorf("private request is not valid JSON")
+	}
+	return cloneBytes(value), nil
 }
 
 func decodeStrict(data []byte, value any) error {

@@ -135,6 +135,12 @@ func (handler *RuntimeHandler) serveSessions(
 		return
 	}
 	sessionID := path[0]
+	if len(path) == 1 && strings.HasSuffix(sessionID, ":reconcile") {
+		handler.reconcileSession(
+			writer, request, strings.TrimSuffix(sessionID, ":reconcile"),
+		)
+		return
+	}
 	if len(path) == 1 {
 		if request.Method != nethttp.MethodGet {
 			methodNotAllowed(writer, nethttp.MethodGet)
@@ -179,6 +185,33 @@ func (handler *RuntimeHandler) serveSessions(
 			return
 		}
 		writeJSON(writer, nethttp.StatusOK, map[string]any{"events": values})
+	case "executions":
+		if request.Method != nethttp.MethodGet {
+			methodNotAllowed(writer, nethttp.MethodGet)
+			return
+		}
+		if len(path) == 2 {
+			values, err := handler.sessions.Executions(sessionID)
+			if err != nil {
+				writeInternalError(writer, err)
+				return
+			}
+			writeJSON(
+				writer, nethttp.StatusOK,
+				map[string]any{"executions": values},
+			)
+			return
+		}
+		if len(path) == 3 {
+			value, err := handler.sessions.Execution(sessionID, path[2])
+			if err != nil {
+				writeError(writer, nethttp.StatusNotFound, requestError(err))
+				return
+			}
+			writeJSON(writer, nethttp.StatusOK, value)
+			return
+		}
+		nethttp.NotFound(writer, request)
 	case "watch":
 		handler.watchSession(writer, request, sessionID)
 	case "turns":
@@ -209,6 +242,9 @@ func (handler *RuntimeHandler) createSessionTurn(
 		ProfileID    string                   `json:"profile_id"`
 		Input        string                   `json:"input"`
 		TaskID       string                   `json:"task_id,omitempty"`
+		Model        string                   `json:"model,omitempty"`
+		Effort       string                   `json:"effort,omitempty"`
+		CWD          string                   `json:"cwd,omitempty"`
 		ModelOptions contract.GenerateOptions `json:"model_options,omitempty"`
 	}
 	if !decodeJSONRequest(writer, request, &input) {
@@ -219,6 +255,7 @@ func (handler *RuntimeHandler) createSessionTurn(
 		session.RunRequest{
 			SessionID: sessionID, TaskID: input.TaskID,
 			ProfileID: input.ProfileID, Input: input.Input,
+			Model: input.Model, Effort: input.Effort, CWD: input.CWD,
 			ModelOptions: input.ModelOptions,
 		},
 	)
@@ -227,6 +264,29 @@ func (handler *RuntimeHandler) createSessionTurn(
 		return
 	}
 	writeJSON(writer, nethttp.StatusOK, result)
+}
+
+func (handler *RuntimeHandler) reconcileSession(
+	writer nethttp.ResponseWriter,
+	request *nethttp.Request,
+	sessionID string,
+) {
+	if request.Method != nethttp.MethodPost {
+		methodNotAllowed(writer, nethttp.MethodPost)
+		return
+	}
+	var input session.ReconcileOptions
+	if !decodeJSONRequest(writer, request, &input) {
+		return
+	}
+	value, runtimeErr := handler.sessions.Reconcile(
+		request.Context(), sessionID, input,
+	)
+	if runtimeErr != nil {
+		writeError(writer, statusForError(runtimeErr), runtimeErr)
+		return
+	}
+	writeJSON(writer, nethttp.StatusOK, value)
 }
 
 func (handler *RuntimeHandler) submitToolResult(
@@ -400,12 +460,18 @@ func (handler *RuntimeHandler) serveRuns(
 		return
 	}
 	runID := path[0]
-	if strings.HasSuffix(runID, ":cancel") {
+	if len(path) == 1 && strings.HasSuffix(runID, ":cancel") {
 		handler.cancelRun(writer, request, strings.TrimSuffix(runID, ":cancel"))
 		return
 	}
-	if strings.HasSuffix(runID, ":resume") {
+	if len(path) == 1 && strings.HasSuffix(runID, ":resume") {
 		handler.resumeRun(writer, request, strings.TrimSuffix(runID, ":resume"))
+		return
+	}
+	if len(path) == 1 && strings.HasSuffix(runID, ":reconcile") {
+		handler.reconcileRun(
+			writer, request, strings.TrimSuffix(runID, ":reconcile"),
+		)
 		return
 	}
 	if len(path) == 1 {
@@ -452,13 +518,17 @@ func (handler *RuntimeHandler) submitRun(
 	request *nethttp.Request,
 ) {
 	var input struct {
-		Kind      runtime.Kind      `json:"kind"`
-		ProfileID string            `json:"profile_id"`
-		Input     string            `json:"input"`
-		SessionID string            `json:"session_id,omitempty"`
-		TaskID    string            `json:"task_id,omitempty"`
-		Labels    map[string]string `json:"labels,omitempty"`
-		Budget    agent.Budget      `json:"budget,omitempty"`
+		Kind         runtime.Kind             `json:"kind"`
+		ProfileID    string                   `json:"profile_id"`
+		Input        string                   `json:"input"`
+		SessionID    string                   `json:"session_id,omitempty"`
+		TaskID       string                   `json:"task_id,omitempty"`
+		Model        string                   `json:"model,omitempty"`
+		Effort       string                   `json:"effort,omitempty"`
+		CWD          string                   `json:"cwd,omitempty"`
+		ModelOptions contract.GenerateOptions `json:"model_options,omitempty"`
+		Labels       map[string]string        `json:"labels,omitempty"`
+		Budget       agent.Budget             `json:"budget,omitempty"`
 	}
 	if !decodeJSONRequest(writer, request, &input) {
 		return
@@ -474,7 +544,9 @@ func (handler *RuntimeHandler) submitRun(
 	runRequest := runtime.Request{
 		Kind: input.Kind, ProfileID: input.ProfileID, Input: input.Input,
 		SessionID: input.SessionID, TaskID: input.TaskID,
-		Labels: input.Labels, AgentBudget: input.Budget,
+		Model: input.Model, Effort: input.Effort, CWD: input.CWD,
+		ModelOptions: input.ModelOptions,
+		Labels:       input.Labels, AgentBudget: input.Budget,
 	}
 	if input.Kind == runtime.KindAgent && emptyBudget(runRequest.AgentBudget) {
 		runRequest.AgentBudget = handler.agentBudget
@@ -485,6 +557,29 @@ func (handler *RuntimeHandler) submitRun(
 		return
 	}
 	writeJSON(writer, nethttp.StatusAccepted, record)
+}
+
+func (handler *RuntimeHandler) reconcileRun(
+	writer nethttp.ResponseWriter,
+	request *nethttp.Request,
+	runID string,
+) {
+	if request.Method != nethttp.MethodPost {
+		methodNotAllowed(writer, nethttp.MethodPost)
+		return
+	}
+	var input struct{}
+	if !decodeJSONRequest(writer, request, &input) {
+		return
+	}
+	value, runtimeErr := handler.runs.ReconcileRun(
+		request.Context(), runID,
+	)
+	if runtimeErr != nil {
+		writeError(writer, statusForError(runtimeErr), runtimeErr)
+		return
+	}
+	writeJSON(writer, nethttp.StatusOK, value)
 }
 
 func (handler *RuntimeHandler) gcRuns(

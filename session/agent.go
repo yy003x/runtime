@@ -41,6 +41,11 @@ func (service *Service) PrepareAgent(
 			"agent Session requires session_id and run_id",
 		)
 	}
+	prepared, runtimeErr := service.prepareRunRequest(request, entry)
+	if runtimeErr != nil {
+		return AgentTurn{}, runtimeErr
+	}
+	request = prepared
 	existing, found, runtimeErr := service.findAgentTurn(
 		request.SessionID, request.RunID, resuming,
 	)
@@ -53,6 +58,11 @@ func (service *Service) PrepareAgent(
 	}
 	started, runtimeErr := service.begin(ids, request, entry)
 	if runtimeErr != nil {
+		return AgentTurn{}, runtimeErr
+	}
+	if err := service.markExecutionRunning(ids); err != nil {
+		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
+		service.finishFailure(ids, runtimeErr)
 		return AgentTurn{}, runtimeErr
 	}
 	return AgentTurn{
@@ -123,7 +133,7 @@ func (service *Service) findAgentTurn(
 				Messages:         messages,
 			}
 			switch turn.State {
-			case TurnCompleted, TurnFailed, TurnCancelled, TurnSubmitted:
+			case TurnCompleted, TurnFailed, TurnCancelled:
 				existing := service.resultFromTurn(turn, lastAssistant)
 				result.ExistingResult = &existing
 			case TurnRequiresAction:
@@ -274,13 +284,20 @@ func (service *Service) SettleAgent(
 		}); err != nil {
 			return err
 		}
-		execution := Execution{
-			SchemaVersion: SchemaVersion, ID: turn.ExecutionID,
-			SessionID: turn.SessionID, TurnID: turn.TurnID, RunID: turn.RunID,
-			ProfileID: turn.ProfileID, ProfileKind: profile.KindModel,
-			Transport: "http", State: turnValue.State,
-			CaptureQuality: CaptureStructured,
-			CreatedAt:      turnValue.CreatedAt, UpdatedAt: now,
+		execution, err := service.store.loadExecution(
+			turn.SessionID, turn.ExecutionID,
+		)
+		if err != nil {
+			return err
+		}
+		execution.State = ExecutionSettled
+		execution.Outcome = OutcomeCompleted
+		execution.Error = runtimeErr
+		execution.UpdatedAt = now
+		if turnValue.State == TurnFailed {
+			execution.Outcome = OutcomeFailed
+		} else if turnValue.State == TurnCancelled {
+			execution.Outcome = OutcomeCancelled
 		}
 		if err := service.store.writeExecution(execution); err != nil {
 			return err

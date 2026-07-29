@@ -39,6 +39,14 @@ func (executor *AgentExecutor) Validate(request Request) error {
 			request.ProfileID,
 		)
 	}
+	if request.Model != "" || request.Effort != "" ||
+		len(request.PrivateRequest) != 0 ||
+		request.ModelOptions.MaxOutputTokens != nil ||
+		request.ModelOptions.Temperature != nil {
+		return fmt.Errorf(
+			"model, effort, model_options, and private CLI request are invalid for agent runs",
+		)
+	}
 	if request.SessionID != "" && executor.Sessions == nil {
 		return fmt.Errorf("agent Session service is unavailable")
 	}

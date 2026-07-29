@@ -173,6 +173,8 @@ func statusForError(runtimeErr *contract.RuntimeError) int {
 	switch runtimeErr.Code {
 	case contract.ErrorInvalidRequest:
 		return nethttp.StatusBadRequest
+	case contract.ErrorContextOverflow:
+		return nethttp.StatusRequestEntityTooLarge
 	case contract.ErrorAuthenticationFailed:
 		return nethttp.StatusUnauthorized
 	case contract.ErrorPermissionDenied:
@@ -183,6 +185,8 @@ func statusForError(runtimeErr *contract.RuntimeError) int {
 		return nethttp.StatusGatewayTimeout
 	case contract.ErrorProviderUnavailable:
 		return nethttp.StatusServiceUnavailable
+	case contract.ErrorInvalidProviderResponse, contract.ErrorProtocol:
+		return nethttp.StatusBadGateway
 	case contract.ErrorConflict:
 		return nethttp.StatusConflict
 	case contract.ErrorCancelled:

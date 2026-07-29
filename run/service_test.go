@@ -194,6 +194,37 @@ func TestExecutorValidationRunsBeforeStoreMutation(t *testing.T) {
 	}
 }
 
+func TestReconcileRunIsIdempotentForTerminalRecord(t *testing.T) {
+	service := newRunService(t, fakeExecutor{
+		outcome: runtime.ExecutionOutcome{
+			State:  runtime.StateCompleted,
+			Result: json.RawMessage(`{"ok":true}`),
+		},
+	})
+	record, runtimeErr := service.RunNow(
+		context.Background(),
+		runtime.Request{
+			Kind: runtime.KindSession, ProfileID: "api", Input: "hello",
+			SessionID: "session_33333333333333333333333333333333",
+		},
+		nil,
+	)
+	if runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	repeated, runtimeErr := service.ReconcileRun(
+		context.Background(), record.ID,
+	)
+	if runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	if repeated.ID != record.ID ||
+		repeated.State != runtime.StateCompleted ||
+		repeated.SettledSequence != record.SettledSequence {
+		t.Fatalf("repeated=%#v record=%#v", repeated, record)
+	}
+}
+
 func newRunService(t *testing.T, executor runtime.Executor) *runtime.Service {
 	t.Helper()
 	store, err := sqlitestore.Open(
@@ -205,7 +236,7 @@ func newRunService(t *testing.T, executor runtime.Executor) *runtime.Service {
 	service, err := runtime.NewService(runtime.ServiceOptions{
 		Store: store,
 		Executors: map[runtime.Kind]runtime.Executor{
-			runtime.KindAgent: executor,
+			runtime.KindAgent: executor, runtime.KindSession: executor,
 		},
 	})
 	if err != nil {
