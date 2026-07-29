@@ -19,7 +19,7 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(configDir, "cx.json"),
-		[]byte(`{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual"}`),
+		[]byte(`{"type":"cli","command":"codex","model":"fixture"}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -51,6 +51,33 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 }
 
+func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(
+		filepath.Join(workingDirectory, "..", "configs", "*.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 10 {
+		t.Fatalf("source profile count=%d", len(files))
+	}
+	for _, file := range files {
+		kind, cliProfile, _, err := loadFile(file)
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		if kind == KindCommand {
+			if err := command.CheckProfile(cliProfile); err != nil {
+				t.Fatalf("%s: %v", file, err)
+			}
+		}
+	}
+}
+
 func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 	for _, testCase := range []struct {
 		name      string
@@ -60,22 +87,27 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 	}{
 		{
 			name: "missing_type", fileName: "cx.json",
-			content:   `{"binary":"codex","transport":"tty","prompt_delivery":"manual"}`,
+			content:   `{"command":"codex"}`,
 			errorText: "type is required",
 		},
 		{
 			name: "invalid_type", fileName: "cx.json",
-			content:   `{"type":"other","binary":"codex","transport":"tty","prompt_delivery":"manual"}`,
+			content:   `{"type":"other","command":"codex"}`,
 			errorText: "type must be",
 		},
 		{
 			name: "cross_domain_field", fileName: "cx.json",
-			content:   `{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual","endpoint":"https://example.invalid/v1"}`,
+			content:   `{"type":"cli","command":"codex","endpoint":"https://example.invalid/v1"}`,
+			errorText: "unknown field",
+		},
+		{
+			name: "legacy_cli_fields", fileName: "cx.json",
+			content:   `{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual"}`,
 			errorText: "unknown field",
 		},
 		{
 			name: "reserved", fileName: "show.json",
-			content:   `{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual"}`,
+			content:   `{"type":"cli","command":"codex"}`,
 			errorText: "reserved profile ID",
 		},
 		{
@@ -125,7 +157,7 @@ func TestLoadSubcommandsMapsOnlyDeclaredNames(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(configDir, "commit.json"),
-		[]byte(`{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"argv"}`),
+		[]byte(`{"type":"cli","command":"codex","exec":true}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -178,10 +210,6 @@ func TestLoadSubcommandsRejectsMissingProfileAndFixedNamespace(t *testing.T) {
 			name: "api_profile", fileName: "api.json",
 			content: `{"profile":"api-cx"}`, errorText: "type=cli",
 		},
-		{
-			name: "non_tty_profile", fileName: "detached.json",
-			content: `{"profile":"detached"}`, errorText: "transport=tty",
-		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			directory := t.TempDir()
@@ -221,12 +249,7 @@ func testCatalogs(t *testing.T) (*command.Catalog, *model.Catalog) {
 	t.Helper()
 	commands, err := command.NewCatalog(map[string]command.Profile{
 		"cx": {
-			Binary: "codex", Transport: command.TransportTTY,
-			PromptDelivery: command.PromptManual,
-		},
-		"detached": {
-			Binary: "codex", Transport: command.TransportTmux,
-			PromptDelivery: command.PromptManual,
+			Command: "codex", Model: "fixture",
 		},
 	})
 	if err != nil {

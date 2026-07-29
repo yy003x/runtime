@@ -161,16 +161,19 @@ func TestCommandProfileGolden(t *testing.T) {
 	t.Run("json_preserves_native_shortcut_and_profile_boundary", func(t *testing.T) {
 		nativeArgs := []string{"--native-flag", "native value", "--json"}
 		for _, test := range []struct {
-			name string
-			args []string
+			name           string
+			args           []string
+			targetExecutes bool
 		}{
 			{
-				name: "shortcut_trailing_json",
-				args: append([]string{"cx"}, nativeArgs...),
+				name:           "shortcut_trailing_json",
+				args:           append([]string{"cx"}, nativeArgs...),
+				targetExecutes: true,
 			},
 			{
-				name: "shortcut_leading_global_json",
-				args: append([]string{"--json", "cx"}, nativeArgs...),
+				name:           "shortcut_leading_global_json",
+				args:           append([]string{"--json", "cx"}, nativeArgs...),
+				targetExecutes: true,
 			},
 			{
 				name: "profile_trailing_json",
@@ -200,6 +203,21 @@ func TestCommandProfileGolden(t *testing.T) {
 				command.Stdout = &stdout
 				command.Stderr = &stderr
 				err := command.Run()
+				if !test.targetExecutes {
+					var exitError *exec.ExitError
+					if !errors.As(err, &exitError) ||
+						exitError.ExitCode() != 1 ||
+						!strings.Contains(stderr.String(), "invalid_request") {
+						t.Fatalf(
+							"typed profile error=%v stdout=%q stderr=%q",
+							err, stdout.String(), stderr.String(),
+						)
+					}
+					if _, statErr := os.Stat(capturePath); !os.IsNotExist(statErr) {
+						t.Fatalf("target unexpectedly executed: %v", statErr)
+					}
+					return
+				}
 				var exitError *exec.ExitError
 				if !errors.As(err, &exitError) ||
 					exitError.ExitCode() != 23 {
@@ -368,10 +386,8 @@ func TestCommandProfileGolden(t *testing.T) {
 	t.Run("profile_env_can_unset_inherited_value", func(t *testing.T) {
 		configPath := filepath.Join(harness.home, "configs", "env-unset.json")
 		config := map[string]any{
-			"type":            "cli",
-			"binary":          "codex",
-			"transport":       "tty",
-			"prompt_delivery": "manual",
+			"type":    "cli",
+			"command": "codex",
 			"env": map[string]any{
 				"RUNTIME_GOLDEN_REMOVE_ME": nil,
 			},

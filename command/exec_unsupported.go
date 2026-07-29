@@ -7,10 +7,14 @@ import (
 	"runtime"
 )
 
-func replaceProcess(Invocation) error {
-	return fmt.Errorf("command bridge is unsupported on %s", runtime.GOOS)
-}
+type StdinMode string
 
-func replaceProcessWithInput(Invocation, string) error {
+const (
+	StdinInherit StdinMode = "inherit"
+	StdinTTY     StdinMode = "tty"
+	StdinNull    StdinMode = "null"
+)
+
+func ReplaceProcess(Invocation, StdinMode) error {
 	return fmt.Errorf("command bridge is unsupported on %s", runtime.GOOS)
 }

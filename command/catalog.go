@@ -2,10 +2,7 @@ package command
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/yy003x/runtime/internal/profileid"
 )
@@ -27,46 +24,12 @@ func NewCatalog(values map[string]Profile, reservedIDs ...string) (*Catalog, err
 		if _, exists := reserved[id]; exists {
 			return nil, fmt.Errorf("command profile %q conflicts with a fixed namespace", id)
 		}
-		if err := profile.Validate(); err != nil {
+		if err := CheckProfile(profile); err != nil {
 			return nil, fmt.Errorf("command profile %q: %w", id, err)
 		}
 		profiles[id] = cloneProfile(profile)
 	}
 	return &Catalog{profiles: profiles}, nil
-}
-
-func LoadDir(path string, reservedIDs ...string) (*Catalog, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, fmt.Errorf("inspect command profile directory: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("command profile path must be a directory, not a symlink")
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("read command profile directory: %w", err)
-	}
-	sort.Slice(entries, func(left, right int) bool {
-		return entries[left].Name() < entries[right].Name()
-	})
-	values := make(map[string]Profile, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(name) != ".json" {
-			return nil, fmt.Errorf("command profile directory contains unsupported entry %q", name)
-		}
-		id := strings.TrimSuffix(name, ".json")
-		if err := profileid.Validate(id); err != nil {
-			return nil, fmt.Errorf("command profile file %q: %w", name, err)
-		}
-		profile, err := LoadFile(filepath.Join(path, name))
-		if err != nil {
-			return nil, err
-		}
-		values[id] = profile
-	}
-	return NewCatalog(values, reservedIDs...)
 }
 
 func (catalog *Catalog) Get(id string) (Profile, bool) {
@@ -94,11 +57,13 @@ func (catalog *Catalog) IDs() []string {
 
 func cloneProfile(profile Profile) Profile {
 	result := Profile{
-		Binary:         profile.Binary,
-		Args:           append([]string(nil), profile.Args...),
-		Transport:      profile.Transport,
-		PromptDelivery: profile.PromptDelivery,
-		EffortAdapter:  profile.EffortAdapter,
+		Command: profile.Command,
+		Args:    append([]string(nil), profile.Args...),
+		Model:   profile.Model,
+		Effort:  profile.Effort,
+		Prompt:  profile.Prompt,
+		Exec:    profile.Exec,
+		CWD:     profile.CWD,
 	}
 	if profile.Env != nil {
 		result.Env = make(map[string]*string, len(profile.Env))

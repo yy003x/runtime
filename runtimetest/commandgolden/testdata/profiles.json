@@ -11,17 +11,17 @@
         "--ask-for-approval",
         "never",
         "-c",
-        "model_reasoning_effort=xhigh",
-        "-c",
         "model_verbosity=high",
+        "--model",
+        "gpt-5.3-codex-spark",
+        "-c",
+        "model_reasoning_effort=xhigh",
         "exec",
         "--skip-git-repo-check",
         "--ignore-user-config",
-        "--ephemeral",
         "--color",
         "never",
-        "--model",
-        "gpt-5.3-codex-spark"
+        "--ephemeral"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-ait"
@@ -30,10 +30,10 @@
     {
       "id": "cx",
       "argv": [
-        "-c",
-        "model_reasoning_effort=xhigh",
         "--model",
-        "gpt-5.6-sol"
+        "gpt-5.6-sol",
+        "-c",
+        "model_reasoning_effort=xhigh"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-aip"
@@ -42,11 +42,12 @@
     {
       "id": "cc",
       "argv": [
-        "--dangerously-skip-permissions"
+        "--dangerously-skip-permissions",
+        "--model",
+        "claude-fable-5"
       ],
       "env": {
         "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn",
-        "ANTHROPIC_MODEL": "claude-fable-5",
         "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip"
       }
     },
@@ -54,21 +55,21 @@
       "id": "cx-adv",
       "argv": [
         "-c",
-        "model_reasoning_effort=max",
-        "-c",
         "model_verbosity=high",
         "-c",
         "sandbox_mode=danger-full-access",
         "-c",
         "approval_policy=never",
+        "--model",
+        "gpt-5.6-terra",
+        "-c",
+        "model_reasoning_effort=max",
         "exec",
         "--skip-git-repo-check",
         "--ignore-user-config",
-        "--ephemeral",
         "--color",
         "never",
-        "--model",
-        "gpt-5.6-terra"
+        "--ephemeral"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-ait"
@@ -82,16 +83,16 @@
         "danger-full-access",
         "--ask-for-approval",
         "never",
+        "--model",
+        "gpt-5.6-sol",
         "-c",
         "model_reasoning_effort=max",
         "exec",
         "--skip-git-repo-check",
         "--ignore-user-config",
-        "--ephemeral",
         "--color",
         "never",
-        "--model",
-        "gpt-5.6-sol"
+        "--ephemeral"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-ait"
@@ -100,18 +101,18 @@
     {
       "id": "cx-image",
       "argv": [
+        "--image",
+        "${IMAGE_PATH}",
+        "--model",
+        "gpt-5.6-sol",
         "-c",
         "model_reasoning_effort=xhigh",
         "exec",
         "--skip-git-repo-check",
         "--ignore-user-config",
-        "--ephemeral",
         "--color",
         "never",
-        "--image",
-        "${IMAGE_PATH}",
-        "--model",
-        "gpt-5.6-sol"
+        "--ephemeral"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-aip"
@@ -124,16 +125,16 @@
         "read-only",
         "--ask-for-approval",
         "never",
+        "--model",
+        "gpt-5.3-codex-spark",
         "-c",
         "model_reasoning_effort=xhigh",
         "exec",
         "--skip-git-repo-check",
         "--ignore-user-config",
-        "--ephemeral",
         "--color",
         "never",
-        "--model",
-        "gpt-5.3-codex-spark"
+        "--ephemeral"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-ait"

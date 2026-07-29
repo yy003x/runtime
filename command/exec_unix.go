@@ -10,24 +10,44 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func replaceProcess(resolved Invocation) error {
-	return syscall.Exec(resolved.Path, resolved.Argv, resolved.Environment)
-}
+type StdinMode string
 
-func replaceProcessWithInput(resolved Invocation, input string) error {
-	file, err := os.CreateTemp("", ".sn-runtime-prompt-*")
+const (
+	StdinInherit StdinMode = "inherit"
+	StdinTTY     StdinMode = "tty"
+	StdinNull    StdinMode = "null"
+)
+
+// ReplaceProcess replaces the Runtime process with an already-built target
+// invocation. Profile, shortcut, Session, and Tmux choose stdin ownership
+// explicitly at their ingress.
+func ReplaceProcess(resolved Invocation, stdinMode StdinMode) error {
+	if len(resolved.Argv) == 0 {
+		return fmt.Errorf("invocation argv is empty")
+	}
+	if stdinMode == StdinInherit ||
+		stdinMode == StdinTTY && isTerminalFD(int(os.Stdin.Fd())) {
+		return execInvocation(resolved)
+	}
+	var (
+		file *os.File
+		err  error
+	)
+	switch stdinMode {
+	case StdinTTY:
+		file, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	case StdinNull:
+		file, err = os.Open("/dev/null")
+	default:
+		return fmt.Errorf("unsupported stdin mode %q", stdinMode)
+	}
 	if err != nil {
-		return fmt.Errorf("create prompt input: %w", err)
+		if stdinMode == StdinTTY {
+			return fmt.Errorf("open controlling TTY: %w", err)
+		}
+		return fmt.Errorf("open /dev/null: %w", err)
 	}
-	path := file.Name()
-	_ = os.Remove(path)
 	defer file.Close()
-	if _, err := file.WriteString(input); err != nil {
-		return fmt.Errorf("write prompt input: %w", err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		return fmt.Errorf("rewind prompt input: %w", err)
-	}
 	original, err := unix.Dup(0)
 	if err != nil {
 		return fmt.Errorf("duplicate stdin: %w", err)
@@ -36,8 +56,32 @@ func replaceProcessWithInput(resolved Invocation, input string) error {
 	if err := unix.Dup2(int(file.Fd()), 0); err != nil {
 		return fmt.Errorf("replace stdin: %w", err)
 	}
-	if err := replaceProcess(resolved); err != nil {
+	if err := execInvocation(resolved); err != nil {
 		_ = unix.Dup2(original, 0)
+		return err
+	}
+	return nil
+}
+
+func execInvocation(resolved Invocation) error {
+	originalCWD, err := os.Open(".")
+	if err != nil {
+		return fmt.Errorf("open current working directory: %w", err)
+	}
+	defer originalCWD.Close()
+	if resolved.CWD != "" {
+		if err := os.Chdir(resolved.CWD); err != nil {
+			return fmt.Errorf("enter cwd %q: %w", resolved.CWD, err)
+		}
+	}
+	if err := syscall.Exec(
+		resolved.Path, resolved.Argv, resolved.Environment,
+	); err != nil {
+		if restoreErr := unix.Fchdir(int(originalCWD.Fd())); restoreErr != nil {
+			return fmt.Errorf(
+				"exec target: %w; restore cwd: %v", err, restoreErr,
+			)
+		}
 		return err
 	}
 	return nil

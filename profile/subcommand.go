@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/internal/profileid"
 	"github.com/yy003x/runtime/internal/strictjson"
 )
@@ -79,12 +78,6 @@ func LoadSubcommands(
 		if entry.Kind != KindCommand || entry.Command == nil {
 			return nil, fmt.Errorf(
 				"%s: shortcut profile %q must be type=cli",
-				path, value.Profile,
-			)
-		}
-		if entry.Command.Transport != command.TransportTTY {
-			return nil, fmt.Errorf(
-				"%s: shortcut profile %q must use transport=tty",
 				path, value.Profile,
 			)
 		}

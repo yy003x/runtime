@@ -1,145 +1,81 @@
 package command
 
 import (
-	"os"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
-func TestDecodeCommandProfile(t *testing.T) {
-	profile, err := Decode(strings.NewReader(`{
-		"binary":"codex",
-		"args":["-c","model_reasoning_effort=xhigh","${EXTRA_ARG}"],
-		"env":{"CODEX_HOME":"${HOME}/.codex-aip","REMOVE_ME":null},
-		"transport":"tty",
-		"prompt_delivery":"argv",
-		"effort_adapter":"codex-config"
-	}`))
+func TestProfileUsesTypedCommandProtocol(t *testing.T) {
+	profile := Profile{
+		Command: "codex",
+		Args:    []string{"--image", "${IMAGE}"},
+		Env: map[string]*string{
+			"CODEX_HOME": stringPointer("${HOME}/.codex-aip"),
+			"REMOVE_ME":  nil,
+		},
+		Model: "gpt-5.6-sol", Effort: EffortHigh,
+		Prompt: "base", Exec: true, CWD: "${HOME}/work",
+	}
+	err := CheckProfile(profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Binary != "codex" || len(profile.Args) != 3 ||
-		profile.Env["REMOVE_ME"] != nil ||
-		profile.EffortAdapter != EffortAdapterCodexConfig {
+	if profile.Command != "codex" || profile.Model != "gpt-5.6-sol" ||
+		profile.Effort != EffortHigh || !profile.Exec ||
+		profile.Env["REMOVE_ME"] != nil {
 		t.Fatalf("profile=%#v", profile)
 	}
-	for _, input := range []string{
-		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","model":"forbidden"}`,
-		`{"binary":"","transport":"tty","prompt_delivery":"argv"}`,
-		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","args":["${BAD-NAME}"]}`,
-		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","env":{"BAD=NAME":"value"}}`,
-		`{"binary":"codex","transport":"tmux","prompt_delivery":"stdin"}`,
-		`{"binary":"codex","transport":"tty","prompt_delivery":"argv","effort_adapter":"binary-name"}`,
+	for _, invalid := range []Profile{
+		{},
+		{Command: "unknown"},
+		{Command: "codex", Args: []string{"${BAD-NAME}"}},
+		{Command: "codex", Env: map[string]*string{"BAD=NAME": stringPointer("value")}},
+		{Command: "codex", Effort: Effort("extreme")},
 	} {
-		if _, err := Decode(strings.NewReader(input)); err == nil {
-			t.Fatalf("Decode(%s) returned nil", input)
+		if err := CheckProfile(invalid); err == nil {
+			t.Fatalf("CheckProfile(%#v) returned nil", invalid)
 		}
 	}
 }
 
-func TestProfileWithEffortUsesExplicitAdapter(t *testing.T) {
-	for _, testCase := range []struct {
-		name    string
-		adapter EffortAdapter
-		want    []string
-	}{
-		{
-			name:    "codex",
-			adapter: EffortAdapterCodexConfig,
-			want:    []string{"fixed", "-c", "model_reasoning_effort=high"},
-		},
-		{
-			name:    "claude",
-			adapter: EffortAdapterClaudeFlag,
-			want:    []string{"fixed", "--effort", "high"},
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			original := Profile{
-				Args:          []string{"fixed"},
-				EffortAdapter: testCase.adapter,
-			}
-			resolved, err := original.WithEffort(EffortHigh)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(resolved.Args, testCase.want) {
-				t.Fatalf("args=%q want=%q", resolved.Args, testCase.want)
-			}
-			if !reflect.DeepEqual(original.Args, []string{"fixed"}) {
-				t.Fatalf("original args mutated: %q", original.Args)
-			}
-		})
-	}
-	unsupported := Profile{}
-	if _, err := unsupported.WithEffort(EffortHigh); err == nil ||
-		!strings.Contains(err.Error(), "does not declare") {
-		t.Fatalf("unsupported error=%v", err)
-	}
-	if _, err := ParseEffort("extreme"); err == nil {
-		t.Fatal("invalid effort was accepted")
-	}
-}
-
-func TestLoadDirUsesFilenameIDsAndRejectsSymlinks(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "cc.json"), []byte(`{"binary":"claude","transport":"tty","prompt_delivery":"manual"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "cx.json"), []byte(`{"binary":"codex","args":["--help"],"transport":"tty","prompt_delivery":"argv"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := LoadDir(root)
+func TestCheckProfileIsSymbolic(t *testing.T) {
+	err := CheckProfile(Profile{
+		Command: "/not-installed/codex",
+		Args:    []string{"--image", "${RUNTIME_IMAGE}"},
+		Env:     map[string]*string{"SECRET": stringPointer("${MISSING_SECRET}")},
+		CWD:     "${MISSING_CWD}/workspace",
+		Prompt:  "missing-prompt-file.md",
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if got := catalog.IDs(); !reflect.DeepEqual(got, []string{"cc", "cx"}) {
-		t.Fatalf("ids=%v", got)
-	}
-	profile, ok := catalog.Get("cx")
-	if !ok || profile.Binary != "codex" {
-		t.Fatalf("profile=%#v ok=%v", profile, ok)
-	}
-
-	linkRoot := t.TempDir()
-	target := filepath.Join(linkRoot, "target.json")
-	if err := os.WriteFile(target, []byte(`{"binary":"codex","transport":"tty","prompt_delivery":"manual"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(linkRoot, "cx.json")); err == nil {
-		if _, err := LoadDir(linkRoot); err == nil {
-			t.Fatal("symlink command profile was accepted")
-		}
+		t.Fatalf("symbolic check resolved runtime dependencies: %v", err)
 	}
 }
 
-func TestCatalogPreservesEffortAdapter(t *testing.T) {
+func TestCatalogReturnsDefensiveTypedProfileCopies(t *testing.T) {
 	catalog, err := NewCatalog(map[string]Profile{
 		"cx": {
-			Binary:         "codex",
-			Transport:      TransportTTY,
-			PromptDelivery: PromptManual,
-			EffortAdapter:  EffortAdapterCodexConfig,
+			Command: "codex",
+			Args:    []string{"--sandbox", "read-only"},
+			Model:   "gpt-5.6-sol",
+			Effort:  EffortHigh,
+			Exec:    true,
+			Env:     map[string]*string{"SET": stringPointer("value")},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, exists := catalog.Get("cx")
-	if !exists || profile.EffortAdapter != EffortAdapterCodexConfig {
-		t.Fatalf("profile=%#v exists=%v", profile, exists)
+	first, exists := catalog.Get("cx")
+	if !exists {
+		t.Fatal("profile missing")
+	}
+	first.Args[0] = "changed"
+	*first.Env["SET"] = "changed"
+	second, _ := catalog.Get("cx")
+	if !reflect.DeepEqual(second.Args, []string{"--sandbox", "read-only"}) ||
+		*second.Env["SET"] != "value" || !second.Exec {
+		t.Fatalf("profile=%#v", second)
 	}
 }
 
-func TestCatalogRejectsFixedNamespaceConflict(t *testing.T) {
-	if _, err := NewCatalog(
-		map[string]Profile{"command": {
-			Binary: "codex", Transport: TransportTTY, PromptDelivery: PromptManual,
-		}},
-		"command",
-	); err == nil || !strings.Contains(err.Error(), "fixed namespace") {
-		t.Fatalf("error=%v", err)
-	}
-}
+func stringPointer(value string) *string { return &value }

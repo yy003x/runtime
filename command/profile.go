@@ -1,33 +1,15 @@
-// Package command owns Runtime vNext command profiles and the transparent
-// process-replacement bridge used by dynamic top-level command IDs.
+// Package command owns CLI Profiles, command adapters, and deterministic
+// invocation construction. It does not own Session or Tmux lifecycle state.
 package command
 
 import (
 	"fmt"
-	"io"
+	"path/filepath"
 	"strings"
-
-	"github.com/yy003x/runtime/internal/strictjson"
+	"unicode/utf8"
 )
 
-const maxProfileBytes int64 = 1 << 20
-
-type Transport string
-
-const (
-	TransportTTY      Transport = "tty"
-	TransportTmux     Transport = "tmux"
-	TransportTerminal Transport = "terminal"
-)
-
-type PromptDelivery string
-
-const (
-	PromptArgv   PromptDelivery = "argv"
-	PromptStdin  PromptDelivery = "stdin"
-	PromptPaste  PromptDelivery = "paste"
-	PromptManual PromptDelivery = "manual"
-)
+const MaxTokenBytes = 96 << 10
 
 type Effort string
 
@@ -39,63 +21,39 @@ const (
 	EffortMax    Effort = "max"
 )
 
-type EffortAdapter string
-
-const (
-	EffortAdapterCodexConfig EffortAdapter = "codex-config"
-	EffortAdapterClaudeFlag  EffortAdapter = "claude-flag"
-)
-
+// Profile is the CLI-only side of the unified Profile protocol.
 type Profile struct {
-	Binary         string             `json:"binary"`
-	Args           []string           `json:"args,omitempty"`
-	Env            map[string]*string `json:"env,omitempty"`
-	Transport      Transport          `json:"transport"`
-	PromptDelivery PromptDelivery     `json:"prompt_delivery"`
-	EffortAdapter  EffortAdapter      `json:"effort_adapter,omitempty"`
+	Command string             `json:"command"`
+	Args    []string           `json:"args,omitempty"`
+	Env     map[string]*string `json:"env,omitempty"`
+	Model   string             `json:"model,omitempty"`
+	Effort  Effort             `json:"effort,omitempty"`
+	Prompt  string             `json:"prompt,omitempty"`
+	Exec    bool               `json:"exec,omitempty"`
+	CWD     string             `json:"cwd,omitempty"`
 }
 
-func Decode(reader io.Reader) (Profile, error) {
-	var profile Profile
-	if err := strictjson.Decode(reader, maxProfileBytes, &profile); err != nil {
-		return Profile{}, err
-	}
-	if err := profile.Validate(); err != nil {
-		return Profile{}, err
-	}
-	return profile, nil
-}
-
-func LoadFile(path string) (Profile, error) {
-	var profile Profile
-	if err := strictjson.ReadRegularFile(path, maxProfileBytes, &profile); err != nil {
-		return Profile{}, err
-	}
-	if err := profile.Validate(); err != nil {
-		return Profile{}, fmt.Errorf("%s: %w", path, err)
-	}
-	return profile, nil
-}
-
+// Validate performs structural validation only. CheckProfile additionally
+// validates adapter option grammar by building symbolic plans.
 func (profile Profile) Validate() error {
-	if strings.TrimSpace(profile.Binary) == "" {
-		return fmt.Errorf("binary is required")
+	if strings.TrimSpace(profile.Command) == "" {
+		return fmt.Errorf("command is required")
 	}
-	if strings.ContainsRune(profile.Binary, '\x00') {
-		return fmt.Errorf("binary contains NUL")
+	if filepath.Base(profile.Command) != "codex" &&
+		filepath.Base(profile.Command) != "claude" {
+		return fmt.Errorf("no command adapter for %q", filepath.Base(profile.Command))
 	}
-	if len(profile.Binary) > 4096 {
-		return fmt.Errorf("binary exceeds 4096 bytes")
+	if err := validateTextToken("command", profile.Command, 4096, false); err != nil {
+		return err
 	}
 	if len(profile.Args) > 4096 {
 		return fmt.Errorf("args exceed 4096 items")
 	}
 	for index, argument := range profile.Args {
-		if len(argument) > 256<<10 {
-			return fmt.Errorf("args[%d] exceeds 262144 bytes", index)
-		}
-		if strings.ContainsRune(argument, '\x00') {
-			return fmt.Errorf("args[%d] contains NUL", index)
+		if err := validateTextToken(
+			fmt.Sprintf("args[%d]", index), argument, MaxTokenBytes, true,
+		); err != nil {
+			return err
 		}
 		if err := validateReferences(argument); err != nil {
 			return fmt.Errorf("args[%d]: %w", index, err)
@@ -111,40 +69,38 @@ func (profile Profile) Validate() error {
 		if value == nil {
 			continue
 		}
-		if len(*value) > 256<<10 {
-			return fmt.Errorf("env[%q] exceeds 262144 bytes", name)
-		}
-		if strings.ContainsRune(*value, '\x00') {
-			return fmt.Errorf("env[%q] contains NUL", name)
+		if err := validateTextToken(
+			fmt.Sprintf("env[%q]", name), *value, MaxTokenBytes, true,
+		); err != nil {
+			return err
 		}
 		if err := validateReferences(*value); err != nil {
 			return fmt.Errorf("env[%q]: %w", name, err)
 		}
 	}
-	switch profile.Transport {
-	case TransportTTY:
-		switch profile.PromptDelivery {
-		case PromptArgv, PromptStdin, PromptManual:
-		default:
-			return fmt.Errorf("prompt_delivery %q is invalid for transport %q", profile.PromptDelivery, profile.Transport)
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "model", value: profile.Model},
+		{name: "prompt", value: profile.Prompt},
+		{name: "cwd", value: profile.CWD},
+	} {
+		if err := validateTextToken(
+			field.name, field.value, MaxTokenBytes, true,
+		); err != nil {
+			return err
 		}
-	case TransportTmux, TransportTerminal:
-		switch profile.PromptDelivery {
-		case PromptArgv, PromptPaste, PromptManual:
-		default:
-			return fmt.Errorf("prompt_delivery %q is invalid for transport %q", profile.PromptDelivery, profile.Transport)
-		}
-	default:
-		return fmt.Errorf("transport must be tty, tmux, or terminal")
 	}
-	switch profile.EffortAdapter {
-	case "", EffortAdapterCodexConfig, EffortAdapterClaudeFlag:
-	default:
-		return fmt.Errorf(
-			"effort_adapter must be %q or %q",
-			EffortAdapterCodexConfig,
-			EffortAdapterClaudeFlag,
-		)
+	if profile.CWD != "" {
+		if err := validateReferences(profile.CWD); err != nil {
+			return fmt.Errorf("cwd: %w", err)
+		}
+	}
+	if profile.Effort != "" {
+		if _, err := ParseEffort(string(profile.Effort)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -155,41 +111,24 @@ func ParseEffort(value string) (Effort, error) {
 	case EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
 		return effort, nil
 	default:
-		return "", fmt.Errorf(
-			"effort must be low, medium, high, xhigh, or max",
-		)
+		return "", fmt.Errorf("effort must be low, medium, high, xhigh, or max")
 	}
 }
 
-func (profile Profile) WithEffort(effort Effort) (Profile, error) {
-	if effort == "" {
-		return profile, nil
+func validateTextToken(name, value string, limit int, allowEmpty bool) error {
+	if !allowEmpty && value == "" {
+		return fmt.Errorf("%s is required", name)
 	}
-	if _, err := ParseEffort(string(effort)); err != nil {
-		return Profile{}, err
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be UTF-8", name)
 	}
-	resolved := profile
-	resolved.Args = append([]string(nil), profile.Args...)
-	switch profile.EffortAdapter {
-	case EffortAdapterCodexConfig:
-		resolved.Args = append(
-			resolved.Args,
-			"-c",
-			"model_reasoning_effort="+string(effort),
-		)
-	case EffortAdapterClaudeFlag:
-		resolved.Args = append(resolved.Args, "--effort", string(effort))
-	case "":
-		return Profile{}, fmt.Errorf(
-			"profile does not declare an effort_adapter",
-		)
-	default:
-		return Profile{}, fmt.Errorf(
-			"unsupported effort_adapter %q",
-			profile.EffortAdapter,
-		)
+	if strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("%s contains NUL", name)
 	}
-	return resolved, nil
+	if len(value) > limit {
+		return fmt.Errorf("%s exceeds %d bytes", name, limit)
+	}
+	return nil
 }
 
 func validateReferences(value string) error {
@@ -225,7 +164,9 @@ func validReferenceName(value string) bool {
 		return false
 	}
 	for index := 1; index < len(value); index++ {
-		if !asciiLetter(value[index]) && (value[index] < '0' || value[index] > '9') && value[index] != '_' {
+		if !asciiLetter(value[index]) &&
+			(value[index] < '0' || value[index] > '9') &&
+			value[index] != '_' {
 			return false
 		}
 	}
