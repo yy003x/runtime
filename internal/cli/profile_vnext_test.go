@@ -2,16 +2,17 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	runtimecommand "github.com/yy003x/runtime/command"
+	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/model"
 )
@@ -161,53 +162,17 @@ func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 	}
 }
 
-func TestAPIProfileStreamOptionValueDoesNotSelectStreamMode(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(
-		writer http.ResponseWriter,
-		request *http.Request,
-	) {
-		var body struct {
-			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Error(err)
-		}
-		if len(body.Messages) < 2 || body.Messages[0].Content != "--stream" {
-			t.Errorf("body=%#v", body)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{
-		  "id":"req-system-value",
-		  "model":"fixture",
-		  "choices":[{"message":{"content":"not streamed"},"finish_reason":"stop"}]
-		}`))
-	}))
-	defer server.Close()
-	paths := prepareVNextHome(t)
-	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
-	t.Setenv("MODEL_API_KEY", "secret")
-	originalTransport := http.DefaultTransport
-	http.DefaultTransport = server.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = originalTransport })
-
-	var stdout strings.Builder
-	output := newCLIOutput(false, &stdout, os.Stderr)
-	if err := runVNextProfileNamespace(
-		paths,
-		[]string{"api-cx", "--system", "--stream", "hello"},
-		output,
-	); err != nil {
-		t.Fatal(err)
+func TestAPIProfileFixedValueDoesNotConsumeStreamFlag(t *testing.T) {
+	request, stream, err := parseDirectModelInput(
+		"api-cx",
+		vNextTestModelProfile("openai-compatible"),
+		[]string{"--system", "--stream", "hello"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "--system requires value") {
+		t.Fatalf("request=%#v stream=%t error=%v", request, stream, err)
 	}
-	if output.streamMode || output.streamStarted ||
-		stdout.String() != "not streamed\n" {
-		t.Fatalf(
-			"streamMode=%t streamStarted=%t output=%q",
-			output.streamMode, output.streamStarted, stdout.String(),
-		)
+	if stream {
+		t.Fatal("value-position --stream selected stream mode")
 	}
 }
 
@@ -276,72 +241,179 @@ func TestParseDirectModelInputRejectsLegacyModelOverride(t *testing.T) {
 	}
 }
 
-func TestParseCommandProfileInputAppliesGenericEffort(t *testing.T) {
-	for _, testCase := range []struct {
-		name           string
-		profile        runtimecommand.Profile
-		args           []string
-		wantPrompt     string
-		wantNativeArgs []string
-		wantSuffix     []string
-	}{
-		{
-			name: "codex_automatic",
-			profile: runtimecommand.Profile{
-				Args:           []string{"fixed"},
-				PromptDelivery: runtimecommand.PromptArgv,
-				EffortAdapter:  runtimecommand.EffortAdapterCodexConfig,
-			},
-			args:       []string{"--effort", "high", "reply ok"},
-			wantPrompt: "reply ok",
-			wantSuffix: []string{"fixed", "-c", "model_reasoning_effort=high"},
+func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) {
+	profile := vNextTestModelProfile("openai-compatible")
+	request, stream, err := parseDirectModelInput(
+		"api",
+		profile,
+		[]string{
+			"--stream", "--system", "system",
+			"--temperature", "0.5",
+			"--max-completion-tokens", "128",
+			"--", "--leading-input",
 		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stream || request.Input.System != "system" ||
+		request.Input.Options.Temperature == nil ||
+		*request.Input.Options.Temperature != 0.5 ||
+		request.Input.Messages[0].Content != "--leading-input" {
+		t.Fatalf("request=%#v stream=%t", request, stream)
+	}
+
+	for _, args := range [][]string{
+		{"--stream", "--stream", "input"},
+		{"--system", "one", "--system", "two", "input"},
+		{"--temperature", "0.1", "--temperature", "0.2", "input"},
 		{
-			name: "claude_manual",
-			profile: runtimecommand.Profile{
-				Args:           []string{"fixed"},
-				PromptDelivery: runtimecommand.PromptManual,
-				EffortAdapter:  runtimecommand.EffortAdapterClaudeFlag,
-			},
-			args:           []string{"--effort=max", "--", "--print", "reply ok"},
-			wantNativeArgs: []string{"--print", "reply ok"},
-			wantSuffix:     []string{"fixed", "--effort", "max"},
+			"--max-completion-tokens", "1",
+			"--max-completion-tokens", "2", "input",
 		},
+		{"--request-file", "one", "--request-file", "two"},
+		{"--system", "--stream", "input"},
+		{"--temperature", "--stream", "input"},
+		{"input", "--stream"},
+		{"input", "extra"},
+		{"input", "--", "extra"},
+		{"--", "one", "two"},
 	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			profile, prompt, nativeArgs, err := parseCommandProfileInput(
-				testCase.profile,
-				testCase.args,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if prompt != testCase.wantPrompt ||
-				!reflect.DeepEqual(nativeArgs, testCase.wantNativeArgs) ||
-				!reflect.DeepEqual(profile.Args, testCase.wantSuffix) {
-				t.Fatalf(
-					"profile.args=%q prompt=%q native=%q",
-					profile.Args,
-					prompt,
-					nativeArgs,
-				)
-			}
-		})
+		if _, _, err := parseDirectModelInput(
+			"api", profile, args,
+		); err == nil {
+			t.Fatalf("args=%q returned nil error", args)
+		}
 	}
 }
 
-func TestParseCommandProfileInputRejectsUnsupportedOrInvalidEffort(t *testing.T) {
-	profile := runtimecommand.Profile{
-		PromptDelivery: runtimecommand.PromptArgv,
+func TestParseDirectModelInputRejectsNonFiniteTemperature(t *testing.T) {
+	profile := vNextTestModelProfile("openai-compatible")
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		if _, _, err := parseDirectModelInput(
+			"api", profile,
+			[]string{"--temperature", value, "input"},
+		); err == nil {
+			t.Fatalf("temperature %q was accepted", value)
+		}
+	}
+}
+
+func TestBuildCommandProfileInvocationMergesPromptAndOverridesTypedFields(t *testing.T) {
+	root := t.TempDir()
+	commandPath := filepath.Join(root, "codex")
+	if err := os.WriteFile(
+		commandPath, []byte("#!/bin/sh\nexit 0\n"), 0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "base.txt"), []byte("base"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "typed.txt"), []byte("typed"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	invocation, mode, err := buildCommandProfileInvocation(
+		runtimecommand.Profile{
+			Command: commandPath,
+			Args:    []string{"--sandbox", "read-only"},
+			Model:   "old", Effort: runtimecommand.EffortLow,
+			Prompt: "base.txt", Exec: false,
+		},
+		[]string{
+			"--model", "new", "--effort=high",
+			"--prompt", "typed.txt", "--exec",
+			"--cwd", "work", "position",
+		},
+		"stdin", root, []string{"PATH=" + root},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != runtimecommand.ModeExec || invocation.CWD != work {
+		t.Fatalf("mode=%s cwd=%q", mode, invocation.CWD)
+	}
+	wantPrompt := "base\ntyped\nstdin\nposition"
+	if got := invocation.Argv[len(invocation.Argv)-1]; got != wantPrompt {
+		t.Fatalf("prompt=%q want=%q argv=%q", got, wantPrompt, invocation.Argv)
+	}
+	joined := strings.Join(invocation.Argv, "\x00")
+	for _, expected := range []string{
+		"--model\x00new",
+		"-c\x00model_reasoning_effort=high",
+		"exec\x00--\x00" + wantPrompt,
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("argv=%q missing=%q", invocation.Argv, expected)
+		}
+	}
+}
+
+func TestParseCommandProfileOptionsExecGrammarAndTerminator(t *testing.T) {
+	options, err := parseCommandProfileOptions(
+		[]string{"--exec", "false"},
+	)
+	if err != nil || options.exec == nil || !*options.exec ||
+		options.positional == nil || *options.positional != "false" {
+		t.Fatalf("options=%#v error=%v", options, err)
+	}
+	options, err = parseCommandProfileOptions(
+		[]string{"--exec=false", "--", "-leading"},
+	)
+	if err != nil || options.exec == nil || *options.exec ||
+		options.positional == nil || *options.positional != "-leading" {
+		t.Fatalf("options=%#v error=%v", options, err)
 	}
 	for _, args := range [][]string{
-		{"--effort", "high", "reply ok"},
-		{"--effort", "extreme", "reply ok"},
-		{"--effort", "high", "--effort", "max", "reply ok"},
+		{"--interactive"},
+		{"--exec=maybe"},
+		{"--effort", "extreme"},
+		{"--effort", "high", "--effort", "max"},
+		{"--prompt", "--exec"},
+		{"--prompt", "--unknown"},
+		{"--model", "--effort", "high"},
+		{"--cwd="},
+		{"input", "--model", "late"},
+		{"--", "one", "two"},
 	} {
-		if _, _, _, err := parseCommandProfileInput(profile, args); err == nil {
+		if _, err := parseCommandProfileOptions(args); err == nil {
 			t.Fatalf("args=%q returned nil error", args)
 		}
+	}
+}
+
+func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
+	root := t.TempDir()
+	commandPath := filepath.Join(root, "codex")
+	if err := os.WriteFile(
+		commandPath, []byte("#!/bin/sh\nexit 0\n"), 0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := buildCommandProfileInvocation(
+		runtimecommand.Profile{Command: commandPath},
+		[]string{"--exec"}, "", root, []string{"PATH=" + root},
+	)
+	var runtimeErr *contract.RuntimeError
+	if err == nil || !strings.Contains(err.Error(), "prompt is required") ||
+		!errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorInvalidRequest ||
+		runtimeErr.Phase != contract.PhaseProfile {
+		t.Fatalf("error=%v", err)
+	}
+	if _, mode, err := buildCommandProfileInvocation(
+		runtimecommand.Profile{Command: commandPath},
+		nil, "", root, []string{"PATH=" + root},
+	); err != nil || mode != runtimecommand.ModeInteractive {
+		t.Fatalf("mode=%s error=%v", mode, err)
 	}
 }
 
@@ -379,7 +451,7 @@ func writeVNextCommand(t *testing.T, dir, id string) {
 	t.Helper()
 	if err := os.WriteFile(
 		filepath.Join(dir, id+".json"),
-		[]byte(`{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual"}`),
+		[]byte(`{"type":"cli","command":"codex","model":"fixture","exec":false}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)

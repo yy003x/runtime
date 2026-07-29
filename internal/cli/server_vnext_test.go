@@ -7,13 +7,94 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/yy003x/runtime/internal/cli/config"
 	"github.com/yy003x/runtime/internal/layout"
 )
+
+func TestMain(main *testing.M) {
+	if os.Getenv("SN_CLI_TEST_SERVER_HOLD") == "1" {
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	os.Exit(main.Run())
+}
+
+func TestServerStartReturnsStablePIDForThirdPartyManagement(t *testing.T) {
+	paths, err := layout.FromHome(filepath.Join(t.TempDir(), ".sn"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(executable, paths.ServerBinary); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SN_CLI_TEST_SERVER_HOLD", "1")
+	var jsonOutput bytes.Buffer
+	if err := startServer(
+		paths, newCLIOutput(true, &jsonOutput, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		SchemaVersion   int  `json:"schema_version"`
+		ContractVersion int  `json:"contract_version"`
+		Running         bool `json:"running"`
+		PID             int  `json:"pid"`
+	}
+	if err := json.Unmarshal(jsonOutput.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.SchemaVersion != cliOutputSchemaVersion ||
+		started.ContractVersion != cliOutputContractVersion ||
+		!started.Running || started.PID <= 0 {
+		t.Fatalf("start result=%#v", started)
+	}
+	var humanOutput bytes.Buffer
+	if err := startServer(
+		paths, newCLIOutput(false, &humanOutput, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(
+		humanOutput.String(), "pid="+strconv.Itoa(started.PID),
+	) {
+		t.Fatalf("already-running output=%q", humanOutput.String())
+	}
+	var statusOutput bytes.Buffer
+	if err := serverStatus(
+		paths, newCLIOutput(true, &statusOutput, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	var status struct {
+		Running bool `json:"running"`
+		PID     int  `json:"pid"`
+	}
+	if err := json.Unmarshal(statusOutput.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || status.PID != started.PID {
+		t.Fatalf("status=%#v start=%#v", status, started)
+	}
+	process, err := os.FindProcess(started.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = process.Signal(syscall.SIGTERM)
+	_ = os.Remove(paths.ServerPIDFile)
+}
 
 func TestServerRunningRequiresMatchingLeaseAndProcessIdentity(t *testing.T) {
 	paths, err := layout.FromHome(filepath.Join(t.TempDir(), ".sn"))
@@ -160,7 +241,7 @@ func TestServerInfoPublishesVNextContractWithoutLegacyScheduler(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 2 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 3 ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
 		payload.ConfiguredAddr != "127.0.0.1:8080" {
@@ -240,6 +321,127 @@ func TestServerUpdateRejectsActionLocalJSON(t *testing.T) {
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestServerStatefulActionsRejectTrailingArgumentsBeforeBootstrap(
+	t *testing.T,
+) {
+	for _, action := range []string{"info", "doctor", "start", "status", "stop"} {
+		t.Run(action, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "not-created")
+			paths, err := layout.FromHome(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = runServerNamespaceVNext(
+				paths,
+				[]string{action, "--unexpected"},
+				newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}),
+			)
+			if err == nil ||
+				!strings.Contains(err.Error(), "does not accept arguments") {
+				t.Fatalf("error=%v", err)
+			}
+			if _, statErr := os.Stat(home); !os.IsNotExist(statErr) {
+				t.Fatalf(
+					"invalid request touched Runtime home: stat error=%v",
+					statErr,
+				)
+			}
+		})
+	}
+}
+
+func TestParseUpdateOptionsRejectsDuplicateAndConflictingModes(t *testing.T) {
+	for _, args := range [][]string{
+		{"--check", "--check"},
+		{"--dry-run", "--dry-run"},
+		{"--version", "v1.2.3", "--version", "v2.0.0"},
+		{"--check", "--dry-run"},
+		{"--check", "--version", "v1.2.3"},
+		{"--version", "--dry-run"},
+	} {
+		if _, err := parseUpdateOptions(args); err == nil {
+			t.Fatalf("parseUpdateOptions(%q) unexpectedly succeeded", args)
+		}
+	}
+	options, err := parseUpdateOptions(
+		[]string{"--dry-run", "--version", "v1.2.3"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.dryRun || options.targetVersion != "v1.2.3" {
+		t.Fatalf("options=%#v", options)
+	}
+}
+
+func TestUpgradePrivateOptionsRejectDuplicateAndMissingValues(t *testing.T) {
+	paths, err := layout.FromHome(filepath.Join(t.TempDir(), "home"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
+	for _, args := range [][]string{
+		{"--resources", "one", "--resources", "two"},
+		{"--resources", "--unknown"},
+	} {
+		if err := runUpgradeCheck(paths, args, output); err == nil {
+			t.Fatalf("runUpgradeCheck(%q) unexpectedly succeeded", args)
+		}
+	}
+	for _, args := range [][]string{
+		{"--payload", "one", "--payload", "two", "--target-home", paths.Home},
+		{"--payload", "--target-home", paths.Home},
+		{"--payload", "one", "--target-home", paths.Home, "--command-link", "--x"},
+		{
+			"--payload", "one", "--target-home", paths.Home,
+			"--overwrite-configs", "--overwrite-configs",
+		},
+		{
+			"--payload", "one", "--target-home", paths.Home,
+			"--local-source-install", "--local-source-install",
+		},
+		{
+			"--payload", "one", "--target-home", paths.Home,
+			"--local-source-install", "--overwrite-configs",
+		},
+	} {
+		if err := runUpgradeActivate(paths, args, output); err == nil {
+			t.Fatalf("runUpgradeActivate(%q) unexpectedly succeeded", args)
+		}
+	}
+}
+
+func TestActivationCommandLinkMustBeOutsideRuntimeHome(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{"bin", "configs"} {
+		if err := os.MkdirAll(filepath.Join(home, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(home, directory, "sn-cli")
+		err := validateActivationCommandLink(
+			home, link, filepath.Join(home, "bin", "sn-cli"),
+		)
+		if err == nil ||
+			!strings.Contains(err.Error(), "outside the Runtime home") {
+			t.Fatalf("link=%s error=%v", link, err)
+		}
+	}
+	external := filepath.Join(t.TempDir(), "sn-cli")
+	externalParent, err := filepath.EvalSymlinks(filepath.Dir(external))
+	if err != nil {
+		t.Fatal(err)
+	}
+	external = filepath.Join(externalParent, "sn-cli")
+	if err := validateActivationCommandLink(
+		home, external, filepath.Join(home, "bin", "sn-cli"),
+	); err != nil {
+		t.Fatalf("external command link rejected: %v", err)
 	}
 }
 

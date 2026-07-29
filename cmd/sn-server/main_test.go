@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/yy003x/runtime/internal/layout"
+)
 
 func TestLoadServerConfigUsesLoopbackDefaults(t *testing.T) {
 	config, err := loadServerConfig(func(string) string { return "" })
@@ -38,5 +44,34 @@ func TestLoadServerConfigRequiresTokenOutsideLoopback(t *testing.T) {
 	})
 	if err != nil || config.BearerToken != "secret" {
 		t.Fatalf("config=%#v err=%v", config, err)
+	}
+}
+
+func TestServerEntryRejectsActivationGuard(t *testing.T) {
+	paths, err := layout.FromHome(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(paths.StateDir, "activation.guard.json"),
+		[]byte("{}\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireActivationReady(paths); err == nil {
+		t.Fatal("sn-server entry accepted an active activation guard")
+	}
+}
+
+func TestServerEntryRejectsArguments(t *testing.T) {
+	if err := validateServerArgs([]string{"--unexpected"}); err == nil {
+		t.Fatal("sn-server accepted an unexpected argument")
+	}
+	if err := validateServerArgs(nil); err != nil {
+		t.Fatal(err)
 	}
 }

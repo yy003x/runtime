@@ -19,8 +19,25 @@ func TestMainLeadingJSONVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["contract_version"] != float64(2) {
+	if payload["contract_version"] != float64(3) {
 		t.Fatalf("payload=%#v", payload)
+	}
+}
+
+func TestMainHelpAndVersionRejectTrailingArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "unexpected"},
+		{"--help", "--json"},
+		{"version", "unexpected"},
+		{"--version", "--json"},
+	} {
+		stdout, stderr, exitCode := captureMainOutput(t, args)
+		if exitCode == 0 || stdout != "" || stderr == "" {
+			t.Fatalf(
+				"args=%q exit=%d stdout=%q stderr=%q",
+				args, exitCode, stdout, stderr,
+			)
+		}
 	}
 }
 

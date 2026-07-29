@@ -14,7 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/cli/config"
+	"github.com/yy003x/runtime/internal/installbundle"
 	"github.com/yy003x/runtime/internal/layout"
 )
 
@@ -33,11 +35,62 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	defer server.Close()
 	t.Setenv("SN_CLI_RELEASE_BASE_URL", server.URL+"/releases")
 	cfg := testConfig(t)
+	previousActivation := runCandidateActivation
+	runCandidateActivation = func(
+		_ context.Context,
+		_ string,
+		payload string,
+		targetHome string,
+		_ int,
+	) (activation.UpgradeResult, error) {
+		profiles, err := installbundle.SyncMissing(
+			filepath.Join(payload, "configs"), cfg.Paths.ConfigDir,
+		)
+		if err != nil {
+			return activation.UpgradeResult{}, err
+		}
+		commands, err := installbundle.SyncMissing(
+			filepath.Join(payload, "commands"), cfg.Paths.CommandDir,
+		)
+		if err != nil {
+			return activation.UpgradeResult{}, err
+		}
+		copiedRuntime, err := copyMissingFile(
+			filepath.Join(payload, "runtime.json"),
+			cfg.Paths.RuntimeConfigFile,
+		)
+		if err != nil {
+			return activation.UpgradeResult{}, err
+		}
+		resources, err := installbundle.SyncMissing(
+			filepath.Join(payload, "resources"), cfg.Paths.ResourcesDir,
+		)
+		if err != nil {
+			return activation.UpgradeResult{}, err
+		}
+		if err := installBinary(
+			filepath.Join(payload, "sn-cli"), cfg.Paths.Binary,
+		); err != nil {
+			return activation.UpgradeResult{}, err
+		}
+		if err := installBinary(
+			filepath.Join(payload, "sn-server"), cfg.Paths.ServerBinary,
+		); err != nil {
+			return activation.UpgradeResult{}, err
+		}
+		return activation.UpgradeResult{
+			TargetHome: targetHome, CopiedProfiles: profiles.Copied,
+			CopiedCommands:      commands.Copied,
+			CopiedRuntimeConfig: copiedRuntime,
+			ResourceFiles:       resources.Copied,
+		}, nil
+	}
+	defer func() { runCandidateActivation = previousActivation }()
 	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
 	mustWriteUpdate(t, cfg.Paths.ServerBinary, "old-server\n", 0o755)
 	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"local","auth":{"header":"Authorization","scheme":"Bearer","from_env":"LOCAL_KEY"},"timeout":"1m"}`+"\n", 0o600)
 	mustWriteUpdate(t, filepath.Join(cfg.Paths.CommandDir, "local.json"), "{\"profile\":\"local\"}\n", 0o600)
-	mustWriteUpdate(t, cfg.Paths.RuntimeConfigFile, "{\"terminal\":{}}\n", 0o600)
+	mustWriteUpdate(t, cfg.Paths.RuntimeConfigFile, "{\"agent\":{}}\n", 0o600)
 	result, err := Apply(context.Background(), cfg, "v2")
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +108,7 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new-profile.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"FIXTURE_KEY"},"timeout":"1m"}`+"\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.CommandDir, "local.json"), "{\"profile\":\"local\"}\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.CommandDir, "new-command.json"), "{\"profile\":\"new-profile\"}\n")
-	assertUpdateContent(t, cfg.Paths.RuntimeConfigFile, "{\"terminal\":{}}\n")
+	assertUpdateContent(t, cfg.Paths.RuntimeConfigFile, "{\"agent\":{}}\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "schema", "profile.json"), "packaged-schema\n")
 }
 

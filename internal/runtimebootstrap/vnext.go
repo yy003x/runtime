@@ -2,9 +2,9 @@ package runtimebootstrap
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/yy003x/runtime/agent"
-	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimeconfig"
 	"github.com/yy003x/runtime/internal/toolbuiltin"
@@ -15,6 +15,7 @@ import (
 	runtime "github.com/yy003x/runtime/run"
 	"github.com/yy003x/runtime/session"
 	sqlitestore "github.com/yy003x/runtime/store/sqlite"
+	runtimetmux "github.com/yy003x/runtime/tmux"
 )
 
 type VNext struct {
@@ -67,6 +68,28 @@ type SessionServices struct {
 	Sessions *session.Service
 }
 
+// LoadTmuxService composes the independent Tmux domain from layout only. It
+// deliberately does not load Profile, Session, runtime.json, or SQLite state.
+func LoadTmuxService(paths layout.Paths) (*runtimetmux.Service, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sn-cli helper executable: %w", err)
+	}
+	service, err := runtimetmux.NewService(runtimetmux.Config{
+		Home: paths.Home, LockFile: paths.TmuxLockFile,
+		ManifestDir:    paths.TmuxManifestDir,
+		TmuxConfigFile: paths.TmuxConfigFile,
+		SocketDir:      paths.TmuxSocketDir, SocketFile: paths.TmuxSocketFile,
+		HelperCommand: []string{
+			executable, runtimetmux.HelperCommandName,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build Tmux service: %w", err)
+	}
+	return service, nil
+}
+
 func LoadSessionServices(
 	paths layout.Paths,
 	fixedCommandIDs ...string,
@@ -83,8 +106,6 @@ func LoadSessionServices(
 	}
 	sessions, err := session.NewService(session.ServiceOptions{
 		Store: sessionStore, Profiles: core.Profiles, Models: core.Models,
-		Commands:       runtimecommand.NewRunner(),
-		TerminalDriver: core.Config.Terminal.Driver,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build Session service: %w", err)

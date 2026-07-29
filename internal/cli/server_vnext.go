@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/cli/config"
 	snupdate "github.com/yy003x/runtime/internal/cli/update"
 	"github.com/yy003x/runtime/internal/cli/version"
@@ -23,6 +25,10 @@ import (
 )
 
 const serverPIDSchemaVersion = 1
+
+var errServerLeaseReleasedWhileAlive = errors.New(
+	"sn-server released its lease before process exit",
+)
 
 type processIdentity struct {
 	StartToken string
@@ -44,7 +50,15 @@ func runServerNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: server info|doctor|start|status|stop|update")
+		return fmt.Errorf(
+			"usage: server info|doctor|start|status|stop|update|upgrade-check",
+		)
+	}
+	switch args[0] {
+	case "info", "doctor", "start", "status", "stop":
+		if len(args) != 1 {
+			return fmt.Errorf("server %s does not accept arguments", args[0])
+		}
 	}
 	switch args[0] {
 	case "info":
@@ -58,7 +72,6 @@ func runServerNamespaceVNext(
 			"version":          version.String(), "runtime_home": paths.Home,
 			"profiles":           core.Profiles.Entries(),
 			"run_database":       paths.RunDBFile,
-			"terminal_driver":    core.Config.Terminal.Driver,
 			"configured_address": serverAddress(),
 			"namespaces":         serverNamespaces(),
 			"capabilities":       serverCapabilities(),
@@ -78,8 +91,7 @@ func runServerNamespaceVNext(
 			return err
 		}
 		if err := output.line(
-			"Profiles: %d, terminal: %s",
-			len(core.Profiles.Entries()), core.Config.Terminal.Driver,
+			"Profiles: %d", len(core.Profiles.Entries()),
 		); err != nil {
 			return err
 		}
@@ -93,14 +105,243 @@ func runServerNamespaceVNext(
 	case "stop":
 		return stopServer(paths, output)
 	case "update":
+		options, err := parseUpdateOptions(args[1:])
+		if err != nil {
+			return err
+		}
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
-		return runUpdateVNext(cfg, args[1:], output)
+		return executeUpdateVNext(cfg, options, output)
+	case "upgrade-check":
+		return runUpgradeCheck(paths, args[1:], output)
+	case "upgrade-activate":
+		return runUpgradeActivate(paths, args[1:], output)
 	default:
 		return fmt.Errorf("unknown server action %q", args[0])
 	}
+}
+
+func runUpgradeCheck(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
+	resources := paths.ResourcesDir
+	seenResources := false
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--resources":
+			if seenResources {
+				return fmt.Errorf("--resources may only be specified once")
+			}
+			seenResources = true
+			value, next, err := serverOptionValue(args, index, "--resources")
+			if err != nil {
+				return err
+			}
+			resources = value
+			index = next
+		default:
+			return fmt.Errorf("unknown upgrade-check argument %s", args[index])
+		}
+	}
+	if err := activation.UpgradePreflight(
+		context.Background(), paths.Home, resources,
+	); err != nil {
+		return err
+	}
+	result := map[string]any{
+		"ready": true, "runtime_home": paths.Home,
+	}
+	if output.JSON() {
+		return output.writeJSON(result)
+	}
+	return output.line("Upgrade preflight: READY")
+}
+
+func runUpgradeActivate(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
+	payload := ""
+	target := ""
+	commandLink := ""
+	overwrite := false
+	localSourceInstall := false
+	coordinatorPID := 0
+	seen := make(map[string]struct{})
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--payload", "--target-home", "--command-link", "--coordinator-pid":
+			name := args[index]
+			if _, exists := seen[name]; exists {
+				return fmt.Errorf("%s may only be specified once", name)
+			}
+			seen[name] = struct{}{}
+			raw, next, err := serverOptionValue(args, index, name)
+			if err != nil {
+				return err
+			}
+			index = next
+			switch name {
+			case "--payload":
+				payload = raw
+			case "--target-home":
+				target = raw
+			case "--command-link":
+				commandLink = raw
+			case "--coordinator-pid":
+				value, parseErr := strconv.Atoi(raw)
+				if parseErr != nil || value <= 0 {
+					return fmt.Errorf(
+						"--coordinator-pid must be a positive integer",
+					)
+				}
+				coordinatorPID = value
+			}
+		case "--overwrite-configs":
+			if _, exists := seen[args[index]]; exists {
+				return fmt.Errorf(
+					"--overwrite-configs may only be specified once",
+				)
+			}
+			seen[args[index]] = struct{}{}
+			overwrite = true
+		case "--local-source-install":
+			if _, exists := seen[args[index]]; exists {
+				return fmt.Errorf(
+					"--local-source-install may only be specified once",
+				)
+			}
+			seen[args[index]] = struct{}{}
+			localSourceInstall = true
+		default:
+			return fmt.Errorf("unknown upgrade-activate argument %s", args[index])
+		}
+	}
+	if payload == "" || target == "" {
+		return fmt.Errorf(
+			"upgrade-activate requires --payload and --target-home",
+		)
+	}
+	if localSourceInstall && overwrite {
+		return fmt.Errorf(
+			"--local-source-install cannot be combined with --overwrite-configs",
+		)
+	}
+	if localSourceInstall {
+		overwrite = true
+	}
+	targetAbsolute, err := layout.CanonicalHome(target)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(targetAbsolute) != filepath.Clean(paths.Home) {
+		return fmt.Errorf(
+			"upgrade target %s does not match SN_CLI_HOME %s",
+			targetAbsolute, paths.Home,
+		)
+	}
+	expectedCommandTarget := filepath.Join(
+		targetAbsolute, "bin", "sn-cli",
+	)
+	if commandLink != "" {
+		if err := validateActivationCommandLink(
+			targetAbsolute, commandLink, expectedCommandTarget,
+		); err != nil {
+			return err
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	var stopServerForInstall func() error
+	if localSourceInstall {
+		stopServerForInstall = func() error {
+			return stopServerLocked(
+				paths,
+				newCLIOutput(false, io.Discard, io.Discard),
+			)
+		}
+	}
+	result, err := activation.UpgradeActivate(
+		context.Background(),
+		activation.UpgradeRequest{
+			TargetHome: targetAbsolute, PayloadDir: payload,
+			CandidateBinary: executable, OverwriteConfig: overwrite,
+			LocalSourceInstall: localSourceInstall,
+			StopServer:         stopServerForInstall,
+			CoordinatorPID:     coordinatorPID,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if commandLink != "" {
+		if err := activation.EnsureCommandLink(
+			commandLink, expectedCommandTarget,
+		); err != nil {
+			return fmt.Errorf(
+				"Runtime activated in %s, but command link was not created: %w",
+				targetAbsolute, err,
+			)
+		}
+	}
+	if output.JSON() {
+		return output.writeJSON(map[string]any{
+			"activated": true, "activation": result,
+		})
+	}
+	return output.line(
+		"Activated contract v%d in %s",
+		result.ContractVersion, result.TargetHome,
+	)
+}
+
+func validateActivationCommandLink(
+	targetHome string,
+	commandLink string,
+	expectedTarget string,
+) error {
+	if filepath.Base(commandLink) != "sn-cli" {
+		return fmt.Errorf("command link must be named sn-cli")
+	}
+	if err := activation.ValidateCommandLink(
+		commandLink, expectedTarget,
+	); err != nil {
+		return err
+	}
+	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(commandLink))
+	if err != nil {
+		return fmt.Errorf("resolve command link directory: %w", err)
+	}
+	resolvedLink := filepath.Join(resolvedParent, filepath.Base(commandLink))
+	relative, err := filepath.Rel(targetHome, resolvedLink)
+	if err != nil {
+		return fmt.Errorf("compare command link with Runtime home: %w", err)
+	}
+	if relative == "." || relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("command link must be outside the Runtime home")
+	}
+	return nil
+}
+
+func serverOptionValue(
+	args []string,
+	index int,
+	name string,
+) (string, int, error) {
+	next := index + 1
+	if next >= len(args) || args[next] == "" ||
+		strings.HasPrefix(args[next], "--") {
+		return "", index, fmt.Errorf("%s requires value", name)
+	}
+	return args[next], next, nil
 }
 
 func serverDoctor(paths layout.Paths, output *cliOutput) error {
@@ -117,7 +358,7 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 	var missingAuth []string
 	for _, entry := range services.Profiles.Entries() {
 		if entry.Command != nil {
-			if _, err := exec.LookPath(entry.Command.Binary); err != nil {
+			if _, err := exec.LookPath(entry.Command.Command); err != nil {
 				missingBinaries = append(missingBinaries, entry.ID)
 			}
 		}
@@ -353,6 +594,12 @@ func stopServerLocked(paths layout.Paths, output *cliOutput) error {
 			return output.line("sn-server stopped (pid=%d)", pid)
 		}
 		if stateErr != nil {
+			if errors.Is(
+				stateErr, errServerLeaseReleasedWhileAlive,
+			) && currentPID == pid {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
 			return stateErr
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -382,8 +629,8 @@ func serverRunning(paths layout.Paths) (bool, int, error) {
 			identity.StartToken == record.ProcessStart &&
 			identity.Executable == record.ProcessExecutable {
 			return false, record.PID, fmt.Errorf(
-				"sn-server pid %d is alive but does not hold its lease; refusing unsafe lifecycle operations",
-				record.PID,
+				"sn-server pid %d is alive but does not hold its lease; refusing unsafe lifecycle operations: %w",
+				record.PID, errServerLeaseReleasedWhileAlive,
 			)
 		}
 		return false, record.PID, nil
@@ -591,14 +838,21 @@ func serverNamespaces() []string {
 
 func serverCapabilities() map[string][]string {
 	return map[string][]string{
-		"profile": {"single_call", "cli", "api", "stream"},
-		"session": {"history", "run", "submit", "tmux_carrier"},
-		"agent":   {"api_harness", "tool_loop", "stream"},
+		"profile": {"single_call", "cli", "api", "typed_override", "stream"},
+		"session": {
+			"history", "run", "submit", "managed_cli", "execution_query",
+			"reconcile",
+		},
+		"tmux":  {"interactive_windows", "paste", "attach"},
+		"agent": {"api_harness", "tool_loop", "stream"},
 		"run": {
 			"durable_queue", "events", "watch", "cancel", "resume",
 			"retry", "reconcile", "gc",
 		},
-		"server": {"http", "workers", "lifecycle", "update"},
+		"server": {
+			"http", "workers", "lifecycle", "update", "upgrade_preflight",
+			"atomic_activation",
+		},
 	}
 }
 
@@ -670,32 +924,75 @@ func serverDoctorDependencyError(
 	)
 }
 
+type updateOptions struct {
+	checkOnly     bool
+	dryRun        bool
+	targetVersion string
+}
+
+func parseUpdateOptions(args []string) (updateOptions, error) {
+	var options updateOptions
+	seen := make(map[string]struct{})
+	for index := 0; index < len(args); index++ {
+		name := args[index]
+		if _, exists := seen[name]; exists {
+			return updateOptions{}, fmt.Errorf(
+				"%s may only be specified once", name,
+			)
+		}
+		switch name {
+		case "--check":
+			seen[name] = struct{}{}
+			options.checkOnly = true
+		case "--dry-run":
+			seen[name] = struct{}{}
+			options.dryRun = true
+		case "--version":
+			seen[name] = struct{}{}
+			value, next, err := serverOptionValue(args, index, name)
+			if err != nil {
+				return updateOptions{}, err
+			}
+			options.targetVersion = value
+			index = next
+		default:
+			return updateOptions{}, fmt.Errorf(
+				"unknown update argument %s", args[index],
+			)
+		}
+	}
+	if options.checkOnly && options.dryRun {
+		return updateOptions{}, fmt.Errorf(
+			"--check and --dry-run are mutually exclusive",
+		)
+	}
+	if options.checkOnly && options.targetVersion != "" {
+		return updateOptions{}, fmt.Errorf(
+			"--check and --version are mutually exclusive",
+		)
+	}
+	return options, nil
+}
+
 func runUpdateVNext(
 	cfg *config.Config,
 	args []string,
 	output *cliOutput,
 ) error {
-	checkOnly := false
-	dryRun := false
-	targetVersion := ""
-	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "--check":
-			checkOnly = true
-		case "--dry-run":
-			dryRun = true
-		case "--version":
-			index++
-			if index >= len(args) {
-				return fmt.Errorf("--version requires value")
-			}
-			targetVersion = args[index]
-		default:
-			return fmt.Errorf("unknown update argument %s", args[index])
-		}
+	options, err := parseUpdateOptions(args)
+	if err != nil {
+		return err
 	}
-	if dryRun {
-		versionLabel := targetVersion
+	return executeUpdateVNext(cfg, options, output)
+}
+
+func executeUpdateVNext(
+	cfg *config.Config,
+	options updateOptions,
+	output *cliOutput,
+) error {
+	if options.dryRun {
+		versionLabel := options.targetVersion
 		if versionLabel == "" {
 			versionLabel = "<latest-version>"
 		}
@@ -719,10 +1016,10 @@ func runUpdateVNext(
 		return output.line("URL: %s", archiveURL)
 	}
 	var status snupdate.Status
-	if checkOnly || targetVersion == "" {
+	if options.checkOnly || options.targetVersion == "" {
 		status = snupdate.Check(context.Background(), cfg, version.Version)
 	}
-	if checkOnly {
+	if options.checkOnly {
 		if status.Error != "" {
 			if !output.JSON() {
 				_ = renderUpdateStatus(output, status)
@@ -734,7 +1031,7 @@ func runUpdateVNext(
 		}
 		return renderUpdateStatus(output, status)
 	}
-	if targetVersion == "" {
+	if options.targetVersion == "" {
 		if status.Error != "" {
 			if !output.JSON() {
 				_ = renderUpdateStatus(output, status)
@@ -748,9 +1045,11 @@ func runUpdateVNext(
 			}
 			return renderUpdateStatus(output, status)
 		}
-		targetVersion = status.LatestVersion
+		options.targetVersion = status.LatestVersion
 	}
-	result, err := snupdate.Apply(context.Background(), cfg, targetVersion)
+	result, err := snupdate.Apply(
+		context.Background(), cfg, options.targetVersion,
+	)
 	if err != nil {
 		return err
 	}

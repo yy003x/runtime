@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,9 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/cli/config"
 	"github.com/yy003x/runtime/internal/installbundle"
 )
@@ -142,108 +145,92 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	); err != nil {
 		return ApplyResult{}, err
 	}
-	for _, target := range []string{cfg.Paths.Binary, cfg.Paths.ServerBinary} {
-		if info, err := os.Lstat(target); err == nil &&
-			(!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
-			return ApplyResult{}, fmt.Errorf(
-				"binary target is not a regular file: %s", target,
-			)
-		} else if err != nil && !os.IsNotExist(err) {
-			return ApplyResult{}, err
+	coordinatorPID := 0
+	if current, executableErr := os.Executable(); executableErr == nil {
+		if currentInfo, currentErr := os.Stat(current); currentErr == nil {
+			if targetInfo, targetErr := os.Stat(cfg.Paths.Binary); targetErr == nil &&
+				os.SameFile(currentInfo, targetInfo) {
+				coordinatorPID = os.Getpid()
+			}
 		}
 	}
-	mergedHome := filepath.Join(temporary, "merged-home")
-	mergedProfiles := filepath.Join(mergedHome, "configs")
-	mergedCommands := filepath.Join(mergedHome, "commands")
-	mergedResources := filepath.Join(mergedHome, "resources")
-	for _, directory := range []string{
-		mergedProfiles, mergedCommands, mergedResources,
-	} {
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return ApplyResult{}, err
-		}
-	}
-	if info, err := os.Stat(cfg.Paths.ConfigDir); err == nil && info.IsDir() {
-		if _, err := installbundle.SyncMissing(cfg.Paths.ConfigDir, mergedProfiles); err != nil {
-			return ApplyResult{}, err
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return ApplyResult{}, err
-	}
-	if info, err := os.Stat(cfg.Paths.CommandDir); err == nil && info.IsDir() {
-		if _, err := installbundle.SyncMissing(cfg.Paths.CommandDir, mergedCommands); err != nil {
-			return ApplyResult{}, err
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return ApplyResult{}, err
-	}
-	if info, err := os.Stat(cfg.Paths.ResourcesDir); err == nil && info.IsDir() {
-		if _, err := installbundle.SyncMissing(cfg.Paths.ResourcesDir, mergedResources); err != nil {
-			return ApplyResult{}, err
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return ApplyResult{}, err
-	}
-	if _, err := installbundle.SyncMissing(packagedProfiles, mergedProfiles); err != nil {
-		return ApplyResult{}, err
-	}
-	if _, err := installbundle.SyncMissing(packagedCommands, mergedCommands); err != nil {
-		return ApplyResult{}, err
-	}
-	if _, err := installbundle.SyncMissing(packagedResources, mergedResources); err != nil {
-		return ApplyResult{}, err
-	}
-	if _, err := copyMissingFile(
-		cfg.Paths.RuntimeConfigFile,
-		filepath.Join(mergedHome, "runtime.json"),
-	); err != nil && !os.IsNotExist(err) {
-		return ApplyResult{}, err
-	}
-	if _, err := copyMissingFile(
-		packagedRuntimeConfig,
-		filepath.Join(mergedHome, "runtime.json"),
-	); err != nil {
-		return ApplyResult{}, err
-	}
-	if err := validateBinary(ctx, binary, mergedHome); err != nil {
-		return ApplyResult{}, err
-	}
-	profileSyncResult, err := installbundle.SyncMissing(
-		packagedProfiles, cfg.Paths.ConfigDir,
+	activated, err := runCandidateActivation(
+		ctx, binary, payload, cfg.Home, coordinatorPID,
 	)
 	if err != nil {
-		return ApplyResult{}, err
-	}
-	commandSyncResult, err := installbundle.SyncMissing(packagedCommands, cfg.Paths.CommandDir)
-	if err != nil {
-		return ApplyResult{}, err
-	}
-	copiedRuntimeConfig, err := copyMissingFile(
-		packagedRuntimeConfig, cfg.Paths.RuntimeConfigFile,
-	)
-	if err != nil {
-		return ApplyResult{}, err
-	}
-	resourceSyncResult, err := installbundle.SyncMissing(packagedResources, cfg.Paths.ResourcesDir)
-	if err != nil {
-		return ApplyResult{}, err
-	}
-	if err := installBinary(binary, cfg.Paths.Binary); err != nil {
-		return ApplyResult{}, err
-	}
-	if err := installBinary(serverBinary, cfg.Paths.ServerBinary); err != nil {
 		return ApplyResult{}, err
 	}
 	result := ApplyResult{
 		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
 		ServerBinary:        cfg.Paths.ServerBinary,
-		CopiedProfiles:      profileSyncResult.Copied,
-		CopiedCommands:      commandSyncResult.Copied,
-		CopiedRuntimeConfig: copiedRuntimeConfig,
-		CopiedResources:     resourceSyncResult.Copied,
+		CopiedProfiles:      activated.CopiedProfiles,
+		CopiedCommands:      activated.CopiedCommands,
+		CopiedRuntimeConfig: activated.CopiedRuntimeConfig,
+		CopiedResources:     activated.ResourceFiles,
 	}
 	_ = writeState(cfg, Status{CheckedAt: time.Now().UTC(), CurrentVersion: version, LatestVersion: version})
 	return result, nil
+}
+
+var runCandidateActivation = func(
+	ctx context.Context,
+	binary string,
+	payload string,
+	targetHome string,
+	coordinatorPID int,
+) (activation.UpgradeResult, error) {
+	args := []string{
+		"--json", "server", "upgrade-activate",
+		"--payload", payload,
+		"--target-home", targetHome,
+	}
+	if coordinatorPID > 0 {
+		args = append(
+			args, "--coordinator-pid", strconv.Itoa(coordinatorPID),
+		)
+	}
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Env = replaceEnv(os.Environ(), "SN_CLI_HOME", targetHome)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return activation.UpgradeResult{}, fmt.Errorf(
+			"activate candidate: %w: %s",
+			err, strings.TrimSpace(string(output)),
+		)
+	}
+	if len(output) > 1<<20 {
+		return activation.UpgradeResult{}, fmt.Errorf(
+			"candidate activation output exceeds 1048576 bytes",
+		)
+	}
+	var response struct {
+		SchemaVersion   int                      `json:"schema_version"`
+		ContractVersion int                      `json:"contract_version"`
+		Activated       bool                     `json:"activated"`
+		Activation      activation.UpgradeResult `json:"activation"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(output)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&response); err != nil {
+		return activation.UpgradeResult{}, fmt.Errorf(
+			"decode candidate activation result: %w", err,
+		)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return activation.UpgradeResult{}, fmt.Errorf(
+			"candidate activation result has trailing JSON",
+		)
+	}
+	if response.SchemaVersion != 1 || response.ContractVersion != 3 ||
+		!response.Activated ||
+		filepath.Clean(response.Activation.TargetHome) !=
+			filepath.Clean(targetHome) {
+		return activation.UpgradeResult{}, fmt.Errorf(
+			"candidate activation result does not match target home",
+		)
+	}
+	return response.Activation, nil
 }
 
 func latestRelease(ctx context.Context, cfg *config.Config) (string, error) {

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yy003x/runtime/internal/layout"
 )
 
 func TestResolvePathAndUpdateDefaults(t *testing.T) {
@@ -20,6 +22,10 @@ func TestLoadUsesSNCLIHomeWithoutRepository(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".sn")
 	t.Setenv("SN_CLI_HOME", home)
 	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = layout.CanonicalHome(home)
 	if err != nil {
 		t.Fatal(err)
 	}

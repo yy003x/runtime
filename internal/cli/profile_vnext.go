@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,16 +84,14 @@ func runLoadedVNextProfile(
 			return err
 		}
 		if entry.Command != nil {
-			if err := output.line("Binary: %s", entry.Command.Binary); err != nil {
+			if err := output.line("Command: %s", entry.Command.Command); err != nil {
 				return err
 			}
-			if err := output.line(
-				"Transport: %s, prompt_delivery: %s",
-				entry.Command.Transport, entry.Command.PromptDelivery,
-			); err != nil {
-				return err
-			}
-			return nil
+			return output.line(
+				"Model: %s, effort: %s, exec: %t, cwd: %s",
+				entry.Command.Model, entry.Command.Effort,
+				entry.Command.Exec, entry.Command.CWD,
+			)
 		}
 		if err := output.line(
 			"Driver: %s, model: %s", entry.Model.Driver, entry.Model.Model,
@@ -104,16 +103,26 @@ func runLoadedVNextProfile(
 		if len(args) > 2 {
 			return fmt.Errorf("profile check accepts at most one profile ID")
 		}
-		var checked []string
+		var entries []runtimeprofile.Entry
 		if len(args) == 2 {
-			if _, exists := runtime.Profiles.Resolve(args[1]); !exists {
+			entry, exists := runtime.Profiles.Resolve(args[1])
+			if !exists {
 				return fmt.Errorf("unknown profile %q", args[1])
 			}
-			checked = []string{args[1]}
+			entries = []runtimeprofile.Entry{entry}
 		} else {
-			for _, entry := range runtime.Profiles.Entries() {
-				checked = append(checked, entry.ID)
+			entries = runtime.Profiles.Entries()
+		}
+		checked := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Kind == runtimeprofile.KindCommand {
+				if err := runtimecommand.CheckProfile(*entry.Command); err != nil {
+					return fmt.Errorf("profile %q: %w", entry.ID, err)
+				}
+			} else if err := entry.Model.Validate(); err != nil {
+				return fmt.Errorf("profile %q: %w", entry.ID, err)
 			}
+			checked = append(checked, entry.ID)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"ok": true, "checked": checked})
@@ -125,51 +134,29 @@ func runLoadedVNextProfile(
 			return fmt.Errorf("unknown profile %q", args[0])
 		}
 		if entry.Kind == runtimeprofile.KindCommand {
-			commandProfile, prompt, nativeArgs, err := parseCommandProfileInput(
-				*entry.Command,
-				args[1:],
-			)
+			invocationBase, err := os.Getwd()
 			if err != nil {
 				return err
 			}
-			if commandProfile.Transport == runtimecommand.TransportTTY {
-				if commandProfile.PromptDelivery == runtimecommand.PromptManual {
-					return runtimecommand.ReplaceProcess(commandProfile, nativeArgs)
+			pipedInput := ""
+			if !runtimecommand.IsTerminal(os.Stdin) {
+				pipedInput, err = runtimecommand.ReadPrompt(os.Stdin)
+				if err != nil {
+					return err
 				}
-				return runtimecommand.ReplaceProcessPrompt(commandProfile, prompt)
 			}
-			result, err := runtimecommand.NewRunner().Execute(
-				context.Background(), commandProfile,
-				runtimecommand.ExecutionRequest{
-					Args: nativeArgs, Prompt: prompt,
-					TerminalDriver: runtime.Config.Terminal.Driver,
-				},
+			invocation, mode, err := buildCommandProfileInvocation(
+				*entry.Command, args[1:], pipedInput,
+				invocationBase, os.Environ(),
 			)
 			if err != nil {
 				return err
 			}
-			if output.JSON() {
-				return output.writeJSON(result)
+			stdinMode := runtimecommand.StdinTTY
+			if mode == runtimecommand.ModeExec {
+				stdinMode = runtimecommand.StdinNull
 			}
-			if err := output.text(result.Stdout); err != nil {
-				return err
-			}
-			if err := output.diagnostic(result.Stderr); err != nil {
-				return err
-			}
-			if result.LaunchHandle != "" {
-				return output.line(
-					"Submitted %s carrier: %s",
-					entry.Command.Transport, result.LaunchHandle,
-				)
-			}
-			if result.Stdout == "" && result.Stderr == "" {
-				return output.line(
-					"Command completed (exit=%d, capture=%s)",
-					result.ExitCode, result.CaptureQuality,
-				)
-			}
-			return nil
+			return runtimecommand.ReplaceProcess(invocation, stdinMode)
 		}
 		request, stream, err := parseDirectModelInput(entry.ID, *entry.Model, args[1:])
 		if stream {
@@ -219,12 +206,24 @@ func runLoadedVNextShortcut(
 			"shortcut profile %q must be type=cli", profileID,
 		)
 	}
-	if entry.Command.Transport != runtimecommand.TransportTTY {
-		return fmt.Errorf(
-			"shortcut profile %q must use transport=tty", profileID,
-		)
+	invocationBase, err := os.Getwd()
+	if err != nil {
+		return err
 	}
-	return runtimecommand.ReplaceProcess(*entry.Command, nativeArgs)
+	mode := runtimecommand.ModeInteractive
+	if entry.Command.Exec {
+		mode = runtimecommand.ModeExec
+	}
+	invocation, err := runtimecommand.Build(runtimecommand.BuildRequest{
+		Mode: mode, OutputProtocol: runtimecommand.OutputNative,
+		Profile: *entry.Command, NativeArgs: nativeArgs,
+		InheritedEnvironment: os.Environ(),
+		InvocationBase:       invocationBase,
+	})
+	if err != nil {
+		return err
+	}
+	return runtimecommand.ReplaceProcess(invocation, runtimecommand.StdinInherit)
 }
 
 func directModelResult(result contract.ModelResult) map[string]any {
@@ -261,84 +260,222 @@ func renderDirectModelResult(
 	)
 }
 
-func parseCommandProfileInput(
+type commandProfileOptions struct {
+	model      *string
+	effort     *runtimecommand.Effort
+	prompt     *string
+	exec       *bool
+	cwd        *string
+	positional *string
+}
+
+func buildCommandProfileInvocation(
 	profile runtimecommand.Profile,
 	args []string,
-) (runtimecommand.Profile, string, []string, error) {
-	effort, remaining, err := parseCommandProfileOptions(args)
+	pipedInput string,
+	invocationBase string,
+	inheritedEnvironment []string,
+) (runtimecommand.Invocation, runtimecommand.Mode, error) {
+	options, err := parseCommandProfileOptions(args)
 	if err != nil {
-		return runtimecommand.Profile{}, "", nil, err
+		return runtimecommand.Invocation{}, "", commandProfileError(err)
 	}
-	resolved, err := profile.WithEffort(effort)
+	basePrompt, err := runtimecommand.ResolvePrompt(
+		profile.Prompt, invocationBase,
+	)
 	if err != nil {
-		return runtimecommand.Profile{}, "", nil, err
+		return runtimecommand.Invocation{}, "", commandProfileError(err)
 	}
-	switch profile.PromptDelivery {
-	case runtimecommand.PromptManual:
-		return resolved, "", append([]string(nil), remaining...), nil
-	case runtimecommand.PromptArgv, runtimecommand.PromptStdin,
-		runtimecommand.PromptPaste:
-		if len(remaining) > 1 {
-			return runtimecommand.Profile{}, "", nil, fmt.Errorf(
-				"automatic command input must be one quoted argument",
-			)
-		}
-		if len(remaining) == 1 {
-			return resolved, remaining[0], nil, nil
-		}
-		value, err := readDirectStdin()
-		if err != nil {
-			return runtimecommand.Profile{}, "", nil, err
-		}
-		if profile.PromptDelivery == runtimecommand.PromptPaste &&
-			strings.TrimSpace(value) == "" {
-			return runtimecommand.Profile{}, "", nil, fmt.Errorf(
-				"paste prompt is required",
-			)
-		}
-		return resolved, value, nil, nil
-	default:
-		return runtimecommand.Profile{}, "", nil, fmt.Errorf(
-			"unsupported prompt delivery %q", profile.PromptDelivery,
+	typedPrompt := ""
+	if options.prompt != nil {
+		typedPrompt, err = runtimecommand.ResolvePrompt(
+			*options.prompt, invocationBase,
 		)
+		if err != nil {
+			return runtimecommand.Invocation{}, "", commandProfileError(err)
+		}
+	}
+	positional := ""
+	if options.positional != nil {
+		positional = *options.positional
+	}
+	prompt, err := runtimecommand.MergePrompt(
+		basePrompt, typedPrompt, pipedInput, positional,
+	)
+	if err != nil {
+		return runtimecommand.Invocation{}, "", commandProfileError(err)
+	}
+	effectiveExec := profile.Exec
+	if options.exec != nil {
+		effectiveExec = *options.exec
+	}
+	mode := runtimecommand.ModeInteractive
+	if effectiveExec {
+		mode = runtimecommand.ModeExec
+		if prompt == "" {
+			return runtimecommand.Invocation{}, "", commandProfileError(fmt.Errorf(
+				"exec Profile prompt is required",
+			))
+		}
+	}
+	var argvPrompt *string
+	if prompt != "" {
+		argvPrompt = &prompt
+	}
+	invocation, err := runtimecommand.Build(runtimecommand.BuildRequest{
+		Mode: mode, OutputProtocol: runtimecommand.OutputNative,
+		Profile: profile,
+		Overrides: runtimecommand.Overrides{
+			Model: options.model, Effort: options.effort, CWD: options.cwd,
+		},
+		ArgvPrompt:           argvPrompt,
+		InheritedEnvironment: inheritedEnvironment,
+		InvocationBase:       invocationBase,
+	})
+	if err != nil {
+		return runtimecommand.Invocation{}, "", commandProfileError(err)
+	}
+	return invocation, mode, nil
+}
+
+func commandProfileError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var runtimeErr *contract.RuntimeError
+	if errors.As(err, &runtimeErr) {
+		return err
+	}
+	return &contract.RuntimeError{
+		Code: contract.ErrorInvalidRequest, Phase: contract.PhaseProfile,
+		Message: err.Error(),
 	}
 }
 
-func parseCommandProfileOptions(
-	args []string,
-) (runtimecommand.Effort, []string, error) {
-	var effort runtimecommand.Effort
-	remaining := make([]string, 0, len(args))
+func parseCommandProfileOptions(args []string) (commandProfileOptions, error) {
+	var result commandProfileOptions
+	seen := make(map[string]bool)
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		if argument == "--" {
-			remaining = append(remaining, args[index+1:]...)
-			break
-		}
-		value := ""
-		switch {
-		case argument == "--effort":
-			index++
-			if index >= len(args) {
-				return "", nil, fmt.Errorf("--effort requires value")
+			if result.positional != nil {
+				return commandProfileOptions{}, fmt.Errorf(
+					"prompt terminator cannot follow positional input",
+				)
 			}
-			value = args[index]
-		case strings.HasPrefix(argument, "--effort="):
-			value = strings.TrimPrefix(argument, "--effort=")
+			remaining := args[index+1:]
+			if len(remaining) > 1 {
+				return commandProfileOptions{}, fmt.Errorf(
+					"`--` accepts at most one input",
+				)
+			}
+			if len(remaining) == 1 {
+				value := remaining[0]
+				result.positional = &value
+			}
+			return result, nil
+		}
+		if result.positional != nil {
+			if strings.HasPrefix(argument, "-") {
+				return commandProfileOptions{}, fmt.Errorf(
+					"typed options cannot follow positional input",
+				)
+			}
+			return commandProfileOptions{}, fmt.Errorf(
+				"Profile input must be one quoted argument",
+			)
+		}
+		name, value, attached := splitTypedOption(argument)
+		switch name {
+		case "--model", "--effort", "--prompt", "--cwd":
+			if seen[name] {
+				return commandProfileOptions{}, fmt.Errorf(
+					"%s may only be specified once", name,
+				)
+			}
+			seen[name] = true
+			if !attached {
+				index++
+				if index >= len(args) ||
+					isCommandProfileTypedOption(args[index]) {
+					return commandProfileOptions{}, fmt.Errorf(
+						"%s requires value", name,
+					)
+				}
+				value = args[index]
+			}
+			if value == "" {
+				return commandProfileOptions{}, fmt.Errorf(
+					"%s requires value", name,
+				)
+			}
+			switch name {
+			case "--model":
+				result.model = &value
+			case "--effort":
+				effort, err := runtimecommand.ParseEffort(value)
+				if err != nil {
+					return commandProfileOptions{}, err
+				}
+				result.effort = &effort
+			case "--prompt":
+				result.prompt = &value
+			case "--cwd":
+				result.cwd = &value
+			}
+		case "--exec":
+			if seen[name] {
+				return commandProfileOptions{}, fmt.Errorf(
+					"--exec may only be specified once",
+				)
+			}
+			seen[name] = true
+			execValue := true
+			if attached {
+				switch value {
+				case "true":
+				case "false":
+					execValue = false
+				default:
+					return commandProfileOptions{}, fmt.Errorf(
+						"--exec must be bare, --exec=true, or --exec=false",
+					)
+				}
+			}
+			result.exec = &execValue
 		default:
-			remaining = append(remaining, argument)
-			continue
+			if strings.HasPrefix(argument, "-") {
+				return commandProfileOptions{}, fmt.Errorf(
+					"unknown command Profile option: %s", argument,
+				)
+			}
+			value := argument
+			result.positional = &value
 		}
-		if effort != "" {
-			return "", nil, fmt.Errorf("--effort may only be specified once")
-		}
-		parsed, err := runtimecommand.ParseEffort(value)
-		if err != nil {
-			return "", nil, err
-		}
-		effort = parsed
 	}
-	return effort, remaining, nil
+	return result, nil
+}
+
+func isCommandProfileTypedOption(value string) bool {
+	if strings.HasPrefix(value, "--") {
+		return true
+	}
+	name, _, _ := splitTypedOption(value)
+	switch name {
+	case "--model", "--effort", "--prompt", "--cwd", "--exec":
+		return true
+	default:
+		return value == "--"
+	}
+}
+
+func splitTypedOption(value string) (string, string, bool) {
+	if strings.HasPrefix(value, "--") {
+		if name, attached, exists := strings.Cut(value, "="); exists {
+			return name, attached, true
+		}
+	}
+	return value, "", false
 }
 
 func parseDirectModelInput(
@@ -350,62 +487,121 @@ func parseDirectModelInput(
 	stream := false
 	requestFile := ""
 	system := ""
-	var prompt string
+	prompt := ""
+	inputSet := false
+	seen := make(map[string]bool)
 	for index := 0; index < len(args); index++ {
-		switch args[index] {
+		current := args[index]
+		if current == "--" {
+			if inputSet {
+				return contract.GenerateRequest{}, stream, fmt.Errorf(
+					"model input terminator cannot follow positional input",
+				)
+			}
+			remaining := args[index+1:]
+			if len(remaining) > 1 {
+				return contract.GenerateRequest{}, stream, fmt.Errorf(
+					"`--` accepts at most one model input",
+				)
+			}
+			if len(remaining) == 1 {
+				prompt = remaining[0]
+				inputSet = true
+			}
+			break
+		}
+		if inputSet {
+			return contract.GenerateRequest{}, stream, fmt.Errorf(
+				"model input must be the final argument",
+			)
+		}
+		if !strings.HasPrefix(current, "-") {
+			prompt = current
+			inputSet = true
+			continue
+		}
+		name := current
+		if strings.HasPrefix(current, "--effort=") {
+			name = "--effort"
+		}
+		if seen[name] {
+			return contract.GenerateRequest{}, stream, fmt.Errorf(
+				"model option %s may only be used once", name,
+			)
+		}
+		seen[name] = true
+		switch current {
 		case "--stream":
 			stream = true
 		case "--request-file":
-			index++
-			if index >= len(args) {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("--request-file requires value")
+			value, next, err := directModelOptionValue(
+				args, index, "--request-file",
+			)
+			if err != nil {
+				return contract.GenerateRequest{}, stream, err
 			}
-			requestFile = args[index]
+			requestFile = value
+			index = next
 		case "--system":
-			index++
-			if index >= len(args) {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("--system requires value")
+			value, next, err := directModelOptionValue(
+				args, index, "--system",
+			)
+			if err != nil {
+				return contract.GenerateRequest{}, stream, err
 			}
-			system = args[index]
+			system = value
+			index = next
 		case "--max-completion-tokens", "--max-tokens":
 			expected := modelTokenLimitOption(modelProfile.Driver)
-			if args[index] != expected {
+			if current != expected {
 				return contract.GenerateRequest{}, stream, fmt.Errorf(
 					"%s is invalid for %s; use %s",
-					args[index], modelProfile.Driver, expected,
+					current, modelProfile.Driver, expected,
 				)
 			}
-			index++
-			if index >= len(args) {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("%s requires value", expected)
+			value, next, err := directModelOptionValue(
+				args, index, expected,
+			)
+			if err != nil {
+				return contract.GenerateRequest{}, stream, err
 			}
-			value, err := strconv.ParseInt(args[index], 10, 64)
-			if err != nil || value <= 0 {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed <= 0 {
 				return contract.GenerateRequest{}, stream, fmt.Errorf("%s must be positive", expected)
 			}
-			request.Input.Options.MaxOutputTokens = &value
+			request.Input.Options.MaxOutputTokens = &parsed
+			index = next
 		case "--temperature":
-			index++
-			if index >= len(args) {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("--temperature requires value")
+			value, next, err := directModelOptionValue(
+				args, index, "--temperature",
+			)
+			if err != nil {
+				return contract.GenerateRequest{}, stream, err
 			}
-			value, err := strconv.ParseFloat(args[index], 64)
-			if err != nil || value < 0 || value > 2 {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("--temperature must be between 0 and 2")
+			parsed, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return contract.GenerateRequest{}, stream, fmt.Errorf(
+					"--temperature must be between 0 and 2",
+				)
 			}
-			request.Input.Options.Temperature = &value
+			if err := contract.ValidateTemperature(parsed); err != nil {
+				return contract.GenerateRequest{}, stream, fmt.Errorf(
+					"--temperature: %w", err,
+				)
+			}
+			request.Input.Options.Temperature = &parsed
+			index = next
 		default:
-			if args[index] == "--effort" ||
-				strings.HasPrefix(args[index], "--effort=") {
-				value := strings.TrimPrefix(args[index], "--effort=")
-				if args[index] == "--effort" {
-					index++
-					if index >= len(args) {
-						return contract.GenerateRequest{}, stream, fmt.Errorf(
-							"--effort requires value",
-						)
+			if name == "--effort" {
+				value := strings.TrimPrefix(current, "--effort=")
+				if current == "--effort" {
+					var err error
+					value, index, err = directModelOptionValue(
+						args, index, "--effort",
+					)
+					if err != nil {
+						return contract.GenerateRequest{}, stream, err
 					}
-					value = args[index]
 				}
 				if _, err := runtimecommand.ParseEffort(value); err != nil {
 					return contract.GenerateRequest{}, stream, err
@@ -415,13 +611,9 @@ func parseDirectModelInput(
 					profileID,
 				)
 			}
-			if strings.HasPrefix(args[index], "-") {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("unknown model input option: %s", args[index])
-			}
-			if prompt != "" {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("model prompt must be one quoted argument")
-			}
-			prompt = args[index]
+			return contract.GenerateRequest{}, stream, fmt.Errorf(
+				"unknown model input option: %s", current,
+			)
 		}
 	}
 	if requestFile != "" {
@@ -456,6 +648,18 @@ func parseDirectModelInput(
 		return contract.GenerateRequest{}, stream, err
 	}
 	return request, stream, nil
+}
+
+func directModelOptionValue(
+	args []string,
+	index int,
+	name string,
+) (string, int, error) {
+	index++
+	if index >= len(args) || strings.HasPrefix(args[index], "--") {
+		return "", index, fmt.Errorf("%s requires value", name)
+	}
+	return args[index], index, nil
 }
 
 func modelTokenLimitOption(driver runtimemodel.DriverName) string {

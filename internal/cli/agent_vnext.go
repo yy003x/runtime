@@ -12,6 +12,8 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
+	"github.com/yy003x/runtime/internal/runtimeconfig"
+	runtimeprofile "github.com/yy003x/runtime/profile"
 	runtime "github.com/yy003x/runtime/run"
 )
 
@@ -29,6 +31,20 @@ func runAgentNamespace(
 	}
 	if err != nil {
 		return err
+	}
+	core, err := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+	if err != nil {
+		return err
+	}
+	entry, exists := core.Profiles.Resolve(options.profileID)
+	if !exists {
+		return fmt.Errorf("unknown profile %q", options.profileID)
+	}
+	if entry.Kind != runtimeprofile.KindModel {
+		return fmt.Errorf(
+			"agent requires an API model profile; %q is a command profile",
+			options.profileID,
+		)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -114,89 +130,155 @@ type agentRunOptions struct {
 
 func parseAgentRun(args []string) (agentRunOptions, error) {
 	value := agentRunOptions{labels: make(map[string]string)}
-	var positional []string
+	seen := make(map[string]bool)
+	inputSet := false
 	for index := 0; index < len(args); index++ {
-		switch args[index] {
+		current := args[index]
+		if current == "--" {
+			if inputSet {
+				return value, fmt.Errorf(
+					"agent input terminator cannot follow positional input",
+				)
+			}
+			remaining := args[index+1:]
+			if len(remaining) > 1 {
+				return value, fmt.Errorf(
+					"`--` accepts at most one agent input",
+				)
+			}
+			if len(remaining) == 1 {
+				value.input = remaining[0]
+				inputSet = true
+			}
+			break
+		}
+		if inputSet {
+			return value, fmt.Errorf("agent input must be the final argument")
+		}
+		if !strings.HasPrefix(current, "-") {
+			value.input = current
+			inputSet = true
+			continue
+		}
+		if current != "--label" {
+			if seen[current] {
+				return value, fmt.Errorf(
+					"agent option %s may only be used once", current,
+				)
+			}
+			seen[current] = true
+		}
+		switch current {
 		case "--profile":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--profile requires value")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--profile",
+			)
+			if err != nil {
+				return value, err
 			}
-			value.profileID = args[index]
+			value.profileID = optionValue
+			index = next
 		case "--session-id":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--session-id requires value")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--session-id",
+			)
+			if err != nil {
+				return value, err
 			}
-			value.sessionID = args[index]
+			value.sessionID = optionValue
+			index = next
 		case "--task-id":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--task-id requires value")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--task-id",
+			)
+			if err != nil {
+				return value, err
 			}
-			value.taskID = args[index]
+			value.taskID = optionValue
+			index = next
 		case "--stream":
 			value.stream = true
 		case "--max-rounds":
-			index++
-			current, err := parsePositiveInt(args, index, "--max-rounds")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--max-rounds",
+			)
 			if err != nil {
 				return value, err
 			}
-			value.maxRounds = current
+			parsed, err := parsePositiveInt(optionValue, "--max-rounds")
+			if err != nil {
+				return value, err
+			}
+			value.maxRounds = parsed
+			index = next
 		case "--max-tool-calls":
-			index++
-			current, err := parsePositiveInt(args, index, "--max-tool-calls")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--max-tool-calls",
+			)
 			if err != nil {
 				return value, err
 			}
-			value.maxToolCalls = current
-		case "--max-total-tokens":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--max-total-tokens requires value")
+			parsed, err := parsePositiveInt(optionValue, "--max-tool-calls")
+			if err != nil {
+				return value, err
 			}
-			current, err := strconv.ParseInt(args[index], 10, 64)
-			if err != nil || current <= 0 {
+			value.maxToolCalls = parsed
+			index = next
+		case "--max-total-tokens":
+			optionValue, next, err := agentOptionValue(
+				args, index, "--max-total-tokens",
+			)
+			if err != nil {
+				return value, err
+			}
+			parsed, err := strconv.ParseInt(optionValue, 10, 64)
+			if err != nil || parsed <= 0 {
 				return value, fmt.Errorf("--max-total-tokens must be positive")
 			}
-			value.maxTotalTokens = current
+			value.maxTotalTokens = parsed
+			index = next
 		case "--max-wall-time":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--max-wall-time requires value")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--max-wall-time",
+			)
+			if err != nil {
+				return value, err
 			}
-			current, err := time.ParseDuration(args[index])
-			if err != nil || current <= 0 {
+			parsed, err := time.ParseDuration(optionValue)
+			if err != nil || parsed <= 0 {
 				return value, fmt.Errorf("--max-wall-time must be a positive duration")
 			}
-			value.maxWallTime = current
+			value.maxWallTime = parsed
+			index = next
 		case "--label":
-			index++
-			if index >= len(args) {
-				return value, fmt.Errorf("--label requires key=value")
+			optionValue, next, err := agentOptionValue(
+				args, index, "--label",
+			)
+			if err != nil {
+				return value, err
 			}
-			key, current, exists := strings.Cut(args[index], "=")
+			key, labelValue, exists := strings.Cut(optionValue, "=")
 			if !exists || key == "" {
 				return value, fmt.Errorf("--label requires key=value")
 			}
-			value.labels[key] = current
-		default:
-			if strings.HasPrefix(args[index], "-") {
-				return value, fmt.Errorf("unknown agent option %s", args[index])
+			if _, exists := value.labels[key]; exists {
+				return value, fmt.Errorf(
+					"--label key %q may only be used once", key,
+				)
 			}
-			positional = append(positional, args[index])
+			value.labels[key] = labelValue
+			index = next
+		default:
+			return value, fmt.Errorf("unknown agent option %s", current)
 		}
 	}
 	if value.profileID == "" {
 		return value, fmt.Errorf("--profile is required")
 	}
-	if len(positional) > 1 {
-		return value, fmt.Errorf("agent input must be one quoted argument")
+	if err := validateAgentBudgetOverrides(value); err != nil {
+		return value, err
 	}
-	if len(positional) == 1 {
-		value.input = positional[0]
-	} else {
+	if !inputSet {
 		input, err := readDirectStdin()
 		if err != nil {
 			return value, err
@@ -209,13 +291,42 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 	return value, nil
 }
 
-func parsePositiveInt(args []string, index int, name string) (int, error) {
-	if index >= len(args) {
-		return 0, fmt.Errorf("%s requires value", name)
+func agentOptionValue(
+	args []string,
+	index int,
+	name string,
+) (string, int, error) {
+	index++
+	if index >= len(args) || strings.HasPrefix(args[index], "--") {
+		return "", index, fmt.Errorf("%s requires value", name)
 	}
-	value, err := strconv.Atoi(args[index])
-	if err != nil || value <= 0 {
+	return args[index], index, nil
+}
+
+func parsePositiveInt(value string, name string) (int, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
-	return value, nil
+	return parsed, nil
+}
+
+func validateAgentBudgetOverrides(value agentRunOptions) error {
+	config := runtimeconfig.Default()
+	if value.maxRounds > 0 {
+		config.Agent.MaxRounds = value.maxRounds
+	}
+	if value.maxToolCalls > 0 {
+		config.Agent.MaxToolCalls = value.maxToolCalls
+	}
+	if value.maxTotalTokens > 0 {
+		config.Agent.MaxTotalTokens = value.maxTotalTokens
+	}
+	if value.maxWallTime > 0 {
+		config.Agent.MaxWallTime = value.maxWallTime.String()
+	}
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid Agent budget override: %w", err)
+	}
+	return nil
 }

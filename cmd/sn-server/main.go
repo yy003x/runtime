@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	transporthttp "github.com/yy003x/runtime/transport/http"
@@ -26,13 +27,23 @@ type serverConfig struct {
 }
 
 var fixedNamespaces = []string{
-	"profile", "session", "agent", "run", "server", "help", "version",
+	"profile", "session", "tmux", "agent", "run", "server", "help", "version",
 }
 
 func main() {
+	if err := validateServerArgs(os.Args[1:]); err != nil {
+		log.Fatalf("arguments: %v", err)
+	}
 	paths, err := layout.Resolve()
 	if err != nil {
 		log.Fatalf("resolve runtime home: %v", err)
+	}
+	if err := requireActivationReady(paths); err != nil {
+		log.Fatalf("activation gate: %v", err)
+	}
+	config, err := loadServerConfig(os.Getenv)
+	if err != nil {
+		log.Fatalf("server config: %v", err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -43,10 +54,6 @@ func main() {
 		log.Fatalf("initialize Runtime vNext: %v", err)
 	}
 	defer services.Runs.Close()
-	config, err := loadServerConfig(os.Getenv)
-	if err != nil {
-		log.Fatalf("server config: %v", err)
-	}
 	runtimeHandler, err := transporthttp.NewRuntimeHandler(
 		transporthttp.RuntimeServices{
 			Model:            transporthttp.NewHandler(services.Models),
@@ -110,6 +117,17 @@ func main() {
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		log.Fatalf("listen: %v", serveErr)
 	}
+}
+
+func validateServerArgs(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("sn-server does not accept command-line arguments")
+	}
+	return nil
+}
+
+func requireActivationReady(paths layout.Paths) error {
+	return activation.RequireNoGuard(paths.StateDir)
 }
 
 func loadServerConfig(getenv func(string) string) (serverConfig, error) {

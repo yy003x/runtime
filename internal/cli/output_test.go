@@ -19,7 +19,9 @@ func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
 	output := newCLIOutput(true, &stdout, &stderr)
 
 	exitCode := output.fail(&contract.RuntimeError{
-		Code: contract.ErrorRateLimited, Message: "retry later",
+		Code: contract.ErrorRateLimited, Phase: contract.PhaseTransport,
+		Message: "retry later", Retryable: true, RetryAfterMS: 250,
+		HTTPStatus: 429, Provider: "fixture", RequestID: "request_1",
 	})
 
 	if exitCode != 1 || stdout.Len() != 0 {
@@ -29,20 +31,50 @@ func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
 		SchemaVersion   int `json:"schema_version"`
 		ContractVersion int `json:"contract_version"`
 		Error           struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code         string `json:"code"`
+			Phase        string `json:"phase"`
+			Message      string `json:"message"`
+			Retryable    bool   `json:"retryable"`
+			RetryAfterMS int64  `json:"retry_after_ms"`
+			HTTPStatus   int    `json:"http_status"`
+			Provider     string `json:"provider"`
+			RequestID    string `json:"request_id"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr is not one JSON document: %v: %q", err, stderr.String())
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 2 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 3 ||
 		payload.Error.Code != string(contract.ErrorRateLimited) ||
+		payload.Error.Phase != string(contract.PhaseTransport) ||
+		!payload.Error.Retryable || payload.Error.RetryAfterMS != 250 ||
+		payload.Error.HTTPStatus != 429 ||
+		payload.Error.Provider != "fixture" ||
+		payload.Error.RequestID != "request_1" ||
 		!strings.Contains(payload.Error.Message, "retry later") {
 		t.Fatalf("payload=%#v", payload)
 	}
 	if strings.Count(strings.TrimSpace(stderr.String()), "\n") != 0 {
 		t.Fatalf("error must be compact: %q", stderr.String())
+	}
+}
+
+func TestMachineEnvelopeOverridesDomainSchemaOnlyAtOuterLayer(t *testing.T) {
+	payload := machineEnvelope(map[string]any{
+		"schema_version":   2,
+		"contract_version": 99,
+		"session": map[string]any{
+			"schema_version": 2,
+			"session_id":     "session_1",
+		},
+	}).(map[string]any)
+	if payload["schema_version"] != cliOutputSchemaVersion ||
+		payload["contract_version"] != cliOutputContractVersion {
+		t.Fatalf("outer payload=%#v", payload)
+	}
+	sessionValue := payload["session"].(map[string]any)
+	if sessionValue["schema_version"] != 2 {
+		t.Fatalf("nested session=%#v", sessionValue)
 	}
 }
 
@@ -86,7 +118,7 @@ func TestCLIOutputStreamFailureBeforeFirstEventIsJSON(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr=%q error=%v", stderr.String(), err)
 	}
-	if payload.ContractVersion != 2 ||
+	if payload.ContractVersion != 3 ||
 		payload.Error.Message != "failed before first event" {
 		t.Fatalf("payload=%#v", payload)
 	}
@@ -169,7 +201,7 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 			if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.ContractVersion != 2 ||
+			if payload.ContractVersion != 3 ||
 				!strings.Contains(payload.Error.Message, "unknown") ||
 				strings.Contains(stderr, `"final"`) {
 				t.Fatalf("payload=%#v stderr=%q", payload, stderr)
@@ -186,9 +218,7 @@ func TestCLIProfileNativeStreamArgumentDoesNotSelectRuntimeStreamErrors(
 		filepath.Join(paths.ConfigDir, "cx.json"),
 		[]byte(`{
 		  "type":"cli",
-		  "binary":"codex",
-		  "transport":"tty",
-		  "prompt_delivery":"argv"
+		  "command":"codex"
 		}`),
 		0o600,
 	); err != nil {
