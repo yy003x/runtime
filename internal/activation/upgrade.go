@@ -46,7 +46,6 @@ type UpgradeRequest struct {
 type UpgradeResult struct {
 	TargetHome           string   `json:"target_home"`
 	CopiedProfiles       []string `json:"copied_profiles"`
-	CopiedCommands       []string `json:"copied_commands"`
 	CopiedRuntimeConfig  bool     `json:"copied_runtime_config"`
 	ReplacedResources    bool     `json:"replaced_resources"`
 	ResourceFiles        []string `json:"resource_files"`
@@ -78,6 +77,7 @@ type transactionArtifact struct {
 	OriginalExists bool   `json:"original_exists"`
 	OriginalDigest string `json:"original_digest,omitempty"`
 	NewDigest      string `json:"new_digest"`
+	Remove         bool   `json:"remove,omitempty"`
 	BackedUp       bool   `json:"backed_up"`
 	Installed      bool   `json:"installed"`
 }
@@ -484,7 +484,7 @@ func validatePayload(payload, candidate string) error {
 			return fmt.Errorf("payload %s must be a regular executable", name)
 		}
 	}
-	for _, name := range []string{"configs", "commands", "resources"} {
+	for _, name := range []string{"configs", "resources"} {
 		path := filepath.Join(payload, name)
 		info, err := os.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
@@ -511,7 +511,6 @@ func buildDesiredHome(
 	for _, directory := range []string{
 		desired,
 		filepath.Join(desired, "configs"),
-		filepath.Join(desired, "commands"),
 		filepath.Join(desired, "resources"),
 		filepath.Join(desired, "bin"),
 	} {
@@ -543,7 +542,7 @@ func buildDesiredHome(
 	}
 	result.ResourceFiles = resourceFiles
 	if !overwrite {
-		for _, name := range []string{"configs", "commands"} {
+		for _, name := range []string{"configs"} {
 			source := filepath.Join(target, name)
 			if info, err := os.Lstat(source); err == nil {
 				if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
@@ -566,24 +565,10 @@ func buildDesiredHome(
 	if err != nil {
 		return UpgradeResult{}, err
 	}
-	commands, err := copyMissingNames(
-		filepath.Join(payload, "commands"),
-		filepath.Join(desired, "commands"),
-	)
-	if err != nil {
-		return UpgradeResult{}, err
-	}
 	result.CopiedProfiles = profiles
-	result.CopiedCommands = commands
 	if overwrite {
 		result.CopiedProfiles, err = regularRelativeFiles(
 			filepath.Join(payload, "configs"),
-		)
-		if err != nil {
-			return UpgradeResult{}, err
-		}
-		result.CopiedCommands, err = regularRelativeFiles(
-			filepath.Join(payload, "commands"),
 		)
 		if err != nil {
 			return UpgradeResult{}, err
@@ -671,9 +656,14 @@ func validateCandidateHome(
 	return nil
 }
 
+// Keep the schema-2 artifact order so an interrupted activation created by
+// the previous binary remains recoverable. New transactions use commands only
+// as a removal tombstone; it is never staged or installed.
 var transactionArtifactNames = []string{
 	"resources", "commands", "runtime.json", "bin", "configs",
 }
+
+const obsoleteCommandsArtifact = "commands"
 
 func barrierFile(stageRoot, name string) string {
 	return filepath.Join(stageRoot, "barriers", name)
@@ -713,7 +703,6 @@ func newTransactionJournal(
 	_ = guard
 	for index, name := range transactionArtifactNames {
 		targetPath := filepath.Join(target, name)
-		stagedPath := filepath.Join(desired, name)
 		backupPath := filepath.Join(
 			stageRoot, "backup",
 			fmt.Sprintf("%02d-%s", index, filepath.Base(name)),
@@ -722,6 +711,16 @@ func newTransactionJournal(
 		if statErr != nil {
 			return transactionJournal{}, statErr
 		}
+		if name == obsoleteCommandsArtifact {
+			journal.Artifacts = append(journal.Artifacts, transactionArtifact{
+				Name: name, Target: targetPath, Backup: backupPath,
+				OriginalExists: originalExists,
+				OriginalDigest: originalDigest,
+				Remove:         true,
+			})
+			continue
+		}
+		stagedPath := filepath.Join(desired, name)
 		newDigest, digestErr := treeDigest(stagedPath)
 		if digestErr != nil {
 			return transactionJournal{}, digestErr
@@ -815,6 +814,22 @@ func commitUpgradeTransaction(
 			}
 		default:
 			if artifact.OriginalExists {
+				current, inspectErr := inspectPath(artifact.Target)
+				if inspectErr != nil {
+					return rollbackAfterCommitError(
+						journalPath, *journal, inspectErr,
+					)
+				}
+				if !current.Exists ||
+					current.Digest != artifact.OriginalDigest {
+					return rollbackAfterCommitError(
+						journalPath, *journal,
+						fmt.Errorf(
+							"%s changed before activation",
+							name,
+						),
+					)
+				}
 				if err := os.MkdirAll(
 					filepath.Dir(artifact.Backup), 0o700,
 				); err != nil {
@@ -838,6 +853,37 @@ func commitUpgradeTransaction(
 					)
 				}
 			}
+		}
+		if artifact.Remove {
+			current, inspectErr := inspectPath(artifact.Target)
+			if inspectErr != nil {
+				return rollbackAfterCommitError(
+					journalPath, *journal, inspectErr,
+				)
+			}
+			if current.Exists {
+				return rollbackAfterCommitError(
+					journalPath, *journal,
+					fmt.Errorf(
+						"obsolete target %s appeared during activation",
+						name,
+					),
+				)
+			}
+			artifact.Installed = true
+			if err := syncDirectory(
+				filepath.Dir(artifact.Target),
+			); err != nil {
+				return rollbackAfterCommitError(
+					journalPath, *journal, err,
+				)
+			}
+			if err := writeJournal(journalPath, *journal); err != nil {
+				return rollbackAfterCommitError(
+					journalPath, *journal, err,
+				)
+			}
+			continue
 		}
 		if err := durableRename(artifact.Staged, artifact.Target); err != nil {
 			return rollbackAfterCommitError(journalPath, *journal, err)
@@ -1309,6 +1355,15 @@ func verifyTransactionState(
 			return err
 		}
 		if wantNew {
+			if artifact.Remove {
+				if target.Exists {
+					return fmt.Errorf(
+						"obsolete target %s remains after activation",
+						artifact.Name,
+					)
+				}
+				continue
+			}
 			if !target.Exists || target.Digest != artifact.NewDigest {
 				return fmt.Errorf(
 					"activated target %s does not match the staged release",
@@ -1421,11 +1476,18 @@ func readJournal(path string) (transactionJournal, error) {
 			value.StageRoot, "backup",
 			fmt.Sprintf("%02d-%s", index, filepath.Base(name)),
 		)
+		removeArtifact := name == obsoleteCommandsArtifact &&
+			artifact.Remove
+		if removeArtifact {
+			expectedStaged = ""
+		}
 		if artifact.Name != name ||
 			artifact.Target != expectedTarget ||
 			artifact.Staged != expectedStaged ||
 			artifact.Backup != expectedBackup ||
-			!validDigest(artifact.NewDigest) ||
+			(removeArtifact && artifact.NewDigest != "") ||
+			(!removeArtifact && !validDigest(artifact.NewDigest)) ||
+			artifact.Remove && name != obsoleteCommandsArtifact ||
 			(artifact.OriginalExists &&
 				!validDigest(artifact.OriginalDigest)) ||
 			(!artifact.OriginalExists &&

@@ -31,7 +31,6 @@ func TestLoadUsesSNCLIHomeWithoutRepository(t *testing.T) {
 	}
 	if config.Home != home ||
 		config.Paths.ConfigDir != filepath.Join(home, "configs") ||
-		config.Paths.CommandDir != filepath.Join(home, "commands") ||
 		config.Paths.RuntimeConfigFile != filepath.Join(home, "runtime.json") {
 		t.Fatalf("unexpected config: %#v", config)
 	}

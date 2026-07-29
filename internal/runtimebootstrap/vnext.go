@@ -19,20 +19,13 @@ import (
 )
 
 type VNext struct {
-	Profiles    *profile.Catalog
-	Subcommands *profile.SubcommandCatalog
-	Models      *model.Service
-	Config      runtimeconfig.Config
+	Profiles *profile.Catalog
+	Models   *model.Service
+	Config   runtimeconfig.Config
 }
 
-func LoadVNext(paths layout.Paths, fixedCommandIDs ...string) (*VNext, error) {
-	profiles, err := profile.Load(paths.ConfigDir)
-	if err != nil {
-		return nil, err
-	}
-	subcommands, err := profile.LoadSubcommands(
-		paths.CommandDir, profiles, fixedCommandIDs...,
-	)
+func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error) {
+	profiles, err := profile.Load(paths.ConfigDir, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +45,7 @@ func LoadVNext(paths layout.Paths, fixedCommandIDs ...string) (*VNext, error) {
 		return nil, fmt.Errorf("build model service: %w", err)
 	}
 	return &VNext{
-		Profiles: profiles, Subcommands: subcommands, Models: models, Config: config,
+		Profiles: profiles, Models: models, Config: config,
 	}, nil
 }
 
@@ -92,9 +85,9 @@ func LoadTmuxService(paths layout.Paths) (*runtimetmux.Service, error) {
 
 func LoadSessionServices(
 	paths layout.Paths,
-	fixedCommandIDs ...string,
+	reservedProfileIDs ...string,
 ) (*SessionServices, error) {
-	core, err := LoadVNext(paths, fixedCommandIDs...)
+	core, err := LoadVNext(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -116,9 +109,9 @@ func LoadSessionServices(
 func LoadServices(
 	paths layout.Paths,
 	cwd string,
-	fixedCommandIDs ...string,
+	reservedProfileIDs ...string,
 ) (*Services, error) {
-	sessionServices, err := LoadSessionServices(paths, fixedCommandIDs...)
+	sessionServices, err := LoadSessionServices(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}

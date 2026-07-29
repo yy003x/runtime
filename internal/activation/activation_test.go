@@ -146,7 +146,6 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 		filepath.Join(target, "bin", "sn-cli"),
 		filepath.Join(target, "bin", "sn-server"),
 		filepath.Join(target, "configs", "cx.json"),
-		filepath.Join(target, "commands", "cx.json"),
 		filepath.Join(target, "runtime.json"),
 		filepath.Join(target, "resources", "release.json"),
 		filepath.Join(target, "bin", "user-helper"),
@@ -154,6 +153,11 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("missing activated path %s: %v", path, err)
 		}
+	}
+	if _, err := os.Lstat(
+		filepath.Join(target, "commands"),
+	); !os.IsNotExist(err) {
+		t.Fatalf("obsolete commands directory remains: %v", err)
 	}
 	if _, err := os.Stat(
 		filepath.Join(target, "state", activationGuardName),
@@ -368,6 +372,67 @@ func TestActivationTransactionRollsBackBehindLegacyBarriers(
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("rollback left %s: %v", path, err)
 		}
+	}
+}
+
+func TestActivationRollbackRestoresObsoleteCommands(t *testing.T) {
+	journalPath, journal, _ := preparedTransaction(t)
+	if err := os.Remove(
+		filepath.Join(journal.StageRoot, "desired", "runtime.json"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitUpgradeTransaction(journalPath, &journal); err == nil {
+		t.Fatal("commit unexpectedly succeeded without staged runtime.json")
+	}
+	data, err := os.ReadFile(
+		filepath.Join(journal.TargetHome, "commands", "old.json"),
+	)
+	if err != nil || string(data) != "old-command" {
+		t.Fatalf("obsolete commands rollback=%q err=%v", data, err)
+	}
+}
+
+func TestActivationJournalAcceptsExistingSchema2CommandsArtifact(
+	t *testing.T,
+) {
+	journalPath, journal, _ := preparedTransaction(t)
+	commands, err := journalArtifact(&journal, obsoleteCommandsArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands.Remove = false
+	commands.Staged = filepath.Join(
+		journal.StageRoot, "desired", obsoleteCommandsArtifact,
+	)
+	if err := os.MkdirAll(commands.Staged, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(commands.Staged, "cx.json"),
+		[]byte("{\"profile\":\"cx\"}\n"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	commands.NewDigest, err = treeDigest(commands.Staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJournal(journalPath, journal); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedCommands, err := journalArtifact(
+		&loaded, obsoleteCommandsArtifact,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedCommands.Remove {
+		t.Fatal("existing schema 2 commands artifact changed to removal")
 	}
 }
 
@@ -931,7 +996,6 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	target := filepath.Join(root, "home")
 	for _, directory := range []string{
 		filepath.Join(payload, "configs"),
-		filepath.Join(payload, "commands"),
 		filepath.Join(payload, "resources", "schema"),
 		target,
 	} {
@@ -959,10 +1023,6 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	writeFixture(
 		filepath.Join(payload, "configs", "cx.json"),
 		"{\"type\":\"cli\",\"command\":\"codex\"}\n", 0o600,
-	)
-	writeFixture(
-		filepath.Join(payload, "commands", "cx.json"),
-		"{\"profile\":\"cx\"}\n", 0o600,
 	)
 	writeFixture(
 		filepath.Join(payload, "runtime.json"), "{}\n", 0o600,

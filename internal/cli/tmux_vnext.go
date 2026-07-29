@@ -76,7 +76,9 @@ func runTmuxNamespaceVNext(
 		if err != nil {
 			return fmt.Errorf("resolve invocation cwd: %w", err)
 		}
-		catalog, err := runtimeprofile.Load(paths.ConfigDir)
+		catalog, err := runtimeprofile.Load(
+			paths.ConfigDir, fixedNamespaces...,
+		)
 		if err != nil {
 			return err
 		}

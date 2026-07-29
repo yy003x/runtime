@@ -441,9 +441,6 @@ func prepareVNextHome(t *testing.T) layout.Paths {
 	if err := os.MkdirAll(paths.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.CommandDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	return paths
 }
 

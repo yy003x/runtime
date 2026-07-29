@@ -129,70 +129,17 @@ func runLoadedVNextProfile(
 		}
 		return output.line("Profiles OK: %s", strings.Join(checked, ", "))
 	default:
-		entry, exists := runtime.Profiles.Resolve(args[0])
-		if !exists {
-			return fmt.Errorf("unknown profile %q", args[0])
-		}
-		if entry.Kind == runtimeprofile.KindCommand {
-			invocationBase, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-			pipedInput := ""
-			if !runtimecommand.IsTerminal(os.Stdin) {
-				pipedInput, err = runtimecommand.ReadPrompt(os.Stdin)
-				if err != nil {
-					return err
-				}
-			}
-			invocation, mode, err := buildCommandProfileInvocation(
-				*entry.Command, args[1:], pipedInput,
-				invocationBase, os.Environ(),
-			)
-			if err != nil {
-				return err
-			}
-			stdinMode := runtimecommand.StdinTTY
-			if mode == runtimecommand.ModeExec {
-				stdinMode = runtimecommand.StdinNull
-			}
-			return runtimecommand.ReplaceProcess(invocation, stdinMode)
-		}
-		request, stream, err := parseDirectModelInput(entry.ID, *entry.Model, args[1:])
-		if stream {
-			output.beginStream()
-		}
-		if err != nil {
-			return err
-		}
-		if stream {
-			result, runtimeErr := runtime.Models.GenerateStream(
-				context.Background(), request,
-				func(event contract.Event) error {
-					return output.writeEvent(event)
-				},
-			)
-			if runtimeErr != nil {
-				return runtimeErr
-			}
-			return output.writeFinal(directModelResult(result))
-		}
-		result, runtimeErr := runtime.Models.Generate(context.Background(), request)
-		if runtimeErr != nil {
-			return runtimeErr
-		}
-		payload := directModelResult(result)
-		if output.JSON() {
-			return output.writeJSON(payload)
-		}
-		return renderDirectModelResult(output, result)
+		return runLoadedVNextProfileID(
+			runtime, args[0], args[1:], output,
+		)
 	}
 }
 
-func runLoadedVNextShortcut(
+func runLoadedVNextProfileID(
 	runtime *runtimebootstrap.VNext,
 	profileID string,
-	nativeArgs []string,
+	args []string,
+	output *cliOutput,
 ) error {
 	if runtime == nil {
 		return fmt.Errorf("Runtime is required")
@@ -201,29 +148,59 @@ func runLoadedVNextShortcut(
 	if !exists {
 		return fmt.Errorf("unknown profile %q", profileID)
 	}
-	if entry.Kind != runtimeprofile.KindCommand || entry.Command == nil {
-		return fmt.Errorf(
-			"shortcut profile %q must be type=cli", profileID,
+	if entry.Kind == runtimeprofile.KindCommand {
+		invocationBase, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		pipedInput := ""
+		if !runtimecommand.IsTerminal(os.Stdin) {
+			pipedInput, err = runtimecommand.ReadPrompt(os.Stdin)
+			if err != nil {
+				return err
+			}
+		}
+		invocation, mode, err := buildCommandProfileInvocation(
+			*entry.Command, args, pipedInput,
+			invocationBase, os.Environ(),
 		)
+		if err != nil {
+			return err
+		}
+		stdinMode := runtimecommand.StdinTTY
+		if mode == runtimecommand.ModeExec {
+			stdinMode = runtimecommand.StdinNull
+		}
+		return runtimecommand.ReplaceProcess(invocation, stdinMode)
 	}
-	invocationBase, err := os.Getwd()
+	request, stream, err := parseDirectModelInput(entry.ID, *entry.Model, args)
+	if stream {
+		output.beginStream()
+	}
 	if err != nil {
 		return err
 	}
-	mode := runtimecommand.ModeInteractive
-	if entry.Command.Exec {
-		mode = runtimecommand.ModeExec
+	if stream {
+		result, runtimeErr := runtime.Models.GenerateStream(
+			context.Background(), request,
+			func(event contract.Event) error {
+				return output.writeEvent(event)
+			},
+		)
+		if runtimeErr != nil {
+			return runtimeErr
+		}
+		return output.writeFinal(directModelResult(result))
 	}
-	invocation, err := runtimecommand.Build(runtimecommand.BuildRequest{
-		Mode: mode, OutputProtocol: runtimecommand.OutputNative,
-		Profile: *entry.Command, NativeArgs: nativeArgs,
-		InheritedEnvironment: os.Environ(),
-		InvocationBase:       invocationBase,
-	})
-	if err != nil {
-		return err
+	result, runtimeErr := runtime.Models.Generate(context.Background(), request)
+	if runtimeErr != nil {
+		return runtimeErr
 	}
-	return runtimecommand.ReplaceProcess(invocation, runtimecommand.StdinInherit)
+	payload := directModelResult(result)
+	if output.JSON() {
+		return output.writeJSON(payload)
+	}
+	return renderDirectModelResult(output, result)
 }
 
 func directModelResult(result contract.ModelResult) map[string]any {

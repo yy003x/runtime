@@ -38,7 +38,6 @@ type ApplyResult struct {
 	Binary              string   `json:"binary"`
 	ServerBinary        string   `json:"server_binary"`
 	CopiedProfiles      []string `json:"copied_profiles"`
-	CopiedCommands      []string `json:"copied_commands"`
 	CopiedRuntimeConfig bool     `json:"copied_runtime_config"`
 	CopiedResources     []string `json:"copied_resources"`
 }
@@ -136,12 +135,11 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	binary := filepath.Join(payload, "sn-cli")
 	serverBinary := filepath.Join(payload, "sn-server")
 	packagedProfiles := filepath.Join(payload, "configs")
-	packagedCommands := filepath.Join(payload, "commands")
 	packagedRuntimeConfig := filepath.Join(payload, "runtime.json")
 	packagedResources := filepath.Join(payload, "resources")
 	if err := validatePayload(
-		binary, serverBinary, packagedProfiles, packagedCommands,
-		packagedRuntimeConfig, packagedResources,
+		binary, serverBinary, packagedProfiles, packagedRuntimeConfig,
+		packagedResources,
 	); err != nil {
 		return ApplyResult{}, err
 	}
@@ -164,7 +162,6 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
 		ServerBinary:        cfg.Paths.ServerBinary,
 		CopiedProfiles:      activated.CopiedProfiles,
-		CopiedCommands:      activated.CopiedCommands,
 		CopiedRuntimeConfig: activated.CopiedRuntimeConfig,
 		CopiedResources:     activated.ResourceFiles,
 	}
@@ -294,7 +291,7 @@ func download(ctx context.Context, client *http.Client, source, target string) e
 }
 
 func validatePayload(
-	binary, serverBinary, profiles, commands, runtimeConfig, resources string,
+	binary, serverBinary, profiles, runtimeConfig, resources string,
 ) error {
 	for name, path := range map[string]string{
 		"sn-cli": binary, "sn-server": serverBinary,
@@ -306,9 +303,6 @@ func validatePayload(
 	}
 	if info, err := os.Stat(profiles); err != nil || !info.IsDir() {
 		return fmt.Errorf("release archive has no configs directory")
-	}
-	if info, err := os.Stat(commands); err != nil || !info.IsDir() {
-		return fmt.Errorf("release archive has no commands directory")
 	}
 	if info, err := os.Stat(runtimeConfig); err != nil || !info.Mode().IsRegular() {
 		return fmt.Errorf("release archive has no runtime.json")

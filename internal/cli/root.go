@@ -100,12 +100,8 @@ func Main(args []string) int {
 		if loadErr != nil {
 			return output.fail(loadErr)
 		}
-		subcommand, exists := runtime.Subcommands.Get(args[0])
-		if !exists {
-			return output.fail(fmt.Errorf("unknown command %q", args[0]))
-		}
-		err = runLoadedVNextShortcut(
-			runtime, subcommand.Profile, args[1:],
+		err = runLoadedVNextProfileID(
+			runtime, args[0], args[1:], output,
 		)
 	}
 	return output.fail(err)
@@ -124,7 +120,8 @@ func printHelp(output *cliOutput) error {
 	return output.text(`sn-cli - Runtime vNext
 
 Usage:
-  sn-cli <command-id> [native-cli-args...]
+  sn-cli <profile-id> [profile-options...] [input]
+  sn-cli --json <api-profile-id> [options...] [prompt]
   sn-cli --json <management-command> [args...]
   sn-cli profile <profile-id> [--model M] [--effort E] [--prompt FILE_OR_TEXT]
                                [--exec|--exec=true|--exec=false] [--cwd DIR] [input]
@@ -136,7 +133,7 @@ Usage:
   sn-cli server info|doctor|start|status|stop|update|upgrade-check
 
 Execution semantics:
-  <command-id>       transparent native CLI process replacement; no Runtime record
+  <profile-id>       implicit profile invocation; identical to profile <id>
   profile <id>       exactly one command or API model call; no Runtime record
   session run        one recorded Session turn; Session never executes tools
   session submit     durable queued Session turn
@@ -147,11 +144,11 @@ Execution semantics:
 Global:
   -h, --help         show this help
   --version          show build version
-  --json             stable machine output; must be the first argument
+  --json             stable API Profile/management output; must be first
+                     CLI Profile output remains target-native
 
 Runtime home:        ${SN_CLI_HOME:-~/.sn}
 Profiles:            <runtime-home>/configs
-Subcommands:         <runtime-home>/commands
 Sessions:            <runtime-home>/sessions
 Run database:        <runtime-home>/state/runtime.db`)
 }

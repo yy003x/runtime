@@ -16,7 +16,6 @@ type Paths struct {
 	Binary            string
 	ServerBinary      string
 	ConfigDir         string
-	CommandDir        string
 	RuntimeConfigFile string
 	ResourcesDir      string
 	SchemaDir         string
@@ -79,7 +78,6 @@ func FromHome(home string) (Paths, error) {
 		Binary:            filepath.Join(absolute, "bin", "sn-cli"),
 		ServerBinary:      filepath.Join(absolute, "bin", "sn-server"),
 		ConfigDir:         filepath.Join(absolute, "configs"),
-		CommandDir:        filepath.Join(absolute, "commands"),
 		RuntimeConfigFile: filepath.Join(absolute, "runtime.json"),
 		ResourcesDir:      resourcesDir,
 		SchemaDir:         filepath.Join(resourcesDir, "schema"),
@@ -169,7 +167,7 @@ func CanonicalHome(home string) (string, error) {
 
 func (p Paths) Ensure() error {
 	for _, dir := range []string{
-		p.Home, p.BinDir, p.ConfigDir, p.CommandDir, p.ResourcesDir,
+		p.Home, p.BinDir, p.ConfigDir, p.ResourcesDir,
 		p.SchemaDir, p.SessionsDir, p.StateDir, p.TmpDir,
 		p.TmuxManifestDir,
 	} {

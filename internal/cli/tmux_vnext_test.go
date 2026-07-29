@@ -67,6 +67,18 @@ func TestTmuxStartRejectsInvalidOptionsBeforeProfileLoad(t *testing.T) {
 	}
 }
 
+func TestTmuxStartRejectsReservedProfileID(t *testing.T) {
+	paths := prepareVNextHome(t)
+	writeVNextCommand(t, paths.ConfigDir, "profile")
+	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runTmuxNamespaceVNext(
+		paths, []string{"start", "profile"}, output,
+	)
+	if err == nil || !strings.Contains(err.Error(), "reserved profile ID") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testing.T) {
 	root := t.TempDir()
 	commandPath := filepath.Join(root, "codex")
@@ -105,7 +117,7 @@ func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testi
 	); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := runtimeprofile.Load(configDir)
+	catalog, err := runtimeprofile.Load(configDir, fixedNamespaces...)
 	if err != nil {
 		t.Fatal(err)
 	}
