@@ -8,8 +8,8 @@
 
 - `ptyx/`：Darwin/Linux PTY 启动、进程组 signal 和 exit code 测试基座。
 - `commandgolden/`：用 fake `codex/claude` 固化 `cx`、`cc` 和 `cx-*` 的
-  argv、env、TTY、stdin、signal 与 exit 行为，并直接验证 active
-  `commands/` 与 Command Bridge。
+  argv、env、TTY、stdin、signal 与 exit 行为，并直接验证隐式/显式 Profile
+  等价、active `configs/` 与 Command Bridge。
 - `scenario/`：测试侧 canonical request/event/result/error fixture 与归一化器。
 - `faux/`：单次 scripted provider 和本地 SSE/HTTP 场景端点，不包含 retry。
 

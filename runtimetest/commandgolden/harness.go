@@ -103,30 +103,6 @@ func CopyFile(source, destination string, mode os.FileMode) error {
 	return os.WriteFile(destination, value, mode)
 }
 
-func CopyDir(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		if !entry.Type().IsRegular() {
-			return fmt.Errorf("unsupported fixture file: %s", path)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		return CopyFile(path, target, info.Mode().Perm())
-	})
-}
-
 func WaitForFile(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {

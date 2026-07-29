@@ -43,20 +43,19 @@ func TestCommandProfileGolden(t *testing.T) {
 		for _, golden := range baseline.Profiles {
 			golden := golden
 			t.Run(golden.ID, func(t *testing.T) {
-				userArgs := []string{"--help", "--", "user value"}
-				switch golden.ID {
-				case "commit", "cx-deep", "cx-image", "cx-spark":
-					userArgs = []string{"user value"}
-				}
+				userArgs := []string{"user value"}
 				capturePath := filepath.Join(t.TempDir(), "capture.json")
 				command := exec.Command(harness.snCLI, append([]string{golden.ID}, userArgs...)...)
-				command.Env = harness.environment(map[string]string{
-					"RUNTIME_GOLDEN_CAPTURE":    capturePath,
-					"RUNTIME_GOLDEN_ENV_KEYS":   capturedEnvKeys,
-					"RUNTIME_GOLDEN_READ_STDIN": "line",
-					"RUNTIME_GOLDEN_STDOUT":     "fake stdout\n",
-					"RUNTIME_GOLDEN_STDERR":     "fake stderr\n",
-				})
+				environment := map[string]string{
+					"RUNTIME_GOLDEN_CAPTURE":  capturePath,
+					"RUNTIME_GOLDEN_ENV_KEYS": capturedEnvKeys,
+					"RUNTIME_GOLDEN_STDOUT":   "fake stdout\n",
+					"RUNTIME_GOLDEN_STDERR":   "fake stderr\n",
+				}
+				if !isExecProfile(golden.ID) {
+					environment["RUNTIME_GOLDEN_READ_STDIN"] = "line"
+				}
+				command.Env = harness.environment(environment)
 				command.Dir = harness.repoRoot
 				process, err := ptyx.Start(command)
 				if err != nil {
@@ -64,8 +63,10 @@ func TestCommandProfileGolden(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = process.Master.Close() })
 				output := readPTY(process)
-				if _, err := process.Master.Write([]byte("hello from pty\n")); err != nil {
-					t.Fatal(err)
+				if !isExecProfile(golden.ID) {
+					if _, err := process.Master.Write([]byte("hello from pty\n")); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if err := process.Cmd.Wait(); err != nil {
 					result := <-output
@@ -83,6 +84,7 @@ func TestCommandProfileGolden(t *testing.T) {
 				for _, argument := range golden.Argv {
 					expectedArgv = append(expectedArgv, Expand(argument, replacements))
 				}
+				expectedArgv = append(expectedArgv, "--")
 				expectedArgv = append(expectedArgv, userArgs...)
 				if !reflect.DeepEqual(capture.Argv, expectedArgv) {
 					t.Fatalf("argv=\n%q\nwant=\n%q", capture.Argv, expectedArgv)
@@ -94,10 +96,12 @@ func TestCommandProfileGolden(t *testing.T) {
 				if !reflect.DeepEqual(capture.Env, expectedEnv) {
 					t.Fatalf("env=%#v want=%#v missing=%v", capture.Env, expectedEnv, capture.Missing)
 				}
-				if !capture.TTY.Stdin || !capture.TTY.Stdout || !capture.TTY.Stderr {
+				if capture.TTY.Stdin == isExecProfile(golden.ID) ||
+					!capture.TTY.Stdout || !capture.TTY.Stderr {
 					t.Fatalf("tty=%#v", capture.TTY)
 				}
-				if capture.Stdin != "hello from pty\n" {
+				if !isExecProfile(golden.ID) &&
+					capture.Stdin != "hello from pty\n" {
 					t.Fatalf("stdin=%q", capture.Stdin)
 				}
 				if golden.ID == "commit" || golden.ID == "cx-deep" || golden.ID == "cx-spark" {
@@ -109,32 +113,48 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("profile_command_executes_once", func(t *testing.T) {
-		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "profile", "commit", "plan exactly once")
-		command.Env = harness.environment(map[string]string{
-			"RUNTIME_GOLDEN_CAPTURE": capturePath,
-		})
-		command.Dir = harness.repoRoot
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		command.Stdout = &stdout
-		command.Stderr = &stderr
-		if err := command.Run(); err != nil {
-			t.Fatalf("run: %v stderr=%s", err, stderr.String())
+	t.Run("implicit_and_explicit_profile_execute_identically", func(t *testing.T) {
+		captures := make([]Capture, 0, 2)
+		for _, prefix := range [][]string{
+			{"commit"},
+			{"profile", "commit"},
+		} {
+			capturePath := filepath.Join(t.TempDir(), "capture.json")
+			args := append(
+				append([]string(nil), prefix...),
+				"--model", "override-model", "--effort", "high",
+				"plan exactly once",
+			)
+			command := exec.Command(harness.snCLI, args...)
+			command.Env = harness.environment(map[string]string{
+				"RUNTIME_GOLDEN_CAPTURE": capturePath,
+			})
+			command.Dir = harness.repoRoot
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			command.Stdout = &stdout
+			command.Stderr = &stderr
+			if err := command.Run(); err != nil {
+				t.Fatalf("run %q: %v stderr=%s", prefix, err, stderr.String())
+			}
+			capture, err := ReadCapture(capturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(capture.Argv) == 0 ||
+				capture.Argv[len(capture.Argv)-1] != "plan exactly once" {
+				t.Fatalf("profile prompt was not delivered once: %q", capture.Argv)
+			}
+			captures = append(captures, capture)
 		}
-		capture, err := ReadCapture(capturePath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(capture.Argv) == 0 || capture.Argv[len(capture.Argv)-1] != "plan exactly once" {
-			t.Fatalf("profile prompt was not delivered once: %q", capture.Argv)
+		if !reflect.DeepEqual(captures[0], captures[1]) {
+			t.Fatalf("implicit=%#v explicit=%#v", captures[0], captures[1])
 		}
 	})
 
-	t.Run("piped_stdin_remains_native", func(t *testing.T) {
+	t.Run("piped_stdin_is_appended_as_typed_prompt", func(t *testing.T) {
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "cx")
+		command := exec.Command(harness.snCLI, "cx-deep")
 		command.Env = harness.environment(map[string]string{
 			"RUNTIME_GOLDEN_CAPTURE":    capturePath,
 			"RUNTIME_GOLDEN_ENV_KEYS":   capturedEnvKeys,
@@ -153,131 +173,47 @@ func TestCommandProfileGolden(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if capture.Stdin != "piped input" || capture.TTY.Stdin || capture.TTY.Stdout || capture.TTY.Stderr {
+		if len(capture.Argv) == 0 ||
+			capture.Argv[len(capture.Argv)-1] != "piped input" ||
+			capture.Stdin != "" || capture.TTY.Stdin ||
+			capture.TTY.Stdout || capture.TTY.Stderr {
 			t.Fatalf("capture=%#v", capture)
 		}
 	})
 
-	t.Run("json_preserves_native_shortcut_and_profile_boundary", func(t *testing.T) {
-		nativeArgs := []string{"--native-flag", "native value", "--json"}
-		for _, test := range []struct {
-			name           string
-			args           []string
-			targetExecutes bool
-		}{
-			{
-				name:           "shortcut_trailing_json",
-				args:           append([]string{"cx"}, nativeArgs...),
-				targetExecutes: true,
-			},
-			{
-				name:           "shortcut_leading_global_json",
-				args:           append([]string{"--json", "cx"}, nativeArgs...),
-				targetExecutes: true,
-			},
-			{
-				name: "profile_trailing_json",
-				args: append([]string{"profile", "cx"}, nativeArgs...),
-			},
-			{
-				name: "profile_leading_global_json",
-				args: append(
-					[]string{"--json", "profile", "cx"}, nativeArgs...,
-				),
-			},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				capturePath := filepath.Join(t.TempDir(), "capture.json")
-				command := exec.Command(harness.snCLI, test.args...)
-				command.Env = harness.environment(map[string]string{
-					"RUNTIME_GOLDEN_CAPTURE":    capturePath,
-					"RUNTIME_GOLDEN_READ_STDIN": "all",
-					"RUNTIME_GOLDEN_STDOUT":     "native stdout\n",
-					"RUNTIME_GOLDEN_STDERR":     "native stderr\n",
-					"RUNTIME_GOLDEN_EXIT_CODE":  "23",
-				})
-				command.Dir = harness.repoRoot
-				command.Stdin = strings.NewReader("native stdin")
-				var stdout bytes.Buffer
-				var stderr bytes.Buffer
-				command.Stdout = &stdout
-				command.Stderr = &stderr
-				err := command.Run()
-				if !test.targetExecutes {
-					var exitError *exec.ExitError
-					if !errors.As(err, &exitError) ||
-						exitError.ExitCode() != 1 ||
-						!strings.Contains(stderr.String(), "invalid_request") {
-						t.Fatalf(
-							"typed profile error=%v stdout=%q stderr=%q",
-							err, stdout.String(), stderr.String(),
-						)
-					}
-					if _, statErr := os.Stat(capturePath); !os.IsNotExist(statErr) {
-						t.Fatalf("target unexpectedly executed: %v", statErr)
-					}
-					return
-				}
-				var exitError *exec.ExitError
-				if !errors.As(err, &exitError) ||
-					exitError.ExitCode() != 23 {
-					t.Fatalf(
-						"exit error=%v stdout=%q stderr=%q",
-						err, stdout.String(), stderr.String(),
-					)
-				}
-				capture, err := ReadCapture(capturePath)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(capture.Argv) < len(nativeArgs) ||
-					!reflect.DeepEqual(
-						capture.Argv[len(capture.Argv)-len(nativeArgs):],
-						nativeArgs,
-					) {
-					t.Fatalf("argv=%q", capture.Argv)
-				}
-				if capture.Stdin != "native stdin" ||
-					stdout.String() != "native stdout\n" ||
-					stderr.String() != "native stderr\n" {
-					t.Fatalf(
-						"native boundary changed: capture=%#v stdout=%q stderr=%q",
-						capture, stdout.String(), stderr.String(),
-					)
-				}
-			})
-		}
-	})
-
-	t.Run("argv_delivery_shortcut_preserves_multiple_native_args", func(t *testing.T) {
-		nativeArgs := []string{
-			"--native-one", "value one", "--native-two", "value two",
-		}
+	t.Run("implicit_and_explicit_profiles_reject_native_argv", func(t *testing.T) {
 		for _, prefix := range [][]string{
 			{"cx-deep"},
+			{"profile", "cx-deep"},
 			{"--json", "cx-deep"},
+			{"--json", "profile", "cx-deep"},
 		} {
 			capturePath := filepath.Join(t.TempDir(), "capture.json")
-			command := exec.Command(
-				harness.snCLI, append(prefix, nativeArgs...)...,
+			args := append(
+				append([]string(nil), prefix...),
+				"--native-one", "value one",
 			)
+			command := exec.Command(harness.snCLI, args...)
 			command.Env = harness.environment(map[string]string{
 				"RUNTIME_GOLDEN_CAPTURE": capturePath,
 			})
 			command.Dir = harness.repoRoot
-			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("run %q: %v output=%q", prefix, err, output)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			command.Stdout = &stdout
+			command.Stderr = &stderr
+			err := command.Run()
+			var exitError *exec.ExitError
+			if !errors.As(err, &exitError) ||
+				exitError.ExitCode() != 1 ||
+				!strings.Contains(stderr.String(), "invalid_request") {
+				t.Fatalf(
+					"prefix=%q error=%v stdout=%q stderr=%q",
+					prefix, err, stdout.String(), stderr.String(),
+				)
 			}
-			capture, err := ReadCapture(capturePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(capture.Argv) < len(nativeArgs) ||
-				!reflect.DeepEqual(
-					capture.Argv[len(capture.Argv)-len(nativeArgs):],
-					nativeArgs,
-				) {
-				t.Fatalf("prefix=%q argv=%q", prefix, capture.Argv)
+			if _, statErr := os.Stat(capturePath); !os.IsNotExist(statErr) {
+				t.Fatalf("prefix=%q target unexpectedly executed: %v", prefix, statErr)
 			}
 		}
 	})
@@ -356,9 +292,9 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("cx_image_missing_input_fails_before_exec", func(t *testing.T) {
+	t.Run("cx_image_missing_environment_fails_before_exec", func(t *testing.T) {
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "cx-image")
+		command := exec.Command(harness.snCLI, "cx-image", "describe image")
 		command.Env = removeEnvironment(
 			harness.environment(map[string]string{
 				"RUNTIME_GOLDEN_CAPTURE":  capturePath,
@@ -399,15 +335,10 @@ func TestCommandProfileGolden(t *testing.T) {
 		if err := os.WriteFile(configPath, append(data, '\n'), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(
-			filepath.Join(harness.home, "commands", "env-unset.json"),
-			[]byte(`{"profile":"env-unset"}`+"\n"),
-			0o600,
-		); err != nil {
-			t.Fatal(err)
-		}
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "env-unset")
+		command := exec.Command(
+			harness.snCLI, "env-unset", "--exec", "check environment",
+		)
 		command.Env = harness.environment(map[string]string{
 			"RUNTIME_GOLDEN_CAPTURE":   capturePath,
 			"RUNTIME_GOLDEN_ENV_KEYS":  capturedEnvKeys,
@@ -429,7 +360,7 @@ func TestCommandProfileGolden(t *testing.T) {
 
 	t.Run("command_invocation_creates_no_runtime_state", func(t *testing.T) {
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "cx")
+		command := exec.Command(harness.snCLI, "cx-deep", "no state")
 		command.Env = harness.environment(map[string]string{
 			"RUNTIME_GOLDEN_CAPTURE":  capturePath,
 			"RUNTIME_GOLDEN_ENV_KEYS": capturedEnvKeys,
@@ -492,9 +423,6 @@ func newHarness(t *testing.T) testHarness {
 		); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := CopyDir(filepath.Join(repoRoot, "configs", "commands"), filepath.Join(home, "commands")); err != nil {
-		t.Fatal(err)
 	}
 	userHome := filepath.Join(root, "user-home")
 	if err := os.MkdirAll(userHome, 0o755); err != nil {
@@ -584,4 +512,13 @@ func containsAdjacent(values []string, first, second string) bool {
 		}
 	}
 	return false
+}
+
+func isExecProfile(id string) bool {
+	switch id {
+	case "commit", "cx-adv", "cx-deep", "cx-image", "cx-spark":
+		return true
+	default:
+		return false
+	}
 }
