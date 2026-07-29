@@ -53,8 +53,6 @@ COVERAGE_PROFILE ?= /tmp/sn-runtime-coverage.out
 override COVERAGE_PROFILE := $(value COVERAGE_PROFILE)
 COVERAGE_MIN ?= 65.0
 override COVERAGE_MIN := $(value COVERAGE_MIN)
-SN_CLI_OVERWRITE_CONFIGS ?= 0
-override SN_CLI_OVERWRITE_CONFIGS := $(value SN_CLI_OVERWRITE_CONFIGS)
 TAG ?=
 override TAG := $(value TAG)
 override RUNTIME_ROOT := $(shell pwd -P)
@@ -62,7 +60,7 @@ override RUNTIME_ROOT := $(shell pwd -P)
 export APP_NAME SERVER_ADDR
 export SN_CLI_COMMIT SN_CLI_TAG SN_CLI_DIRTY SN_CLI_BUILDDATE SN_CLI_VERSION SN_CLI_LDFLAGS
 export GO GOCACHE GOMODCACHE V
-export COVERAGE_PROFILE COVERAGE_MIN SN_CLI_OVERWRITE_CONFIGS TAG RUNTIME_ROOT
+export COVERAGE_PROFILE COVERAGE_MIN TAG RUNTIME_ROOT
 
 .PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor make-step-contract-test _make-variable-probe
 
@@ -85,9 +83,8 @@ help:
 		"  make release-check            run the complete release gate" \
 		"" \
 		"Install:" \
-		"  make install                  install current checkout; preserve active configs by default" \
-		"  make install SN_CLI_OVERWRITE_CONFIGS=1" \
-		"                                explicitly replace active configs" \
+		"  make install                  replace local binaries/configs and Runtime state" \
+		"                                stop sn-server; do not restart it" \
 		"" \
 		"Release:" \
 		"  make release-assets           build cross-platform archives and checksums" \
@@ -111,7 +108,7 @@ fmt:
 
 fmt-check:
 	@$(MAKE_STEP) --stage fmt-check --meta scope=go -- \
-		bash -c 'cd "$${RUNTIME_ROOT}"; files="$$(gofmt -l $$(find agent cmd command contract internal model profile provider run runtimetest session store transport -name "*.go" -type f))"; if [[ -n "$$files" ]]; then printf "Go files require formatting:\n%s\n" "$$files"; exit 1; fi'
+		bash -c 'cd "$${RUNTIME_ROOT}"; files="$$(gofmt -l $$(find agent cmd command contract internal model profile provider run runtimetest session store tmux transport -name "*.go" -type f))"; if [[ -n "$$files" ]]; then printf "Go files require formatting:\n%s\n" "$$files"; exit 1; fi'
 
 test:
 	@$(MAKE_STEP) --stage test --meta scope=./... -- \
@@ -123,7 +120,7 @@ test-serial:
 
 test-race:
 	@$(MAKE_STEP) --stage test-race --meta scope=runtime-domains -- \
-		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./agent ./command ./model ./session ./run ./store/sqlite ./transport/http -count=1
+		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./agent ./command ./model ./session ./run ./store/sqlite ./tmux ./transport/http -count=1
 
 coverage:
 	@$(MAKE_STEP) --stage coverage --meta "minimum=$${COVERAGE_MIN}%" --meta "profile=$${COVERAGE_PROFILE}" -- \
@@ -142,8 +139,15 @@ sn-cli-build: | bin
 		"$${GO}" -C "$${RUNTIME_ROOT}" build -ldflags "$${SN_CLI_LDFLAGS}" -o "$${RUNTIME_ROOT}/bin/sn-cli" ./cmd/sn-cli
 
 install: build sn-cli-build
-	@$(MAKE_STEP) --live --stage install --meta "overwrite_configs=$${SN_CLI_OVERWRITE_CONFIGS}" -- \
-		bash -c 'case "$${SN_CLI_OVERWRITE_CONFIGS}" in 1) overwrite_flag="--overwrite-configs" ;; 0) overwrite_flag="" ;; *) printf "SN_CLI_OVERWRITE_CONFIGS must be 0 or 1\n" >&2; exit 1 ;; esac; set -- bash "$${RUNTIME_ROOT}/install.sh" --binary "$${RUNTIME_ROOT}/bin/sn-cli" --server "$${RUNTIME_ROOT}/bin/sn-server" --configs "$${RUNTIME_ROOT}/configs" --commands "$${RUNTIME_ROOT}/configs/commands" --runtime-config "$${RUNTIME_ROOT}/configs/runtime/runtime.json" --resources "$${RUNTIME_ROOT}/resources"; if [[ -n "$$overwrite_flag" ]]; then set -- "$$@" "$$overwrite_flag"; fi; exec "$$@"'
+	@$(MAKE_STEP) --live --stage install --meta local_source_install=1 -- \
+		bash "$${RUNTIME_ROOT}/install.sh" \
+			--binary "$${RUNTIME_ROOT}/bin/sn-cli" \
+			--server "$${RUNTIME_ROOT}/bin/sn-server" \
+			--configs "$${RUNTIME_ROOT}/configs" \
+			--commands "$${RUNTIME_ROOT}/configs/commands" \
+			--runtime-config "$${RUNTIME_ROOT}/configs/runtime/runtime.json" \
+			--resources "$${RUNTIME_ROOT}/resources" \
+			--local-source-install
 
 sn-cli-install: install
 
@@ -161,7 +165,7 @@ publish-test:
 
 sn-cli-test:
 	@$(MAKE_STEP) --stage sn-cli-test --meta scope=cli -- \
-		"$${GO}" -C "$${RUNTIME_ROOT}" test ./agent ./command ./contract ./model ./profile ./provider/... ./session ./run ./store/sqlite ./transport/... ./internal/... ./runtimetest/...
+		"$${GO}" -C "$${RUNTIME_ROOT}" test ./agent ./command ./contract ./model ./profile ./provider/... ./session ./run ./store/sqlite ./tmux ./transport/... ./internal/... ./runtimetest/...
 
 sn-cli-doctor: sn-cli-build
 	@$(MAKE_STEP) --live --stage sn-cli-doctor --meta home=temporary -- \
@@ -218,5 +222,4 @@ _make-variable-probe:
 		"SN_CLI_LDFLAGS=$${SN_CLI_LDFLAGS}" \
 		"COVERAGE_PROFILE=$${COVERAGE_PROFILE}" \
 		"COVERAGE_MIN=$${COVERAGE_MIN}" \
-		"SN_CLI_OVERWRITE_CONFIGS=$${SN_CLI_OVERWRITE_CONFIGS}" \
 		"RUNTIME_ROOT=$${RUNTIME_ROOT}"

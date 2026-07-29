@@ -13,10 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24.x"
+          go-version-file: go.mod
           cache: true
+      - name: 安装 tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Validate and build release assets
         run: make release-check SN_CLI_VERSION="${GITHUB_REF_NAME}"
       - name: Publish GitHub Release

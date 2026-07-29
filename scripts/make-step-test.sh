@@ -109,7 +109,6 @@ make_variables=(
   SN_CLI_LDFLAGS
   COVERAGE_PROFILE
   COVERAGE_MIN
-  SN_CLI_OVERWRITE_CONFIGS
 )
 make_arguments=()
 for variable_name in "${make_variables[@]}"; do
@@ -156,6 +155,127 @@ grep -Fq "server address: $dangerous_make_value" "$scratch/make-help.stdout" ||
   fail "Make help interpreted SERVER_ADDR"
 grep -Fq "coverage minimum: $dangerous_make_value%" "$scratch/make-help.stdout" ||
   fail "Make help interpreted COVERAGE_MIN"
+
+run_isolated_make -n install \
+  >"$scratch/make-install-dry-run.stdout" \
+  2>"$scratch/make-install-dry-run.stderr"
+grep -Fq -- '--local-source-install' "$scratch/make-install-dry-run.stdout" ||
+  fail "make install did not select local source install mode"
+grep -Fq 'local_source_install=1' "$scratch/make-install-dry-run.stdout" ||
+  fail "make install did not report local source install metadata"
+if grep -Fq 'SN_CLI_OVERWRITE_CONFIGS' "$scratch/make-install-dry-run.stdout" ||
+  grep -Fq -- '--overwrite-configs' "$scratch/make-install-dry-run.stdout"; then
+  fail "make install retained the removed overwrite-configs control"
+fi
+
+local_bundle="$scratch/local-bundle"
+local_install_home="$scratch/local-home"
+local_install_bin="$scratch/local-bin"
+local_candidate_args="$scratch/local-candidate.args"
+mkdir -p \
+  "$local_bundle/configs" \
+  "$local_bundle/commands" \
+  "$local_bundle/resources" \
+  "$local_install_bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  "printf '%s\\n' \"\$@\" >\"\$LOCAL_CANDIDATE_ARGS\"" \
+  >"$local_bundle/sn-cli"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$local_bundle/sn-server"
+chmod 755 "$local_bundle/sn-cli" "$local_bundle/sn-server"
+printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
+  >"$local_bundle/configs/cx.json"
+printf '%s\n' '{"profile":"cx"}' >"$local_bundle/commands/cx.json"
+printf '%s\n' '{}' >"$local_bundle/runtime.json"
+printf '%s\n' '{}' >"$local_bundle/resources/release.json"
+local_source_args=(
+  --binary "$local_bundle/sn-cli"
+  --server "$local_bundle/sn-server"
+  --configs "$local_bundle/configs"
+  --commands "$local_bundle/commands"
+  --runtime-config "$local_bundle/runtime.json"
+  --resources "$local_bundle/resources"
+  --home "$local_install_home"
+  --install-dir "$local_install_bin"
+)
+
+bash "$ROOT_DIR/install.sh" \
+  "${local_source_args[@]}" \
+  --local-source-install \
+  --dry-run \
+  >"$scratch/local-source-dry-run.stdout" \
+  2>"$scratch/local-source-dry-run.stderr"
+grep -Fq 'local source install: 1' "$scratch/local-source-dry-run.stderr" ||
+  fail "local source install dry-run did not report its mode"
+grep -Fq 'overwrite configs: 1' "$scratch/local-source-dry-run.stderr" ||
+  fail "local source install did not fix overwrite mode internally"
+
+set +e
+bash "$ROOT_DIR/install.sh" \
+  "${local_source_args[@]}" \
+  --local-source-install \
+  --overwrite-configs \
+  --dry-run \
+  >"$scratch/local-source-conflict.stdout" \
+  2>"$scratch/local-source-conflict.stderr"
+local_source_conflict_status=$?
+set -e
+[[ "$local_source_conflict_status" -ne 0 ]] ||
+  fail "local source install accepted explicit --overwrite-configs"
+grep -Fq 'cannot be combined with --overwrite-configs' \
+  "$scratch/local-source-conflict.stderr" ||
+  fail "local source install returned the wrong overwrite conflict"
+
+for forbidden_option in archive checksums version; do
+  case "$forbidden_option" in
+    archive) forbidden_args=(--archive "$scratch/source.tar.gz") ;;
+    checksums) forbidden_args=(--checksums "$scratch/checksums.txt") ;;
+    version) forbidden_args=(--version v0.0.0-test) ;;
+  esac
+  set +e
+  bash "$ROOT_DIR/install.sh" \
+    "${local_source_args[@]}" \
+    --local-source-install \
+    "${forbidden_args[@]}" \
+    --dry-run \
+    >"$scratch/local-source-$forbidden_option.stdout" \
+    2>"$scratch/local-source-$forbidden_option.stderr"
+  forbidden_status=$?
+  set -e
+  [[ "$forbidden_status" -ne 0 ]] ||
+    fail "local source install accepted --$forbidden_option"
+  grep -Fq 'cannot be combined with --archive, --checksums, or --version' \
+    "$scratch/local-source-$forbidden_option.stderr" ||
+    fail "local source install returned the wrong --$forbidden_option conflict"
+done
+
+set +e
+bash "$ROOT_DIR/install.sh" \
+  --local-source-install \
+  --home "$local_install_home" \
+  --install-dir "$local_install_bin" \
+  --dry-run \
+  >"$scratch/local-source-network.stdout" \
+  2>"$scratch/local-source-network.stderr"
+local_source_network_status=$?
+set -e
+[[ "$local_source_network_status" -ne 0 ]] ||
+  fail "network install accepted local source mode"
+grep -Fq 'requires the complete --binary source bundle' \
+  "$scratch/local-source-network.stderr" ||
+  fail "network install returned the wrong local source mode error"
+
+LOCAL_CANDIDATE_ARGS="$local_candidate_args" \
+  bash "$ROOT_DIR/install.sh" \
+  "${local_source_args[@]}" \
+  --local-source-install \
+  >"$scratch/local-source-install.stdout" \
+  2>"$scratch/local-source-install.stderr"
+if grep -Fxq -- '--overwrite-configs' "$local_candidate_args"; then
+  fail "local source install passed a conflicting overwrite flag to candidate"
+fi
+grep -Fxq -- '--local-source-install' "$local_candidate_args" ||
+  fail "local source install did not pass its private candidate flag"
 
 set +e
 run_isolated_make sn-cli-build \

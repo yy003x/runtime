@@ -11,6 +11,7 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli <command-id>`：透明 command shortcut，不记录；
 - `sn-cli profile <id>`：一次 command 或 model 调用，不记录；
 - `sn-cli session ...`：文件型本地执行会话，不自动执行 tool；
+- `sn-cli tmux ...`：固定专用 tmux server/window 的交互进程管理，不进入 Session；
 - `sn-cli agent run`：唯一 API-only Agent Kernel；
 - `sn-cli run ...`：SQLite durable Run 控制面。
 
@@ -20,7 +21,7 @@ artifact reader 或 shim。
 
 ## 架构边界
 
-- `command/`、`model/`、`session/`、`agent/`、`run/` 是独立领域；
+- `command/`、`model/`、`session/`、`tmux/`、`agent/`、`run/` 是独立领域；
 - `contract/` 保存 Provider-neutral request/event/error；
 - `provider/*`、`store/sqlite/`、`transport/*` 是 adapter；
 - `internal/runtimebootstrap/` 是 composition root；
