@@ -290,6 +290,34 @@ func TestResolveAndMergePrompt(t *testing.T) {
 	}
 }
 
+func TestResolveExecutableUsesProfileEnvironmentCWDAndPATH(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	bin := filepath.Join(work, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	commandPath := filepath.Join(bin, "codex")
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pathValue := "./bin"
+	resolved, err := ResolveExecutable(
+		Profile{
+			Command: "codex", CWD: "work",
+			Env: map[string]*string{"PATH": &pathValue},
+		},
+		root,
+		[]string{"PATH=/definitely/not/used"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != commandPath {
+		t.Fatalf("resolved=%q want=%q", resolved, commandPath)
+	}
+}
+
 func TestReplaceProcessAppliesCWDAndNullStdin(t *testing.T) {
 	const childMarker = "SN_COMMAND_REPLACE_CHILD"
 	if os.Getenv(childMarker) == "1" {

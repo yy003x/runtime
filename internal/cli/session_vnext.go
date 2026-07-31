@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/identity"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	runtimemodel "github.com/yy003x/runtime/model"
@@ -29,33 +31,26 @@ func runSessionNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: session run|submit|list|show|messages|events|logs|executions|execution|reconcile|tool-result|configure|export|delete|gc")
+		return cliValidationf("usage: session run|submit|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
 	}
 	switch args[0] {
 	case "run", "submit":
 		return runSessionExecution(paths, args[0], args[1:], output)
 	}
 	if err := validateSessionManagementInvocation(args); err != nil {
-		return err
+		return cliValidation(err)
 	}
-	services, err := runtimebootstrap.LoadSessionServices(paths, fixedNamespaces...)
+	services, err := runtimebootstrap.LoadSessionMaintenanceServices(paths)
 	if err != nil {
 		return err
 	}
 	switch args[0] {
 	case "list":
-		if err := validateManagementArgs(
-			args[1:], []string{"--state"}, nil,
-		); err != nil {
-			return err
-		}
-		state, err := optionString(args[1:], "--state")
+		filter, err := parseSessionListFilter(args[1:])
 		if err != nil {
 			return err
 		}
-		values, err := services.Sessions.List(session.ListFilter{
-			State: session.SessionState(state),
-		})
+		values, err := services.Sessions.List(filter)
 		if err != nil {
 			return err
 		}
@@ -86,7 +81,7 @@ func runSessionNamespaceVNext(
 		}
 		value, err := services.Sessions.Get(sessionID)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"session": value})
@@ -108,7 +103,7 @@ func runSessionNamespaceVNext(
 		}
 		values, err := services.Sessions.Messages(sessionID, after)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"messages": values})
@@ -148,7 +143,7 @@ func runSessionNamespaceVNext(
 		}
 		values, err := services.Sessions.Events(sessionID, after)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		if args[0] == "logs" {
 			tail, err := intOptionValue(args[1:], "--tail", 120)
@@ -189,7 +184,7 @@ func runSessionNamespaceVNext(
 		}
 		values, err := services.Sessions.Executions(sessionID)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"executions": values})
@@ -222,7 +217,9 @@ func runSessionNamespaceVNext(
 		}
 		value, err := services.Sessions.Execution(sessionID, executionID)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(
+				err, "execution", executionID,
+			)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"execution": value})
@@ -235,6 +232,9 @@ func runSessionNamespaceVNext(
 		sessionID, reconcileOptions, err := parseSessionReconcileOptions(args[1:])
 		if err != nil {
 			return err
+		}
+		if _, err := services.Sessions.Get(sessionID); err != nil {
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		value, runtimeErr := services.Sessions.Reconcile(
 			context.Background(), sessionID, reconcileOptions,
@@ -251,8 +251,6 @@ func runSessionNamespaceVNext(
 			"Session %s reconciled: turn=%s state=%s",
 			value.SessionID, value.TurnID, value.State,
 		)
-	case "tool-result":
-		return submitSessionToolResult(services.Sessions, args[1:], output)
 	case "configure":
 		if err := validateManagementArgs(
 			args[1:], []string{"--session-id", "--retention"}, nil,
@@ -271,7 +269,7 @@ func runSessionNamespaceVNext(
 			sessionID, session.Retention(retention),
 		)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"session": value})
@@ -293,7 +291,7 @@ func runSessionNamespaceVNext(
 		}
 		target, err := services.Sessions.Delete(sessionID)
 		if err != nil {
-			return err
+			return canonicalSessionResourceError(err, "session", sessionID)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{
@@ -330,13 +328,7 @@ func runSessionNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		if output.JSON() {
-			return output.writeJSON(value)
-		}
-		return output.line(
-			"Session GC: candidates=%d moved=%d apply=%t",
-			len(value.Candidates), len(value.Moved), !value.DryRun,
-		)
+		return renderSessionGCResult(output, value)
 	default:
 		return fmt.Errorf("unknown session action %q", args[0])
 	}
@@ -347,36 +339,26 @@ func validateSessionManagementInvocation(args []string) error {
 	actionArgs := args[1:]
 	switch action {
 	case "list":
-		if err := validateManagementArgs(
-			actionArgs, []string{"--state"}, nil,
-		); err != nil {
-			return err
-		}
-		state, err := optionString(actionArgs, "--state")
-		if err != nil {
-			return err
-		}
-		if state == "" && optionProvided(actionArgs, "--state") {
-			return fmt.Errorf(
-				"--state must be idle, active, blocked, or archived",
-			)
-		}
-		return validateSessionStateFilter(session.SessionState(state))
+		_, err := parseSessionListFilter(actionArgs)
+		return err
 	case "show", "executions", "delete":
 		if err := validateManagementArgs(
 			actionArgs, []string{"--session-id"}, nil,
 		); err != nil {
 			return err
 		}
-		_, err := requiredOption(actionArgs, "--session-id")
-		return err
+		return validateRequiredIdentityOption(
+			actionArgs, "--session-id", "session",
+		)
 	case "messages", "events":
 		if err := validateManagementArgs(
 			actionArgs, []string{"--session-id", "--after-seq"}, nil,
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+		if err := validateRequiredIdentityOption(
+			actionArgs, "--session-id", "session",
+		); err != nil {
 			return err
 		}
 		_, err := uintOption(actionArgs, "--after-seq", 0)
@@ -388,7 +370,9 @@ func validateSessionManagementInvocation(args []string) error {
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+		if err := validateRequiredIdentityOption(
+			actionArgs, "--session-id", "session",
+		); err != nil {
 			return err
 		}
 		if _, err := uintOption(actionArgs, "--after-seq", 0); err != nil {
@@ -403,47 +387,30 @@ func validateSessionManagementInvocation(args []string) error {
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
-			return err
-		}
-		_, err := requiredOption(actionArgs, "--execution-id")
-		return err
-	case "reconcile":
-		_, _, err := parseSessionReconcileOptions(actionArgs)
-		return err
-	case "tool-result":
-		if err := validateManagementArgs(
-			actionArgs,
-			[]string{
-				"--session-id", "--turn-id", "--tool-call-id",
-				"--idempotency-key", "--content", "--content-file",
-			},
-			[]string{"--error"},
+		if err := validateRequiredIdentityOption(
+			actionArgs, "--session-id", "session",
 		); err != nil {
 			return err
 		}
-		for _, name := range []string{
-			"--session-id", "--turn-id", "--tool-call-id",
-			"--idempotency-key",
-		} {
-			if _, err := requiredOption(actionArgs, name); err != nil {
-				return err
-			}
+		return validateRequiredIdentityOption(
+			actionArgs, "--execution-id", "execution",
+		)
+	case "reconcile":
+		sessionID, _, err := parseSessionReconcileOptions(actionArgs)
+		if err != nil {
+			return err
 		}
-		if optionProvided(actionArgs, "--content") &&
-			optionProvided(actionArgs, "--content-file") {
-			return fmt.Errorf(
-				"--content and --content-file are mutually exclusive",
-			)
-		}
-		return nil
+		err = identity.Validate(sessionID, "session")
+		return err
 	case "configure":
 		if err := validateManagementArgs(
 			actionArgs, []string{"--session-id", "--retention"}, nil,
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+		if err := validateRequiredIdentityOption(
+			actionArgs, "--session-id", "session",
+		); err != nil {
 			return err
 		}
 		retention, err := requiredOption(actionArgs, "--retention")
@@ -457,7 +424,9 @@ func validateSessionManagementInvocation(args []string) error {
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--session-id"); err != nil {
+		if err := validateRequiredIdentityOption(
+			actionArgs, "--session-id", "session",
+		); err != nil {
 			return err
 		}
 		_, err := requiredOption(actionArgs, "--output")
@@ -484,16 +453,26 @@ func validateSessionManagementInvocation(args []string) error {
 	}
 }
 
-func validateSessionStateFilter(state session.SessionState) error {
-	switch state {
-	case "", session.SessionIdle, session.SessionActive,
-		session.SessionBlocked, session.SessionArchived:
-		return nil
-	default:
-		return fmt.Errorf(
-			"--state must be idle, active, blocked, or archived",
+func parseSessionListFilter(args []string) (session.ListFilter, error) {
+	if err := validateManagementArgs(
+		args, []string{"--state"}, nil,
+	); err != nil {
+		return session.ListFilter{}, err
+	}
+	state, err := optionString(args, "--state")
+	if err != nil {
+		return session.ListFilter{}, err
+	}
+	if state == "" && optionProvided(args, "--state") {
+		return session.ListFilter{}, fmt.Errorf(
+			"state must be idle, active, blocked, or archived",
 		)
 	}
+	filter := session.ListFilter{State: session.SessionState(state)}
+	if err := session.ValidateListFilter(filter); err != nil {
+		return session.ListFilter{}, err
+	}
+	return filter, nil
 }
 
 func validateSessionRetention(retention session.Retention) error {
@@ -502,10 +481,42 @@ func validateSessionRetention(retention session.Retention) error {
 		session.RetentionPinned:
 		return nil
 	default:
-		return fmt.Errorf(
+		return cliValidationf(
 			"--retention must be ephemeral, standard, or pinned",
 		)
 	}
+}
+
+func validateRequiredIdentityOption(
+	args []string,
+	option string,
+	prefix string,
+) error {
+	value, err := requiredOption(args, option)
+	if err != nil {
+		return err
+	}
+	return cliValidation(identity.Validate(value, prefix))
+}
+
+func canonicalSessionResourceError(
+	err error,
+	resource string,
+	id string,
+) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return &contract.RuntimeError{
+			Code: contract.ErrorNotFound, Phase: contract.PhaseRequest,
+			Message: fmt.Sprintf("%s %s was not found", resource, id),
+		}
+	}
+	if errors.Is(err, session.ErrConflict) {
+		return &contract.RuntimeError{
+			Code: contract.ErrorConflict, Phase: contract.PhaseRun,
+			Message: err.Error(),
+		}
+	}
+	return err
 }
 
 func parseSessionReconcileOptions(
@@ -517,7 +528,7 @@ func parseSessionReconcileOptions(
 	for index := 0; index < len(args); index++ {
 		current := args[index]
 		if seen[current] {
-			return "", options, fmt.Errorf(
+			return "", options, cliValidationf(
 				"session reconcile option %s may only be used once",
 				current,
 			)
@@ -527,7 +538,7 @@ func parseSessionReconcileOptions(
 		case "--session-id":
 			index++
 			if index >= len(args) || strings.HasPrefix(args[index], "-") {
-				return "", options, fmt.Errorf("--session-id requires value")
+				return "", options, cliValidationf("--session-id requires value")
 			}
 			sessionID = args[index]
 		case "--terminate":
@@ -535,16 +546,16 @@ func parseSessionReconcileOptions(
 		case "--acknowledge-unknown":
 			options.AcknowledgeUnknown = true
 		default:
-			return "", options, fmt.Errorf(
+			return "", options, cliValidationf(
 				"unknown session reconcile option %s", current,
 			)
 		}
 	}
 	if sessionID == "" {
-		return "", options, fmt.Errorf("--session-id is required")
+		return "", options, cliValidationf("--session-id is required")
 	}
 	if options.Terminate && options.AcknowledgeUnknown {
-		return "", options, fmt.Errorf(
+		return "", options, cliValidationf(
 			"--terminate and --acknowledge-unknown are mutually exclusive",
 		)
 	}
@@ -675,7 +686,9 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 			break
 		}
 		if seen[current] {
-			return value, fmt.Errorf("session option %s may only be used once", current)
+			return value, cliValidationf(
+				"session option %s may only be used once", current,
+			)
 		}
 		seen[current] = true
 		switch current {
@@ -683,53 +696,53 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--session-id requires value")
+				return value, cliValidationf("--session-id requires value")
 			}
 			value.sessionID = args[index]
 		case "--task-id":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--task-id requires value")
+				return value, cliValidationf("--task-id requires value")
 			}
 			value.taskID = args[index]
 		case "--retention":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--retention requires value")
+				return value, cliValidationf("--retention requires value")
 			}
 			value.retention = session.Retention(args[index])
 			if err := validateSessionRetention(value.retention); err != nil {
-				return value, err
+				return value, cliValidation(err)
 			}
 		case "--model":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--model requires value")
+				return value, cliValidationf("--model requires value")
 			}
 			value.model = args[index]
 		case "--effort":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--effort requires value")
+				return value, cliValidationf("--effort requires value")
 			}
 			if _, err := runtimecommand.ParseEffort(args[index]); err != nil {
-				return value, err
+				return value, cliValidation(err)
 			}
 			value.effort = args[index]
 		case "--cwd":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--cwd requires value")
+				return value, cliValidationf("--cwd requires value")
 			}
 			value.cwd = args[index]
 		case "--max-completion-tokens", "--max-tokens":
 			if value.tokenLimitFlag != "" {
-				return value, fmt.Errorf(
+				return value, cliValidationf(
 					"%s and %s are mutually exclusive",
 					value.tokenLimitFlag, current,
 				)
@@ -738,35 +751,37 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("%s requires value", current)
+				return value, cliValidationf("%s requires value", current)
 			}
 			tokenLimit, err := strconv.ParseInt(args[index], 10, 64)
 			if err != nil || tokenLimit <= 0 {
-				return value, fmt.Errorf("%s must be positive", current)
+				return value, cliValidationf("%s must be positive", current)
 			}
 			value.modelOptions.MaxOutputTokens = &tokenLimit
 		case "--temperature":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
-				return value, fmt.Errorf("--temperature requires value")
+				return value, cliValidationf("--temperature requires value")
 			}
 			current, err := strconv.ParseFloat(args[index], 64)
 			if err != nil || math.IsNaN(current) || math.IsInf(current, 0) ||
 				current < 0 || current > 2 {
-				return value, fmt.Errorf("--temperature must be between 0 and 2")
+				return value, cliValidationf(
+					"--temperature must be between 0 and 2",
+				)
 			}
 			value.modelOptions.Temperature = &current
 		default:
-			return value, fmt.Errorf("unknown session option %s", current)
+			return value, cliValidationf("unknown session option %s", current)
 		}
 		index++
 	}
 	if value.profileID == "" {
-		return value, fmt.Errorf("session execution requires profile ID")
+		return value, cliValidationf("session execution requires profile ID")
 	}
 	if len(args[index:]) > 1 {
-		return value, fmt.Errorf("session input must be one quoted argument")
+		return value, cliValidationf("session input must be one quoted argument")
 	}
 	stdinInput, err := readDirectStdin()
 	if err != nil {
@@ -778,7 +793,7 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 	}
 	value.input = joinNonEmptyInput(stdinInput, positionalInput)
 	if strings.TrimSpace(value.input) == "" {
-		return value, fmt.Errorf("session input is required")
+		return value, cliValidationf("session input is required")
 	}
 	return value, nil
 }
@@ -799,27 +814,27 @@ func validateSessionProfileOptions(
 ) error {
 	entry, exists := profiles.Resolve(invocation.profileID)
 	if !exists {
-		return fmt.Errorf("unknown profile %q", invocation.profileID)
+		return cliValidationf("unknown profile %q", invocation.profileID)
 	}
 	hasModelOptions := invocation.modelOptions.MaxOutputTokens != nil ||
 		invocation.modelOptions.Temperature != nil
 	if entry.Kind == runtimeprofile.KindCommand {
 		if hasModelOptions {
-			return fmt.Errorf(
+			return cliValidationf(
 				"API model request options are invalid for CLI profile %q",
 				invocation.profileID,
 			)
 		}
 		if invocation.effort != "" {
 			if _, err := runtimecommand.ParseEffort(invocation.effort); err != nil {
-				return err
+				return cliValidation(err)
 			}
 		}
 		return nil
 	}
 	if invocation.model != "" || invocation.effort != "" ||
 		invocation.cwd != "" {
-		return fmt.Errorf(
+		return cliValidationf(
 			"--model, --effort, and --cwd are invalid for API profile %q",
 			invocation.profileID,
 		)
@@ -832,80 +847,12 @@ func validateSessionProfileOptions(
 	}
 	expected := modelTokenLimitOption(runtimemodel.DriverName(entry.Model.Driver))
 	if invocation.tokenLimitFlag != expected {
-		return fmt.Errorf(
+		return cliValidationf(
 			"%s is invalid for %s; use %s",
 			invocation.tokenLimitFlag, entry.Model.Driver, expected,
 		)
 	}
 	return nil
-}
-
-func submitSessionToolResult(
-	service *session.Service,
-	args []string,
-	output *cliOutput,
-) error {
-	if err := validateManagementArgs(
-		args,
-		[]string{
-			"--session-id", "--turn-id", "--tool-call-id",
-			"--idempotency-key", "--content", "--content-file",
-		},
-		[]string{"--error"},
-	); err != nil {
-		return err
-	}
-	sessionID, err := requiredOption(args, "--session-id")
-	if err != nil {
-		return err
-	}
-	turnID, err := requiredOption(args, "--turn-id")
-	if err != nil {
-		return err
-	}
-	callID, err := requiredOption(args, "--tool-call-id")
-	if err != nil {
-		return err
-	}
-	key, err := requiredOption(args, "--idempotency-key")
-	if err != nil {
-		return err
-	}
-	content, err := optionString(args, "--content")
-	if err != nil {
-		return err
-	}
-	contentFile, err := optionString(args, "--content-file")
-	if err != nil {
-		return err
-	}
-	if optionProvided(args, "--content") &&
-		optionProvided(args, "--content-file") {
-		return fmt.Errorf("--content and --content-file are mutually exclusive")
-	}
-	if contentFile != "" {
-		content, err = readPromptFile(contentFile)
-		if err != nil {
-			return err
-		}
-	}
-	receipt, runtimeErr := service.SubmitToolResult(
-		sessionID, turnID,
-		session.ToolResultInput{
-			ToolCallID: callID, Content: content,
-			IsError: hasFlag(args, "--error"), IdempotencyKey: key,
-		},
-	)
-	if runtimeErr != nil {
-		return runtimeErr
-	}
-	if output.JSON() {
-		return output.writeJSON(receipt)
-	}
-	return output.line(
-		"Tool result accepted: call=%s message_sequence=%d",
-		receipt.ToolCallID, receipt.MessageSequence,
-	)
 }
 
 func exportSession(
@@ -928,7 +875,7 @@ func exportSession(
 	}
 	sessionValue, err := service.Get(sessionID)
 	if err != nil {
-		return err
+		return canonicalSessionResourceError(err, "session", sessionID)
 	}
 	messages, err := service.Messages(sessionID, 0)
 	if err != nil {
@@ -978,6 +925,16 @@ func renderSessionSummary(output *cliOutput, value session.Session) error {
 	}
 	return output.line(
 		"Messages: %d, events: %d", value.MessageCount, value.EventCount,
+	)
+}
+
+func renderSessionGCResult(output *cliOutput, value session.GCResult) error {
+	if output.JSON() {
+		return output.writeJSON(value)
+	}
+	return output.line(
+		"Session GC: candidates=%d moved=%d skipped=%d apply=%t",
+		len(value.Candidates), len(value.Moved), len(value.Skipped), !value.DryRun,
 	)
 }
 
@@ -1063,7 +1020,7 @@ func requiredOption(args []string, name string) (string, error) {
 		return "", err
 	}
 	if value == "" {
-		return "", fmt.Errorf("%s is required", name)
+		return "", cliValidationf("%s is required", name)
 	}
 	return value, nil
 }
@@ -1085,7 +1042,7 @@ func validateManagementArgs(
 	for index := 0; index < len(args); index++ {
 		name := args[index]
 		if seen[name] {
-			return fmt.Errorf(
+			return cliValidationf(
 				"option %s may only be used once", name,
 			)
 		}
@@ -1094,13 +1051,13 @@ func validateManagementArgs(
 			continue
 		}
 		if _, ok := values[name]; !ok {
-			return fmt.Errorf("unknown option %s", name)
+			return cliValidationf("unknown option %s", name)
 		}
 		seen[name] = true
 		index++
 		if index >= len(args) ||
 			strings.HasPrefix(args[index], "--") {
-			return fmt.Errorf("%s requires value", name)
+			return cliValidationf("%s requires value", name)
 		}
 	}
 	return nil
@@ -1110,7 +1067,7 @@ func optionString(args []string, name string) (string, error) {
 	for index, value := range args {
 		if value == name {
 			if index+1 >= len(args) {
-				return "", fmt.Errorf("%s requires value", name)
+				return "", cliValidationf("%s requires value", name)
 			}
 			return args[index+1], nil
 		}
@@ -1125,11 +1082,15 @@ func uintOption(args []string, name string, fallback uint64) (uint64, error) {
 	}
 	if value == "" {
 		if optionProvided(args, name) {
-			return 0, fmt.Errorf("%s requires value", name)
+			return 0, cliValidationf("%s requires value", name)
 		}
 		return fallback, nil
 	}
-	return strconv.ParseUint(value, 10, 64)
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, cliValidation(err)
+	}
+	return parsed, nil
 }
 
 func intOptionValue(args []string, name string, fallback int) (int, error) {
@@ -1139,13 +1100,13 @@ func intOptionValue(args []string, name string, fallback int) (int, error) {
 	}
 	if value == "" {
 		if optionProvided(args, name) {
-			return 0, fmt.Errorf("%s requires value", name)
+			return 0, cliValidationf("%s requires value", name)
 		}
 		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer", name)
+		return 0, cliValidationf("%s must be a positive integer", name)
 	}
 	return parsed, nil
 }
@@ -1161,7 +1122,7 @@ func boundedIntOptionValue(
 		return 0, err
 	}
 	if value > maximum {
-		return 0, fmt.Errorf(
+		return 0, cliValidationf(
 			"%s must be between 1 and %d", name, maximum,
 		)
 	}
@@ -1179,19 +1140,19 @@ func durationHoursOption(
 	}
 	if value == "" {
 		if optionProvided(args, name) {
-			return 0, fmt.Errorf("%s requires value", name)
+			return 0, cliValidationf("%s requires value", name)
 		}
 		return fallback, nil
 	}
 	hours, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || hours == 0 {
-		return 0, fmt.Errorf(
+		return 0, cliValidationf(
 			"%s must be a positive integer that fits a duration", name,
 		)
 	}
 	duration, err := time.ParseDuration(value + "h")
 	if err != nil || duration <= 0 {
-		return 0, fmt.Errorf(
+		return 0, cliValidationf(
 			"%s must be a positive integer that fits a duration", name,
 		)
 	}

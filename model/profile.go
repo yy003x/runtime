@@ -4,15 +4,10 @@ package model
 
 import (
 	"fmt"
-	"io"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/yy003x/runtime/internal/strictjson"
 )
-
-const maxProfileBytes int64 = 1 << 20
 
 type DriverName string
 
@@ -49,28 +44,6 @@ type Profile struct {
 	Defaults Defaults          `json:"defaults,omitempty"`
 	Timeout  string            `json:"timeout"`
 	Context  ContextPolicy     `json:"context,omitempty"`
-}
-
-func DecodeProfile(reader io.Reader) (Profile, error) {
-	var profile Profile
-	if err := strictjson.Decode(reader, maxProfileBytes, &profile); err != nil {
-		return Profile{}, err
-	}
-	if err := profile.Validate(); err != nil {
-		return Profile{}, err
-	}
-	return profile, nil
-}
-
-func LoadProfileFile(path string) (Profile, error) {
-	var profile Profile
-	if err := strictjson.ReadRegularFile(path, maxProfileBytes, &profile); err != nil {
-		return Profile{}, err
-	}
-	if err := profile.Validate(); err != nil {
-		return Profile{}, fmt.Errorf("%s: %w", path, err)
-	}
-	return profile, nil
 }
 
 func (profile Profile) Validate() error {

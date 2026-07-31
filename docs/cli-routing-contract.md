@@ -13,7 +13,8 @@
 namespace 或 Profile ID 后的 `--json` 不属于 root。例如 `sn-cli cx --json` 会
 进入 Profile typed parser，并因未知 option 失败，而不会原样传给 Codex。固定根
 namespace `profile|session|tmux|agent|run|server|help|version` 和 Profile 管理
-action `list|show|check` 都是保留 Profile ID，不能被配置覆盖。
+action `list|show|check`、已退役 action 名 `exec|open` 都是保留 Profile ID，
+不能被配置覆盖；保留 `exec|open` 不表示恢复旧 action。
 
 ## Profile
 
@@ -41,14 +42,13 @@ effective `exec=true` 时 prompt 必须非空，`exec=false` 时允许空 prompt
 ## Session
 
 ```text
-sn-cli session run [options] <profile-id> <input>
-sn-cli session submit [options] <profile-id> <input>
+sn-cli session run [options] <profile-id> [input]
+sn-cli session submit [options] <profile-id> [input]
 sn-cli session list|show|messages|events|logs
 sn-cli session executions --session-id <id>
 sn-cli session execution --session-id <id> --execution-id <id>
 sn-cli session reconcile --session-id <id>
                          [--terminate|--acknowledge-unknown]
-sn-cli session tool-result
 sn-cli session configure|export|delete|gc
 ```
 
@@ -58,11 +58,15 @@ exit，并解码稳定机器输出。Session 不读取 Profile `exec`，也不�
 
 CLI Session Turn override 只支持 `--model`、`--effort`、`--cwd`。API request
 options 只适用于 API Profile，CLI override 只适用于 CLI Profile。输入来自 piped
-stdin 和最后一个位置参数，合并后必须非空。
+stdin 和可选的最后一个位置参数；两者以换行合并，合并后必须非空。
 
 `run` 同步等待 terminal result；`submit` 创建 durable Run，并由 worker 执行同一
 Session service。进程已经可能执行但结果未知时，Session 和 Run 进入显式
 reconciliation，不自动重放。
+
+Session 领域内部保留 `requires_action`/tool-result projection，但 stock CLI 和
+HTTP 不发布 tool-result 写入口；当前公开 Session request 也不声明 tools。自动
+model/tool/tool-result loop 只属于 Agent。
 
 ## Tmux
 
@@ -85,7 +89,7 @@ window；初始 prompt 是最终 argv token，只有后续 `send` 使用安全 p
 ## Agent 与 Run
 
 ```text
-sn-cli agent run --profile <api-profile-id> [options] <input>
+sn-cli agent run --profile <api-profile-id> [options] [input]
 
 sn-cli run submit --kind agent|session --profile <id> <input>
 sn-cli run get|list|result|events|watch
@@ -93,7 +97,14 @@ sn-cli run cancel|resume|retry|reconcile
 sn-cli run gc [--older-than 168h] [--limit 100] [--apply]
 ```
 
-`agent run` 是唯一 API-only model/tool loop。`run submit` 是 durable queue 控制面。
+`agent run` 是唯一 API-only model/tool loop。位置 input 存在时不读取 stdin；
+省略位置 input 时读取非 TTY stdin，最终输入必须非空。`run submit` 是 durable
+queue 控制面，不读取 stdin。
+
+Agent request 不接受 `cwd`。`run submit --kind agent --cwd ...` 在创建 Run 前
+失败；`cwd` 只属于 Session/CLI command execution。pause/resume 是 Kernel
+extension：保留底层 `run resume` CLI/API/Store state，但 stock server capability
+不宣称默认 builtin tool 集可产生 Pause。
 
 ## 输出
 

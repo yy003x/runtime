@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +12,10 @@ import (
 
 	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/identity"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
+	"github.com/yy003x/runtime/internal/strictjson"
 	runtime "github.com/yy003x/runtime/run"
 	"github.com/yy003x/runtime/session"
 )
@@ -23,45 +26,95 @@ func runRunNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc")
+		return cliValidationf("usage: run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc")
 	}
 	if args[0] == "watch" {
 		output.beginStream()
 	}
 	var submitRequest runtime.Request
 	var resumeInput json.RawMessage
+	var err error
 	if args[0] == "submit" {
-		var err error
 		submitRequest, err = parseDurableSubmit(args[1:], agent.Budget{})
 		if err != nil {
-			return err
+			return cliValidation(err)
 		}
 	} else {
 		if err := validateRunManagementInvocation(args); err != nil {
-			return err
+			return cliValidation(err)
 		}
 		if args[0] == "resume" {
-			var err error
 			resumeInput, err = readResumeInput(args[1:])
 			if err != nil {
 				return err
 			}
 		}
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
+	var (
+		cwd                 string
+		executionServices   *runtimebootstrap.Services
+		queryServices       *runtimebootstrap.RunQueryServices
+		maintenanceServices *runtimebootstrap.RunMaintenanceServices
+		gcOlderThan         time.Duration
+	)
+	switch args[0] {
+	case "get", "list", "result", "events", "watch":
+		queryServices, err = runtimebootstrap.LoadRunQueryServices(paths)
+		if err != nil {
+			return err
+		}
+		defer queryServices.Runs.Close()
+	case "cancel", "reconcile":
+		maintenanceServices, err =
+			runtimebootstrap.LoadRunMaintenanceServices(paths)
+		if err != nil {
+			return err
+		}
+		defer maintenanceServices.Runs.Close()
+	case "gc":
+		configured, optionErr := optionString(
+			args[1:], "--older-than",
+		)
+		if optionErr != nil {
+			return optionErr
+		}
+		if configured != "" {
+			gcOlderThan, err = time.ParseDuration(configured)
+			if err != nil {
+				return err
+			}
+		} else {
+			gcOlderThan, err =
+				runtimebootstrap.LoadRunSettledRetention(paths)
+			if err != nil {
+				return err
+			}
+		}
+		queryServices, err = runtimebootstrap.LoadRunQueryServices(paths)
+		if err != nil {
+			return err
+		}
+		defer queryServices.Runs.Close()
+	case "submit", "resume", "retry":
+		cwd, err = os.Getwd()
+		if err != nil {
+			return err
+		}
+		executionServices, err = runtimebootstrap.LoadServices(
+			paths, cwd, fixedNamespaces...,
+		)
+		if err != nil {
+			return err
+		}
+		defer executionServices.Runs.Close()
+	default:
+		return fmt.Errorf("unknown run action %q", args[0])
 	}
-	services, err := runtimebootstrap.LoadServices(paths, cwd, fixedNamespaces...)
-	if err != nil {
-		return err
-	}
-	defer services.Runs.Close()
 	switch args[0] {
 	case "submit":
 		request := submitRequest
 		if request.Kind == runtime.KindAgent {
-			request.AgentBudget = services.Config.AgentBudget()
+			request.AgentBudget = executionServices.Config.AgentBudget()
 		}
 		if request.Kind == runtime.KindSession && request.SessionID == "" {
 			request.SessionID, err = session.NewID()
@@ -75,7 +128,9 @@ func runRunNamespaceVNext(
 				request.CWD = filepath.Join(cwd, request.CWD)
 			}
 		}
-		record, runtimeErr := services.Runs.Submit(context.Background(), request)
+		record, runtimeErr := executionServices.Runs.Submit(
+			context.Background(), request,
+		)
 		if runtimeErr != nil {
 			return runtimeErr
 		}
@@ -96,37 +151,22 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		record, err := services.Runs.Get(context.Background(), runID)
+		record, err := queryServices.Runs.Get(context.Background(), runID)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"run": record})
 		}
 		return renderRunRecord(output, record)
 	case "list":
-		if err := validateManagementArgs(
-			args[1:], []string{"--state", "--kind", "--limit"}, nil,
-		); err != nil {
-			return err
-		}
-		state, err := optionString(args[1:], "--state")
+		filter, err := parseRunListFilter(args[1:])
 		if err != nil {
 			return err
 		}
-		kind, err := optionString(args[1:], "--kind")
-		if err != nil {
-			return err
-		}
-		limit, err := boundedIntOptionValue(
-			args[1:], "--limit", 100, 1000,
+		records, err := queryServices.Runs.List(
+			context.Background(), filter,
 		)
-		if err != nil {
-			return err
-		}
-		records, err := services.Runs.List(context.Background(), runtime.ListFilter{
-			State: runtime.State(state), Kind: runtime.Kind(kind), Limit: limit,
-		})
 		if err != nil {
 			return err
 		}
@@ -156,9 +196,9 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		record, err := services.Runs.Get(context.Background(), runID)
+		record, err := queryServices.Runs.Get(context.Background(), runID)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{
@@ -182,11 +222,11 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		events, err := services.Runs.Events(
+		events, err := queryServices.Runs.Events(
 			context.Background(), runID, after, 1000,
 		)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"events": events})
@@ -216,12 +256,12 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		record, err := services.Runs.Watch(
+		record, err := queryServices.Runs.Watch(
 			context.Background(), runID, after,
 			func(event contract.Event) error { return output.writeEvent(event) },
 		)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		return output.writeFinal(map[string]any{"run": record})
 	case "cancel":
@@ -234,9 +274,11 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		record, err := services.Runs.Cancel(context.Background(), runID)
+		record, err := maintenanceServices.Runs.Cancel(
+			context.Background(), runID,
+		)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"run": record})
@@ -253,11 +295,11 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		record, err := services.Runs.Resume(
+		record, err := executionServices.Runs.Resume(
 			context.Background(), runID, resumeInput,
 		)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"run": record})
@@ -273,7 +315,7 @@ func runRunNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		record, runtimeErr := services.Runs.Retry(
+		record, runtimeErr := executionServices.Runs.Retry(
 			context.Background(), runID,
 		)
 		if runtimeErr != nil {
@@ -293,7 +335,7 @@ func runRunNamespaceVNext(
 			)
 		}
 		runID := args[2]
-		record, runtimeErr := services.Runs.ReconcileRun(
+		record, runtimeErr := maintenanceServices.Runs.ReconcileRun(
 			context.Background(), runID,
 		)
 		if runtimeErr != nil {
@@ -312,27 +354,16 @@ func runRunNamespaceVNext(
 		); err != nil {
 			return err
 		}
-		olderThan := services.Config.SettledRetention()
-		configured, err := optionString(args[1:], "--older-than")
-		if err != nil {
-			return err
-		}
-		if configured != "" {
-			olderThan, err = time.ParseDuration(configured)
-			if err != nil || olderThan < time.Hour {
-				return fmt.Errorf("--older-than must be a duration of at least 1h")
-			}
-		}
 		limit, err := boundedIntOptionValue(
 			args[1:], "--limit", 100, 1000,
 		)
 		if err != nil {
 			return err
 		}
-		result, err := services.Runs.GC(
+		result, err := queryServices.Runs.GC(
 			context.Background(),
 			runtime.GCOptions{
-				Before: time.Now().UTC().Add(-olderThan),
+				Before: time.Now().UTC().Add(-gcOlderThan),
 				Limit:  limit, Apply: hasFlag(args[1:], "--apply"),
 			},
 		)
@@ -361,39 +392,13 @@ func validateRunManagementInvocation(args []string) error {
 		); err != nil {
 			return err
 		}
-		_, err := requiredOption(actionArgs, "--run-id")
-		return err
+		runID, err := requiredOption(actionArgs, "--run-id")
+		if err != nil {
+			return err
+		}
+		return identity.Validate(runID, "run")
 	case "list":
-		if err := validateManagementArgs(
-			actionArgs, []string{"--state", "--kind", "--limit"}, nil,
-		); err != nil {
-			return err
-		}
-		state, err := optionString(actionArgs, "--state")
-		if err != nil {
-			return err
-		}
-		if state == "" && optionProvided(actionArgs, "--state") {
-			return fmt.Errorf(
-				"--state must be queued, running, paused, needs_reconciliation, completed, failed, or cancelled",
-			)
-		}
-		if err := validateRunStateFilter(runtime.State(state)); err != nil {
-			return err
-		}
-		kind, err := optionString(actionArgs, "--kind")
-		if err != nil {
-			return err
-		}
-		if kind == "" && optionProvided(actionArgs, "--kind") {
-			return fmt.Errorf("--kind must be agent or session")
-		}
-		if err := validateRunKindFilter(runtime.Kind(kind)); err != nil {
-			return err
-		}
-		_, err = boundedIntOptionValue(
-			actionArgs, "--limit", 100, 1000,
-		)
+		_, err := parseRunListFilter(actionArgs)
 		return err
 	case "events", "watch":
 		if err := validateManagementArgs(
@@ -401,10 +406,14 @@ func validateRunManagementInvocation(args []string) error {
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--run-id"); err != nil {
+		runID, err := requiredOption(actionArgs, "--run-id")
+		if err != nil {
 			return err
 		}
-		_, err := uintOption(actionArgs, "--after-seq", 0)
+		if err := identity.Validate(runID, "run"); err != nil {
+			return err
+		}
+		_, err = uintOption(actionArgs, "--after-seq", 0)
 		return err
 	case "resume":
 		if err := validateManagementArgs(
@@ -413,10 +422,11 @@ func validateRunManagementInvocation(args []string) error {
 		); err != nil {
 			return err
 		}
-		if _, err := requiredOption(actionArgs, "--run-id"); err != nil {
+		runID, err := requiredOption(actionArgs, "--run-id")
+		if err != nil {
 			return err
 		}
-		return nil
+		return identity.Validate(runID, "run")
 	case "reconcile":
 		if len(actionArgs) != 2 || actionArgs[0] != "--run-id" ||
 			actionArgs[1] == "" ||
@@ -425,7 +435,7 @@ func validateRunManagementInvocation(args []string) error {
 				"run reconcile requires exactly --run-id <run-id>",
 			)
 		}
-		return nil
+		return identity.Validate(actionArgs[1], "run")
 	case "gc":
 		if err := validateManagementArgs(
 			actionArgs, []string{"--older-than", "--limit"},
@@ -460,26 +470,55 @@ func validateRunManagementInvocation(args []string) error {
 	}
 }
 
-func validateRunStateFilter(state runtime.State) error {
-	switch state {
-	case "", runtime.StateQueued, runtime.StateRunning, runtime.StatePaused,
-		runtime.StateNeedsReconciliation, runtime.StateCompleted,
-		runtime.StateFailed, runtime.StateCancelled:
-		return nil
-	default:
-		return fmt.Errorf(
-			"--state must be queued, running, paused, needs_reconciliation, completed, failed, or cancelled",
-		)
+func canonicalRunManagementError(err error) error {
+	if errors.Is(err, runtime.ErrNotFound) {
+		return &contract.RuntimeError{
+			Code: contract.ErrorNotFound, Phase: contract.PhaseRun,
+			Message: err.Error(),
+		}
 	}
+	if errors.Is(err, runtime.ErrConflict) {
+		return &contract.RuntimeError{
+			Code: contract.ErrorConflict, Phase: contract.PhaseRun,
+			Message: err.Error(),
+		}
+	}
+	return err
 }
 
-func validateRunKindFilter(kind runtime.Kind) error {
-	switch kind {
-	case "", runtime.KindAgent, runtime.KindSession:
-		return nil
-	default:
-		return fmt.Errorf("--kind must be agent or session")
+func parseRunListFilter(args []string) (runtime.ListFilter, error) {
+	if err := validateManagementArgs(
+		args, []string{"--state", "--kind", "--limit"}, nil,
+	); err != nil {
+		return runtime.ListFilter{}, err
 	}
+	state, err := optionString(args, "--state")
+	if err != nil {
+		return runtime.ListFilter{}, err
+	}
+	if state == "" && optionProvided(args, "--state") {
+		return runtime.ListFilter{}, fmt.Errorf(
+			"state must be queued, running, paused, needs_reconciliation, completed, failed, or cancelled",
+		)
+	}
+	kind, err := optionString(args, "--kind")
+	if err != nil {
+		return runtime.ListFilter{}, err
+	}
+	if kind == "" && optionProvided(args, "--kind") {
+		return runtime.ListFilter{}, fmt.Errorf(
+			"kind must be agent or session",
+		)
+	}
+	limit, err := boundedIntOptionValue(
+		args, "--limit", runtime.DefaultListLimit, runtime.MaxListLimit,
+	)
+	if err != nil {
+		return runtime.ListFilter{}, err
+	}
+	return runtime.NormalizeListFilter(runtime.ListFilter{
+		State: runtime.State(state), Kind: runtime.Kind(kind), Limit: limit,
+	})
 }
 
 func renderRunRecord(output *cliOutput, record runtime.Record) error {
@@ -699,6 +738,9 @@ func parseDurableSubmit(
 	if request.Kind != runtime.KindAgent && request.Kind != runtime.KindSession {
 		return request, fmt.Errorf("--kind must be agent or session")
 	}
+	if request.Kind == runtime.KindAgent && request.CWD != "" {
+		return request, fmt.Errorf("--cwd is invalid for agent runs")
+	}
 	if request.Kind == runtime.KindSession {
 		request.AgentBudget = agent.Budget{}
 	}
@@ -716,25 +758,31 @@ func readResumeInput(args []string) (json.RawMessage, error) {
 	}
 	if optionProvided(args, "--input-json") &&
 		optionProvided(args, "--input-file") {
-		return nil, fmt.Errorf("--input-json and --input-file are mutually exclusive")
+		return nil, cliValidationf("--input-json and --input-file are mutually exclusive")
 	}
 	if path != "" {
-		info, err := os.Lstat(path)
+		data, err := strictjson.ReadRegularFileBytes(path, 1<<20)
 		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
-			info.Size() > 1<<20 {
-			return nil, fmt.Errorf("resume input file must be a regular file no larger than 1048576 bytes")
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
+			if strictjson.IsValidation(err) {
+				return nil, cliValidation(err)
+			}
 			return nil, err
 		}
 		value = string(data)
 	}
-	if value == "" || !json.Valid([]byte(value)) {
-		return nil, fmt.Errorf("valid --input-json or --input-file is required")
+	if value == "" {
+		return nil, cliValidationf("valid --input-json or --input-file is required")
+	}
+	var validated json.RawMessage
+	if err := strictjson.Decode(
+		strings.NewReader(value), 1<<20, &validated,
+	); err != nil {
+		if strictjson.IsValidation(err) {
+			return nil, cliValidationf(
+				"valid --input-json or --input-file is required: %v", err,
+			)
+		}
+		return nil, err
 	}
 	return json.RawMessage(value), nil
 }

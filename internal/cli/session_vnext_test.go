@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -28,7 +30,8 @@ func TestSessionInvocationUsesTypedCLIOverridesAndRejectsCarrierOptions(t *testi
 		t.Fatalf("value=%#v", value)
 	}
 	for _, option := range []string{
-		"--prompt-file", "--terminal-driver", "--command-arg",
+		"--prompt-file", "--session-file", "--terminal-driver",
+		"--command-arg", "--launch",
 	} {
 		if _, err := parseSessionInvocation(
 			[]string{option, "value", "cx", "input"},
@@ -55,6 +58,120 @@ func TestSessionInvocationUsesTypedCLIOverridesAndRejectsCarrierOptions(t *testi
 		if _, err := parseSessionInvocation(args); err == nil {
 			t.Fatalf("accepted invalid invocation args=%#v", args)
 		}
+	}
+}
+
+func TestSessionInvocationAndProfileCompatibilityAreCLIValidation(t *testing.T) {
+	_, err := parseSessionInvocation([]string{"--unknown"})
+	var validationErr *cliValidationError
+	if err == nil || !errors.As(err, &validationErr) {
+		t.Fatalf("argument error=%v, want CLI validation", err)
+	}
+	assertMachineErrorCode(t, err, contract.ErrorInvalidRequest)
+
+	profiles := sessionTestProfiles(t, runtimemodel.Profile{
+		Driver:   runtimemodel.DriverOpenAICompatible,
+		Endpoint: "https://example.invalid/v1/chat/completions",
+		Model:    "fixture",
+		Auth: runtimemodel.Auth{
+			Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY",
+		},
+		Timeout: "1m",
+	})
+	for _, invocation := range []sessionInvocation{
+		{profileID: "missing"},
+		{profileID: "api-cx", model: "override"},
+		{
+			profileID: "api-cx", tokenLimitFlag: "--max-tokens",
+			modelOptions: contract.GenerateOptions{
+				MaxOutputTokens: func() *int64 {
+					value := int64(32)
+					return &value
+				}(),
+			},
+		},
+	} {
+		err := validateSessionProfileOptions(invocation, profiles)
+		validationErr = nil
+		if err == nil || !errors.As(err, &validationErr) {
+			t.Fatalf("invocation=%#v error=%v, want CLI validation", invocation, err)
+		}
+	}
+}
+
+func TestSessionInvocationDoesNotClassifyStdinIOAsValidation(t *testing.T) {
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	originalStdin := os.Stdin
+	os.Stdin = directory
+	defer func() { os.Stdin = originalStdin }()
+
+	_, err = parseSessionInvocation([]string{"api-cx", "input"})
+	var validationErr *cliValidationError
+	if err == nil || errors.As(err, &validationErr) {
+		t.Fatalf("stdin error=%v, want unclassified I/O", err)
+	}
+	assertMachineErrorCode(t, err, contract.ErrorInternal)
+}
+
+func TestCanonicalSessionDeleteConflict(t *testing.T) {
+	err := canonicalSessionResourceError(
+		fmt.Errorf("delete: %w", session.ErrConflict),
+		"session", "session_00000000000000000000000000000000",
+	)
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorConflict ||
+		runtimeErr.Phase != contract.PhaseRun {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestSessionToolResultActionIsNotPublic(t *testing.T) {
+	paths := prepareVNextHome(t)
+	err := runSessionNamespaceVNext(
+		paths,
+		[]string{
+			"tool-result",
+			"--session-id", "session_00000000000000000000000000000000",
+			"--turn-id", "turn_00000000000000000000000000000000",
+			"--tool-call-id", "call_missing",
+			"--idempotency-key", "missing-turn",
+			"--content", "result",
+		},
+		newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "unknown session action") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, statErr := os.Stat(paths.SessionsDir); !os.IsNotExist(statErr) {
+		t.Fatalf("removed action bootstrapped Session state: %v", statErr)
+	}
+}
+
+func TestSessionManagementDoesNotLoadProfileOrRuntimeConfig(t *testing.T) {
+	paths := prepareVNextHome(t)
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile, []byte(`{"agent":{"max_rounds":0}}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		paths.ConfigDir+"/broken.json", []byte(`{"type":"unknown"}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	if err := runSessionNamespaceVNext(
+		paths, []string{"list"}, newCLIOutput(false, &stdout, os.Stderr),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "Sessions (0)") {
+		t.Fatalf("output=%q", stdout.String())
 	}
 }
 
@@ -97,6 +214,24 @@ func TestSessionExportJSONReturnsBusinessResult(t *testing.T) {
 	if payload.SessionID != "session_1" ||
 		payload.Output != "/tmp/session.json" || !payload.Exported {
 		t.Fatalf("payload=%#v", payload)
+	}
+}
+
+func TestRenderSessionGCResultIncludesSkippedCount(t *testing.T) {
+	value := session.GCResult{
+		Candidates: []string{"session_1", "session_2"},
+		Moved:      []string{"session_1"},
+		Skipped:    []string{"session_2"},
+	}
+	var stdout bytes.Buffer
+	if err := renderSessionGCResult(
+		newCLIOutput(false, &stdout, &bytes.Buffer{}), value,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(),
+		"Session GC: candidates=2 moved=1 skipped=1 apply=true\n"; got != want {
+		t.Fatalf("output=%q want=%q", got, want)
 	}
 }
 
@@ -202,6 +337,7 @@ func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
 		{"run", "--unknown"},
 		{"list", "--state", "unknown"},
 		{"list", "--state", ""},
+		{"list", "--state", "idle", "--state", "archived"},
 		{"gc", "--limit", "1001"},
 		{"gc", "--limit", ""},
 		{"gc", "--older-than-hours", "2562048"},
@@ -231,6 +367,10 @@ func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
 }
 
 func TestSessionManagementPreflightAcceptsBoundedFilters(t *testing.T) {
+	if filter, err := parseSessionListFilter(nil); err != nil ||
+		filter != (session.ListFilter{}) {
+		t.Fatalf("default filter=%#v error=%v", filter, err)
+	}
 	for _, args := range [][]string{
 		{"list", "--state", "idle"},
 		{
@@ -241,6 +381,32 @@ func TestSessionManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 		if err := validateSessionManagementInvocation(args); err != nil {
 			t.Fatalf("args=%#v error=%v", args, err)
 		}
+	}
+}
+
+func TestSessionManagementUsesCanonicalIDAndNotFoundErrors(t *testing.T) {
+	const missingSessionID = "session_00000000000000000000000000000000"
+	if err := validateSessionManagementInvocation([]string{
+		"show", "--session-id", missingSessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSessionManagementInvocation([]string{
+		"show", "--session-id", "session_missing",
+	}); err == nil {
+		t.Fatal("malformed session ID was accepted")
+	}
+
+	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runSessionNamespaceVNext(
+		prepareVNextHome(t),
+		[]string{"show", "--session-id", missingSessionID},
+		output,
+	)
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorNotFound {
+		t.Fatalf("error=%v", err)
 	}
 }
 

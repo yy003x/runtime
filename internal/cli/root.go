@@ -37,7 +37,9 @@ func Main(args []string) int {
 	switch args[0] {
 	case "-h", "--help", "help":
 		if len(args) != 1 {
-			return output.fail(fmt.Errorf("%s does not accept arguments", args[0]))
+			return output.fail(cliValidationf(
+				"%s does not accept arguments", args[0],
+			))
 		}
 		if err := printHelp(output); err != nil {
 			return output.fail(err)
@@ -45,7 +47,9 @@ func Main(args []string) int {
 		return 0
 	case "--version", "version":
 		if len(args) != 1 {
-			return output.fail(fmt.Errorf("%s does not accept arguments", args[0]))
+			return output.fail(cliValidationf(
+				"%s does not accept arguments", args[0],
+			))
 		}
 		if output.JSON() {
 			if err := output.writeJSON(map[string]any{
@@ -96,7 +100,9 @@ func Main(args []string) int {
 	case "server":
 		err = runServerNamespaceVNext(paths, args[1:], output)
 	default:
-		runtime, loadErr := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+		runtime, loadErr := runtimebootstrap.LoadProfileServices(
+			paths, fixedNamespaces...,
+		)
 		if loadErr != nil {
 			return output.fail(loadErr)
 		}
@@ -121,14 +127,16 @@ func printHelp(output *cliOutput) error {
 
 Usage:
   sn-cli <profile-id> [profile-options...] [input]
-  sn-cli --json <api-profile-id> [options...] [prompt]
+  sn-cli --json <profile-id> [profile-options...] [input]
   sn-cli --json <management-command> [args...]
   sn-cli profile <profile-id> [--model M] [--effort E] [--prompt FILE_OR_TEXT]
                                [--exec|--exec=true|--exec=false] [--cwd DIR] [input]
   sn-cli profile list|show|check
-  sn-cli session run|submit [runtime-options] <profile-id> <input>
+  sn-cli session run|submit [runtime-options] <profile-id> [input]
+  sn-cli session list|show|messages|events|logs|executions|execution
+  sn-cli session reconcile|configure|export|delete|gc
   sn-cli tmux start|list|show|send|attach|interrupt|stop
-  sn-cli agent run --profile <model-profile-id> [options] <input>
+  sn-cli agent run --profile <model-profile-id> [options] [input]
   sn-cli run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc
   sn-cli server info|doctor|start|status|stop|update|upgrade-check
 

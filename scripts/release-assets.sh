@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=scripts/release-profile-files.sh
+source "$ROOT_DIR/scripts/release-profile-files.sh"
+
 GO="${GO:-go}"
 GOCACHE="${GOCACHE:-$("$GO" env GOCACHE)}"
 GOMODCACHE="${GOMODCACHE:-$("$GO" env GOMODCACHE)}"
@@ -32,7 +35,9 @@ for platform in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
     GOOS="$os" \
     GOARCH="$arch" \
     "$GO" build -o "$stage/sn-server" ./cmd/sn-server
-  cp configs/*.json "$stage/configs/"
+  for profile in "${SN_CLI_RELEASE_PROFILE_FILES[@]}"; do
+    cp "configs/$profile" "$stage/configs/"
+  done
   cp configs/runtime/runtime.json "$stage/runtime.json"
   cp -R resources/. "$stage/resources/"
   COPYFILE_DISABLE=1 tar -czf "dist/sn-cli-$os-$arch.tar.gz" \

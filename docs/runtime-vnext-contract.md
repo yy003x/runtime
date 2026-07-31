@@ -62,7 +62,8 @@ leading global `--json` 不包装其原生输出。
 `sn-cli <id>` 与 `sn-cli profile <id>` 使用同一 Profile loader、typed parser、
 执行 service 和输出语义。固定根 namespace
 `profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理 action
-`list|show|check`，都是保留 Profile ID；loader 遇到冲突即失败。
+`list|show|check` 和已退役 action 名 `exec|open`，都是保留 Profile ID；loader
+遇到冲突即失败，且不会恢复旧 `profile exec|open` action。
 
 `profile check` 是纯静态校验，不解析真实 env/PATH/cwd，不读取 prompt file。
 
@@ -81,7 +82,9 @@ Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。s
 
 OpenAI-compatible Chat Completions 使用 `max_completion_tokens`；
 Anthropic-compatible Messages 使用 `max_tokens`。Canonical
-`max_output_tokens` 由 Driver 映射到 wire 字段。
+`max_output_tokens` 由 Driver 映射到 wire 字段。Canonical tool Message 的
+`is_error` 必须随历史保留；Anthropic-compatible Driver 将其映射到
+`tool_result.is_error`，不能只保留在 lifecycle event 中。
 
 ## 4. Session
 
@@ -114,9 +117,12 @@ Execution 只持久化 observed byte count、prefix digest、truncated/limit fac
 Runtime typed summary；不落原始 stderr、resolved secret、完整 argv/env。
 
 spawn 通过 private helper 的 marker-before-exec handshake：`spawn_intent` 和
-PID/PGID/start-token 必须先持久化，收到 go 后 helper 才 unlink manifest 并
-`exec` Provider。任何可能已运行而 terminal 未提交的 CLI attempt 都视为未知，
-不自动重放。
+PID/PGID/start-token 必须先持久化。invocation manifest 位于
+`state/session-invocations/`，是随机命名、mode `0600`、single-link 的私有文件；
+helper 绑定 manifest directory/file device+inode，收到 go 后才 no-follow
+读取、strict decode、按 identity unlink 并 `exec` Provider。服务初始化只清理
+超过 24 小时且可证明为 Runtime-owned 的遗留 manifest。任何可能已运行而 terminal
+未提交的 CLI attempt 都视为未知，不自动重放。
 
 公开恢复流程：
 
@@ -135,7 +141,46 @@ Session request 的公开 DTO 只保存 digest/ref。冻结的 CLI snapshot 与 
 get/list/result/events/export/log/error。同一 Session 同时只允许一个非 terminal
 durable Session Run。
 
+Agent 绑定 Session 时，Run 的 combined `request_digest/config_digest` 与
+Session Turn/Execution 的 digest 是两个独立命名空间。Agent private execution
+snapshot 单独保存 `session_request_digest/session_config_digest`，并用它们校验
+Session projection；不得把包含 Agent、Provider 和 tool identity 的 combined
+digest 写成 Session 自己的 profile-only digest。
+
 Session fact `schema_version=2`。旧 schema 不读、不迁移。
+
+文件型 Session Store 的一次 mutation 可能同时涉及 message/event JSONL、
+Session/Turn/Execution 和 context manifest。它在 Session `flock` 内使用私有
+`mutation_version=3` undo journal：replace 修改前持久化完整 preimage；JSONL
+修改前持久化原始 `size + SHA-256 prefix_digest`。JSONL 追加通过 atomic
+full-file rewrite 发布，不原地 append；prepared rollback 只有在当前 file identity
+属于该 mutation、长度不少于原始 size 且前缀 digest 匹配时，才 atomic rewrite
+回原前缀。新 Session root 还必须先用随机 nonce owner marker 与 journal 绑定，
+再以 no-replace rename 发布；全部 fact 成功后再写 committed marker。commit 写入
+报错以 strict/no-follow 重读到的磁盘状态为准，绝不把可证明 committed 的 mutation
+回滚。启动和下一次同 Session 操作都先持锁恢复；prepared mutation 仅在
+owner/scope/identity 完整匹配时回滚，committed mutation 保留并按
+owner marker → journal 顺序清理。
+recovery 只修复文件投影，不调用 Provider、不执行 command/tool，也不跨入
+SQLite transaction。canonical Session `schema_version` 保持 2。
+
+delete/GC rename 使用 `state/session-trash-moves/<session_id>.json` 的 private
+`version=1` journal，绑定 source root identity，target 只允许
+`_system/trash/<timestamp>/<session_id>`。恢复只接受“匹配 source、target
+缺失”或“source 缺失、匹配 target”两种状态；前者执行 no-replace rename 并同步
+source/target 目录；两种状态确认后都由上层重建 index，再清理 journal。两端同时
+存在、同时缺失或 identity 漂移均保留 journal 并 fail closed。local-source
+activation reset 同步删除
+`sessions/`、`state/session-locks/`、`state/session-invocations/`、
+`state/session-mutations/`、`state/session-trash-moves/` 和
+`state/runtime.db*`。
+
+Session filesystem 的操作基于 pinned directory FD、逐组件 `O_NOFOLLOW`、
+single-link regular-file 和 device/inode 复核。删除前先 no-replace 移到随机 private
+quarantine，复核 inode；不匹配则尝试恢复原名并失败收口。这一模型覆盖
+symlink/hardlink、路径替换、确定性并发 swap 和 crash，不宣称抵抗已获得同 UID
+任意代码执行、可持续枚举 quarantine 名称或使用 ptrace/kill 的攻击者；POSIX
+不存在 compare-by-inode unlink。
 
 ## 5. Tmux
 
@@ -160,10 +205,108 @@ Tmux 是独立 interactive process manager：
 Agent 只接受 API Profile。Kernel 使用注入的 `model.Generator`、`ToolExecutor` 和
 `EffectRecorder`，按 model → tool validation → tool execution → message append
 循环。工具执行前保存 prepared checkpoint；`tool.started` 后结果未知时 Run 进入
-`needs_reconciliation`。
+`needs_reconciliation`。Agent request 不接受 `cwd`；workspace roots/cwd 是
+Runtime bootstrap 冻结到 tool execution snapshot 的配置，不是 per-Run override。
 
-默认 tool 只读。`write_file`、`exec_command` 必须在 `runtime.json` 显式启用，
-且受 workspace roots、symlink 和大小门禁。
+Run `AgentExecutor` 在创建 Run 前冻结完整、versioned、non-secret private
+execution snapshot；Kernel 仍不读取 Profile、配置或数据库。snapshot 包含：
+
+```text
+execution_contract_version
+model_execution_snapshot
+tool_execution_snapshot
+tool_execution_digest
+session_request_digest       # 仅绑定 Session 时存在
+session_config_digest        # 仅绑定 Session 时存在
+config_digest
+request_digest
+```
+
+`model_execution_snapshot` 保存完整 API Profile、Profile digest，以及实际选中
+Provider driver 的 implementation 和 semantic version；`tool_execution_snapshot`
+保存 tool implementation/version、canonical non-secret configuration 和完整
+definitions。`config_digest` 绑定 Agent execution contract、model/Provider、tool
+以及可选 Session config identity；`request_digest` 再绑定 immutable public Agent
+request 和可选 Session request identity。Provider/tool implementation version 与
+`execution_contract_version` 都是人工维护的执行语义版本，不是 build、release、
+Git commit、CLI `contract_version` 或 LoopState schema version。
+
+API Profile 只把 `auth.from_env` 的变量名、header 和 scheme 纳入 snapshot；
+resolved secret value 不进入 snapshot、digest、event 或 Store。每次新的 Provider
+call 仍从执行进程当前环境解析该变量，因此相同 `from_env` 名称下的 secret value
+轮换不构成 execution drift；修改变量名或其它 Profile literal 则构成 drift。
+
+fresh submit 和 Retry 在创建新 Run 前比较完整 current execution snapshot。执行时
+还在首次 Session mutation、每个新 model call、fresh tool preparation 以及
+fresh/recovered-prepared tool side effect 前复核 current model/Profile/driver、
+tool identity/config/definitions、Agent version 和可选 Session digests。Resume
+input 已 durable 接受但尚未推进 active pause 时也先复核；发生 drift 时保留原
+pause，不执行新的 Provider/tool side effect。
+
+恢复 durable `completed|failed|started` model/tool evidence、闭合已持久化 pause、
+投影已知 terminal outcome，以及 cancel/reconcile 时，只使用 frozen snapshot 和
+durable journal，不要求 current Profile、Provider 或 tool executor 仍存在或相同。
+`started` tool effect 的结果仍是 unknown，必须进入 reconciliation，绝不因 current
+环境可用而重放。frozen tool definitions 负责历史 request/schema 校验；只有实际
+执行新的 handler 才使用 current tool executor。
+
+Tool `input_schema` 在注册时编译，调用参数在任何 checkpoint、event 或 handler
+副作用前按完整 JSON Schema 校验。prepared effect 的 request 和 LoopState 都持久
+记录同一个原始 preparation `checkpoint_id`；恢复时同时核对 Run/Profile、
+model request/result digest、round、Session canonical message prefix、seen tool
+call、effect 和 event journal。任一证据缺失或冲突都 fail closed，不把 latest
+checkpoint 冒充 preparation checkpoint。每个 completed `model_calls` 条目冻结完整
+canonical `GenerateRequest`、request digest、完整 `ModelResult` 和 result digest；
+恢复时按精确 assistant message boundary 重建 request/profile/trace，重新计算两个
+digest，并从 durable result usage 汇总 `total_tokens`，验证 round/tool/token 计数
+没有超过该 Run 的 effective budget。
+
+内部 Agent LoopState checkpoint 使用 `schema_version=2`，并持久化
+`base_message_count`。恢复时以该边界为锚，按每轮 durable model result、已闭合
+tool effect 和经 pause schema 校验的 resume message 重建完整 message 序列，拒绝
+额外、重复、乱序或无来源的 assistant/tool message。每个 historical effect 的
+preparation checkpoint 都必须证明其 schema、Run/Profile、round、pending
+call/cursor、seen 前缀和 committed event sequence；pause effect 在持久化前固定
+`tool_call_id`，允许 journal 中保留多个已恢复的历史 `agent.paused`。
+
+`model_calls` 以 `UNIQUE(run_id, sequence)` 约束 round evidence。Resume 使用不超过
+1 MiB 的 strict envelope object：只接受 `pause_id` 和 `input`，拒绝未知/重复字段、
+trailing data、`null` root 与 `null pause_id`；`input` 自身可为任意单一 JSON value
+（包括 `null`），具体结构和 null 语义完全由 pause JSON Schema 决定。公开
+Run Record 不序列化最新 resume input。
+
+默认 tool 只读。`write_file` 必须在 `runtime.json` 显式启用，且受 workspace
+roots、symlink 和大小门禁。builtin `exec_command` 已移除：root/path 检查不是
+OS sandbox，旧配置包含该名称时 fail closed。
+`read_file`、`list_directory` 在参数 schema 验证通过后的无副作用文件系统拒绝，
+以尺寸受限的稳定 JSON `ToolResult{IsError:true}` 闭合 effect 并允许下一轮模型继续；
+内部结果编码失败或正常输出超限仍按未知 effect 安全收口。
+三个文件工具在 Build 时固定 canonical workspace root 的 device/inode，执行时以
+`O_NOFOLLOW + openat/fstatat` 逐组件绑定目录 fd；read 使用 nonblocking 单链接
+regular fd 和 bounded read，list 绑定目录 fd，write 在固定 parent fd 内以
+crypto-random `O_EXCL` 私有临时文件执行 file fsync、`renameat` 和 directory fsync。
+该边界抵抗确定性的 root/parent/component/leaf path swap；遍历拒绝 symlink，
+read 额外拒绝 FIFO、非 regular 和 `nlink>1` hardlink。不宣称抵抗已完全控制同
+UID 进程、可 ptrace 或可直接操纵既有 fd 的攻击者。
+
+private execution snapshot 是 Store-only 明文元数据，不是加密容器。它不会进入
+公开 DTO、event、log 或 error，但会保存 endpoint、model、按契约视为 non-secret
+的 literal header、tool schema、workspace root/cwd identity 等信息。digest 和
+semantic identity 用于检测已表示的配置/实现漂移，不是 binary provenance
+attestation、数字签名或 OS sandbox；未同步 bump semantic version 的实现变化，以及
+已能以同 UID 篡改进程或 SQLite 的攻击者，均超出该门禁的保证范围。
+
+`run reconcile --run-id <id>` 是 Agent unknown tool effect 的唯一显式收口入口：
+它不重放 Agent/tool，而是保留 checkpoint、event 和 tool-effect evidence，并将
+Run 结案为 failed。Agent 绑定 Session 时，Session 在 reconciliation 前保持
+`blocked + active Turn(running) + Execution(settled/unknown)`；该命令先幂等收口
+Session projection，再提交 Run terminal barrier。重复调用返回同一 terminal
+record。Agent 在执行 tool 前在 Turn 上原子持久化 `agent_owned=true` owner
+marker；若进程在 unknown projection 前退出，Execution 可以仍是 `running`，
+`run reconcile` 仍按精确 `run_id` 收口。`paused` 不走 reconciliation，只能通过
+`run resume` 恢复。pause/resume 是 Kernel extension：底层 CLI/API/Store 和
+validator 保留，但 stock builtin tools 不产生 Pause，`server info` 因此不发布
+`resume` capability。
 
 ## 7. Durable Run
 
@@ -175,11 +318,39 @@ queued → running ─┬→ paused → queued
                   └→ cancelled
 ```
 
-`retry` 创建新 Run 并以 `retry_of` 关联。terminal publish barrier 必须在一个
-SQLite transaction 内提交 result/error、terminal event/state、`run.settled`、
-settled sequence 和 queue removal。settled 后禁止追加 event。
+`retry` 只接受 terminal Run，创建新 Run 并以 `retry_of` 关联。Agent Retry
+byte-for-byte 保留原 `private_request_json`，不根据当前配置重新冻结；创建新 Run
+前必须先把 current execution snapshot 与原 snapshot 完整比较，发生 drift 时拒绝
+且不产生新 Run。相同 `auth.from_env` 名称下的 secret value 轮换不参与该比较。
+terminal publish barrier 必须在一个 SQLite transaction 内提交 result/error、
+terminal event/state、`run.settled`、settled sequence 和 queue removal。settled
+后禁止追加 event。
 
-SQLite `PRAGMA user_version=2`。unknown、更高、旧或混合 schema fail closed。
+Resume validator 先把 envelope 绑定到 immutable active pause bytes 和可选 expiry；
+Store transaction 再核对 Run 仍为 `paused`、没有 cancellation reservation、pause
+bytes 精确相等，并在事务内采样 `accepted_at`。等于 expiry 的 acceptance 有效，
+晚于 expiry 才冲突。该事务同时写 canonical resume input/digest/`accepted_at`
+journal、更新 latest `resume_accepted_at`、清理 pause/error/cancel flag，并通过
+CAS 重新入队。非法 envelope、schema/expiry conflict、exact pause 漂移或 CAS
+零行更新都整体回滚，不产生 journal、state 或 queue mutation；并发 resume 最多
+一个成功。恢复时 latest acceptance 必须与 contiguous resume journal 的最后一条
+精确一致。
+
+`queued` 和 `paused` cancellation 先在 SQLite 持久化 reservation 并移除 queue，
+再由 kind-specific finalizer 收口，最后通过 terminal publish barrier 转为
+`cancelled`；启动 recovery 使用专用 keyset scan 排空遗留 reservation，不受普通
+list limit 影响。`running` Run 的 owner worker 轮询同一 SQLite durable flag；
+独立 CLI/HTTP 进程写入 reservation 后，worker 取消 execution context 并由
+kind-specific finalizer 收口。普通 terminal/reconciliation publish 必须拒绝已有
+reservation，只有 cancellation-owned publish 可以消费它。
+
+`run reconcile` 本身是操作者对 unknown outcome 的显式确认。Session Run 从已经
+人工 reconciliation 的 Session evidence 收口；Agent Run 由 Agent executor
+收口。两种 kind 均不得 replay 原执行。已经 reconciliation 的 Agent terminal
+result 带显式 acknowledgement marker，重复调用幂等返回该 record；普通 terminal
+Agent Run 不会被误报为已 reconciliation。
+
+SQLite `PRAGMA user_version=4`。unknown、更高、旧或混合 schema fail closed。
 
 ## 8. CLI 与 HTTP
 
@@ -192,9 +363,33 @@ profile session tmux agent run server help version
 Runtime machine contract 为 `schema_version=1`、`contract_version=3`。
 隐式或显式 CLI Profile 和 `tmux attach` 不属于 machine wrapper。
 
-HTTP 使用同一 application service，严格拒绝未知字段并限制 request size。Session
-新增 execution query 与 reconcile route；HTTP 不提供 Tmux 控制，也不能上传
-command、env、Provider payload 或 tool handler。
+Run Record 可以公开 Runtime-owned `request_digest/config_digest`，但
+`private_request_json`、Agent execution snapshot 和最新 Resume input 均不属于
+public machine contract，不得经 CLI/HTTP query、result、event、watch、log 或 error
+输出。
+
+Run application composition 按 action 分层：query/watch 只加载 Run Store；
+cancel/reconcile 只加载 Run Store 和 Session maintenance service；GC 仅在未显式
+提供 cutoff 时读取 retention 配置。上述 maintenance 路径必须能只用 private
+snapshot 和 durable evidence 工作，不加载 current Profile、Provider 或 tool。
+submit/resume/retry 和 worker execution 才加载完整执行依赖。
+
+HTTP 使用同一 application service。所有 JSON body 共同限制 request size、合法
+UTF-8、单一完整 JSON value，并拒绝重复 key 和 trailing data；固定 Runtime DTO
+要求 non-null object、拒绝未知字段和任意显式 `null`，无业务字段的 POST control
+action 还必须精确为 `{}`。`/v1/model/generate` 使用 strict object 后执行 canonical
+`GenerateRequest.Validate`；`/v1/runs/{run_id}:resume` 使用上述 strict resume
+envelope，只有 envelope 的 `input` 字段 shape/null 由 pause schema 决定。NUL
+只由 canonical text field validator 拒绝，不是 decoder 对所有 JSON string 的
+全局禁令。Session/Run collection query 使用 allowlist、单值和显式空值校验；
+malformed、未知、重复或显式空参数均拒绝，只有省略才使用领域默认值。Session 新增
+execution query 与 reconcile route；HTTP 不提供 Tmux
+控制，也不能上传 command、env、Provider payload 或 tool handler。
+
+HTTP、CLI machine error 与 server Bearer 认证使用 canonical `RuntimeError`。
+malformed resource ID 是 `invalid_request/400`；合法 ID 指向不存在的资源是
+`not_found/404`；Store 故障是 `internal/500`。不得用空 list/event 假装目标资源
+存在，也不得把 Store 故障降级成 not-found。
 
 ## 9. 激活与非兼容声明
 
@@ -205,13 +400,20 @@ directory。当前 installer/updater 只能由 staged candidate 在
 maintenance/lifecycle lock、quiescence 和 schema preflight 全部通过后激活。
 
 staged gate 读取 candidate payload 自身的 `resources/release.json`，不信任
-active/merged home 的同名文件，也没有环境 token bypass。激活事务先持久化 journal
-与 state guard，再用 no-replace regular file 暂时占用 active `bin/`、`configs/`；
+active/merged home 的同名文件，也没有环境 token bypass。在创建 target
+目录、lock、stage 或停止 server 前，candidate 必须先对 payload 执行完整
+`profile check`，并以 required/no-follow/inode-pinned 方式校验 `runtime.json`、
+`tmux.conf` 和两个具有固定 `$id`/root shape 且可编译的 JSON Schema；构造 merged
+staged home 后再次验证同一组契约。激活事务先持久化 journal 与 state guard，再用
+no-replace regular file
+暂时占用 active `bin/`、`configs/`；
 二次进程扫描按 inode 和 PID/start-token 判定。任何无法证明全旧或全新的恢复状态都
 保留 guard/barrier，禁止自动放行。journal 在 `committed|rolled_back` terminal
 phase 仍阻断所有入口，直到 stage、rename、guard/journal 的 durable cleanup 完成。
-installer 只允许 home 外部的 install-dir；激活后使用稳定 directory FD 和
-no-clobber `symlinkat` 创建 command link，不覆盖任何已有 entry。
+installer 只允许 home 外部的 install-dir；activation mutation 前使用稳定
+directory FD、durable owner sidecar 和 no-clobber `symlinkat` 预留 command link，
+不覆盖任何已有 entry。失败或 release 不删除 owner/link；retry 必须重新验证
+owner 内容、parent/link/owner inode 和 exact target 后才可复用。
 
 运行中的 server、managed Tmux window、active/unknown Session execution、
 queued/running/paused/needs-reconciliation Run、目标 home binary process 或
@@ -221,9 +423,10 @@ schema 1 状态都阻止激活。`--overwrite-configs` 不绕过运行态门禁�
 语义，固定覆盖 source configs，并由 staged candidate 在 lifecycle lock 内安全
 停止 server。该模式仍要求 Tmux 和目标 binary process quiescent，但允许不解析旧
 Session/Run schema；只有发布 artifact 全部提交并验证后，才在 guard 下幂等删除
-Session、Session private state 和 `runtime.db*`，然后解除 journal。安装终态固定
-为 server stopped，且这项 reset 授权不能由 archive installer 或
-`server update` 获得。
+`sessions/`、`state/session-locks/`、`state/session-invocations/`、
+`state/session-mutations/`、`state/session-trash-moves/` 和
+`state/runtime.db*`，然后解除 journal。安装终态固定为 server stopped，且这项
+reset 授权不能由 archive installer 或 `server update` 获得。
 
 vNext 不读取旧 Profile 字段、旧 Session carrier、旧 Session/SQLite schema、旧
 Run artifact、旧 SDK contract、command shortcut 或旧 namespace shim。所有有效

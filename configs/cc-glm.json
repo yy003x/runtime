@@ -1,0 +1,15 @@
+{
+  "type": "cli",
+  "command": "claude",
+  "model": "glm-5.2",
+  "exec": false,
+  "args": [
+    "--dangerously-skip-permissions"
+  ],
+  "env": {
+    "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip",
+    "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/apps/anthropic",
+    "ANTHROPIC_API_KEY": "${BAILIAN_API_KEY}",
+    "ANTHROPIC_AUTH_TOKEN": "${BAILIAN_API_KEY}"
+  }
+}

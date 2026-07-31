@@ -1,6 +1,8 @@
 package runtimeconfig
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,8 +42,9 @@ type Run struct {
 func Default() Config {
 	return Config{
 		Agent: Agent{
-			Tools:     []string{"read_file", "list_directory"},
-			MaxRounds: 16, MaxToolCalls: 64, MaxWallTime: "15m",
+			Tools:          []string{"read_file", "list_directory"},
+			WorkspaceRoots: []string{},
+			MaxRounds:      16, MaxToolCalls: 64, MaxWallTime: "15m",
 		},
 		Scheduler: Scheduler{Workers: 1, PollInterval: "250ms"},
 		Run:       Run{SettledRetention: "168h"},
@@ -49,19 +52,47 @@ func Default() Config {
 }
 
 func Load(path string) (Config, error) {
-	value := Default()
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return value, nil
+		return Default(), nil
 	}
 	if err != nil {
 		return Config{}, err
 	}
+	return loadPresent(path, info)
+}
+
+// LoadRequired decodes a runtime config that must already exist. Activation
+// uses this variant so a disappearing payload or staged runtime.json cannot be
+// mistaken for the normal runtime default.
+func LoadRequired(path string) (Config, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return Config{}, err
+	}
+	return loadPresent(path, info)
+}
+
+func loadPresent(path string, info os.FileInfo) (Config, error) {
+	value := Default()
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return Config{}, fmt.Errorf("runtime config must be a regular file, not a symlink")
 	}
-	if err := strictjson.ReadRegularFile(path, maxConfigBytes, &value); err != nil {
+	var raw map[string]json.RawMessage
+	if err := strictjson.ReadRegularFile(path, maxConfigBytes, &raw); err != nil {
 		return Config{}, err
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return Config{}, fmt.Errorf("%s: normalize runtime config: %w", path, err)
+	}
+	if err := strictjson.RejectNulls(data, nil); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := strictjson.Decode(
+		bytes.NewReader(data), int64(len(data)), &value,
+	); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := value.Validate(); err != nil {
 		return Config{}, err
@@ -70,6 +101,12 @@ func Load(path string) (Config, error) {
 }
 
 func (config Config) Validate() error {
+	if config.Agent.Tools == nil {
+		return fmt.Errorf("agent.tools must be an array when provided")
+	}
+	if config.Agent.WorkspaceRoots == nil {
+		return fmt.Errorf("agent.workspace_roots must be an array when provided")
+	}
 	if config.Agent.MaxRounds <= 0 || config.Agent.MaxRounds > 128 {
 		return fmt.Errorf("agent.max_rounds must be between 1 and 128")
 	}
@@ -87,7 +124,7 @@ func (config Config) Validate() error {
 	seenTools := make(map[string]struct{}, len(config.Agent.Tools))
 	for _, name := range config.Agent.Tools {
 		switch name {
-		case "read_file", "list_directory", "write_file", "exec_command":
+		case "read_file", "list_directory", "write_file":
 		default:
 			return fmt.Errorf("agent.tools contains unsupported tool %q", name)
 		}

@@ -28,9 +28,12 @@ func TestProfileUsesTypedCommandProtocol(t *testing.T) {
 	for _, invalid := range []Profile{
 		{},
 		{Command: "unknown"},
+		{Command: "codex/"},
+		{Command: "codex/."},
 		{Command: "codex", Args: []string{"${BAD-NAME}"}},
 		{Command: "codex", Env: map[string]*string{"BAD=NAME": stringPointer("value")}},
 		{Command: "codex", Effort: Effort("extreme")},
+		{Command: "codex", Effort: Effort(" high ")},
 	} {
 		if err := CheckProfile(invalid); err == nil {
 			t.Fatalf("CheckProfile(%#v) returned nil", invalid)

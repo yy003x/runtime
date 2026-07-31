@@ -141,6 +141,12 @@ func (output *cliOutput) fail(err error) int {
 			httpStatus = runtimeErr.HTTPStatus
 			provider = runtimeErr.Provider
 			requestID = runtimeErr.RequestID
+		} else {
+			var validationErr *cliValidationError
+			if errors.As(err, &validationErr) {
+				code = string(contract.ErrorInvalidRequest)
+				phase = string(contract.PhaseRequest)
+			}
 		}
 		errorValue := map[string]any{
 			"code": code, "phase": phase,

@@ -59,6 +59,47 @@ func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
 	}
 }
 
+func TestCLIOutputOnlyClassifiesMarkedValidationErrorsAsInvalidRequest(
+	t *testing.T,
+) {
+	for _, test := range []struct {
+		name string
+		err  error
+		code contract.ErrorCode
+	}{
+		{
+			name: "validation",
+			err:  cliValidationf("unknown option --bad"),
+			code: contract.ErrorInvalidRequest,
+		},
+		{
+			name: "unclassified_io_or_store",
+			err:  errors.New("store read failed"),
+			code: contract.ErrorInternal,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			output := newCLIOutput(
+				true, &bytes.Buffer{}, &stderr,
+			)
+			if exitCode := output.fail(test.err); exitCode != 1 {
+				t.Fatalf("exit=%d", exitCode)
+			}
+			var payload struct {
+				Error contract.RuntimeError `json:"error"`
+			}
+			if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error.Code != test.code ||
+				payload.Error.Phase != contract.PhaseRequest {
+				t.Fatalf("error=%#v", payload.Error)
+			}
+		})
+	}
+}
+
 func TestMachineEnvelopeOverridesDomainSchemaOnlyAtOuterLayer(t *testing.T) {
 	payload := machineEnvelope(map[string]any{
 		"schema_version":   2,

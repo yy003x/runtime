@@ -2,15 +2,19 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	runtime "github.com/yy003x/runtime/run"
+	sqlitestore "github.com/yy003x/runtime/store/sqlite"
 )
 
 func TestRenderRunResultPrintsStoredAgentAnswer(t *testing.T) {
@@ -148,6 +152,28 @@ func TestDurableSessionSubmitDoesNotCarryAgentBudget(t *testing.T) {
 	}
 }
 
+func TestDurableSubmitRejectsAgentCWDAndKeepsSessionCWD(t *testing.T) {
+	if _, err := parseDurableSubmit(
+		[]string{"--profile", "api", "--cwd", "work", "hello"},
+		agent.DefaultBudget(),
+	); err == nil || !strings.Contains(err.Error(), "invalid for agent runs") {
+		t.Fatalf("Agent cwd error=%v", err)
+	}
+	request, err := parseDurableSubmit(
+		[]string{
+			"--kind", "session", "--profile", "cx",
+			"--cwd", "work", "hello",
+		},
+		agent.DefaultBudget(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Kind != runtime.KindSession || request.CWD != "work" {
+		t.Fatalf("request=%#v", request)
+	}
+}
+
 func TestDurableSubmitRejectsDuplicateScalarOptions(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -271,10 +297,14 @@ func TestRunManagementPreflightRejectsBeforeStatefulBootstrap(t *testing.T) {
 		},
 		{"list", "--state", "unknown"},
 		{"list", "--state", ""},
+		{"list", "--state", "queued", "--state", "running"},
 		{"list", "--kind", "unknown"},
 		{"list", "--kind", ""},
+		{"list", "--kind", "agent", "--kind", "session"},
+		{"list", "--limit", "-1"},
 		{"list", "--limit", "1001"},
 		{"list", "--limit", ""},
+		{"list", "--limit", "1", "--limit", "2"},
 		{"gc", "--older-than", ""},
 		{"gc", "--limit", "0"},
 		{"get", "--run-id", "run_1", "trailing"},
@@ -304,6 +334,15 @@ func TestRunManagementPreflightRejectsBeforeStatefulBootstrap(t *testing.T) {
 }
 
 func TestRunManagementPreflightAcceptsBoundedFilters(t *testing.T) {
+	defaultFilter, err := parseRunListFilter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultFilter != (runtime.ListFilter{
+		Limit: runtime.DefaultListLimit,
+	}) {
+		t.Fatalf("default filter=%#v", defaultFilter)
+	}
 	if err := validateRunManagementInvocation([]string{
 		"list", "--state", "needs_reconciliation",
 		"--kind", "session", "--limit", "1000",
@@ -320,6 +359,226 @@ func TestRunManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 	}
 	if !output.streamMode || output.streamStarted {
 		t.Fatal("invalid watch did not select machine stream errors")
+	}
+}
+
+func TestResumeInputClassifiesFileShapeBeforeRuntimeBootstrap(t *testing.T) {
+	rawInput := " \n [1,{\"answer\":true}] \t"
+	preserved, err := readResumeInput([]string{"--input-json", rawInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(preserved) != rawInput {
+		t.Fatalf("resume JSON changed: got=%q want=%q", preserved, rawInput)
+	}
+
+	root := t.TempDir()
+	regular := filepath.Join(root, "regular.json")
+	if err := os.WriteFile(regular, []byte(`{"answer":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "directory")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(root, "symlink.json")
+	if err := os.Symlink(regular, symlink); err != nil {
+		t.Fatal(err)
+	}
+	oversized := filepath.Join(root, "oversized.json")
+	if err := os.WriteFile(
+		oversized, []byte(`"`+strings.Repeat("x", (1<<20)+1)+`"`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := filepath.Join(root, "duplicate.json")
+	if err := os.WriteFile(
+		duplicate, []byte(`{"answer":true,"answer":false}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	trailing := filepath.Join(root, "trailing.json")
+	if err := os.WriteFile(
+		trailing, []byte(`{"answer":true} {}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		directory, symlink, oversized, duplicate, trailing,
+	} {
+		_, err := readResumeInput([]string{"--input-file", path})
+		var validationErr *cliValidationError
+		if err == nil || !errors.As(err, &validationErr) {
+			t.Fatalf("path=%s error=%v, want CLI validation", path, err)
+		}
+		assertMachineErrorCode(t, err, contract.ErrorInvalidRequest)
+	}
+
+	missing := filepath.Join(root, "missing.json")
+	_, err = readResumeInput([]string{"--input-file", missing})
+	var validationErr *cliValidationError
+	if err == nil || errors.As(err, &validationErr) ||
+		!errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing error=%v, want internal file I/O", err)
+	}
+	assertMachineErrorCode(t, err, contract.ErrorInternal)
+
+	paths := prepareVNextHome(t)
+	err = runRunNamespaceVNext(
+		paths,
+		[]string{
+			"resume",
+			"--run-id", "run_00000000000000000000000000000000",
+			"--input-file", symlink,
+		},
+		newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}),
+	)
+	if err == nil {
+		t.Fatal("invalid resume file was accepted")
+	}
+	if _, statErr := os.Stat(paths.SessionsDir); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid resume bootstrapped Session state: %v", statErr)
+	}
+	if _, statErr := os.Stat(paths.RunDBFile); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid resume opened Run database: %v", statErr)
+	}
+}
+
+func TestRunManagementUsesCanonicalIDAndNotFoundErrors(t *testing.T) {
+	const missingRunID = "run_00000000000000000000000000000000"
+	if err := validateRunManagementInvocation([]string{
+		"get", "--run-id", missingRunID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRunManagementInvocation([]string{
+		"get", "--run-id", "run_missing",
+	}); err == nil {
+		t.Fatal("malformed run ID was accepted")
+	}
+
+	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runRunNamespaceVNext(
+		prepareVNextHome(t),
+		[]string{"get", "--run-id", missingRunID},
+		output,
+	)
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorNotFound {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRunCompositionIgnoresUnrelatedExecutionInputs(t *testing.T) {
+	ctx := context.Background()
+	paths := prepareVNextHome(t)
+	writeVNextModel(
+		t, paths.ConfigDir, "api",
+		"https://example.invalid/v1/chat/completions",
+	)
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile, []byte(`{}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := runtimebootstrap.LoadServices(paths, paths.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitted, runtimeErr := setup.Runs.Submit(ctx, runtime.Request{
+		Kind: runtime.KindAgent, ProfileID: "api", Input: "cancel",
+		AgentBudget: agent.DefaultBudget(),
+	})
+	if runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	cancelID := submitted.ID
+	if err := setup.Runs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(paths.ConfigDir, "api.json"),
+		[]byte(`{"type":"api","driver":`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile, []byte(`{"run":`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlitestore.Open(
+		paths.RunDBFile,
+		sqlitestore.Options{SkipReconcile: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryID := "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if _, err := store.Create(ctx, queryID, runtime.Request{
+		Kind: runtime.KindSession, ProfileID: "missing", Input: "stored",
+		SessionID: "session_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Start(ctx, queryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Settle(
+		ctx, queryID, runtime.StateCompleted,
+		json.RawMessage(`{"stored":true}`), nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"get", "--run-id", queryID},
+		{"list"},
+		{"result", "--run-id", queryID},
+		{"events", "--run-id", queryID},
+		{"watch", "--run-id", queryID},
+		{"gc", "--older-than", "1h", "--limit", "10"},
+	} {
+		output := newCLIOutput(
+			false, &bytes.Buffer{}, &bytes.Buffer{},
+		)
+		if err := runRunNamespaceVNext(paths, args, output); err != nil {
+			t.Fatalf("args=%#v error=%v", args, err)
+		}
+	}
+	if err := runRunNamespaceVNext(
+		paths, []string{"cancel", "--run-id", cancelID},
+		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatalf("cancel error=%v", err)
+	}
+	if err := runRunNamespaceVNext(
+		paths, []string{"reconcile", "--run-id", queryID},
+		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatalf("reconcile error=%v", err)
+	}
+
+	if err := runRunNamespaceVNext(
+		paths, []string{"gc"},
+		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
+	); err == nil || !strings.Contains(err.Error(), "load runtime config") {
+		t.Fatalf("default GC ignored invalid runtime config: %v", err)
+	}
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile, []byte(`{}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRunNamespaceVNext(
+		paths, []string{"gc"},
+		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatalf("default GC loaded broken Profile: %v", err)
 	}
 }
 

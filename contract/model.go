@@ -62,6 +62,7 @@ const (
 	ErrorToolFailed              ErrorCode = "tool_failed"
 	ErrorCancelled               ErrorCode = "cancelled"
 	ErrorConflict                ErrorCode = "conflict"
+	ErrorNotFound                ErrorCode = "not_found"
 	ErrorInternal                ErrorCode = "internal"
 )
 
@@ -108,6 +109,7 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	IsError    bool       `json:"is_error,omitempty"`
 }
 
 type ToolSpec struct {

@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -23,7 +22,7 @@ func runAgentNamespace(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 || args[0] != "run" {
-		return fmt.Errorf("usage: agent run --profile <model-profile-id> [options] <input>")
+		return cliValidationf("usage: agent run --profile <model-profile-id> [options] [input]")
 	}
 	options, err := parseAgentRun(args[1:])
 	if options.stream {
@@ -32,16 +31,18 @@ func runAgentNamespace(
 	if err != nil {
 		return err
 	}
-	core, err := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+	core, err := runtimebootstrap.LoadProfileServices(
+		paths, fixedNamespaces...,
+	)
 	if err != nil {
 		return err
 	}
 	entry, exists := core.Profiles.Resolve(options.profileID)
 	if !exists {
-		return fmt.Errorf("unknown profile %q", options.profileID)
+		return cliValidationf("unknown profile %q", options.profileID)
 	}
 	if entry.Kind != runtimeprofile.KindModel {
-		return fmt.Errorf(
+		return cliValidationf(
 			"agent requires an API model profile; %q is a command profile",
 			options.profileID,
 		)
@@ -79,7 +80,7 @@ func runAgentNamespace(
 		runtime.Request{
 			Kind: runtime.KindAgent, ProfileID: options.profileID,
 			Input: options.input, SessionID: options.sessionID,
-			TaskID: options.taskID, CWD: cwd, AgentBudget: budget,
+			TaskID: options.taskID, AgentBudget: budget,
 			Labels: options.labels,
 		},
 		sink,
@@ -136,13 +137,13 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 		current := args[index]
 		if current == "--" {
 			if inputSet {
-				return value, fmt.Errorf(
+				return value, cliValidationf(
 					"agent input terminator cannot follow positional input",
 				)
 			}
 			remaining := args[index+1:]
 			if len(remaining) > 1 {
-				return value, fmt.Errorf(
+				return value, cliValidationf(
 					"`--` accepts at most one agent input",
 				)
 			}
@@ -153,7 +154,7 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			break
 		}
 		if inputSet {
-			return value, fmt.Errorf("agent input must be the final argument")
+			return value, cliValidationf("agent input must be the final argument")
 		}
 		if !strings.HasPrefix(current, "-") {
 			value.input = current
@@ -162,7 +163,7 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 		}
 		if current != "--label" {
 			if seen[current] {
-				return value, fmt.Errorf(
+				return value, cliValidationf(
 					"agent option %s may only be used once", current,
 				)
 			}
@@ -233,7 +234,7 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			}
 			parsed, err := strconv.ParseInt(optionValue, 10, 64)
 			if err != nil || parsed <= 0 {
-				return value, fmt.Errorf("--max-total-tokens must be positive")
+				return value, cliValidationf("--max-total-tokens must be positive")
 			}
 			value.maxTotalTokens = parsed
 			index = next
@@ -246,7 +247,7 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			}
 			parsed, err := time.ParseDuration(optionValue)
 			if err != nil || parsed <= 0 {
-				return value, fmt.Errorf("--max-wall-time must be a positive duration")
+				return value, cliValidationf("--max-wall-time must be a positive duration")
 			}
 			value.maxWallTime = parsed
 			index = next
@@ -259,21 +260,21 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			}
 			key, labelValue, exists := strings.Cut(optionValue, "=")
 			if !exists || key == "" {
-				return value, fmt.Errorf("--label requires key=value")
+				return value, cliValidationf("--label requires key=value")
 			}
 			if _, exists := value.labels[key]; exists {
-				return value, fmt.Errorf(
+				return value, cliValidationf(
 					"--label key %q may only be used once", key,
 				)
 			}
 			value.labels[key] = labelValue
 			index = next
 		default:
-			return value, fmt.Errorf("unknown agent option %s", current)
+			return value, cliValidationf("unknown agent option %s", current)
 		}
 	}
 	if value.profileID == "" {
-		return value, fmt.Errorf("--profile is required")
+		return value, cliValidationf("--profile is required")
 	}
 	if err := validateAgentBudgetOverrides(value); err != nil {
 		return value, err
@@ -286,7 +287,7 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 		value.input = input
 	}
 	if strings.TrimSpace(value.input) == "" {
-		return value, fmt.Errorf("agent input is required")
+		return value, cliValidationf("agent input is required")
 	}
 	return value, nil
 }
@@ -298,7 +299,7 @@ func agentOptionValue(
 ) (string, int, error) {
 	index++
 	if index >= len(args) || strings.HasPrefix(args[index], "--") {
-		return "", index, fmt.Errorf("%s requires value", name)
+		return "", index, cliValidationf("%s requires value", name)
 	}
 	return args[index], index, nil
 }
@@ -306,7 +307,7 @@ func agentOptionValue(
 func parsePositiveInt(value string, name string) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
-		return 0, fmt.Errorf("%s must be positive", name)
+		return 0, cliValidationf("%s must be positive", name)
 	}
 	return parsed, nil
 }
@@ -326,7 +327,7 @@ func validateAgentBudgetOverrides(value agentRunOptions) error {
 		config.Agent.MaxWallTime = value.maxWallTime.String()
 	}
 	if err := config.Validate(); err != nil {
-		return fmt.Errorf("invalid Agent budget override: %w", err)
+		return cliValidationf("invalid Agent budget override: %v", err)
 	}
 	return nil
 }

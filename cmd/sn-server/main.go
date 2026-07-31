@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
@@ -49,7 +51,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("resolve working directory: %v", err)
 	}
-	services, err := runtimebootstrap.LoadServices(paths, cwd, fixedNamespaces...)
+	services, err := runtimebootstrap.LoadServicesWithRunRecovery(
+		paths,
+		cwd,
+		fixedNamespaces...,
+	)
 	if err != nil {
 		log.Fatalf("initialize Runtime vNext: %v", err)
 	}
@@ -168,7 +174,17 @@ func bearerAuth(token string, next http.Handler) http.Handler {
 		if len(provided) != len(expected) ||
 			subtle.ConstantTimeCompare(provided, expected) != 1 {
 			writer.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Header().Set("Cache-Control", "no-store")
+			writer.Header().Set("X-Content-Type-Options", "nosniff")
+			writer.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"error": &contract.RuntimeError{
+					Code:    contract.ErrorAuthenticationFailed,
+					Phase:   contract.PhaseTransport,
+					Message: "bearer authentication failed",
+				},
+			})
 			return
 		}
 		next.ServeHTTP(writer, request)

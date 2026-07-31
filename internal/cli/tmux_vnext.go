@@ -191,7 +191,7 @@ func runTmuxNamespaceWith(
 		}
 		pipedInput, err := readOptionalTmuxInput(stdin)
 		if err != nil {
-			return tmuxRequestError(err)
+			return err
 		}
 		input, err := mergeTmuxInput(pipedInput, positional)
 		if err != nil {
@@ -266,12 +266,12 @@ func resolveTmuxStartInvocation(
 	}
 	entry, exists := catalog.Resolve(options.profileID)
 	if !exists {
-		return runtimetmux.Invocation{}, fmt.Errorf(
+		return runtimetmux.Invocation{}, cliValidationf(
 			"unknown profile %q", options.profileID,
 		)
 	}
 	if entry.Kind != runtimeprofile.KindCommand || entry.Command == nil {
-		return runtimetmux.Invocation{}, fmt.Errorf(
+		return runtimetmux.Invocation{}, cliValidationf(
 			"tmux start profile %q must be type=cli", options.profileID,
 		)
 	}
@@ -500,7 +500,7 @@ func readOptionalTmuxInput(file *os.File) (string, error) {
 		return "", fmt.Errorf("read Tmux input: %w", err)
 	}
 	if len(value) > tmuxInputLimit {
-		return "", fmt.Errorf("Tmux input exceeds %d bytes", tmuxInputLimit)
+		return "", cliValidationf("Tmux input exceeds %d bytes", tmuxInputLimit)
 	}
 	return string(value), nil
 }

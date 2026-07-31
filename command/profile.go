@@ -39,9 +39,14 @@ func (profile Profile) Validate() error {
 	if strings.TrimSpace(profile.Command) == "" {
 		return fmt.Errorf("command is required")
 	}
-	if filepath.Base(profile.Command) != "codex" &&
-		filepath.Base(profile.Command) != "claude" {
-		return fmt.Errorf("no command adapter for %q", filepath.Base(profile.Command))
+	base, exact := adapterBase(profile.Command)
+	if !exact {
+		return fmt.Errorf(
+			"command must end with an exact codex or claude basename",
+		)
+	}
+	if base != "codex" && base != "claude" {
+		return fmt.Errorf("no command adapter for %q", base)
 	}
 	if err := validateTextToken("command", profile.Command, 4096, false); err != nil {
 		return err
@@ -106,7 +111,7 @@ func (profile Profile) Validate() error {
 }
 
 func ParseEffort(value string) (Effort, error) {
-	effort := Effort(strings.TrimSpace(value))
+	effort := Effort(value)
 	switch effort {
 	case EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
 		return effort, nil
@@ -175,4 +180,11 @@ func validReferenceName(value string) bool {
 
 func asciiLetter(value byte) bool {
 	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
+func adapterBase(command string) (string, bool) {
+	index := strings.LastIndex(command, string(filepath.Separator))
+	rawBase := command[index+1:]
+	base := filepath.Base(command)
+	return base, rawBase != "" && rawBase == base
 }

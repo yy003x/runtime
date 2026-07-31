@@ -1,8 +1,10 @@
 package runtimebootstrap
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/internal/layout"
@@ -18,20 +20,23 @@ import (
 	runtimetmux "github.com/yy003x/runtime/tmux"
 )
 
-type VNext struct {
+type ProfileServices struct {
 	Profiles *profile.Catalog
 	Models   *model.Service
-	Config   runtimeconfig.Config
 }
 
-func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error) {
+type VNext struct {
+	*ProfileServices
+	Config runtimeconfig.Config
+}
+
+func LoadProfileServices(
+	paths layout.Paths,
+	reservedProfileIDs ...string,
+) (*ProfileServices, error) {
 	profiles, err := profile.Load(paths.ConfigDir, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
-	}
-	config, err := runtimeconfig.Load(paths.RuntimeConfigFile)
-	if err != nil {
-		return nil, fmt.Errorf("load runtime config: %w", err)
 	}
 	models, err := model.NewService(
 		profiles.ModelCatalog(),
@@ -44,9 +49,19 @@ func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error)
 	if err != nil {
 		return nil, fmt.Errorf("build model service: %w", err)
 	}
-	return &VNext{
-		Profiles: profiles, Models: models, Config: config,
-	}, nil
+	return &ProfileServices{Profiles: profiles, Models: models}, nil
+}
+
+func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error) {
+	profiles, err := LoadProfileServices(paths, reservedProfileIDs...)
+	if err != nil {
+		return nil, err
+	}
+	config, err := runtimeconfig.Load(paths.RuntimeConfigFile)
+	if err != nil {
+		return nil, fmt.Errorf("load runtime config: %w", err)
+	}
+	return &VNext{ProfileServices: profiles, Config: config}, nil
 }
 
 type Services struct {
@@ -57,8 +72,21 @@ type Services struct {
 }
 
 type SessionServices struct {
-	*VNext
+	*ProfileServices
 	Sessions *session.Service
+}
+
+type SessionMaintenanceServices struct {
+	Sessions *session.Service
+}
+
+type RunQueryServices struct {
+	Runs *runtime.QueryService
+}
+
+type RunMaintenanceServices struct {
+	Sessions *session.Service
+	Runs     *runtime.Service
 }
 
 // LoadTmuxService composes the independent Tmux domain from layout only. It
@@ -87,10 +115,110 @@ func LoadSessionServices(
 	paths layout.Paths,
 	reservedProfileIDs ...string,
 ) (*SessionServices, error) {
-	core, err := LoadVNext(paths, reservedProfileIDs...)
+	core, err := LoadProfileServices(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}
+	sessions, err := loadSessionExecutionService(paths, core)
+	if err != nil {
+		return nil, err
+	}
+	return &SessionServices{ProfileServices: core, Sessions: sessions}, nil
+}
+
+func LoadSessionMaintenanceServices(
+	paths layout.Paths,
+) (*SessionMaintenanceServices, error) {
+	sessionStore, err := session.NewStore(
+		paths.SessionsDir, paths.StateDir,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build Session store: %w", err)
+	}
+	sessions, err := session.NewMaintenanceService(sessionStore)
+	if err != nil {
+		return nil, fmt.Errorf("build Session maintenance service: %w", err)
+	}
+	return &SessionMaintenanceServices{Sessions: sessions}, nil
+}
+
+// LoadRunQueryServices composes only the SQLite-backed Run query/GC surface.
+// It deliberately does not load Profile, Provider, tools, Session, or
+// runtime.json and never performs startup reconciliation.
+func LoadRunQueryServices(paths layout.Paths) (*RunQueryServices, error) {
+	runStore, err := sqlitestore.Open(
+		paths.RunDBFile,
+		sqlitestore.Options{SkipReconcile: true},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open Run store: %w", err)
+	}
+	runs, err := runtime.NewQueryService(runStore)
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build Run query service: %w", err)
+	}
+	return &RunQueryServices{Runs: runs}, nil
+}
+
+// LoadRunSettledRetention reads only the Run GC default from runtime.json.
+func LoadRunSettledRetention(paths layout.Paths) (time.Duration, error) {
+	config, err := runtimeconfig.Load(paths.RuntimeConfigFile)
+	if err != nil {
+		return 0, fmt.Errorf("load runtime config: %w", err)
+	}
+	return config.SettledRetention(), nil
+}
+
+// LoadRunMaintenanceServices composes explicit cancellation/reconciliation
+// without execution dependencies. Agent and Session executors receive only
+// the Stores needed by their maintenance methods.
+func LoadRunMaintenanceServices(
+	paths layout.Paths,
+) (*RunMaintenanceServices, error) {
+	runStore, err := sqlitestore.Open(
+		paths.RunDBFile,
+		sqlitestore.Options{SkipReconcile: true},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open Run store: %w", err)
+	}
+	sessionStore, err := session.NewStore(
+		paths.SessionsDir, paths.StateDir,
+	)
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build Session store: %w", err)
+	}
+	sessions, err := session.NewMaintenanceService(sessionStore)
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build Session maintenance service: %w", err)
+	}
+	runs, err := runtime.NewService(runtime.ServiceOptions{
+		Store: runStore,
+		Executors: map[runtime.Kind]runtime.Executor{
+			runtime.KindAgent: &runtime.AgentExecutor{
+				Store: runStore, Sessions: sessions,
+			},
+			runtime.KindSession: &runtime.SessionExecutor{
+				Sessions: sessions,
+			},
+		},
+	})
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build Run maintenance service: %w", err)
+	}
+	return &RunMaintenanceServices{
+		Sessions: sessions, Runs: runs,
+	}, nil
+}
+
+func loadSessionExecutionService(
+	paths layout.Paths,
+	core *ProfileServices,
+) (*session.Service, error) {
 	sessionStore, err := session.NewStore(
 		paths.SessionsDir, paths.StateDir,
 	)
@@ -103,7 +231,7 @@ func LoadSessionServices(
 	if err != nil {
 		return nil, fmt.Errorf("build Session service: %w", err)
 	}
-	return &SessionServices{VNext: core, Sessions: sessions}, nil
+	return sessions, nil
 }
 
 func LoadServices(
@@ -111,12 +239,31 @@ func LoadServices(
 	cwd string,
 	reservedProfileIDs ...string,
 ) (*Services, error) {
-	sessionServices, err := LoadSessionServices(paths, reservedProfileIDs...)
+	return loadServices(paths, cwd, true, reservedProfileIDs...)
+}
+
+func LoadServicesWithRunRecovery(
+	paths layout.Paths,
+	cwd string,
+	reservedProfileIDs ...string,
+) (*Services, error) {
+	return loadServices(paths, cwd, false, reservedProfileIDs...)
+}
+
+func loadServices(
+	paths layout.Paths,
+	cwd string,
+	skipRunRecovery bool,
+	reservedProfileIDs ...string,
+) (*Services, error) {
+	core, err := LoadVNext(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}
-	core := sessionServices.VNext
-	sessions := sessionServices.Sessions
+	sessions, err := loadSessionExecutionService(paths, core.ProfileServices)
+	if err != nil {
+		return nil, err
+	}
 	tools, err := toolbuiltin.Build(toolbuiltin.Options{
 		Names: core.Config.Agent.Tools,
 		Roots: core.Config.Agent.WorkspaceRoots,
@@ -125,7 +272,10 @@ func LoadServices(
 	if err != nil {
 		return nil, fmt.Errorf("build Agent tools: %w", err)
 	}
-	runStore, err := sqlitestore.Open(paths.RunDBFile, sqlitestore.Options{})
+	runStore, err := sqlitestore.Open(
+		paths.RunDBFile,
+		sqlitestore.Options{SkipReconcile: true},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open Run store: %w", err)
 	}
@@ -145,6 +295,12 @@ func LoadServices(
 	if err != nil {
 		runStore.Close()
 		return nil, fmt.Errorf("build Run service: %w", err)
+	}
+	if !skipRunRecovery {
+		if err := runs.Reconcile(context.Background()); err != nil {
+			_ = runs.Close()
+			return nil, fmt.Errorf("reconcile Run service: %w", err)
+		}
 	}
 	return &Services{
 		VNext: core, Sessions: sessions, Runs: runs, Tools: tools,

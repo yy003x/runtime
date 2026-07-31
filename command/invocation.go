@@ -25,6 +25,27 @@ type preparedConfig struct {
 	path        string
 }
 
+// ResolveExecutable applies the same cwd, env, PATH, and reference rules used
+// by Build without constructing or executing a final argv.
+func ResolveExecutable(
+	profile Profile,
+	invocationBase string,
+	inheritedEnvironment []string,
+) (string, error) {
+	if err := profile.Validate(); err != nil {
+		return "", err
+	}
+	prepared, err := prepareEffectiveConfig(BuildRequest{
+		Profile:              profile,
+		InvocationBase:       invocationBase,
+		InheritedEnvironment: inheritedEnvironment,
+	})
+	if err != nil {
+		return "", err
+	}
+	return prepared.path, nil
+}
+
 func prepareEffectiveConfig(request BuildRequest) (preparedConfig, error) {
 	_, _, rawCWD, err := effectiveTyped(request)
 	if err != nil {

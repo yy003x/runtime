@@ -12,6 +12,17 @@ import (
 	runtime "github.com/yy003x/runtime/run"
 )
 
+func TestAgentUsageDocumentsOptionalStdinBackedInput(t *testing.T) {
+	err := runAgentNamespace(
+		layout.Paths{}, nil,
+		newCLIOutput(false, &strings.Builder{}, &strings.Builder{}),
+	)
+	if err == nil || err.Error() !=
+		"usage: agent run --profile <model-profile-id> [options] [input]" {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestRenderAgentRunPrintsAssistantTextAndIdentity(t *testing.T) {
 	result, err := json.Marshal(map[string]any{
 		"outcome": map[string]any{

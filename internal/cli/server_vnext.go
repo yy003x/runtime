@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/cli/config"
 	snupdate "github.com/yy003x/runtime/internal/cli/update"
@@ -50,19 +51,21 @@ func runServerNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf(
+		return cliValidationf(
 			"usage: server info|doctor|start|status|stop|update|upgrade-check",
 		)
 	}
 	switch args[0] {
 	case "info", "doctor", "start", "status", "stop":
 		if len(args) != 1 {
-			return fmt.Errorf("server %s does not accept arguments", args[0])
+			return cliValidationf("server %s does not accept arguments", args[0])
 		}
 	}
 	switch args[0] {
 	case "info":
-		core, err := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+		core, err := runtimebootstrap.LoadProfileServices(
+			paths, fixedNamespaces...,
+		)
 		if err != nil {
 			return err
 		}
@@ -107,7 +110,7 @@ func runServerNamespaceVNext(
 	case "update":
 		options, err := parseUpdateOptions(args[1:])
 		if err != nil {
-			return err
+			return cliValidation(err)
 		}
 		cfg, err := config.Load()
 		if err != nil {
@@ -119,7 +122,7 @@ func runServerNamespaceVNext(
 	case "upgrade-activate":
 		return runUpgradeActivate(paths, args[1:], output)
 	default:
-		return fmt.Errorf("unknown server action %q", args[0])
+		return cliValidationf("unknown server action %q", args[0])
 	}
 }
 
@@ -134,7 +137,7 @@ func runUpgradeCheck(
 		switch args[index] {
 		case "--resources":
 			if seenResources {
-				return fmt.Errorf("--resources may only be specified once")
+				return cliValidationf("--resources may only be specified once")
 			}
 			seenResources = true
 			value, next, err := serverOptionValue(args, index, "--resources")
@@ -144,7 +147,7 @@ func runUpgradeCheck(
 			resources = value
 			index = next
 		default:
-			return fmt.Errorf("unknown upgrade-check argument %s", args[index])
+			return cliValidationf("unknown upgrade-check argument %s", args[index])
 		}
 	}
 	if err := activation.UpgradePreflight(
@@ -178,7 +181,7 @@ func runUpgradeActivate(
 		case "--payload", "--target-home", "--command-link", "--coordinator-pid":
 			name := args[index]
 			if _, exists := seen[name]; exists {
-				return fmt.Errorf("%s may only be specified once", name)
+				return cliValidationf("%s may only be specified once", name)
 			}
 			seen[name] = struct{}{}
 			raw, next, err := serverOptionValue(args, index, name)
@@ -196,7 +199,7 @@ func runUpgradeActivate(
 			case "--coordinator-pid":
 				value, parseErr := strconv.Atoi(raw)
 				if parseErr != nil || value <= 0 {
-					return fmt.Errorf(
+					return cliValidationf(
 						"--coordinator-pid must be a positive integer",
 					)
 				}
@@ -204,7 +207,7 @@ func runUpgradeActivate(
 			}
 		case "--overwrite-configs":
 			if _, exists := seen[args[index]]; exists {
-				return fmt.Errorf(
+				return cliValidationf(
 					"--overwrite-configs may only be specified once",
 				)
 			}
@@ -212,23 +215,23 @@ func runUpgradeActivate(
 			overwrite = true
 		case "--local-source-install":
 			if _, exists := seen[args[index]]; exists {
-				return fmt.Errorf(
+				return cliValidationf(
 					"--local-source-install may only be specified once",
 				)
 			}
 			seen[args[index]] = struct{}{}
 			localSourceInstall = true
 		default:
-			return fmt.Errorf("unknown upgrade-activate argument %s", args[index])
+			return cliValidationf("unknown upgrade-activate argument %s", args[index])
 		}
 	}
 	if payload == "" || target == "" {
-		return fmt.Errorf(
+		return cliValidationf(
 			"upgrade-activate requires --payload and --target-home",
 		)
 	}
 	if localSourceInstall && overwrite {
-		return fmt.Errorf(
+		return cliValidationf(
 			"--local-source-install cannot be combined with --overwrite-configs",
 		)
 	}
@@ -240,7 +243,7 @@ func runUpgradeActivate(
 		return err
 	}
 	if filepath.Clean(targetAbsolute) != filepath.Clean(paths.Home) {
-		return fmt.Errorf(
+		return cliValidationf(
 			"upgrade target %s does not match SN_CLI_HOME %s",
 			targetAbsolute, paths.Home,
 		)
@@ -248,19 +251,57 @@ func runUpgradeActivate(
 	expectedCommandTarget := filepath.Join(
 		targetAbsolute, "bin", "sn-cli",
 	)
+	var commandReservation *activation.CommandLinkReservation
 	if commandLink != "" {
 		if err := validateActivationCommandLink(
 			targetAbsolute, commandLink, expectedCommandTarget,
 		); err != nil {
 			return err
 		}
+		commandReservation, err = activation.ReserveCommandLink(
+			commandLink, expectedCommandTarget,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	executable, err := os.Executable()
 	if err != nil {
+		if commandReservation != nil {
+			return errors.Join(err, commandReservation.Release())
+		}
 		return err
 	}
 	var stopServerForInstall func() error
+	var inspectServerForInstall func() (
+		activation.ManagedServerProcess,
+		error,
+	)
 	if localSourceInstall {
+		inspectServerForInstall = func() (
+			activation.ManagedServerProcess,
+			error,
+		) {
+			running, pid, inspectErr := serverRunning(paths)
+			if inspectErr != nil {
+				return activation.ManagedServerProcess{}, inspectErr
+			}
+			if !running {
+				return activation.ManagedServerProcess{}, nil
+			}
+			record, readErr := readServerPID(paths.ServerPIDFile)
+			if readErr != nil {
+				return activation.ManagedServerProcess{}, readErr
+			}
+			if record.PID != pid {
+				return activation.ManagedServerProcess{}, fmt.Errorf(
+					"sn-server process identity changed during install preflight",
+				)
+			}
+			return activation.ManagedServerProcess{
+				PID: pid, StartToken: record.ProcessStart,
+			}, nil
+		}
 		stopServerForInstall = func() error {
 			return stopServerLocked(
 				paths,
@@ -274,19 +315,21 @@ func runUpgradeActivate(
 			TargetHome: targetAbsolute, PayloadDir: payload,
 			CandidateBinary: executable, OverwriteConfig: overwrite,
 			LocalSourceInstall: localSourceInstall,
+			InspectServer:      inspectServerForInstall,
 			StopServer:         stopServerForInstall,
 			CoordinatorPID:     coordinatorPID,
 		},
 	)
 	if err != nil {
+		if commandReservation != nil {
+			return errors.Join(err, commandReservation.Release())
+		}
 		return err
 	}
-	if commandLink != "" {
-		if err := activation.EnsureCommandLink(
-			commandLink, expectedCommandTarget,
-		); err != nil {
+	if commandReservation != nil {
+		if err := commandReservation.Commit(); err != nil {
 			return fmt.Errorf(
-				"Runtime activated in %s, but command link was not created: %w",
+				"Runtime activated in %s, but command link reservation changed: %w",
 				targetAbsolute, err,
 			)
 		}
@@ -308,7 +351,7 @@ func validateActivationCommandLink(
 	expectedTarget string,
 ) error {
 	if filepath.Base(commandLink) != "sn-cli" {
-		return fmt.Errorf("command link must be named sn-cli")
+		return cliValidationf("command link must be named sn-cli")
 	}
 	if err := activation.ValidateCommandLink(
 		commandLink, expectedTarget,
@@ -326,7 +369,7 @@ func validateActivationCommandLink(
 	}
 	if relative == "." || relative != ".." &&
 		!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("command link must be outside the Runtime home")
+		return cliValidationf("command link must be outside the Runtime home")
 	}
 	return nil
 }
@@ -339,7 +382,7 @@ func serverOptionValue(
 	next := index + 1
 	if next >= len(args) || args[next] == "" ||
 		strings.HasPrefix(args[next], "--") {
-		return "", index, fmt.Errorf("%s requires value", name)
+		return "", index, cliValidationf("%s requires value", name)
 	}
 	return args[next], next, nil
 }
@@ -355,11 +398,20 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 	}
 	defer services.Runs.Close()
 	var missingBinaries []string
+	var invalidCommands []string
+	commandErrors := make(map[string]string)
 	var missingAuth []string
 	for _, entry := range services.Profiles.Entries() {
 		if entry.Command != nil {
-			if _, err := exec.LookPath(entry.Command.Command); err != nil {
-				missingBinaries = append(missingBinaries, entry.ID)
+			if _, resolveErr := runtimecommand.ResolveExecutable(
+				*entry.Command, cwd, os.Environ(),
+			); resolveErr != nil {
+				commandErrors[entry.ID] = resolveErr.Error()
+				if errors.Is(resolveErr, exec.ErrNotFound) {
+					missingBinaries = append(missingBinaries, entry.ID)
+				} else {
+					invalidCommands = append(invalidCommands, entry.ID)
+				}
 			}
 		}
 		if entry.Model != nil {
@@ -369,9 +421,10 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 		}
 	}
 	result := map[string]any{
-		"schema_version":           cliOutputSchemaVersion,
-		"contract_version":         cliOutputContractVersion,
-		"ok":                       len(missingBinaries) == 0 && len(missingAuth) == 0,
+		"schema_version":   cliOutputSchemaVersion,
+		"contract_version": cliOutputContractVersion,
+		"ok": len(missingBinaries) == 0 &&
+			len(invalidCommands) == 0 && len(missingAuth) == 0,
 		"version":                  version.String(),
 		"namespaces":               serverNamespaces(),
 		"capabilities":             serverCapabilities(),
@@ -379,25 +432,31 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 		"tools":                    services.Tools.Definitions(),
 		"run_store":                "sqlite_wal",
 		"missing_command_binaries": missingBinaries,
+		"invalid_command_profiles": invalidCommands,
+		"command_profile_errors":   commandErrors,
 		"missing_auth_environment": missingAuth,
 	}
 	if result["ok"] != true {
 		if !output.JSON() {
 			if err := renderServerDoctor(
 				output, false, len(services.Profiles.Entries()),
-				len(services.Tools.Definitions()), missingBinaries, missingAuth,
+				len(services.Tools.Definitions()), missingBinaries,
+				invalidCommands, missingAuth,
 			); err != nil {
 				return err
 			}
 		}
-		return serverDoctorDependencyError(missingBinaries, missingAuth)
+		return serverDoctorDependencyError(
+			missingBinaries, invalidCommands, missingAuth,
+		)
 	}
 	if output.JSON() {
 		return output.writeJSON(result)
 	}
 	return renderServerDoctor(
 		output, true, len(services.Profiles.Entries()),
-		len(services.Tools.Definitions()), missingBinaries, missingAuth,
+		len(services.Tools.Definitions()), missingBinaries,
+		invalidCommands, missingAuth,
 	)
 }
 
@@ -846,7 +905,7 @@ func serverCapabilities() map[string][]string {
 		"tmux":  {"interactive_windows", "paste", "attach"},
 		"agent": {"api_harness", "tool_loop", "stream"},
 		"run": {
-			"durable_queue", "events", "watch", "cancel", "resume",
+			"durable_queue", "events", "watch", "cancel",
 			"retry", "reconcile", "gc",
 		},
 		"server": {
@@ -869,6 +928,7 @@ func renderServerDoctor(
 	profileCount int,
 	toolCount int,
 	missingBinaries []string,
+	invalidCommands []string,
 	missingAuth []string,
 ) error {
 	state := "FAILED"
@@ -891,6 +951,13 @@ func renderServerDoctor(
 			return err
 		}
 	}
+	if len(invalidCommands) > 0 {
+		if err := output.line(
+			"Invalid command profiles: %s", strings.Join(invalidCommands, ", "),
+		); err != nil {
+			return err
+		}
+	}
 	if len(missingAuth) > 0 {
 		if err := output.line(
 			"Missing auth environment: %s", strings.Join(missingAuth, ", "),
@@ -903,13 +970,20 @@ func renderServerDoctor(
 
 func serverDoctorDependencyError(
 	missingBinaries []string,
+	invalidCommands []string,
 	missingAuth []string,
 ) error {
-	details := make([]string, 0, 2)
+	details := make([]string, 0, 3)
 	if len(missingBinaries) > 0 {
 		details = append(
 			details,
 			"missing command profiles: "+strings.Join(missingBinaries, ", "),
+		)
+	}
+	if len(invalidCommands) > 0 {
+		details = append(
+			details,
+			"invalid command profiles: "+strings.Join(invalidCommands, ", "),
 		)
 	}
 	if len(missingAuth) > 0 {
@@ -972,18 +1046,6 @@ func parseUpdateOptions(args []string) (updateOptions, error) {
 		)
 	}
 	return options, nil
-}
-
-func runUpdateVNext(
-	cfg *config.Config,
-	args []string,
-	output *cliOutput,
-) error {
-	options, err := parseUpdateOptions(args)
-	if err != nil {
-		return err
-	}
-	return executeUpdateVNext(cfg, options, output)
 }
 
 func executeUpdateVNext(

@@ -62,10 +62,16 @@ func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 10 {
-		t.Fatalf("source profile count=%d", len(files))
+	required := map[string]bool{
+		"api-cc.json": true, "api-cx.json": true,
+		"cc-bai.json": true, "cc.json": true,
+		"commit.json": true, "cx-adv.json": true,
+		"cx-deep.json": true, "cx-image.json": true,
+		"cx-remote.json": true, "cx-spark.json": true,
+		"cx.json": true,
 	}
 	for _, file := range files {
+		delete(required, filepath.Base(file))
 		kind, cliProfile, _, err := loadFile(file)
 		if err != nil {
 			t.Fatalf("%s: %v", file, err)
@@ -75,6 +81,9 @@ func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
 				t.Fatalf("%s: %v", file, err)
 			}
 		}
+	}
+	if len(required) != 0 {
+		t.Fatalf("source profiles are missing required files: %v", required)
 	}
 }
 
@@ -117,6 +126,16 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 		},
 		{
 			name: "reserved_check", fileName: "check.json",
+			content:   `{"type":"cli","command":"codex"}`,
+			errorText: "reserved profile ID",
+		},
+		{
+			name: "reserved_legacy_exec", fileName: "exec.json",
+			content:   `{"type":"cli","command":"codex"}`,
+			errorText: "reserved profile ID",
+		},
+		{
+			name: "reserved_legacy_open", fileName: "open.json",
 			content:   `{"type":"cli","command":"codex"}`,
 			errorText: "reserved profile ID",
 		},

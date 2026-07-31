@@ -44,6 +44,69 @@ func TestModelRequestValidationRejectsNonFiniteTemperature(t *testing.T) {
 	}
 }
 
+func TestModelRequestValidationRejectsInvalidText(t *testing.T) {
+	tests := []struct {
+		name    string
+		request ModelRequest
+	}{
+		{
+			name: "system_nul",
+			request: ModelRequest{
+				System:   "bad\x00system",
+				Messages: []Message{{Role: RoleUser, Content: "hello"}},
+			},
+		},
+		{
+			name: "message_invalid_utf8",
+			request: ModelRequest{
+				Messages: []Message{{
+					Role: RoleUser, Content: string([]byte{0xff}),
+				}},
+			},
+		},
+		{
+			name: "label_nul",
+			request: ModelRequest{
+				Messages: []Message{{Role: RoleUser, Content: "hello"}},
+				Trace: TraceContext{Labels: map[string]string{
+					"task": "bad\x00value",
+				}},
+			},
+		},
+		{
+			name: "tool_description_nul",
+			request: ModelRequest{
+				Messages: []Message{{Role: RoleUser, Content: "hello"}},
+				Tools: []ToolSpec{{
+					Name: "fixture", Description: "bad\x00description",
+					InputSchema: json.RawMessage(`{"type":"object"}`),
+				}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.request.Validate(); err == nil {
+				t.Fatal("invalid text was accepted")
+			}
+		})
+	}
+}
+
+func TestMessageValidationLimitsIsErrorToToolResults(t *testing.T) {
+	if err := (Message{
+		Role: RoleTool, ToolCallID: "call-1", Content: "failed", IsError: true,
+	}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []Role{RoleUser, RoleAssistant} {
+		message := Message{Role: role, Content: "content", IsError: true}
+		if err := message.Validate(); err == nil {
+			t.Fatalf("role %q accepted is_error", role)
+		}
+	}
+}
+
 func TestEventAndErrorValidation(t *testing.T) {
 	result := ModelResult{
 		Message:      Message{Role: RoleAssistant, Content: "ok"},
@@ -71,6 +134,13 @@ func TestEventAndErrorValidation(t *testing.T) {
 	}
 	if !strings.Contains(runtimeError.Error(), "rate_limited") {
 		t.Fatalf("Error()=%q", runtimeError.Error())
+	}
+	notFound := RuntimeError{
+		Code: ErrorNotFound, Phase: PhaseRequest,
+		Message: "run was not found",
+	}
+	if err := notFound.Validate(); err != nil {
+		t.Fatal(err)
 	}
 
 	argumentsDelta := Event{

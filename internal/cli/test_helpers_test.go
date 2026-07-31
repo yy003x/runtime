@@ -10,9 +10,33 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 	runtime "github.com/yy003x/runtime/run"
 )
+
+func assertMachineErrorCode(
+	t *testing.T,
+	err error,
+	want contract.ErrorCode,
+) {
+	t.Helper()
+	var stderr bytes.Buffer
+	if exitCode := newCLIOutput(
+		true, &bytes.Buffer{}, &stderr,
+	).fail(err); exitCode != 1 {
+		t.Fatalf("exit=%d, want 1", exitCode)
+	}
+	var payload struct {
+		Error contract.RuntimeError `json:"error"`
+	}
+	if decodeErr := json.Unmarshal(stderr.Bytes(), &payload); decodeErr != nil {
+		t.Fatalf("decode machine error: %v: %q", decodeErr, stderr.String())
+	}
+	if payload.Error.Code != want {
+		t.Fatalf("machine error=%#v, want code=%s", payload.Error, want)
+	}
+}
 
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()

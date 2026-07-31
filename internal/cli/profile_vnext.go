@@ -2,12 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
+	"github.com/yy003x/runtime/internal/strictjson"
 	runtimemodel "github.com/yy003x/runtime/model"
 	runtimeprofile "github.com/yy003x/runtime/profile"
 )
@@ -25,9 +24,11 @@ func runVNextProfileNamespace(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: profile <profile-id> [input...] | profile list|show|check")
+		return cliValidationf("usage: profile <profile-id> [input] | profile list|show|check")
 	}
-	runtime, err := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+	runtime, err := runtimebootstrap.LoadProfileServices(
+		paths, fixedNamespaces...,
+	)
 	if err != nil {
 		return err
 	}
@@ -35,7 +36,7 @@ func runVNextProfileNamespace(
 }
 
 func runLoadedVNextProfile(
-	runtime *runtimebootstrap.VNext,
+	runtime *runtimebootstrap.ProfileServices,
 	args []string,
 	output *cliOutput,
 ) error {
@@ -45,7 +46,7 @@ func runLoadedVNextProfile(
 	switch args[0] {
 	case "list":
 		if len(args) != 1 {
-			return fmt.Errorf("profile list does not accept arguments")
+			return cliValidationf("profile list does not accept arguments")
 		}
 		values := make([]map[string]string, 0, len(runtime.Profiles.Entries()))
 		for _, entry := range runtime.Profiles.Entries() {
@@ -65,11 +66,11 @@ func runLoadedVNextProfile(
 		return nil
 	case "show":
 		if len(args) != 2 {
-			return fmt.Errorf("profile show requires one profile ID")
+			return cliValidationf("profile show requires one profile ID")
 		}
 		entry, exists := runtime.Profiles.Resolve(args[1])
 		if !exists {
-			return fmt.Errorf("unknown profile %q", args[1])
+			return cliValidationf("unknown profile %q", args[1])
 		}
 		value := any(entry.Model)
 		if entry.Kind == runtimeprofile.KindCommand {
@@ -101,13 +102,13 @@ func runLoadedVNextProfile(
 		return output.line("Endpoint: %s", entry.Model.Endpoint)
 	case "check":
 		if len(args) > 2 {
-			return fmt.Errorf("profile check accepts at most one profile ID")
+			return cliValidationf("profile check accepts at most one profile ID")
 		}
 		var entries []runtimeprofile.Entry
 		if len(args) == 2 {
 			entry, exists := runtime.Profiles.Resolve(args[1])
 			if !exists {
-				return fmt.Errorf("unknown profile %q", args[1])
+				return cliValidationf("unknown profile %q", args[1])
 			}
 			entries = []runtimeprofile.Entry{entry}
 		} else {
@@ -136,7 +137,7 @@ func runLoadedVNextProfile(
 }
 
 func runLoadedVNextProfileID(
-	runtime *runtimebootstrap.VNext,
+	runtime *runtimebootstrap.ProfileServices,
 	profileID string,
 	args []string,
 	output *cliOutput,
@@ -146,7 +147,7 @@ func runLoadedVNextProfileID(
 	}
 	entry, exists := runtime.Profiles.Resolve(profileID)
 	if !exists {
-		return fmt.Errorf("unknown profile %q", profileID)
+		return cliValidationf("unknown profile %q", profileID)
 	}
 	if entry.Kind == runtimeprofile.KindCommand {
 		invocationBase, err := os.Getwd()
@@ -255,7 +256,7 @@ func buildCommandProfileInvocation(
 ) (runtimecommand.Invocation, runtimecommand.Mode, error) {
 	options, err := parseCommandProfileOptions(args)
 	if err != nil {
-		return runtimecommand.Invocation{}, "", commandProfileError(err)
+		return runtimecommand.Invocation{}, "", commandProfileRequestError(err)
 	}
 	basePrompt, err := runtimecommand.ResolvePrompt(
 		profile.Prompt, invocationBase,
@@ -325,6 +326,20 @@ func commandProfileError(err error) error {
 	}
 	return &contract.RuntimeError{
 		Code: contract.ErrorInvalidRequest, Phase: contract.PhaseProfile,
+		Message: err.Error(),
+	}
+}
+
+func commandProfileRequestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var runtimeErr *contract.RuntimeError
+	if errors.As(err, &runtimeErr) {
+		return err
+	}
+	return &contract.RuntimeError{
+		Code: contract.ErrorInvalidRequest, Phase: contract.PhaseRequest,
 		Message: err.Error(),
 	}
 }
@@ -471,13 +486,13 @@ func parseDirectModelInput(
 		current := args[index]
 		if current == "--" {
 			if inputSet {
-				return contract.GenerateRequest{}, stream, fmt.Errorf(
+				return contract.GenerateRequest{}, stream, cliValidationf(
 					"model input terminator cannot follow positional input",
 				)
 			}
 			remaining := args[index+1:]
 			if len(remaining) > 1 {
-				return contract.GenerateRequest{}, stream, fmt.Errorf(
+				return contract.GenerateRequest{}, stream, cliValidationf(
 					"`--` accepts at most one model input",
 				)
 			}
@@ -488,7 +503,7 @@ func parseDirectModelInput(
 			break
 		}
 		if inputSet {
-			return contract.GenerateRequest{}, stream, fmt.Errorf(
+			return contract.GenerateRequest{}, stream, cliValidationf(
 				"model input must be the final argument",
 			)
 		}
@@ -502,7 +517,7 @@ func parseDirectModelInput(
 			name = "--effort"
 		}
 		if seen[name] {
-			return contract.GenerateRequest{}, stream, fmt.Errorf(
+			return contract.GenerateRequest{}, stream, cliValidationf(
 				"model option %s may only be used once", name,
 			)
 		}
@@ -531,7 +546,7 @@ func parseDirectModelInput(
 		case "--max-completion-tokens", "--max-tokens":
 			expected := modelTokenLimitOption(modelProfile.Driver)
 			if current != expected {
-				return contract.GenerateRequest{}, stream, fmt.Errorf(
+				return contract.GenerateRequest{}, stream, cliValidationf(
 					"%s is invalid for %s; use %s",
 					current, modelProfile.Driver, expected,
 				)
@@ -544,7 +559,7 @@ func parseDirectModelInput(
 			}
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || parsed <= 0 {
-				return contract.GenerateRequest{}, stream, fmt.Errorf("%s must be positive", expected)
+				return contract.GenerateRequest{}, stream, cliValidationf("%s must be positive", expected)
 			}
 			request.Input.Options.MaxOutputTokens = &parsed
 			index = next
@@ -557,13 +572,13 @@ func parseDirectModelInput(
 			}
 			parsed, err := strconv.ParseFloat(value, 64)
 			if err != nil {
-				return contract.GenerateRequest{}, stream, fmt.Errorf(
+				return contract.GenerateRequest{}, stream, cliValidationf(
 					"--temperature must be between 0 and 2",
 				)
 			}
 			if err := contract.ValidateTemperature(parsed); err != nil {
-				return contract.GenerateRequest{}, stream, fmt.Errorf(
-					"--temperature: %w", err,
+				return contract.GenerateRequest{}, stream, cliValidationf(
+					"--temperature: %v", err,
 				)
 			}
 			request.Input.Options.Temperature = &parsed
@@ -581,14 +596,14 @@ func parseDirectModelInput(
 					}
 				}
 				if _, err := runtimecommand.ParseEffort(value); err != nil {
-					return contract.GenerateRequest{}, stream, err
+					return contract.GenerateRequest{}, stream, cliValidation(err)
 				}
-				return contract.GenerateRequest{}, stream, fmt.Errorf(
-					"profile %q does not declare an API effort adapter",
+				return contract.GenerateRequest{}, stream, cliValidationf(
+					"--effort is not supported for API profile %q",
 					profileID,
 				)
 			}
-			return contract.GenerateRequest{}, stream, fmt.Errorf(
+			return contract.GenerateRequest{}, stream, cliValidationf(
 				"unknown model input option: %s", current,
 			)
 		}
@@ -596,7 +611,7 @@ func parseDirectModelInput(
 	if requestFile != "" {
 		if prompt != "" || system != "" || request.Input.Options.MaxOutputTokens != nil ||
 			request.Input.Options.Temperature != nil {
-			return contract.GenerateRequest{}, stream, fmt.Errorf(
+			return contract.GenerateRequest{}, stream, cliValidationf(
 				"--request-file cannot be combined with prompt or request options",
 			)
 		}
@@ -614,7 +629,7 @@ func parseDirectModelInput(
 			prompt = value
 		}
 		if strings.TrimSpace(prompt) == "" {
-			return contract.GenerateRequest{}, stream, fmt.Errorf("model prompt is required")
+			return contract.GenerateRequest{}, stream, cliValidationf("model prompt is required")
 		}
 		request.Input.System = system
 		request.Input.Messages = []contract.Message{{
@@ -622,7 +637,7 @@ func parseDirectModelInput(
 		}}
 	}
 	if err := request.Validate(); err != nil {
-		return contract.GenerateRequest{}, stream, err
+		return contract.GenerateRequest{}, stream, cliValidation(err)
 	}
 	return request, stream, nil
 }
@@ -634,7 +649,7 @@ func directModelOptionValue(
 ) (string, int, error) {
 	index++
 	if index >= len(args) || strings.HasPrefix(args[index], "--") {
-		return "", index, fmt.Errorf("%s requires value", name)
+		return "", index, cliValidationf("%s requires value", name)
 	}
 	return args[index], index, nil
 }
@@ -651,33 +666,22 @@ func modelTokenLimitOption(driver runtimemodel.DriverName) string {
 }
 
 func readModelRequest(path string) (contract.ModelRequest, error) {
-	var reader io.Reader
-	var file *os.File
-	if path == "-" {
-		reader = os.Stdin
-	} else {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return contract.ModelRequest{}, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return contract.ModelRequest{}, fmt.Errorf("request file must be a regular file, not a symlink")
-		}
-		file, err = os.Open(filepath.Clean(path))
-		if err != nil {
-			return contract.ModelRequest{}, err
-		}
-		defer file.Close()
-		reader = file
-	}
 	var value contract.ModelRequest
-	decoder := json.NewDecoder(io.LimitReader(reader, (1<<20)+1))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return contract.ModelRequest{}, fmt.Errorf("decode model request: %w", err)
+	var err error
+	if path == "-" {
+		err = strictjson.Decode(os.Stdin, 1<<20, &value)
+	} else {
+		err = strictjson.ReadRegularFile(path, 1<<20, &value)
+	}
+	if err != nil {
+		err = fmt.Errorf("decode model request: %w", err)
+		if strictjson.IsValidation(err) {
+			return contract.ModelRequest{}, cliValidation(err)
+		}
+		return contract.ModelRequest{}, err
 	}
 	if err := value.Validate(); err != nil {
-		return contract.ModelRequest{}, err
+		return contract.ModelRequest{}, cliValidation(err)
 	}
 	return value, nil
 }
@@ -692,7 +696,7 @@ func readDirectStdin() (string, error) {
 		return "", err
 	}
 	if len(value) > 1<<20 {
-		return "", fmt.Errorf("stdin exceeds 1048576 bytes")
+		return "", cliValidationf("stdin exceeds 1048576 bytes")
 	}
 	return string(value), nil
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 )
 
@@ -27,13 +28,17 @@ func TestMainLeadingJSONVersion(t *testing.T) {
 	}
 }
 
-func TestMainHelpDocumentsJSONProfileBoundary(t *testing.T) {
+func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 	stdout, stderr, exitCode := captureMainOutput(t, []string{"help"})
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 	}
 	for _, expected := range []string{
-		"sn-cli --json <api-profile-id> [options...] [prompt]",
+		"sn-cli --json <profile-id> [profile-options...] [input]",
+		"sn-cli session run|submit [runtime-options] <profile-id> [input]",
+		"sn-cli session list|show|messages|events|logs|executions|execution",
+		"sn-cli session reconcile|configure|export|delete|gc",
+		"sn-cli agent run --profile <model-profile-id> [options] [input]",
 		"stable API Profile/management output; must be first",
 		"CLI Profile output remains target-native",
 	} {
@@ -60,6 +65,145 @@ func TestMainHelpAndVersionRejectTrailingArguments(t *testing.T) {
 	}
 }
 
+func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
+	paths := prepareVNextHome(t)
+	writeVNextCommand(t, paths.ConfigDir, "cx")
+	writeVNextModel(
+		t, paths.ConfigDir, "api",
+		"https://example.invalid/v1/chat/completions",
+	)
+	t.Setenv("SN_CLI_HOME", paths.Home)
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "session_id",
+			args: []string{
+				"--json", "session", "show", "--session-id", "bad",
+			},
+		},
+		{
+			name: "run_id",
+			args: []string{
+				"--json", "run", "get", "--run-id", "bad",
+			},
+		},
+		{
+			name: "unknown_option",
+			args: []string{
+				"--json", "session", "show", "--unknown", "value",
+			},
+		},
+		{
+			name: "profile_usage",
+			args: []string{"--json", "profile"},
+		},
+		{
+			name: "command_profile_unknown_option",
+			args: []string{
+				"--json", "profile", "cx", "--unknown",
+			},
+		},
+		{
+			name: "api_profile_unknown_option",
+			args: []string{
+				"--json", "profile", "api", "--unknown",
+			},
+		},
+		{
+			name: "profile_not_found",
+			args: []string{
+				"--json", "profile", "missing", "input",
+			},
+		},
+		{
+			name: "agent_parse",
+			args: []string{
+				"--json", "agent", "run", "--unknown",
+			},
+		},
+		{
+			name: "agent_profile_not_found",
+			args: []string{
+				"--json", "agent", "run",
+				"--profile", "missing", "input",
+			},
+		},
+		{
+			name: "tmux_parse",
+			args: []string{
+				"--json", "tmux", "list", "unexpected",
+			},
+		},
+		{
+			name: "tmux_profile_not_found",
+			args: []string{
+				"--json", "tmux", "start", "missing",
+			},
+		},
+		{
+			name: "server_trailing",
+			args: []string{
+				"--json", "server", "status", "unexpected",
+			},
+		},
+		{
+			name: "server_unknown_action",
+			args: []string{
+				"--json", "server", "unknown",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr, exitCode := captureMainOutput(t, test.args)
+			if exitCode != 1 || stdout != "" {
+				t.Fatalf(
+					"exit=%d stdout=%q stderr=%q",
+					exitCode, stdout, stderr,
+				)
+			}
+			var payload struct {
+				Error contract.RuntimeError `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(stderr), &payload); err != nil {
+				t.Fatalf("stderr=%q error=%v", stderr, err)
+			}
+			if payload.Error.Code != contract.ErrorInvalidRequest ||
+				payload.Error.Phase != contract.PhaseRequest {
+				t.Fatalf("error=%#v", payload.Error)
+			}
+		})
+	}
+}
+
+func TestMainMachineConfigurationFailureRemainsInternal(t *testing.T) {
+	paths := prepareVNextHome(t)
+	if err := os.WriteFile(
+		paths.ConfigDir+"/broken.json", []byte(`{"type":"cli"`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SN_CLI_HOME", paths.Home)
+	stdout, stderr, exitCode := captureMainOutput(
+		t, []string{"--json", "profile", "list"},
+	)
+	if exitCode != 1 || stdout != "" {
+		t.Fatalf(
+			"exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr,
+		)
+	}
+	var payload struct {
+		Error contract.RuntimeError `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr), &payload); err != nil {
+		t.Fatalf("stderr=%q error=%v", stderr, err)
+	}
+	if payload.Error.Code != contract.ErrorInternal {
+		t.Fatalf("configuration failure was misclassified: %#v", payload.Error)
+	}
+}
+
 func TestMainRejectsRemovedSystemNamespace(t *testing.T) {
 	paths := prepareVNextHome(t)
 	t.Setenv("SN_CLI_HOME", paths.Home)
@@ -81,7 +225,7 @@ func TestMainRejectsRemovedSystemNamespace(t *testing.T) {
 }
 
 func TestTopLevelProfileManagementNamesAreUnknownProfiles(t *testing.T) {
-	for _, name := range []string{"list", "show", "check"} {
+	for _, name := range []string{"list", "show", "check", "exec", "open"} {
 		t.Run(name, func(t *testing.T) {
 			paths := prepareVNextHome(t)
 			t.Setenv("SN_CLI_HOME", paths.Home)

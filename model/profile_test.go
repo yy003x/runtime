@@ -3,57 +3,86 @@ package model
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestDecodeModelProfile(t *testing.T) {
-	profile, err := DecodeProfile(strings.NewReader(`{
-		"driver":"openai-compatible",
-		"endpoint":"https://example.invalid/v1/chat/completions",
-		"model":"fixture",
-		"auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},
-		"headers":{"X-Client":"runtime-test"},
-		"defaults":{"max_completion_tokens":1024},
-		"timeout":"5m"
-	}`))
-	if err != nil {
+func TestValidateModelProfile(t *testing.T) {
+	maxCompletionTokens := int64(1024)
+	profile := Profile{
+		Driver:   DriverOpenAICompatible,
+		Endpoint: "https://example.invalid/v1/chat/completions",
+		Model:    "fixture",
+		Auth: Auth{
+			Header: "Authorization", Scheme: "Bearer",
+			FromEnv: "MODEL_API_KEY",
+		},
+		Headers: map[string]string{"X-Client": "runtime-test"},
+		Defaults: Defaults{
+			MaxCompletionTokens: &maxCompletionTokens,
+		},
+		Timeout: "5m",
+	}
+	if err := profile.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if profile.Driver != DriverOpenAICompatible || profile.TimeoutDuration().Minutes() != 5 {
 		t.Fatalf("profile=%#v", profile)
 	}
-	for _, input := range []string{
-		`{"driver":"openai-compatible","endpoint":"http://example.invalid/v1","model":"x","auth":{"header":"Authorization","scheme":"Bearer","from_env":"KEY"},"timeout":"1m"}`,
-		`{"driver":"openai-compatible","endpoint":"https://example.invalid/v1","model":"x","auth":{"header":"Authorization","scheme":"Bearer","from_env":"KEY"},"headers":{"Authorization":"literal"},"timeout":"1m"}`,
-		`{"driver":"openai-compatible","endpoint":"https://example.invalid/v1","model":"x","auth":{"header":"Authorization","scheme":"Bearer","from_env":"KEY"},"retry":3,"timeout":"1m"}`,
-		`{"driver":"openai-compatible","endpoint":"https://example.invalid/v1","model":"x","auth":{"header":"Authorization","scheme":"Bearer","from_env":"${KEY}"},"timeout":"1m"}`,
-		`{"driver":"openai-compatible","endpoint":"https://example.invalid/v1","model":"x","auth":{"header":"Authorization","scheme":"Bearer","from_env":"KEY"},"defaults":{"max_tokens":1024},"timeout":"1m"}`,
-		`{"driver":"openai-compatible","endpoint":"https://example.invalid/v1","model":"x","auth":{"header":"Authorization","scheme":"Bearer","from_env":"KEY"},"defaults":{"max_output_tokens":1024},"timeout":"1m"}`,
-		`{"driver":"anthropic-compatible","endpoint":"https://example.invalid/v1","model":"x","auth":{"header":"x-api-key","from_env":"KEY"},"defaults":{"max_completion_tokens":1024},"timeout":"1m"}`,
+	for name, value := range map[string]Profile{
+		"insecure_endpoint": {
+			Driver: DriverOpenAICompatible, Endpoint: "http://example.invalid/v1",
+			Model: "x", Auth: Auth{
+				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
+			}, Timeout: "1m",
+		},
+		"reserved_header": {
+			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1",
+			Model: "x", Auth: Auth{
+				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
+			}, Headers: map[string]string{"Authorization": "literal"}, Timeout: "1m",
+		},
+		"invalid_auth_env": {
+			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1",
+			Model: "x", Auth: Auth{
+				Header: "Authorization", Scheme: "Bearer", FromEnv: "${KEY}",
+			}, Timeout: "1m",
+		},
+		"wrong_openai_token_limit": {
+			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1",
+			Model: "x", Auth: Auth{
+				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
+			}, Defaults: Defaults{MaxTokens: &maxCompletionTokens}, Timeout: "1m",
+		},
+		"wrong_anthropic_token_limit": {
+			Driver: DriverAnthropicCompatible, Endpoint: "https://example.invalid/v1",
+			Model: "x", Auth: Auth{
+				Header: "x-api-key", FromEnv: "KEY",
+			}, Defaults: Defaults{
+				MaxCompletionTokens: &maxCompletionTokens,
+			}, Timeout: "1m",
+		},
 	} {
-		if _, err := DecodeProfile(strings.NewReader(input)); err == nil {
-			t.Fatalf("DecodeProfile(%s) returned nil", input)
+		if err := value.Validate(); err == nil {
+			t.Fatalf("%s was accepted: %#v", name, value)
 		}
 	}
 }
 
-func TestLoadProfileDirAndResolveSecret(t *testing.T) {
-	root := t.TempDir()
-	document := `{
-		"driver":"openai-compatible",
-		"endpoint":"https://example.invalid/v1/chat/completions",
-		"model":"fixture",
-		"auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},
-		"timeout":"1m"
-	}`
-	if err := os.WriteFile(filepath.Join(root, "fixture.json"), []byte(document), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := LoadProfileDir(root)
+func TestCatalogResolveSecret(t *testing.T) {
+	catalog, err := NewCatalog(map[string]Profile{
+		"fixture": {
+			Driver:   DriverOpenAICompatible,
+			Endpoint: "https://example.invalid/v1/chat/completions",
+			Model:    "fixture",
+			Auth: Auth{
+				Header: "Authorization", Scheme: "Bearer",
+				FromEnv: "MODEL_API_KEY",
+			},
+			Timeout: "1m",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

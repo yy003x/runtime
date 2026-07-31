@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yy003x/runtime/internal/profileid"
 )
@@ -33,6 +34,9 @@ func (request GenerateRequest) Validate() error {
 func (request ModelRequest) Validate() error {
 	if len(request.System) > maxSystemBytes {
 		return fmt.Errorf("system exceeds %d bytes", maxSystemBytes)
+	}
+	if err := validateText(request.System, "system"); err != nil {
+		return err
 	}
 	if len(request.Messages) == 0 {
 		return fmt.Errorf("messages are required")
@@ -70,6 +74,12 @@ func (request ModelRequest) Validate() error {
 		return fmt.Errorf("trace.labels exceed %d items", maxLabels)
 	}
 	for key, value := range request.Trace.Labels {
+		if err := validateText(key, "trace label key"); err != nil {
+			return err
+		}
+		if err := validateText(value, fmt.Sprintf("trace.labels[%q]", key)); err != nil {
+			return err
+		}
 		if strings.TrimSpace(key) == "" || len(key) > maxLabelKeyBytes {
 			return fmt.Errorf("trace.labels contains an invalid key")
 		}
@@ -89,20 +99,24 @@ func ValidateTemperature(value float64) error {
 }
 
 func (message Message) Validate() error {
+	if err := validateText(message.Content, "message content"); err != nil {
+		return err
+	}
 	switch message.Role {
 	case RoleUser:
 		if message.Content == "" {
 			return fmt.Errorf("user content is required")
 		}
-		if len(message.ToolCalls) != 0 || message.ToolCallID != "" {
+		if len(message.ToolCalls) != 0 || message.ToolCallID != "" ||
+			message.IsError {
 			return fmt.Errorf("user message cannot contain tool fields")
 		}
 	case RoleAssistant:
 		if message.Content == "" && len(message.ToolCalls) == 0 {
 			return fmt.Errorf("assistant message requires content or tool_calls")
 		}
-		if message.ToolCallID != "" {
-			return fmt.Errorf("assistant message cannot contain tool_call_id")
+		if message.ToolCallID != "" || message.IsError {
+			return fmt.Errorf("assistant message cannot contain tool result fields")
 		}
 	case RoleTool:
 		if message.ToolCallID == "" {
@@ -137,6 +151,9 @@ func (tool ToolSpec) Validate() error {
 	if err := validateName(tool.Name, "tool name"); err != nil {
 		return err
 	}
+	if err := validateText(tool.Description, "tool description"); err != nil {
+		return err
+	}
 	if len(tool.Description) > maxMessageBytes {
 		return fmt.Errorf("tool description exceeds %d bytes", maxMessageBytes)
 	}
@@ -144,6 +161,9 @@ func (tool ToolSpec) Validate() error {
 }
 
 func (call ToolCall) Validate() error {
+	if err := validateText(call.ID, "tool call id"); err != nil {
+		return err
+	}
 	if strings.TrimSpace(call.ID) == "" {
 		return fmt.Errorf("tool call id is required")
 	}
@@ -331,7 +351,7 @@ func (runtimeError RuntimeError) Validate() error {
 	case ErrorInvalidRequest, ErrorAuthenticationFailed, ErrorPermissionDenied,
 		ErrorRateLimited, ErrorTimeout, ErrorProviderUnavailable, ErrorProtocol,
 		ErrorInvalidProviderResponse, ErrorContextOverflow, ErrorToolFailed,
-		ErrorCancelled, ErrorConflict, ErrorInternal:
+		ErrorCancelled, ErrorConflict, ErrorNotFound, ErrorInternal:
 	default:
 		return fmt.Errorf("unsupported error code %q", runtimeError.Code)
 	}
@@ -342,6 +362,9 @@ func (runtimeError RuntimeError) Validate() error {
 	}
 	if strings.TrimSpace(runtimeError.Message) == "" {
 		return fmt.Errorf("error message is required")
+	}
+	if err := validateText(runtimeError.Message, "error message"); err != nil {
+		return err
 	}
 	if runtimeError.RetryAfterMS < 0 {
 		return fmt.Errorf("retry_after_ms must not be negative")
@@ -354,11 +377,21 @@ func (runtimeError RuntimeError) Validate() error {
 }
 
 func validateName(value, label string) error {
+	if err := validateText(value, label); err != nil {
+		return err
+	}
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%s is required", label)
 	}
 	if len(value) > 256 {
 		return fmt.Errorf("%s exceeds 256 bytes", label)
+	}
+	return nil
+}
+
+func validateText(value, label string) error {
+	if !utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("%s must be valid UTF-8 without NUL", label)
 	}
 	return nil
 }

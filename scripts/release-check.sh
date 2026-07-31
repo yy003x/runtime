@@ -6,6 +6,9 @@ DIST_DIR="$ROOT_DIR/dist"
 RELEASE_VERSION="${SN_CLI_VERSION:-release-check}"
 GO_BIN="${GO:-go}"
 
+# shellcheck source=scripts/release-profile-files.sh
+source "$ROOT_DIR/scripts/release-profile-files.sh"
+
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'release-check: %s\n' "$*" >&2; exit 1; }
 run_make() {
@@ -38,8 +41,7 @@ fi
 
 log "[release-check] validating source"
 [ -f "$ROOT_DIR/configs/runtime/runtime.json" ] || die "missing configs/runtime/runtime.json"
-required_profiles=(api-cc.json api-cx.json cc-bai.json cc.json commit.json cx-adv.json cx-deep.json cx-image.json cx-spark.json cx.json)
-for profile in "${required_profiles[@]}"; do
+for profile in "${SN_CLI_RELEASE_PROFILE_FILES[@]}"; do
   [ -f "$ROOT_DIR/configs/$profile" ] || die "missing profile: $profile"
 done
 unexpected_config_entries="$(find "$ROOT_DIR/configs" -mindepth 1 -maxdepth 1 \
@@ -50,6 +52,9 @@ for schema in profile.schema.json runtime.schema.json; do
 done
 [ -f "$ROOT_DIR/resources/release.json" ] ||
   die "missing resource activation manifest: resources/release.json"
+grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+  "$ROOT_DIR/resources/release.json" ||
+  die "release manifest does not declare Run SQLite schema 4"
 [ -f "$ROOT_DIR/resources/tmux.conf" ] ||
   die "missing dedicated Tmux bootstrap config: resources/tmux.conf"
 
@@ -74,6 +79,17 @@ done
 for asset in "${expected_assets[@]:1}"; do
   awk -v name="$asset" '$2 == name || $2 == "*" name {found=1} END {exit !found}' \
     "$DIST_DIR/checksums.txt" || die "checksum missing for $asset"
+  expected_profile_entries="$(
+    printf 'configs/%s\n' "${SN_CLI_RELEASE_PROFILE_FILES[@]}" |
+      LC_ALL=C sort
+  )"
+  actual_profile_entries="$(
+    tar -tzf "$DIST_DIR/$asset" |
+      awk 'index($0, "configs/") == 1 && $0 != "configs/" {print}' |
+      LC_ALL=C sort
+  )"
+  [ "$actual_profile_entries" = "$expected_profile_entries" ] ||
+    die "release asset Profile set does not match the formal release list: $asset"
   if tar -tzf "$DIST_DIR/$asset" |
     grep -Eq '(^|/)commands(/|$)'; then
     die "release asset retained the removed commands directory: $asset"
@@ -302,6 +318,9 @@ cmp "$ROOT_DIR/resources/schema/runtime.schema.json" \
 cmp "$ROOT_DIR/resources/tmux.conf" \
   "$runtime_home/resources/tmux.conf" >/dev/null ||
   die "install did not refresh the Tmux bootstrap config"
+grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+  "$runtime_home/resources/release.json" ||
+  die "installed release manifest does not declare Run SQLite schema 4"
 
 printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
   >"$runtime_home/configs/local-only.json"
@@ -675,7 +694,9 @@ mkdir -p \
   "$local_source_home/commands" \
   "$local_source_home/sessions/_system" \
   "$local_source_home/state/session-locks" \
-  "$local_source_home/state/session-invocations"
+  "$local_source_home/state/session-invocations" \
+  "$local_source_home/state/session-mutations" \
+  "$local_source_home/state/session-trash-moves"
 printf '%s\n' '{"profile":"cx"}' \
   >"$local_source_home/commands/cx.json"
 printf '%s\n' '{"schema_version":1,"sessions":[]}' \
@@ -684,6 +705,10 @@ printf '%s\n' legacy \
   >"$local_source_home/state/session-locks/index.lock"
 printf '%s\n' legacy \
   >"$local_source_home/state/session-invocations/.invocation-old.json"
+printf '%s\n' legacy \
+  >"$local_source_home/state/session-mutations/session_fixture.json"
+printf '%s\n' legacy \
+  >"$local_source_home/state/session-trash-moves/session_fixture.json"
 
 bash "$ROOT_DIR/install.sh" "${local_source_args[@]}"
 local_status="$(
@@ -703,6 +728,8 @@ for reset_path in \
   "$local_source_home/sessions" \
   "$local_source_home/state/session-locks" \
   "$local_source_home/state/session-invocations" \
+  "$local_source_home/state/session-mutations" \
+  "$local_source_home/state/session-trash-moves" \
   "$local_source_home/state/runtime.db" \
   "$local_source_home/state/runtime.db-wal" \
   "$local_source_home/state/runtime.db-shm" \

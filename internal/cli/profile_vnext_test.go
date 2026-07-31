@@ -17,6 +17,16 @@ import (
 	"github.com/yy003x/runtime/model"
 )
 
+func TestProfileUsageDocumentsSingleOptionalInput(t *testing.T) {
+	err := runVNextProfileNamespace(
+		layout.Paths{}, nil, newCLIOutput(false, &strings.Builder{}, &strings.Builder{}),
+	)
+	if err == nil || err.Error() !=
+		"usage: profile <profile-id> [input] | profile list|show|check" {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestVNextProfileManagementAggregatesCatalogs(t *testing.T) {
 	paths := prepareVNextHome(t)
 	writeVNextCommand(t, paths.ConfigDir, "cx")
@@ -34,6 +44,25 @@ func TestVNextProfileManagementAggregatesCatalogs(t *testing.T) {
 		if !strings.Contains(output, `"ok":true`) {
 			t.Fatalf("args=%q output=%s", args, output)
 		}
+	}
+}
+
+func TestProfileManagementDoesNotLoadRuntimeConfig(t *testing.T) {
+	paths := prepareVNextHome(t)
+	writeVNextCommand(t, paths.ConfigDir, "cx")
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile, []byte(`{"agent":{"max_rounds":0}}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	if err := runVNextProfileNamespace(
+		paths, []string{"list"}, newCLIOutput(false, &stdout, os.Stderr),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "cx") {
+		t.Fatalf("output=%q", stdout.String())
 	}
 }
 
@@ -299,6 +328,92 @@ func TestParseDirectModelInputRejectsNonFiniteTemperature(t *testing.T) {
 	}
 }
 
+func TestReadModelRequestRejectsTrailingOversizedAndInvalidText(t *testing.T) {
+	root := t.TempDir()
+	valid := `{"messages":[{"role":"user","content":"hello"}]}`
+	tests := []struct {
+		name    string
+		content []byte
+	}{
+		{
+			name:    "multiple_values",
+			content: []byte(valid + ` {"messages":[{"role":"user","content":"again"}]}`),
+		},
+		{
+			name:    "trailing_garbage",
+			content: []byte(valid + ` trailing`),
+		},
+		{
+			name:    "oversized",
+			content: []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("x", 1<<20) + `"}]}`),
+		},
+		{
+			name:    "nul_text",
+			content: []byte(`{"messages":[{"role":"user","content":"bad\u0000text"}]}`),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(root, test.name+".json")
+			if err := os.WriteFile(path, test.content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readModelRequest(path); err == nil {
+				t.Fatal("invalid request file was accepted")
+			}
+		})
+	}
+}
+
+func TestReadModelRequestClassifiesDocumentsButNotFileIO(t *testing.T) {
+	root := t.TempDir()
+	for _, testCase := range []struct {
+		name    string
+		content string
+	}{
+		{name: "malformed", content: `{"messages":`},
+		{
+			name: "duplicate",
+			content: `{
+				"messages":[{"role":"user","content":"one"}],
+				"messages":[{"role":"user","content":"two"}]
+			}`,
+		},
+		{
+			name: "unknown",
+			content: `{
+				"messages":[{"role":"user","content":"one"}],
+				"unknown":true
+			}`,
+		},
+		{
+			name:    "trailing",
+			content: `{"messages":[{"role":"user","content":"one"}]} {}`,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := filepath.Join(root, testCase.name+".json")
+			if err := os.WriteFile(path, []byte(testCase.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readModelRequest(path)
+			var validationErr *cliValidationError
+			if err == nil || !errors.As(err, &validationErr) {
+				t.Fatalf("error=%v, want CLI validation", err)
+			}
+			assertMachineErrorCode(t, err, contract.ErrorInvalidRequest)
+		})
+	}
+
+	_, err := readModelRequest(filepath.Join(root, "missing.json"))
+	var validationErr *cliValidationError
+	if err == nil || errors.As(err, &validationErr) ||
+		!errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file error=%v, want internal file I/O", err)
+	}
+	assertMachineErrorCode(t, err, contract.ErrorInternal)
+}
+
 func TestBuildCommandProfileInvocationMergesPromptAndOverridesTypedFields(t *testing.T) {
 	root := t.TempDir()
 	commandPath := filepath.Join(root, "codex")
@@ -417,13 +532,17 @@ func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 	}
 }
 
-func TestDirectAPIProfileRecognizesButRejectsEffortWithoutAdapter(t *testing.T) {
+func TestDirectAPIProfileRejectsUnsupportedEffort(t *testing.T) {
 	_, _, err := parseDirectModelInput(
 		"api-cx",
 		vNextTestModelProfile("openai-compatible"),
 		[]string{"--effort", "high", "reply ok"},
 	)
-	if err == nil || !strings.Contains(err.Error(), "API effort adapter") {
+	if err == nil ||
+		!strings.Contains(
+			err.Error(),
+			`--effort is not supported for API profile "api-cx"`,
+		) {
 		t.Fatalf("error=%v", err)
 	}
 }

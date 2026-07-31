@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/cli/config"
 	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/profile"
 )
 
 func TestMain(main *testing.M) {
@@ -221,6 +221,11 @@ func TestServerLockRejectsSymlink(t *testing.T) {
 
 func TestServerInfoPublishesVNextContractWithoutLegacyScheduler(t *testing.T) {
 	paths := prepareVNextHome(t)
+	writeVNextCommand(t, paths.ConfigDir, "cx")
+	writeVNextModel(
+		t, paths.ConfigDir, "api-cx",
+		"https://example.invalid/v1/chat/completions",
+	)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
@@ -237,6 +242,12 @@ func TestServerInfoPublishesVNextContractWithoutLegacyScheduler(t *testing.T) {
 		Namespaces      []string            `json:"namespaces"`
 		Capabilities    map[string][]string `json:"capabilities"`
 		ConfiguredAddr  string              `json:"configured_address"`
+		Profiles        []struct {
+			ID      string          `json:"id"`
+			Kind    profile.Kind    `json:"kind"`
+			Command json.RawMessage `json:"command"`
+			Model   json.RawMessage `json:"model"`
+		} `json:"profiles"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
@@ -244,8 +255,34 @@ func TestServerInfoPublishesVNextContractWithoutLegacyScheduler(t *testing.T) {
 	if payload.SchemaVersion != 1 || payload.ContractVersion != 3 ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
-		payload.ConfiguredAddr != "127.0.0.1:8080" {
+		payload.ConfiguredAddr != "127.0.0.1:8080" ||
+		len(payload.Profiles) != 2 {
 		t.Fatalf("payload=%#v", payload)
+	}
+	for _, capability := range payload.Capabilities["run"] {
+		if capability == "resume" {
+			t.Fatalf(
+				"stock server must not advertise Kernel-extension resume: %#v",
+				payload.Capabilities["run"],
+			)
+		}
+	}
+	for _, entry := range payload.Profiles {
+		if entry.ID == "" ||
+			entry.Kind != profile.KindCommand &&
+				entry.Kind != profile.KindModel {
+			t.Fatalf("invalid profile entry=%#v", entry)
+		}
+		switch entry.Kind {
+		case profile.KindCommand:
+			if len(entry.Command) == 0 || len(entry.Model) != 0 {
+				t.Fatalf("invalid CLI profile entry=%#v", entry)
+			}
+		case profile.KindModel:
+			if len(entry.Model) == 0 || len(entry.Command) != 0 {
+				t.Fatalf("invalid API profile entry=%#v", entry)
+			}
+		}
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
@@ -310,17 +347,9 @@ func TestServerStatusDoesNotClaimConfiguredAddressAsRuntimeFact(t *testing.T) {
 }
 
 func TestServerUpdateRejectsActionLocalJSON(t *testing.T) {
-	cfg := &config.Config{}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	err := runUpdateVNext(
-		cfg, []string{"--json"}, newCLIOutput(false, &stdout, &stderr),
-	)
+	_, err := parseUpdateOptions([]string{"--json"})
 	if err == nil || !strings.Contains(err.Error(), "unknown update argument --json") {
 		t.Fatalf("error=%v", err)
-	}
-	if stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -445,12 +474,56 @@ func TestActivationCommandLinkMustBeOutsideRuntimeHome(t *testing.T) {
 	}
 }
 
+func TestUpgradeActivationKeepsDurableCommandLinkReservationOnFailure(
+	t *testing.T,
+) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "home")
+	payload := filepath.Join(root, "invalid-payload")
+	commandDir := filepath.Join(root, "command")
+	for _, directory := range []string{home, payload, commandDir} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := layout.FromHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandLink := filepath.Join(commandDir, "sn-cli")
+	err = runUpgradeActivate(
+		paths,
+		[]string{
+			"--payload", payload,
+			"--target-home", home,
+			"--command-link", commandLink,
+		},
+		newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}),
+	)
+	if err == nil {
+		t.Fatal("invalid payload unexpectedly activated")
+	}
+	expectedTarget := filepath.Join(home, "bin", "sn-cli")
+	if got, readErr := os.Readlink(commandLink); readErr != nil ||
+		got != expectedTarget {
+		t.Fatalf(
+			"failed activation lost durable command link: target=%q error=%v",
+			got, readErr,
+		)
+	}
+}
+
 func TestServerDoctorDependencyErrorNamesMissingInputs(t *testing.T) {
 	err := serverDoctorDependencyError(
-		[]string{"cx-deep"}, []string{"MODEL_API_KEY"},
+		[]string{"cx-deep"}, []string{"cx-invalid"},
+		[]string{"MODEL_API_KEY"},
 	)
 	message := err.Error()
 	if !strings.Contains(message, "cx-deep") ||
+		!strings.Contains(message, "cx-invalid") ||
 		!strings.Contains(message, "MODEL_API_KEY") {
 		t.Fatalf("message=%q", message)
 	}

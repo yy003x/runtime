@@ -45,6 +45,50 @@ HTTP 不接受 command upload、env、任意 Provider payload 或 tool handler�
 只能选择启动时加载的 Profile 和注册 tool；CLI executor 的 HTTP cwd 必须来自
 absolute request/Profile 配置，不能使用 server 启动 cwd。
 
+## Durable Agent execution identity
+
+Agent Run 在进入 SQLite queue 前冻结 private non-secret execution snapshot，而不是
+只记录一个可重新解释的 Profile ID：
+
+```text
+submit / retry
+  → freeze or verify Agent + model/Provider + tool snapshot
+  → persist combined request_digest/config_digest
+  → create queued Run
+
+new Session/model/tool side effect
+  → compare current loaded snapshot with frozen snapshot
+  → equal: advance
+  → drift: fail closed or preserve the active pause
+
+terminal / cancel / reconcile
+  → frozen snapshot + durable journal only
+```
+
+model snapshot 保存完整 API Profile、Profile digest 和 concrete driver semantic
+identity；tool snapshot 保存 implementation/version、canonical roots/cwd
+configuration 和 definitions。绑定 Session 时另存 Session 自己的
+`session_request_digest/session_config_digest`，不把 combined Agent digest 混入
+Session facts。resolved `auth.from_env` value 不冻结；相同变量名下的 secret rotation
+允许在下一次 Provider call 生效。
+
+Retry 保留原 private snapshot，不按当前配置 re-freeze；只有完整 current snapshot
+仍匹配时才创建新 Run。恢复 durable completed/failed/started effect、已知 terminal
+projection、cancel 和 reconcile 不要求 current Profile、Provider 或 tool 仍可加载，
+因此配置删除或升级不会把已经可证明的结果卡死。
+
+composition 按动作最小化：
+
+- `run get|list|result|events|watch` 只加载 Run Store；
+- `run gc` 只加载 Run Store；省略 `--older-than` 时额外只读取 retention 配置；
+- `run cancel|reconcile` 只加载 Run Store 与 Session maintenance service；
+- `run submit|resume|retry` 和 worker execution 才加载 current
+  Profile/Provider/tool/runtime execution dependencies。
+
+private 仅表示不经公共 DTO、event、log 或 error 输出，不表示加密。snapshot equality
+用于阻断已表示的语义漂移，不是 binary attestation、数字签名或 OS sandbox；同 UID
+恶意进程、SQLite 篡改和未 bump semantic version 的实现变化不在保证范围内。
+
 ## 故障语义
 
 - Provider 单次调用失败：typed Runtime error，Driver 不 retry；
@@ -54,7 +98,9 @@ absolute request/Profile 配置，不能使用 server 启动 cwd。
   `needs_reconciliation`，不自动重放；
 - consumer stream 断开：ephemeral model call 随 context 取消；
 - durable Agent SSE 断开：Run 继续，可按 event sequence 续读；
-- tool effect 已 started 且结果未知：`needs_reconciliation`；
+- tool effect 已 started 且结果未知：`needs_reconciliation`，不自动重放；
+  显式 `run reconcile` 保留 effect evidence 并以 failed 收口；绑定的 Session
+  在此之前保持 blocked；
 - worker 单 Run 失败：结案后继续领队列；Store/claim 错误才停止 worker；
 - Tmux window 的 pane transcript 不进入 Session，也不伪装 canonical result。
 
@@ -100,13 +146,18 @@ release 的 `install.sh`；若恢复一键 self-update，需先发布兼容 sche
 updater。
 
 staged gate 只读取 candidate payload 自身的 manifest，不接受环境 token 绕过。
-新版 activation 先持久化 journal/state guard，再以 no-replace regular file
+任何 target mutation 或停服前，candidate 先对 payload 执行完整 Profile 语义检查，
+并 required/no-follow 校验 runtime、Tmux resource 和固定 identity/root shape 的
+可编译 Schema；merged staged home 再做二次检查。新版 activation 先持久化
+journal/state guard，再以 no-replace regular file
 暂时占用 active `bin/`、`configs/`；二次 quiescence 使用原 binary inode 和
 coordinator PID/start-token。journal 自身持续作为入口 barrier；
 `committed|rolled_back` terminal phase、stage/rename/guard/journal 的目录 fsync
 和 crash recovery 均完成后才放行，歧义状态保留 barrier 等待恢复。installer 的
-外部 command link 在成功激活后通过稳定 directory FD 与 no-clobber `symlinkat`
-创建，失败只报告链接未创建，绝不覆盖现有入口。
+外部 command link 在 activation mutation 前通过稳定 directory FD、durable owner
+sidecar 与 no-clobber `symlinkat` 预留；owner `flock` 串行化协作 installer。
+失败路径保留 exact owner/link，不删除最终名称；retry 只有在 owner 内容、inode
+identity 和 target 均未变化时才复用，绝不覆盖已有入口。
 
 release gate 包括 Go format、serial/race tests、vet、跨平台 build/checksum、临时
 home install/upgrade、Profile/Session/Tmux schema preflight、隐式/显式 Profile

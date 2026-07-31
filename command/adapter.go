@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 )
 
@@ -59,13 +58,19 @@ type Adapter interface {
 }
 
 func Resolve(command string) (Adapter, error) {
-	switch filepath.Base(command) {
+	base, exact := adapterBase(command)
+	if !exact {
+		return nil, fmt.Errorf(
+			"command must end with an exact codex or claude basename",
+		)
+	}
+	switch base {
 	case "codex":
 		return codexAdapter{}, nil
 	case "claude":
 		return claudeAdapter{}, nil
 	default:
-		return nil, fmt.Errorf("no command adapter for %q", filepath.Base(command))
+		return nil, fmt.Errorf("no command adapter for %q", base)
 	}
 }
 

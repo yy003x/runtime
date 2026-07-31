@@ -16,8 +16,7 @@
             "enum": [
               "read_file",
               "list_directory",
-              "write_file",
-              "exec_command"
+              "write_file"
             ]
           },
           "default": ["read_file", "list_directory"]
@@ -25,6 +24,7 @@
         "workspace_roots": {
           "type": "array",
           "uniqueItems": true,
+          "x-sn-clean-unique": true,
           "items": {
             "type": "string",
             "pattern": "^/"
@@ -44,10 +44,21 @@
         },
         "max_total_tokens": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9223372036854775807
         },
         "max_wall_time": {
           "type": "string",
+          "x-sn-duration-min": "1s",
+          "x-sn-duration-max": "24h",
+          "allOf": [
+            {
+              "pattern": "^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+            },
+            {
+              "pattern": "[1-9]"
+            }
+          ],
           "default": "15m"
         }
       }
@@ -64,6 +75,16 @@
         },
         "poll_interval": {
           "type": "string",
+          "x-sn-duration-min": "10ms",
+          "x-sn-duration-max": "1m",
+          "allOf": [
+            {
+              "pattern": "^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+            },
+            {
+              "pattern": "[1-9]"
+            }
+          ],
           "default": "250ms"
         }
       }
@@ -74,6 +95,16 @@
       "properties": {
         "settled_retention": {
           "type": "string",
+          "x-sn-duration-min": "1h",
+          "x-sn-duration-max": "8760h",
+          "allOf": [
+            {
+              "pattern": "^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+            },
+            {
+              "pattern": "[1-9]"
+            }
+          ],
           "default": "168h"
         }
       }

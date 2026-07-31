@@ -27,13 +27,13 @@ const (
 	KindModel   Kind = "api"
 )
 
-var ReservedIDs = []string{"list", "show", "check"}
+var ReservedIDs = []string{"list", "show", "check", "exec", "open"}
 
 type Entry struct {
-	ID      string
-	Kind    Kind
-	Command *command.Profile
-	Model   *model.Profile
+	ID      string           `json:"id"`
+	Kind    Kind             `json:"kind"`
+	Command *command.Profile `json:"command,omitempty"`
+	Model   *model.Profile   `json:"model,omitempty"`
 }
 
 type Catalog struct {
@@ -125,19 +125,43 @@ func loadFile(path string) (Kind, command.Profile, model.Profile, error) {
 	if err != nil {
 		return "", command.Profile{}, model.Profile{}, fmt.Errorf("%s: normalize profile: %w", path, err)
 	}
+	if err := strictjson.RejectNulls(data, func(parts []string) bool {
+		switch Kind(profileType) {
+		case KindCommand:
+			return len(parts) == 2 && parts[0] == "env"
+		case KindModel:
+			return len(parts) == 2 &&
+				(parts[0] == "defaults" &&
+					(parts[1] == "max_completion_tokens" ||
+						parts[1] == "max_tokens" ||
+						parts[1] == "temperature") ||
+					parts[0] == "context" &&
+						parts[1] == "summary_enabled")
+		default:
+			return false
+		}
+	}); err != nil {
+		return "", command.Profile{}, model.Profile{}, fmt.Errorf(
+			"%s: %w", path, err,
+		)
+	}
 	switch Kind(profileType) {
 	case KindCommand:
 		var config cliConfig
-		if err := strictjson.Decode(bytes.NewReader(data), maxProfileBytes, &config); err != nil {
+		if err := strictjson.Decode(
+			bytes.NewReader(data), int64(len(data)), &config,
+		); err != nil {
 			return "", command.Profile{}, model.Profile{}, fmt.Errorf("%s: %w", path, err)
 		}
-		if err := config.Profile.Validate(); err != nil {
+		if err := command.CheckProfile(config.Profile); err != nil {
 			return "", command.Profile{}, model.Profile{}, fmt.Errorf("%s: %w", path, err)
 		}
 		return KindCommand, config.Profile, model.Profile{}, nil
 	case KindModel:
 		var config apiConfig
-		if err := strictjson.Decode(bytes.NewReader(data), maxProfileBytes, &config); err != nil {
+		if err := strictjson.Decode(
+			bytes.NewReader(data), int64(len(data)), &config,
+		); err != nil {
 			return "", command.Profile{}, model.Profile{}, fmt.Errorf("%s: %w", path, err)
 		}
 		if err := config.Profile.Validate(); err != nil {

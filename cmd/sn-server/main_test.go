@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 )
 
@@ -73,5 +77,40 @@ func TestServerEntryRejectsArguments(t *testing.T) {
 	}
 	if err := validateServerArgs(nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBearerAuthUsesCanonicalErrorEnvelope(t *testing.T) {
+	handler := bearerAuth("secret", http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	request.Header.Set("Authorization", "Bearer wrong")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized ||
+		response.Header().Get("WWW-Authenticate") != "Bearer" ||
+		response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf(
+			"status=%d headers=%v body=%s",
+			response.Code, response.Header(), response.Body.String(),
+		)
+	}
+	var payload struct {
+		Error contract.RuntimeError `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != contract.ErrorAuthenticationFailed ||
+		payload.Error.Phase != contract.PhaseTransport {
+		t.Fatalf("error=%#v", payload.Error)
+	}
+	if response.Body.String() == "" ||
+		payload.Error.Message == "" {
+		t.Fatal("canonical authentication error is empty")
 	}
 }
