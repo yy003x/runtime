@@ -1,6 +1,7 @@
 package activation
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,9 +18,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/sys/unix"
 
 	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/runtimeconfig"
+	"github.com/yy003x/runtime/internal/strictjson"
 )
 
 const (
@@ -39,8 +43,18 @@ type UpgradeRequest struct {
 	CandidateBinary    string
 	OverwriteConfig    bool
 	LocalSourceInstall bool
+	InspectServer      func() (ManagedServerProcess, error)
 	StopServer         func() error
 	CoordinatorPID     int
+}
+
+// ManagedServerProcess is the process identity that a local-source install is
+// allowed to keep running during its read-only quiescence preflight. The
+// activation lifecycle lock prevents that identity from changing before the
+// subsequent StopServer call and full recheck.
+type ManagedServerProcess struct {
+	PID        int
+	StartToken string
 }
 
 type UpgradeResult struct {
@@ -110,12 +124,12 @@ func UpgradeActivate(
 				"local source install must overwrite active configs",
 			)
 		}
-		if request.StopServer == nil {
+		if request.InspectServer == nil || request.StopServer == nil {
 			return UpgradeResult{}, fmt.Errorf(
 				"local source install requires managed server quiescence",
 			)
 		}
-	} else if request.StopServer != nil {
+	} else if request.InspectServer != nil || request.StopServer != nil {
 		return UpgradeResult{}, fmt.Errorf(
 			"server quiescence callback is only valid for local source install",
 		)
@@ -125,7 +139,7 @@ func UpgradeActivate(
 		return UpgradeResult{}, fmt.Errorf("load payload release manifest: %w", err)
 	}
 	if manifest.ActivationEpoch != 2 || manifest.ContractVersion != 3 ||
-		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 2 ||
+		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 4 ||
 		manifest.MinimumUpdaterEpoch != 2 ||
 		manifest.LegacySelfUpdate != "blocked" {
 		return UpgradeResult{}, fmt.Errorf(
@@ -136,6 +150,16 @@ func UpgradeActivate(
 		)
 	}
 	if err := validatePayload(payload, candidate); err != nil {
+		return UpgradeResult{}, err
+	}
+	if err := validatePayloadContracts(
+		target, payload, request.OverwriteConfig,
+	); err != nil {
+		return UpgradeResult{}, err
+	}
+	if err := validateCandidateProfileHome(
+		ctx, candidate, payload,
+	); err != nil {
 		return UpgradeResult{}, err
 	}
 	if err := ensurePrivateDirectory(target); err != nil {
@@ -251,6 +275,9 @@ func UpgradeActivate(
 	if err != nil {
 		return UpgradeResult{}, err
 	}
+	if err := validateDesiredHomeContracts(desired, manifest); err != nil {
+		return UpgradeResult{}, err
+	}
 	result.TargetHome = target
 	result.ActivationEpoch = manifest.ActivationEpoch
 	result.ContractVersion = manifest.ContractVersion
@@ -265,6 +292,27 @@ func UpgradeActivate(
 			return UpgradeResult{}, fmt.Errorf(
 				"validate Runtime state reset: %w", err,
 			)
+		}
+		managedServer, err := request.InspectServer()
+		if err != nil {
+			return UpgradeResult{}, fmt.Errorf(
+				"inspect sn-server for local source install: %w", err,
+			)
+		}
+		preStopExcluded, err := managedServerExclusions(
+			managedServer, excluded,
+		)
+		if err != nil {
+			return UpgradeResult{}, err
+		}
+		if err := preflightQuiescence(
+			target, manifest, preStopExcluded, processTargets,
+			quiescenceOptions{
+				SkipServer:       true,
+				SkipRuntimeState: true,
+			},
+		); err != nil {
+			return UpgradeResult{}, err
 		}
 		if err := request.StopServer(); err != nil {
 			return UpgradeResult{}, fmt.Errorf(
@@ -356,6 +404,46 @@ func UpgradeActivate(
 	); err != nil {
 		return UpgradeResult{}, err
 	}
+	return result, nil
+}
+
+func managedServerExclusions(
+	managed ManagedServerProcess,
+	base map[int]processExclusion,
+) (map[int]processExclusion, error) {
+	result := make(map[int]processExclusion, len(base)+1)
+	for pid, exclusion := range base {
+		result[pid] = exclusion
+	}
+	if managed.PID == 0 {
+		if managed.StartToken != "" {
+			return nil, fmt.Errorf(
+				"managed server start token requires a process id",
+			)
+		}
+		return result, nil
+	}
+	if managed.PID <= 0 || managed.StartToken == "" {
+		return nil, fmt.Errorf("managed server identity is incomplete")
+	}
+	if _, reserved := result[managed.PID]; reserved {
+		return nil, fmt.Errorf(
+			"managed server pid %d conflicts with an activation process",
+			managed.PID,
+		)
+	}
+	current, err := processStartToken(managed.PID)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"identify managed sn-server pid=%d: %w", managed.PID, err,
+		)
+	}
+	if current != managed.StartToken {
+		return nil, fmt.Errorf(
+			"managed sn-server pid=%d changed identity", managed.PID,
+		)
+	}
+	result[managed.PID] = processExclusion{StartToken: managed.StartToken}
 	return result, nil
 }
 
@@ -504,6 +592,149 @@ func validatePayload(payload, candidate string) error {
 	return nil
 }
 
+func validatePayloadContracts(
+	target, payload string,
+	overwrite bool,
+) error {
+	payloadRuntime := filepath.Join(payload, "runtime.json")
+	if _, err := runtimeconfig.LoadRequired(payloadRuntime); err != nil {
+		return fmt.Errorf("validate payload runtime.json: %w", err)
+	}
+	if !overwrite {
+		activeRuntime := filepath.Join(target, "runtime.json")
+		if _, err := os.Lstat(activeRuntime); err == nil {
+			if _, err := runtimeconfig.LoadRequired(activeRuntime); err != nil {
+				return fmt.Errorf("validate active runtime.json: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect active runtime.json: %w", err)
+		}
+	}
+
+	return validateRequiredResources(filepath.Join(payload, "resources"))
+}
+
+func validateDesiredHomeContracts(
+	desired string,
+	expectedManifest Manifest,
+) error {
+	if _, err := runtimeconfig.LoadRequired(
+		filepath.Join(desired, "runtime.json"),
+	); err != nil {
+		return fmt.Errorf("validate staged runtime.json: %w", err)
+	}
+	resources := filepath.Join(desired, "resources")
+	manifest, _, err := LoadManifest(resources)
+	if err != nil {
+		return fmt.Errorf("validate staged release manifest: %w", err)
+	}
+	if manifest != expectedManifest {
+		return fmt.Errorf("staged release manifest changed during activation")
+	}
+	if err := validateRequiredResources(resources); err != nil {
+		return fmt.Errorf("validate staged resources: %w", err)
+	}
+	return nil
+}
+
+func validateRequiredResources(resources string) error {
+	tmuxConfig := filepath.Join(resources, "tmux.conf")
+	if _, err := readRegular(tmuxConfig, 1<<20); err != nil {
+		return fmt.Errorf(
+			"validate tmux.conf as a no-follow regular file: %w",
+			err,
+		)
+	}
+	for _, name := range []string{
+		"profile.schema.json", "runtime.schema.json",
+	} {
+		path := filepath.Join(resources, "schema", name)
+		if err := validateJSONSchema(path); err != nil {
+			return fmt.Errorf(
+				"validate schema/%s: %w", name, err,
+			)
+		}
+	}
+	return nil
+}
+
+func validateJSONSchema(path string) error {
+	data, err := readRegular(path, 1<<20)
+	if err != nil {
+		return fmt.Errorf("read as a no-follow regular file: %w", err)
+	}
+	var raw json.RawMessage
+	if err := strictjson.Decode(
+		bytes.NewReader(data), 1<<20, &raw,
+	); err != nil {
+		return fmt.Errorf("decode strict JSON: %w", err)
+	}
+	if err := validateSchemaIdentity(filepath.Base(path), raw); err != nil {
+		return err
+	}
+	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("decode JSON Schema: %w", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource(path, document); err != nil {
+		return fmt.Errorf("register JSON Schema: %w", err)
+	}
+	if _, err := compiler.Compile(path); err != nil {
+		return fmt.Errorf("compile JSON Schema: %w", err)
+	}
+	return nil
+}
+
+func validateSchemaIdentity(name string, raw json.RawMessage) error {
+	var identity struct {
+		Schema               string                     `json:"$schema"`
+		ID                   string                     `json:"$id"`
+		Title                string                     `json:"title"`
+		Type                 string                     `json:"type"`
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		OneOf                []json.RawMessage          `json:"oneOf"`
+	}
+	if err := json.Unmarshal(raw, &identity); err != nil {
+		return fmt.Errorf("decode JSON Schema identity: %w", err)
+	}
+	const draft = "https://json-schema.org/draft/2020-12/schema"
+	if identity.Schema != draft {
+		return fmt.Errorf("JSON Schema has unexpected $schema %q", identity.Schema)
+	}
+	switch name {
+	case "profile.schema.json":
+		const id = "https://github.com/yy003x/runtime/resources/schema/profile.schema.json"
+		if identity.ID != id ||
+			identity.Title != "Runtime Profile" ||
+			len(identity.OneOf) != 2 {
+			return fmt.Errorf("profile JSON Schema identity or root shape is invalid")
+		}
+	case "runtime.schema.json":
+		const id = "https://github.com/yy003x/runtime/resources/schema/runtime.schema.json"
+		if identity.ID != id ||
+			identity.Title != "Runtime vNext Configuration" ||
+			identity.Type != "object" ||
+			identity.AdditionalProperties == nil ||
+			*identity.AdditionalProperties ||
+			identity.Properties == nil {
+			return fmt.Errorf("runtime JSON Schema identity or root shape is invalid")
+		}
+		for _, property := range []string{"agent", "scheduler", "run"} {
+			if _, exists := identity.Properties[property]; !exists {
+				return fmt.Errorf(
+					"runtime JSON Schema is missing root property %q",
+					property,
+				)
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected Runtime JSON Schema %q", name)
+	}
+	return nil
+}
+
 func buildDesiredHome(
 	target, payload, desired string,
 	overwrite bool,
@@ -636,22 +867,44 @@ func validateCandidateHome(
 		{"profile", "check"},
 		{"server", "info"},
 	} {
-		command := exec.CommandContext(ctx, candidate, args...)
-		command.Env = replaceEnvironment(
-			os.Environ(),
-			map[string]string{
-				"SN_CLI_HOME":                  desired,
-				"SN_CLI_ACTIVATION_VALIDATION": "1",
-			},
-		)
-		output, err := command.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf(
-				"candidate %s failed: %w: %s",
-				strings.Join(args, " "), err,
-				strings.TrimSpace(string(output)),
-			)
+		if err := validateCandidateCommand(
+			ctx, candidate, desired, args,
+		); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func validateCandidateProfileHome(
+	ctx context.Context,
+	candidate, home string,
+) error {
+	return validateCandidateCommand(
+		ctx, candidate, home, []string{"profile", "check"},
+	)
+}
+
+func validateCandidateCommand(
+	ctx context.Context,
+	candidate, home string,
+	args []string,
+) error {
+	command := exec.CommandContext(ctx, candidate, args...)
+	command.Env = replaceEnvironment(
+		os.Environ(),
+		map[string]string{
+			"SN_CLI_HOME":                  home,
+			"SN_CLI_ACTIVATION_VALIDATION": "1",
+		},
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"candidate %s failed: %w: %s",
+			strings.Join(args, " "), err,
+			strings.TrimSpace(string(output)),
+		)
 	}
 	return nil
 }

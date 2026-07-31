@@ -2,13 +2,13 @@
 package activation
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/yy003x/runtime/internal/strictjson"
 )
 
 // RequireNoGuard blocks public Runtime operations while an activation
@@ -56,14 +56,10 @@ func LoadManifest(resourcesDir string) (Manifest, []byte, error) {
 		)
 	}
 	var manifest Manifest
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&manifest); err != nil {
+	if err := strictjson.Decode(
+		bytes.NewReader(data), 64<<10, &manifest,
+	); err != nil {
 		return Manifest{}, nil, fmt.Errorf("decode release manifest: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Manifest{}, nil, fmt.Errorf("release manifest has trailing JSON")
 	}
 	if manifest.SchemaVersion != 1 || manifest.ActivationEpoch < 1 {
 		return Manifest{}, nil, fmt.Errorf("unsupported release activation manifest")

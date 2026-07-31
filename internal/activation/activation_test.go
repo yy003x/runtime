@@ -3,6 +3,7 @@ package activation
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/profile"
+	"github.com/yy003x/runtime/session"
 )
 
 func TestMain(main *testing.M) {
@@ -21,10 +24,21 @@ func TestMain(main *testing.M) {
 		os.Exit(0)
 	}
 	if os.Getenv("SN_ACTIVATION_TEST_CANDIDATE") == "1" {
-		if len(os.Args) == 3 &&
-			((os.Args[1] == "profile" && os.Args[2] == "check") ||
-				(os.Args[1] == "server" && os.Args[2] == "info")) {
-			os.Exit(0)
+		if len(os.Args) == 3 {
+			switch {
+			case os.Args[1] == "profile" && os.Args[2] == "check":
+				home := os.Getenv(layout.HomeEnv)
+				if _, err := profile.Load(
+					filepath.Join(home, "configs"),
+					"profile", "session", "tmux", "agent", "run",
+					"server", "help", "version",
+				); err == nil {
+					os.Exit(0)
+				}
+				os.Exit(65)
+			case os.Args[1] == "server" && os.Args[2] == "info":
+				os.Exit(0)
+			}
 		}
 		os.Exit(64)
 	}
@@ -42,7 +56,7 @@ func TestLegacyProfileListGateAlwaysRejectsStagedContractV3Candidate(
 	if err := os.MkdirAll(resources, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manifest := []byte(`{"schema_version":1,"activation_epoch":2,"contract_version":3,"session_schema_version":2,"run_schema_version":2,"minimum_updater_epoch":2,"legacy_self_update":"blocked"}`)
+	manifest := []byte(`{"schema_version":1,"activation_epoch":2,"contract_version":3,"session_schema_version":2,"run_schema_version":4,"minimum_updater_epoch":2,"legacy_self_update":"blocked"}`)
 	if err := os.WriteFile(filepath.Join(resources, "release.json"), manifest, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +91,33 @@ func TestLoadManifestRejectsSymlink(t *testing.T) {
 	}
 	if _, _, err := LoadManifest(resources); err == nil {
 		t.Fatal("release manifest symlink was accepted")
+	}
+}
+
+func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
+	resources := filepath.Join(t.TempDir(), "resources")
+	if err := os.MkdirAll(resources, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	value := `{
+		"schema_version":1,
+		"schema_version":1,
+		"activation_epoch":2,
+		"contract_version":3,
+		"session_schema_version":2,
+		"run_schema_version":4,
+		"minimum_updater_epoch":2,
+		"legacy_self_update":"blocked"
+	}`
+	if err := os.WriteFile(
+		filepath.Join(resources, "release.json"),
+		[]byte(value), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadManifest(resources); err == nil ||
+		!strings.Contains(err.Error(), "duplicate field") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -139,7 +180,7 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	}
 	if result.ContractVersion != 3 ||
 		result.SessionSchemaVersion != 2 ||
-		result.RunSchemaVersion != 2 {
+		result.RunSchemaVersion != 4 {
 		t.Fatalf("result=%#v", result)
 	}
 	for _, path := range []string{
@@ -202,6 +243,362 @@ func TestUpgradeActivateRejectsOldRunSchemaBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestUpgradeActivateRejectsRunSchema3ManifestBeforeMutation(t *testing.T) {
+	payload, target, candidate := upgradeFixture(t)
+	manifestPath := filepath.Join(payload, "resources", "release.json")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = []byte(strings.Replace(
+		string(manifest), `"run_schema_version":4`,
+		`"run_schema_version":3`, 1,
+	))
+	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = UpgradeActivate(context.Background(), UpgradeRequest{
+		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
+		OverwriteConfig: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "run_schema=3") {
+		t.Fatalf("error=%v", err)
+	}
+	assertActivationNotStarted(t, target)
+}
+
+func TestUpgradeActivateRejectsInvalidRuntimeBeforeMutation(t *testing.T) {
+	t.Run("payload_runtime", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		if err := os.WriteFile(
+			filepath.Join(payload, "runtime.json"),
+			[]byte(`{"definitely_invalid_runtime_field":true}`),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		stopCalls := 0
+		_, err := UpgradeActivate(
+			context.Background(),
+			UpgradeRequest{
+				TargetHome: target, PayloadDir: payload,
+				CandidateBinary: candidate, OverwriteConfig: true,
+				LocalSourceInstall: true,
+				InspectServer:      inspectStoppedServer,
+				StopServer: func() error {
+					stopCalls++
+					return nil
+				},
+			},
+		)
+		if err == nil ||
+			!strings.Contains(err.Error(), "payload runtime.json") {
+			t.Fatalf("error=%v", err)
+		}
+		if stopCalls != 0 {
+			t.Fatalf("invalid runtime stopped server %d time(s)", stopCalls)
+		}
+		assertActivationNotStarted(t, target)
+	})
+
+	t.Run("preserved_active_runtime", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		if err := os.WriteFile(
+			filepath.Join(target, "runtime.json"),
+			[]byte(`{"definitely_invalid_runtime_field":true}`),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		_, err := UpgradeActivate(
+			context.Background(),
+			UpgradeRequest{
+				TargetHome: target, PayloadDir: payload,
+				CandidateBinary: candidate,
+			},
+		)
+		if err == nil ||
+			!strings.Contains(err.Error(), "active runtime.json") {
+			t.Fatalf("error=%v", err)
+		}
+		assertActivationNotStarted(t, target)
+	})
+}
+
+func TestUpgradeActivateRejectsInvalidProfileBeforeMutation(t *testing.T) {
+	payload, target, candidate := upgradeFixture(t)
+	if err := os.WriteFile(
+		filepath.Join(payload, "configs", "cx.json"),
+		[]byte(`{"type":"cli","command":"unsupported"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SN_ACTIVATION_TEST_CANDIDATE", "1")
+	stopCalls := 0
+	_, err := UpgradeActivate(
+		context.Background(),
+		UpgradeRequest{
+			TargetHome: target, PayloadDir: payload,
+			CandidateBinary: candidate, OverwriteConfig: true,
+			LocalSourceInstall: true,
+			InspectServer:      inspectStoppedServer,
+			StopServer: func() error {
+				stopCalls++
+				return nil
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "candidate profile check") {
+		t.Fatalf("error=%v", err)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("invalid profile stopped server %d time(s)", stopCalls)
+	}
+	assertActivationNotStarted(t, target)
+}
+
+func TestActivationRuntimeValidationRequiresRegularFiles(t *testing.T) {
+	t.Run("payload_missing", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		if err := os.Remove(filepath.Join(payload, "runtime.json")); err != nil {
+			t.Fatal(err)
+		}
+		stopCalls := 0
+		_, err := UpgradeActivate(
+			context.Background(),
+			UpgradeRequest{
+				TargetHome: target, PayloadDir: payload,
+				CandidateBinary: candidate, OverwriteConfig: true,
+				LocalSourceInstall: true,
+				InspectServer:      inspectStoppedServer,
+				StopServer: func() error {
+					stopCalls++
+					return nil
+				},
+			},
+		)
+		if err == nil ||
+			!strings.Contains(err.Error(), "payload runtime.json") {
+			t.Fatalf("error=%v", err)
+		}
+		if stopCalls != 0 {
+			t.Fatalf("missing runtime stopped server %d time(s)", stopCalls)
+		}
+		assertActivationNotStarted(t, target)
+	})
+
+	t.Run("preserved_active_symlink", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		external := filepath.Join(t.TempDir(), "runtime.json")
+		if err := os.WriteFile(external, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(
+			external, filepath.Join(target, "runtime.json"),
+		); err != nil {
+			t.Fatal(err)
+		}
+		_, err := UpgradeActivate(
+			context.Background(),
+			UpgradeRequest{
+				TargetHome: target, PayloadDir: payload,
+				CandidateBinary: candidate,
+			},
+		)
+		if err == nil || !strings.Contains(err.Error(), "active runtime.json") {
+			t.Fatalf("error=%v", err)
+		}
+		assertActivationNotStarted(t, target)
+	})
+
+	t.Run("staged_missing", func(t *testing.T) {
+		payload, _, _ := upgradeFixture(t)
+		manifest, _, err := LoadManifest(
+			filepath.Join(payload, "resources"),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateDesiredHomeContracts(payload, manifest); err != nil {
+			t.Fatalf("complete staged home was rejected: %v", err)
+		}
+		if err := os.Remove(filepath.Join(payload, "runtime.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateDesiredHomeContracts(
+			payload, manifest,
+		); err == nil || !strings.Contains(err.Error(), "staged runtime.json") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+}
+
+func TestUpgradeActivateRejectsIncompleteResourcesBeforeMutation(
+	t *testing.T,
+) {
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "missing_tmux_config",
+			mutate: func(t *testing.T, payload string) {
+				if err := os.Remove(
+					filepath.Join(payload, "resources", "tmux.conf"),
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "schema_symlink",
+			mutate: func(t *testing.T, payload string) {
+				path := filepath.Join(
+					payload, "resources", "schema",
+					"profile.schema.json",
+				)
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(t.TempDir(), "schema.json")
+				if err := os.WriteFile(
+					target, []byte("{}\n"), 0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "malformed_schema_json",
+			mutate: func(t *testing.T, payload string) {
+				if err := os.WriteFile(
+					filepath.Join(
+						payload, "resources", "schema",
+						"profile.schema.json",
+					),
+					[]byte(`{"type":`), 0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "uncompilable_schema",
+			mutate: func(t *testing.T, payload string) {
+				if err := os.WriteFile(
+					filepath.Join(
+						payload, "resources", "schema",
+						"runtime.schema.json",
+					),
+					[]byte(`{"type":17}`), 0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wrong_schema_identity",
+			mutate: func(t *testing.T, payload string) {
+				if err := os.WriteFile(
+					filepath.Join(
+						payload, "resources", "schema",
+						"profile.schema.json",
+					),
+					[]byte(`{
+						"$schema":"https://json-schema.org/draft/2020-12/schema",
+						"$id":"https://example.invalid/profile.schema.json",
+						"title":"Runtime Profile",
+						"oneOf":[{},{}]
+					}`), 0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			payload, target, candidate := upgradeFixture(t)
+			testCase.mutate(t, payload)
+			_, err := UpgradeActivate(
+				context.Background(),
+				UpgradeRequest{
+					TargetHome: target, PayloadDir: payload,
+					CandidateBinary: candidate, OverwriteConfig: true,
+				},
+			)
+			if err == nil {
+				t.Fatal("incomplete resources were accepted")
+			}
+			assertActivationNotStarted(t, target)
+		})
+	}
+}
+
+func TestActiveExecutionPreflightAcceptsCompleteSettledFacts(t *testing.T) {
+	root := t.TempDir()
+	sessionsDir := filepath.Join(root, "sessions")
+	sessionID := "session_" + strings.Repeat("1", 32)
+	executionID := "execution_" + strings.Repeat("2", 32)
+	turnID := "turn_" + strings.Repeat("3", 32)
+	runID := "run_" + strings.Repeat("4", 32)
+	sessionDir := filepath.Join(sessionsDir, sessionID)
+	executionsDir := filepath.Join(sessionDir, "executions")
+	if err := os.MkdirAll(executionsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	sessionData, err := json.Marshal(session.Session{
+		SchemaVersion:   session.SchemaVersion,
+		ID:              sessionID,
+		State:           session.SessionIdle,
+		Retention:       session.RetentionEphemeral,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		MessageCount:    1,
+		EventCount:      1,
+		LastProfileID:   "cx-remote",
+		LastProfileKind: profile.KindModel,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionData, err := json.Marshal(session.Execution{
+		SchemaVersion: session.SchemaVersion,
+		ID:            executionID,
+		SessionID:     sessionID,
+		TurnID:        turnID,
+		RunID:         runID,
+		ProfileID:     "cx-remote",
+		ProfileKind:   profile.KindModel,
+		State:         session.ExecutionSettled,
+		Outcome:       session.OutcomeCompleted,
+		RequestDigest: strings.Repeat("a", 64),
+		ConfigDigest:  strings.Repeat("b", 64),
+		Stdout:        session.StreamObservation{ObservedBytes: 2},
+		Stderr:        session.StreamObservation{},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string][]byte{
+		filepath.Join(sessionDir, "session.json"):         sessionData,
+		filepath.Join(executionsDir, executionID+".json"): executionData,
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := assertNoActiveSessionExecutions(sessionsDir); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLocalSourceInstallReplacesConfigsAndResetsOldRuntimeState(
 	t *testing.T,
 ) {
@@ -213,6 +610,7 @@ func TestLocalSourceInstallReplacesConfigsAndResetsOldRuntimeState(
 	result, err := UpgradeActivate(context.Background(), UpgradeRequest{
 		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
 		OverwriteConfig: true, LocalSourceInstall: true,
+		InspectServer: inspectStoppedServer,
 		StopServer: func() error {
 			stopCalls++
 			return nil
@@ -233,6 +631,8 @@ func TestLocalSourceInstallReplacesConfigsAndResetsOldRuntimeState(
 		filepath.Join(target, "sessions"),
 		filepath.Join(target, "state", "session-locks"),
 		filepath.Join(target, "state", "session-invocations"),
+		filepath.Join(target, "state", "session-mutations"),
+		filepath.Join(target, "state", "session-trash-moves"),
 		filepath.Join(target, "state", "runtime.db"),
 		filepath.Join(target, "state", "runtime.db-wal"),
 		filepath.Join(target, "state", "runtime.db-shm"),
@@ -260,6 +660,7 @@ func TestLocalSourceInstallValidatesCandidateBeforeStoppingOrResetting(
 	_, err := UpgradeActivate(context.Background(), UpgradeRequest{
 		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
 		OverwriteConfig: true, LocalSourceInstall: true,
+		InspectServer: inspectStoppedServer,
 		StopServer: func() error {
 			stopCalls++
 			return nil
@@ -279,6 +680,84 @@ func TestLocalSourceInstallValidatesCandidateBeforeStoppingOrResetting(
 		if _, statErr := os.Stat(path); statErr != nil {
 			t.Fatalf("candidate failure changed %s: %v", path, statErr)
 		}
+	}
+}
+
+func TestLocalSourceInstallChecksTmuxBeforeStoppingServer(t *testing.T) {
+	payload, target, candidate := upgradeFixture(t)
+	t.Setenv("SN_ACTIVATION_TEST_CANDIDATE", "1")
+	socket := tmuxSocketForHome(target)
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socket) })
+	stopCalls := 0
+	_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
+		OverwriteConfig: true, LocalSourceInstall: true,
+		InspectServer: inspectStoppedServer,
+		StopServer: func() error {
+			stopCalls++
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Tmux socket") {
+		t.Fatalf("error=%v", err)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("Tmux blocker stopped managed server %d time(s)", stopCalls)
+	}
+}
+
+func TestLocalSourceInstallChecksExtraTargetProcessBeforeStoppingServer(
+	t *testing.T,
+) {
+	payload, target, candidate := upgradeFixture(t)
+	t.Setenv("SN_ACTIVATION_TEST_CANDIDATE", "1")
+	bin := filepath.Join(target, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetCLI := filepath.Join(bin, "sn-cli")
+	if err := os.Link(executable, targetCLI); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(targetCLI)
+	command.Env = append(os.Environ(), "SN_ACTIVATION_TEST_HOLD=1")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	if _, err := processStartToken(command.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+
+	stopCalls := 0
+	_, err = UpgradeActivate(context.Background(), UpgradeRequest{
+		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
+		OverwriteConfig: true, LocalSourceInstall: true,
+		InspectServer: inspectStoppedServer,
+		StopServer: func() error {
+			stopCalls++
+			return nil
+		},
+	})
+	if err == nil ||
+		!strings.Contains(err.Error(), "target Runtime binary is still running") {
+		t.Fatalf("error=%v", err)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("target-process blocker stopped server %d time(s)", stopCalls)
 	}
 }
 
@@ -682,7 +1161,7 @@ func TestRunPreflightRejectsUnknownStateAndSidecarSymlink(t *testing.T) {
 			"CREATE TABLE runs (state TEXT NOT NULL)",
 			"CREATE TABLE queue (run_id TEXT)",
 			"INSERT INTO runs(state) VALUES ('future_state')",
-			"PRAGMA user_version = 2",
+			"PRAGMA user_version = 4",
 		} {
 			if _, err := database.Exec(statement); err != nil {
 				t.Fatal(err)
@@ -691,7 +1170,7 @@ func TestRunPreflightRejectsUnknownStateAndSidecarSymlink(t *testing.T) {
 		if err := database.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := preflightRunDatabase(path, 2); err == nil ||
+		if err := preflightRunDatabase(path, 4); err == nil ||
 			!strings.Contains(err.Error(), "unknown state") {
 			t.Fatalf("unknown Run state error=%v", err)
 		}
@@ -709,7 +1188,7 @@ func TestRunPreflightRejectsUnknownStateAndSidecarSymlink(t *testing.T) {
 		if err := os.Symlink(external, path+"-wal"); err != nil {
 			t.Fatal(err)
 		}
-		if err := preflightRunDatabase(path, 2); err == nil ||
+		if err := preflightRunDatabase(path, 4); err == nil ||
 			!strings.Contains(err.Error(), "sidecar") {
 			t.Fatalf("sidecar symlink error=%v", err)
 		}
@@ -1029,14 +1508,50 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "resources", "schema", "profile.schema.json"),
-		"{}\n", 0o600,
+		`{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"$id":"https://github.com/yy003x/runtime/resources/schema/profile.schema.json",
+			"title":"Runtime Profile",
+			"oneOf":[{"type":"object"},{"type":"object"}]
+		}`+"\n", 0o600,
+	)
+	writeFixture(
+		filepath.Join(payload, "resources", "schema", "runtime.schema.json"),
+		`{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"$id":"https://github.com/yy003x/runtime/resources/schema/runtime.schema.json",
+			"title":"Runtime vNext Configuration",
+			"type":"object",
+			"additionalProperties":false,
+			"properties":{"agent":{},"scheduler":{},"run":{}}
+		}`+"\n", 0o600,
+	)
+	writeFixture(
+		filepath.Join(payload, "resources", "tmux.conf"),
+		"set-option -g status off\n", 0o600,
 	)
 	writeFixture(
 		filepath.Join(payload, "resources", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":2,\"contract_version\":3,\"session_schema_version\":2,\"run_schema_version\":2,\"minimum_updater_epoch\":2,\"legacy_self_update\":\"blocked\"}\n",
+		"{\"schema_version\":1,\"activation_epoch\":2,\"contract_version\":3,\"session_schema_version\":2,\"run_schema_version\":4,\"minimum_updater_epoch\":2,\"legacy_self_update\":\"blocked\"}\n",
 		0o600,
 	)
 	return payload, target, candidate
+}
+
+func inspectStoppedServer() (ManagedServerProcess, error) {
+	return ManagedServerProcess{}, nil
+}
+
+func assertActivationNotStarted(t *testing.T, target string) {
+	t.Helper()
+	for _, name := range []string{"bin", "configs", "resources", "state", "tmp"} {
+		if _, err := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(err) {
+			t.Fatalf(
+				"failed preflight created %s: %v",
+				filepath.Join(target, name), err,
+			)
+		}
+	}
 }
 
 func seedActiveHome(t *testing.T, target string) {
@@ -1076,6 +1591,8 @@ func seedLegacyRuntimeState(t *testing.T, target string) {
 		filepath.Join(target, "sessions", "_system"),
 		filepath.Join(target, "state", "session-locks"),
 		filepath.Join(target, "state", "session-invocations"),
+		filepath.Join(target, "state", "session-mutations"),
+		filepath.Join(target, "state", "session-trash-moves"),
 	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
@@ -1091,6 +1608,14 @@ func seedLegacyRuntimeState(t *testing.T, target string) {
 		filepath.Join(target, "state", "session-locks", "index.lock"),
 		filepath.Join(
 			target, "state", "session-invocations", ".invocation-old.json",
+		),
+		filepath.Join(
+			target, "state", "session-mutations",
+			"session_fixture.json",
+		),
+		filepath.Join(
+			target, "state", "session-trash-moves",
+			"session_fixture.json",
 		),
 	} {
 		if err := os.WriteFile(path, []byte("legacy\n"), 0o600); err != nil {

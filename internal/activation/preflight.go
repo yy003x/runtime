@@ -30,6 +30,7 @@ type processExclusion struct {
 }
 
 type quiescenceOptions struct {
+	SkipServer       bool
 	SkipRuntimeState bool
 }
 
@@ -40,8 +41,10 @@ func preflightQuiescence(
 	processTargets []processTarget,
 	options quiescenceOptions,
 ) error {
-	if err := assertServerStopped(target); err != nil {
-		return err
+	if !options.SkipServer {
+		if err := assertServerStopped(target); err != nil {
+			return err
+		}
 	}
 	socket := tmuxSocketForHome(target)
 	if socket == "" {
@@ -158,11 +161,7 @@ func assertNoActiveSessionExecutions(sessionsDir string) error {
 			continue
 		}
 		sessionPath := filepath.Join(sessionsDir, entry.Name(), "session.json")
-		var sessionFact struct {
-			SchemaVersion int                  `json:"schema_version"`
-			ID            string               `json:"session_id"`
-			State         session.SessionState `json:"state"`
-		}
+		var sessionFact session.Session
 		if err := decodeStrictRegular(sessionPath, &sessionFact); err != nil {
 			return err
 		}
@@ -208,12 +207,7 @@ func assertNoActiveSessionExecutions(sessionsDir string) error {
 			executionPath := filepath.Join(
 				executionsDir, executionEntry.Name(),
 			)
-			var executionFact struct {
-				SchemaVersion int                      `json:"schema_version"`
-				ID            string                   `json:"execution_id"`
-				State         session.ExecutionState   `json:"state"`
-				Outcome       session.ExecutionOutcome `json:"outcome"`
-			}
+			var executionFact session.Execution
 			if err := decodeStrictRegular(
 				executionPath, &executionFact,
 			); err != nil {
