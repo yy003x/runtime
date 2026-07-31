@@ -18,7 +18,14 @@ import (
 	"github.com/yy003x/runtime/provider/internal/httpx"
 )
 
-const providerName = "anthropic-compatible"
+const (
+	providerName = "anthropic-compatible"
+
+	// Bump manually when execution semantics change in a way not represented by
+	// the Profile or Provider-neutral request contract.
+	executionImplementation        = "runtime.provider.anthropic-compatible"
+	executionImplementationVersion = 1
+)
 
 type Driver struct {
 	client *http.Client
@@ -29,6 +36,14 @@ func New(client *http.Client) *Driver {
 		client = http.DefaultClient
 	}
 	return &Driver{client: client}
+}
+
+func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
+	return model.DriverExecutionIdentity{
+		Driver:                model.DriverAnthropicCompatible,
+		Implementation:        executionImplementation,
+		ImplementationVersion: executionImplementationVersion,
+	}
 }
 
 func (*Driver) Validate(profile model.Profile) error {
@@ -118,6 +133,7 @@ type contentPart struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
 }
 
 type toolPayload struct {
@@ -138,6 +154,7 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 			role = string(contract.RoleUser)
 			parts = append(parts, contentPart{
 				Type: "tool_result", ToolUseID: message.ToolCallID, Content: message.Content,
+				IsError: message.IsError,
 			})
 		} else {
 			if message.Content != "" {

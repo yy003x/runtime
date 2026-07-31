@@ -11,6 +11,11 @@ import (
 
 const ScenarioLabel = "runtime.faux.scenario"
 
+const (
+	executionImplementation        = "runtime.runtimetest.faux"
+	executionImplementationVersion = 1
+)
+
 type Driver struct {
 	provider *Provider
 }
@@ -20,6 +25,14 @@ func NewDriver(provider *Provider) (*Driver, error) {
 		return nil, fmt.Errorf("faux provider is required")
 	}
 	return &Driver{provider: provider}, nil
+}
+
+func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
+	return model.DriverExecutionIdentity{
+		Driver:                model.DriverOpenAICompatible,
+		Implementation:        executionImplementation,
+		ImplementationVersion: executionImplementationVersion,
+	}
 }
 
 func (driver *Driver) Validate(model.Profile) error {

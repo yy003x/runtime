@@ -14,6 +14,18 @@ import (
 	"github.com/yy003x/runtime/model"
 )
 
+func TestDriverExecutionIdentity(t *testing.T) {
+	identity := New(nil).ExecutionIdentity()
+	if identity.Driver != model.DriverOpenAICompatible ||
+		identity.Implementation != executionImplementation ||
+		identity.ImplementationVersion != executionImplementationVersion {
+		t.Fatalf("identity=%#v", identity)
+	}
+	if err := identity.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDriverStreamsTextAndFragmentedToolCallInOneAttempt(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

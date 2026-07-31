@@ -16,6 +16,18 @@ type testDriver struct {
 	result      contract.ModelResult
 	err         *contract.RuntimeError
 	mutateInput bool
+	identity    *DriverExecutionIdentity
+}
+
+func (driver *testDriver) ExecutionIdentity() DriverExecutionIdentity {
+	if driver.identity != nil {
+		return *driver.identity
+	}
+	return DriverExecutionIdentity{
+		Driver:                DriverOpenAICompatible,
+		Implementation:        "runtime.model.test-driver",
+		ImplementationVersion: 1,
+	}
 }
 
 func (driver *testDriver) Validate(Profile) error {

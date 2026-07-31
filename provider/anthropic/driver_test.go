@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,18 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/model"
 )
+
+func TestDriverExecutionIdentity(t *testing.T) {
+	identity := New(nil).ExecutionIdentity()
+	if identity.Driver != model.DriverAnthropicCompatible ||
+		identity.Implementation != executionImplementation ||
+		identity.ImplementationVersion != executionImplementationVersion {
+		t.Fatalf("identity=%#v", identity)
+	}
+	if err := identity.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 	var attempts atomic.Int32
@@ -82,5 +95,41 @@ func TestDriverRequiresMaxTokens(t *testing.T) {
 	}
 	if err := New(nil).Validate(profile); err == nil {
 		t.Fatal("profile without max_tokens was accepted")
+	}
+}
+
+func TestEncodeRequestPreservesToolResultError(t *testing.T) {
+	maxTokens := int64(64)
+	payload, err := encodeRequest(model.ResolvedModel{
+		Model: "fixture",
+	}, contract.ModelRequest{
+		Messages: []contract.Message{
+			{Role: contract.RoleUser, Content: "start"},
+			{
+				Role: contract.RoleAssistant,
+				ToolCalls: []contract.ToolCall{{
+					ID: "call-1", Name: "fixture",
+					Arguments: json.RawMessage(`{}`),
+				}},
+			},
+			{
+				Role: contract.RoleTool, ToolCallID: "call-1",
+				Content: "failed", IsError: true,
+			},
+		},
+		Options: contract.GenerateOptions{MaxOutputTokens: &maxTokens},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body requestBody
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 3 ||
+		len(body.Messages[2].Content) != 1 ||
+		body.Messages[2].Content[0].Type != "tool_result" ||
+		!body.Messages[2].Content[0].IsError {
+		t.Fatalf("body=%#v", body)
 	}
 }

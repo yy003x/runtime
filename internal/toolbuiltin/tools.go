@@ -8,18 +8,29 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/contract"
 )
 
-const maxToolOutputBytes = 1 << 20
+const (
+	maxToolOutputBytes                 = 1 << 20
+	maxReadOnlyToolErrorBytes          = 4 << 10
+	toolExecutionImplementation        = "runtime.toolbuiltin"
+	toolExecutionImplementationVersion = 4
+	toolExecutionConfigSchemaVersion   = 2
+)
+
+var (
+	errPathRequired      = errors.New("path is required")
+	errOutsideWorkspace  = errors.New("path is outside configured workspace roots")
+	errSymlinkNotAllowed = errors.New("path contains symlink component")
+	errPathNotDirectory  = errors.New("path is not a directory")
+)
 
 type Options struct {
 	Names []string
@@ -73,16 +84,6 @@ func Build(options Options) (*agent.Registry, error) {
 			},
 			Handler: resolver.writeFile,
 		},
-		"exec_command": {
-			Definition: contract.ToolSpec{
-				Name:        "exec_command",
-				Description: "Execute an argv array without a shell within configured workspace roots.",
-				InputSchema: json.RawMessage(
-					`{"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"},"minItems":1},"cwd":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300}},"required":["argv"],"additionalProperties":false}`,
-				),
-			},
-			Handler: resolver.execCommand,
-		},
 	}
 	values := make([]agent.RegisteredTool, 0, len(options.Names))
 	for _, name := range options.Names {
@@ -92,17 +93,58 @@ func Build(options Options) (*agent.Registry, error) {
 		}
 		values = append(values, value)
 	}
-	return agent.NewRegistry(values...)
+	configuration, err := json.Marshal(toolExecutionConfiguration{
+		SchemaVersion:  toolExecutionConfigSchemaVersion,
+		WorkspaceRoots: snapshotWorkspaceRoots(resolver.roots),
+		CWD:            resolver.cwd,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return agent.NewRegistryWithToolExecution(agent.ToolExecutionIdentity{
+		Implementation:        toolExecutionImplementation,
+		ImplementationVersion: toolExecutionImplementationVersion,
+		Configuration:         configuration,
+	}, values...)
 }
 
 type resolver struct {
-	roots []workspaceRoot
-	cwd   string
+	roots     []workspaceRoot
+	cwd       string
+	testHooks *resolverTestHooks
 }
 
 type workspaceRoot struct {
 	lexical   string
 	canonical string
+	device    uint64
+	inode     uint64
+}
+
+type toolExecutionConfiguration struct {
+	SchemaVersion  int                          `json:"schema_version"`
+	WorkspaceRoots []toolExecutionWorkspaceRoot `json:"workspace_roots"`
+	CWD            string                       `json:"cwd"`
+}
+
+type toolExecutionWorkspaceRoot struct {
+	Lexical   string `json:"lexical"`
+	Canonical string `json:"canonical"`
+	Device    uint64 `json:"device"`
+	Inode     uint64 `json:"inode"`
+}
+
+func snapshotWorkspaceRoots(
+	roots []workspaceRoot,
+) []toolExecutionWorkspaceRoot {
+	values := make([]toolExecutionWorkspaceRoot, len(roots))
+	for index, root := range roots {
+		values[index] = toolExecutionWorkspaceRoot{
+			Lexical: root.lexical, Canonical: root.canonical,
+			Device: root.device, Inode: root.inode,
+		}
+	}
+	return values
 }
 
 func newResolver(roots []string, cwd string) (*resolver, error) {
@@ -116,15 +158,13 @@ func newResolver(roots []string, cwd string) (*resolver, error) {
 		if err != nil {
 			return nil, err
 		}
-		info, err := os.Stat(canonical)
+		device, inode, err := workspaceRootIdentity(canonical)
 		if err != nil {
 			return nil, err
 		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("workspace root must be a directory")
-		}
 		values = append(values, workspaceRoot{
 			lexical: filepath.Clean(absolute), canonical: filepath.Clean(canonical),
+			device: device, inode: inode,
 		})
 	}
 	absoluteCWD, err := filepath.Abs(cwd)
@@ -150,23 +190,27 @@ func (resolver *resolver) readFile(
 	if err := decodeArguments(request.Arguments, &input); err != nil {
 		return agent.ToolResult{}, err
 	}
-	path, err := resolver.resolveExisting(input.Path, false)
+	path, err := resolver.resolveWorkspacePath(input.Path)
 	if err != nil {
-		return agent.ToolResult{}, err
+		return readOnlyFilesystemFailure(err)
 	}
-	info, err := os.Lstat(path)
+	file, _, err := resolver.openReadFile(path)
 	if err != nil {
-		return agent.ToolResult{}, err
+		return readOnlyFilesystemFailure(err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxToolOutputBytes {
-		return agent.ToolResult{}, fmt.Errorf("file must be regular and no larger than %d bytes", maxToolOutputBytes)
-	}
-	data, err := os.ReadFile(path)
+	data, err := boundedRead(file)
 	if err != nil {
-		return agent.ToolResult{}, err
+		_ = file.Close()
+		return readOnlyFilesystemFailure(err)
+	}
+	if err := file.Close(); err != nil {
+		return readOnlyFilesystemFailure(err)
 	}
 	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
-		return agent.ToolResult{}, fmt.Errorf("file is not valid UTF-8 text")
+		return readOnlyToolFailure(
+			"invalid_utf8",
+			"file is not valid UTF-8 text",
+		)
 	}
 	return agent.ToolResult{Content: string(data)}, nil
 }
@@ -181,13 +225,21 @@ func (resolver *resolver) listDirectory(
 	if err := decodeArguments(request.Arguments, &input); err != nil {
 		return agent.ToolResult{}, err
 	}
-	path, err := resolver.resolveExisting(input.Path, true)
+	path, err := resolver.resolveWorkspacePath(input.Path)
 	if err != nil {
-		return agent.ToolResult{}, err
+		return readOnlyFilesystemFailure(err)
 	}
-	entries, err := os.ReadDir(path)
+	directory, err := resolver.openListDirectory(path)
 	if err != nil {
-		return agent.ToolResult{}, err
+		return readOnlyFilesystemFailure(err)
+	}
+	entries, err := boundedDirectoryEntries(directory)
+	if err != nil {
+		_ = directory.Close()
+		return readOnlyFilesystemFailure(err)
+	}
+	if err := directory.Close(); err != nil {
+		return readOnlyFilesystemFailure(err)
 	}
 	type item struct {
 		Name string `json:"name"`
@@ -206,8 +258,110 @@ func (resolver *resolver) listDirectory(
 	sort.Slice(values, func(left, right int) bool {
 		return values[left].Name < values[right].Name
 	})
-	data, _ := json.Marshal(values)
+	data, err := json.Marshal(values)
+	if err != nil {
+		return agent.ToolResult{}, fmt.Errorf(
+			"encode directory listing: %w",
+			err,
+		)
+	}
+	if len(data) > maxToolOutputBytes {
+		return readOnlyToolFailure(
+			"directory_too_large",
+			"directory exceeds the listing limit",
+		)
+	}
 	return agent.ToolResult{Content: string(data)}, nil
+}
+
+type readOnlyToolErrorEnvelope struct {
+	Error readOnlyToolError `json:"error"`
+}
+
+type readOnlyToolError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func readOnlyFilesystemFailure(err error) (agent.ToolResult, error) {
+	switch {
+	case errors.Is(err, errPathRequired):
+		return readOnlyToolFailure("invalid_path", "path is required")
+	case errors.Is(err, errOutsideWorkspace):
+		return readOnlyToolFailure(
+			"outside_workspace",
+			"path is outside configured workspace roots",
+		)
+	case errors.Is(err, errSymlinkNotAllowed):
+		return readOnlyToolFailure(
+			"symlink_not_allowed",
+			"symlink paths are not allowed",
+		)
+	case errors.Is(err, errPathNotDirectory):
+		return readOnlyToolFailure(
+			"not_directory",
+			"path is not a directory",
+		)
+	case errors.Is(err, errPathNotRegular):
+		return readOnlyToolFailure(
+			"not_regular_file",
+			"path is not a regular file",
+		)
+	case errors.Is(err, errReadHardlink):
+		return readOnlyToolFailure(
+			"hardlink_not_allowed",
+			"files with multiple hard links are not allowed",
+		)
+	case errors.Is(err, errFileTooLarge):
+		return readOnlyToolFailure(
+			"file_too_large",
+			"file exceeds the read limit",
+		)
+	case errors.Is(err, errDirectoryTooLarge):
+		return readOnlyToolFailure(
+			"directory_too_large",
+			"directory exceeds the listing limit",
+		)
+	case errors.Is(err, errWorkspaceRootChanged):
+		return readOnlyToolFailure(
+			"workspace_changed",
+			"workspace root identity changed",
+		)
+	case errors.Is(err, os.ErrNotExist):
+		return readOnlyToolFailure("not_found", "path does not exist")
+	case errors.Is(err, os.ErrPermission):
+		return readOnlyToolFailure(
+			"permission_denied",
+			"filesystem access was denied",
+		)
+	default:
+		return readOnlyToolFailure(
+			"io_error",
+			"filesystem operation failed",
+		)
+	}
+}
+
+func readOnlyToolFailure(
+	code string,
+	message string,
+) (agent.ToolResult, error) {
+	content, err := json.Marshal(readOnlyToolErrorEnvelope{
+		Error: readOnlyToolError{Code: code, Message: message},
+	})
+	if err != nil {
+		return agent.ToolResult{}, fmt.Errorf(
+			"encode read-only tool error: %w",
+			err,
+		)
+	}
+	if len(content) == 0 || len(content) > maxReadOnlyToolErrorBytes {
+		return agent.ToolResult{}, fmt.Errorf(
+			"read-only tool error exceeds %d bytes",
+			maxReadOnlyToolErrorBytes,
+		)
+	}
+	return agent.ToolResult{Content: string(content), IsError: true}, nil
 }
 
 func (resolver *resolver) writeFile(
@@ -224,143 +378,19 @@ func (resolver *resolver) writeFile(
 	if len(input.Content) > maxToolOutputBytes {
 		return agent.ToolResult{}, fmt.Errorf("content exceeds %d bytes", maxToolOutputBytes)
 	}
-	path, err := resolver.resolveWritable(input.Path)
+	path, err := resolver.resolveWorkspacePath(input.Path)
 	if err != nil {
 		return agent.ToolResult{}, err
 	}
-	parent := filepath.Dir(path)
-	temp, err := os.CreateTemp(parent, ".runtime-tool-*.tmp")
-	if err != nil {
-		return agent.ToolResult{}, err
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		return agent.ToolResult{}, err
-	}
-	if _, err := io.WriteString(temp, input.Content); err != nil {
-		temp.Close()
-		return agent.ToolResult{}, err
-	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return agent.ToolResult{}, err
-	}
-	if err := temp.Close(); err != nil {
-		return agent.ToolResult{}, err
-	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := resolver.writeFileAt(path, input.Content); err != nil {
 		return agent.ToolResult{}, err
 	}
 	return agent.ToolResult{Content: `{"written":true}`}, nil
 }
 
-func (resolver *resolver) execCommand(
-	ctx context.Context,
-	request agent.ToolRequest,
-) (agent.ToolResult, error) {
-	var input struct {
-		Argv           []string `json:"argv"`
-		CWD            string   `json:"cwd"`
-		TimeoutSeconds int      `json:"timeout_seconds"`
-	}
-	if err := decodeArguments(request.Arguments, &input); err != nil {
-		return agent.ToolResult{}, err
-	}
-	if len(input.Argv) == 0 || len(input.Argv) > 256 {
-		return agent.ToolResult{}, fmt.Errorf("argv must contain 1 to 256 items")
-	}
-	for _, value := range input.Argv {
-		if value == "" || strings.ContainsRune(value, 0) {
-			return agent.ToolResult{}, fmt.Errorf("argv contains an invalid item")
-		}
-	}
-	cwd := input.CWD
-	if cwd == "" {
-		cwd = resolver.cwd
-	}
-	cwd, err := resolver.resolveExisting(cwd, true)
-	if err != nil {
-		return agent.ToolResult{}, err
-	}
-	timeout := time.Duration(input.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-	if timeout > 5*time.Minute {
-		return agent.ToolResult{}, fmt.Errorf("timeout_seconds exceeds 300")
-	}
-	commandContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	command := exec.CommandContext(commandContext, input.Argv[0], input.Argv[1:]...)
-	command.Dir = cwd
-	var output limitedBuffer
-	command.Stdout = &output
-	command.Stderr = &output
-	err = command.Run()
-	result, _ := json.Marshal(map[string]any{
-		"output": output.String(), "success": err == nil,
-	})
-	if output.overflow {
-		return agent.ToolResult{}, fmt.Errorf("command output exceeds %d bytes", maxToolOutputBytes)
-	}
-	if err != nil {
-		return agent.ToolResult{Content: string(result), IsError: true}, nil
-	}
-	return agent.ToolResult{Content: string(result)}, nil
-}
-
-func (resolver *resolver) resolveExisting(
-	value string,
-	requireDirectory bool,
-) (string, error) {
-	path, err := resolver.absoluteWithinRoot(value)
-	if err != nil {
-		return "", err
-	}
-	root, err := resolver.rootFor(path)
-	if err != nil {
-		return "", err
-	}
-	if err := rejectSymlinkComponents(root, path); err != nil {
-		return "", err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if requireDirectory && !info.IsDir() {
-		return "", fmt.Errorf("path is not a directory")
-	}
-	return path, nil
-}
-
-func (resolver *resolver) resolveWritable(value string) (string, error) {
-	path, err := resolver.absoluteWithinRoot(value)
-	if err != nil {
-		return "", err
-	}
-	root, err := resolver.rootFor(path)
-	if err != nil {
-		return "", err
-	}
-	if err := rejectSymlinkComponents(root, filepath.Dir(path)); err != nil {
-		return "", err
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return "", fmt.Errorf("write target must be a regular file, not a symlink")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	return path, nil
-}
-
 func (resolver *resolver) absoluteWithinRoot(value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
-		return "", fmt.Errorf("path is required")
+		return "", errPathRequired
 	}
 	path := value
 	if !filepath.IsAbs(path) {
@@ -380,7 +410,7 @@ func (resolver *resolver) absoluteWithinRoot(value string) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("path is outside configured workspace roots")
+	return "", errOutsideWorkspace
 }
 
 func (resolver *resolver) rootFor(path string) (string, error) {
@@ -391,14 +421,14 @@ func (resolver *resolver) rootFor(path string) (string, error) {
 			return root.canonical, nil
 		}
 	}
-	return "", fmt.Errorf("path is outside configured workspace roots")
+	return "", errOutsideWorkspace
 }
 
 func rejectSymlinkComponents(root, path string) error {
 	relative, err := filepath.Rel(root, path)
 	if err != nil || relative == ".." ||
 		strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("path is outside configured workspace roots")
+		return errOutsideWorkspace
 	}
 	current := root
 	remainder := relative
@@ -412,7 +442,7 @@ func rejectSymlinkComponents(root, path string) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("path contains symlink component %s", current)
+			return fmt.Errorf("%w %s", errSymlinkNotAllowed, current)
 		}
 	}
 	return nil
@@ -429,25 +459,4 @@ func decodeArguments(value json.RawMessage, target any) error {
 		return fmt.Errorf("tool arguments contain trailing JSON")
 	}
 	return nil
-}
-
-type limitedBuffer struct {
-	value    bytes.Buffer
-	overflow bool
-}
-
-func (buffer *limitedBuffer) Write(value []byte) (int, error) {
-	if buffer.value.Len()+len(value) > maxToolOutputBytes {
-		remaining := maxToolOutputBytes - buffer.value.Len()
-		if remaining > 0 {
-			_, _ = buffer.value.Write(value[:remaining])
-		}
-		buffer.overflow = true
-		return len(value), nil
-	}
-	return buffer.value.Write(value)
-}
-
-func (buffer *limitedBuffer) String() string {
-	return buffer.value.String()
 }

@@ -1,7 +1,6 @@
 package faux
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,11 +11,10 @@ import (
 
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/model"
-	transportcli "github.com/yy003x/runtime/transport/cli"
 	transporthttp "github.com/yy003x/runtime/transport/http"
 )
 
-func TestCanonicalScenarioMatchesGoCLIAndHTTP(t *testing.T) {
+func TestCanonicalScenarioMatchesGoAndHTTP(t *testing.T) {
 	set := loadFixtureSet(t)
 	provider, err := NewProvider(set.Scripts)
 	if err != nil {
@@ -40,17 +38,6 @@ func TestCanonicalScenarioMatchesGoCLIAndHTTP(t *testing.T) {
 	)
 	if runtimeErr != nil {
 		t.Fatal(runtimeErr)
-	}
-
-	var cliOutput bytes.Buffer
-	if runtimeErr := transportcli.Generate(
-		context.Background(), service, request, true, &cliOutput,
-	); runtimeErr != nil {
-		t.Fatal(runtimeErr)
-	}
-	cliEvents := decodeNDJSONEvents(t, cliOutput.Bytes())
-	if !reflect.DeepEqual(cliEvents, goEvents) {
-		t.Fatalf("CLI events differ:\nCLI=%#v\nGo=%#v", cliEvents, goEvents)
 	}
 
 	requestData, err := json.Marshal(request)
@@ -92,8 +79,8 @@ func TestCanonicalScenarioMatchesGoCLIAndHTTP(t *testing.T) {
 	if !reflect.DeepEqual(httpResult, goResult) {
 		t.Fatalf("HTTP result=%#v Go result=%#v", httpResult, goResult)
 	}
-	if provider.Attempts("text") != 4 {
-		t.Fatalf("attempts=%d, want one per Go/CLI/HTTP call", provider.Attempts("text"))
+	if provider.Attempts("text") != 3 {
+		t.Fatalf("attempts=%d, want one per Go/HTTP call", provider.Attempts("text"))
 	}
 }
 
@@ -133,23 +120,6 @@ func canonicalRequest() contract.GenerateRequest {
 			Trace:    contract.TraceContext{Labels: map[string]string{ScenarioLabel: "text"}},
 		},
 	}
-}
-
-func decodeNDJSONEvents(t *testing.T, data []byte) []contract.Event {
-	t.Helper()
-	var events []contract.Event
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		var event contract.Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			t.Fatal(err)
-		}
-		events = append(events, event)
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return events
 }
 
 func decodeSSEEvents(t *testing.T, data string) []contract.Event {

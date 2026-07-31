@@ -14,6 +14,7 @@ import (
 )
 
 type Driver interface {
+	ExecutionIdentity() DriverExecutionIdentity
 	Validate(Profile) error
 	Stream(
 		context.Context,
@@ -58,6 +59,17 @@ func NewService(
 		if driver == nil {
 			return nil, fmt.Errorf("model driver %q is nil", name)
 		}
+		identity := driver.ExecutionIdentity()
+		if err := identity.Validate(); err != nil {
+			return nil, fmt.Errorf("model driver %q: %w", name, err)
+		}
+		if identity.Driver != name {
+			return nil, fmt.Errorf(
+				"model driver %q execution identity declares driver %q",
+				name,
+				identity.Driver,
+			)
+		}
 		values[name] = driver
 	}
 	for _, id := range catalog.IDs() {
@@ -75,6 +87,44 @@ func NewService(
 		getenv = os.LookupEnv
 	}
 	return &Service{catalog: catalog, drivers: values, getenv: getenv}, nil
+}
+
+// ExecutionSnapshot freezes the non-secret API Profile and the semantic
+// identity of the concrete driver selected by this Service. It deliberately
+// does not resolve auth.from_env.
+func (service *Service) ExecutionSnapshot(
+	profileID string,
+) (ExecutionSnapshot, error) {
+	if service == nil || service.catalog == nil {
+		return ExecutionSnapshot{}, fmt.Errorf("model service is unavailable")
+	}
+	profile, exists := service.catalog.Get(profileID)
+	if !exists {
+		return ExecutionSnapshot{}, fmt.Errorf(
+			"model profile %q was not found", profileID,
+		)
+	}
+	driver, exists := service.drivers[profile.Driver]
+	if !exists || driver == nil {
+		return ExecutionSnapshot{}, fmt.Errorf(
+			"model profile %q driver %q is unavailable",
+			profileID,
+			profile.Driver,
+		)
+	}
+	identity := driver.ExecutionIdentity()
+	if err := identity.Validate(); err != nil {
+		return ExecutionSnapshot{}, fmt.Errorf(
+			"model profile %q driver identity: %w", profileID, err,
+		)
+	}
+	if identity.Driver != profile.Driver {
+		return ExecutionSnapshot{}, fmt.Errorf(
+			"model profile %q driver identity does not match Profile",
+			profileID,
+		)
+	}
+	return newExecutionSnapshot(profileID, profile, identity)
 }
 
 func (service *Service) Generate(

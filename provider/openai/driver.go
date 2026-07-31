@@ -18,7 +18,14 @@ import (
 	"github.com/yy003x/runtime/provider/internal/httpx"
 )
 
-const providerName = "openai-compatible"
+const (
+	providerName = "openai-compatible"
+
+	// Bump manually when execution semantics change in a way not represented by
+	// the Profile or Provider-neutral request contract.
+	executionImplementation        = "runtime.provider.openai-compatible"
+	executionImplementationVersion = 1
+)
 
 type Driver struct {
 	client *http.Client
@@ -29,6 +36,14 @@ func New(client *http.Client) *Driver {
 		client = http.DefaultClient
 	}
 	return &Driver{client: client}
+}
+
+func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
+	return model.DriverExecutionIdentity{
+		Driver:                model.DriverOpenAICompatible,
+		Implementation:        executionImplementation,
+		ImplementationVersion: executionImplementationVersion,
+	}
 }
 
 func (*Driver) Validate(profile model.Profile) error {

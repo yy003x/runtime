@@ -2,8 +2,6 @@ package model
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -44,40 +42,6 @@ func NewCatalog(values map[string]Profile, reservedIDs ...string) (*Catalog, err
 		profiles[id] = cloneProfile(profile)
 	}
 	return &Catalog{profiles: profiles}, nil
-}
-
-func LoadProfileDir(path string, reservedIDs ...string) (*Catalog, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, fmt.Errorf("inspect model profile directory: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("model profile path must be a directory, not a symlink")
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("read model profile directory: %w", err)
-	}
-	sort.Slice(entries, func(left, right int) bool {
-		return entries[left].Name() < entries[right].Name()
-	})
-	values := make(map[string]Profile, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(name) != ".json" {
-			return nil, fmt.Errorf("model profile directory contains unsupported entry %q", name)
-		}
-		id := strings.TrimSuffix(name, ".json")
-		if err := profileid.Validate(id); err != nil {
-			return nil, fmt.Errorf("model profile file %q: %w", name, err)
-		}
-		profile, err := LoadProfileFile(filepath.Join(path, name))
-		if err != nil {
-			return nil, err
-		}
-		values[id] = profile
-	}
-	return NewCatalog(values, reservedIDs...)
 }
 
 func (catalog *Catalog) Get(id string) (Profile, bool) {
