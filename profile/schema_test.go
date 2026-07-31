@@ -312,7 +312,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "cli_prompt_exceeds_byte_limit",
 			document: `{"type":"cli","command":"codex","prompt":` +
-				strconv.Quote(strings.Repeat("界", 40_000)) + `}`,
+				strconv.Quote(strings.Repeat("界", 43_000)) + `}`,
 			semanticRule: "CLI token limit is measured in UTF-8 bytes",
 		},
 		{

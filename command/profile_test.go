@@ -2,8 +2,21 @@ package command
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestPromptByteLimitIs128000(t *testing.T) {
+	if MaxTokenBytes != 128_000 {
+		t.Fatalf("MaxTokenBytes=%d want=128000", MaxTokenBytes)
+	}
+	if _, err := ReadPrompt(strings.NewReader(strings.Repeat("x", MaxTokenBytes))); err != nil {
+		t.Fatalf("exact prompt limit rejected: %v", err)
+	}
+	if _, err := ReadPrompt(strings.NewReader(strings.Repeat("x", MaxTokenBytes+1))); err == nil {
+		t.Fatal("oversized prompt was accepted")
+	}
+}
 
 func TestProfileUsesTypedCommandProtocol(t *testing.T) {
 	profile := Profile{

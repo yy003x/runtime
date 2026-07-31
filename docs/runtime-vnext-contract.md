@@ -53,6 +53,7 @@ Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Cla
 - 识别并替换 model、effort、exec 和 canonical-output selector；
 - 对重复、stateful、改变 final shape 或无法安全归类的配置 fail closed；
 - Profile/Session/Tmux 输入用 `--` 结束 options，并保证 prompt 为最终 argv token；
+- file、stdin、合并 prompt 与单个 argv/env token 上限为 128,000 bytes；
 - spawn 前校验 env expansion、cwd、PATH、单 token 与总 argv/env budget。
 
 Profile `prompt`、typed `--prompt`、piped stdin、位置 input 按顺序合并。CLI Profile

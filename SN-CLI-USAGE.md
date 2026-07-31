@@ -274,8 +274,8 @@ sn-cli run submit --profile api-cx -- "-这是Run输入"
 
 | 输入 | 最大值 |
 |---|---:|
-| CLI Profile prompt 合并结果 | 96 KiB |
-| `tmux start` prompt 合并结果 | 96 KiB |
+| CLI Profile prompt 合并结果 | 128,000 bytes |
+| `tmux start` prompt 合并结果 | 128,000 bytes |
 | API Profile prompt/request | 1 MiB |
 | Session input | 1 MiB |
 | `tmux send` input | 1 MiB |

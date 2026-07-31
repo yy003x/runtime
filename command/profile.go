@@ -9,7 +9,9 @@ import (
 	"unicode/utf8"
 )
 
-const MaxTokenBytes = 96 << 10
+// MaxTokenBytes stays below Linux's common 128 KiB single-argv-string limit,
+// which includes the terminating NUL.
+const MaxTokenBytes = 128_000
 
 type Effort string
 

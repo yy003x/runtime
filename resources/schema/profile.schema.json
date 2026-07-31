@@ -35,8 +35,8 @@
           "maxItems": 4096,
           "items": {
             "type": "string",
-            "maxLength": 98304,
-            "x-sn-max-bytes": 98304,
+            "maxLength": 128000,
+            "x-sn-max-bytes": 128000,
             "pattern": "^(?:[^$\\x00]|\\$+(?:\\{[A-Za-z_][A-Za-z0-9_]*\\}|[^$\\{\\x00]))*\\$*$"
           }
         },
@@ -53,15 +53,15 @@
               "string",
               "null"
             ],
-            "maxLength": 98304,
-            "x-sn-max-bytes": 98304,
+            "maxLength": 128000,
+            "x-sn-max-bytes": 128000,
             "pattern": "^(?:[^$\\x00]|\\$+(?:\\{[A-Za-z_][A-Za-z0-9_]*\\}|[^$\\{\\x00]))*\\$*$"
           }
         },
         "model": {
           "type": "string",
-          "maxLength": 98304,
-          "x-sn-max-bytes": 98304,
+          "maxLength": 128000,
+          "x-sn-max-bytes": 128000,
           "pattern": "^[^\\x00]*$"
         },
         "effort": {
@@ -76,8 +76,8 @@
         },
         "prompt": {
           "type": "string",
-          "maxLength": 98304,
-          "x-sn-max-bytes": 98304,
+          "maxLength": 128000,
+          "x-sn-max-bytes": 128000,
           "pattern": "^[^\\x00]*$"
         },
         "exec": {
@@ -86,8 +86,8 @@
         },
         "cwd": {
           "type": "string",
-          "maxLength": 98304,
-          "x-sn-max-bytes": 98304,
+          "maxLength": 128000,
+          "x-sn-max-bytes": 128000,
           "pattern": "^(?:[^$\\x00]|\\$+(?:\\{[A-Za-z_][A-Za-z0-9_]*\\}|[^$\\{\\x00]))*\\$*$"
         }
       }

@@ -76,6 +76,9 @@ Profile 的 `type=cli|api` 决定 command adapter 或 Provider adapter。Session
 不会自动启动 server。Session 内部保留 `requires_action` projection，但 stock
 CLI/HTTP 不发布 tool-result 写入口。
 
+CLI Profile 的 file、stdin、合并 prompt 与单个 argv/env token 上限统一为
+128,000 bytes；超过上限时在启动目标 CLI 前返回 `context_overflow`。
+
 Agent tool effect 的结果无法确认时，Run 进入 `needs_reconciliation`，不自动
 重放。显式 `run reconcile` 保留 effect evidence 并以 failed 收口；如果 Agent
 绑定了 Session，该 Session 在收口前保持 blocked。Agent `paused` 只通过

@@ -93,7 +93,7 @@ Profile prompt → --prompt → piped stdin → positional input
 ```
 
 `--exec` 等价于 `--exec=true`，不接受 `--exec true` 这种会消费位置输入的形式。
-`--` 后最多一个 input。每个输入片段和最终 prompt 上限为 96 KiB；Runtime 还会在
+`--` 后最多一个 input。每个输入片段和最终 prompt 上限为 128,000 bytes；Runtime 还会在
 spawn 前校验单 token 与总 argv/env/指针预算。
 
 CLI Profile 的两种 mode 都在校验后 process replacement：
