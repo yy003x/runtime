@@ -153,7 +153,7 @@ ID 不复用。每个 Turn 可选择 API 或 CLI Profile；executor/provider 只
 - projection 不改写或删除原始 messages。
 
 Profile base prompt 是 invocation 前缀，不另存为本轮 user Message。最终 CLI
-prompt 仍受 96 KiB argv-token 门禁。
+prompt 仍受 128,000-byte argv-token 门禁。
 
 ## CLI Execution
 

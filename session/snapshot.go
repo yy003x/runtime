@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maxBasePromptBytes = 96 << 10
+const maxBasePromptBytes = runtimecommand.MaxTokenBytes
 
 func (service *Service) PrepareRunRequest(
 	request RunRequest,

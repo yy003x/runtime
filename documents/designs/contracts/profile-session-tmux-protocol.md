@@ -160,11 +160,12 @@ stdin 和最后一个位置参数按此顺序合并，非空片段用换行连�
 - bare `--exec` 永不消费下一 token，因此 `--exec false` 表示
   `exec=true`、input=`false`；false 只能写成 `--exec=false`。
 - file、stdin 和 string fragment 都必须是 UTF-8、无 NUL；读取上限与最终 prompt
-  token 上限均为 96 KiB。file 使用 no-follow open 后 `fstat`，拒绝 symlink、
+  token 上限均为 128,000 bytes。该值低于 Linux 常见的 128 KiB 单 argv string
+  边界（含结尾 NUL）。file 使用 no-follow open 后 `fstat`，拒绝 symlink、
   非 regular file 和 stat/open race。
 - adapter 在 prompt 前加入 `--` option terminator；prompt 仍是最后一个 argv
   token，支持以 `-` 开头的内容，也不会被 variadic option 消费。
-- Invocation 构建时预检每个展开后的 argv/env token 不超过 96 KiB，总
+- Invocation 构建时预检每个展开后的 argv/env token 不超过 128,000 bytes，总
   `argv+env` 不超过 `min(512 KiB, ARG_MAX-32 KiB)`；无法探测 `ARG_MAX` 时使用
   128 KiB 保守总预算。总量计算包含每个 token 的 NUL、argv/env pointer table 和
   executable path；预算为负或不足时直接失败。超限必须在 spawn 前返回 typed
@@ -328,7 +329,7 @@ Session
   canonical 输入输出分别由 user/assistant Message 保存。
 - CLI history 继续生成有界、转义后的 history/current-input prompt，并在前面合并
   Profile base prompt；base prompt 是 invocation 前缀，不另存为本轮 user
-  Message。最终合并值同时受 96 KiB argv-token 门禁。
+  Message。最终合并值同时受 128,000-byte argv-token 门禁。
 - `session run` 等待 executor terminal result；`session submit` 由 durable Run
   worker 执行同一 Session service，不能在仅启动进程后把 Turn 标为 settled。
 
@@ -378,7 +379,7 @@ non-secret Profile snapshot/config digest；snapshot 保存 `command/args/env` �
 typed 字段，不保存 resolved env secret。durable Run 的公开 `Request` 只携带
 digest/ref；`CLIExecutionSnapshot` 与已解析 base-prompt 内容进入 SQLite schema=2
 独立的 store-only `private_request_json`，对应 Go 字段强制 `json:"-"`。内容受
-96 KiB 限制，DB/file mode=0600；CLI/HTTP 的 Run get/list/result/events、Session
+128,000-byte 限制，DB/file mode=0600；CLI/HTTP 的 Run get/list/result/events、Session
 export、human render、日志和 error 都不得序列化它。worker、idempotency 比较和
 retry/clone 通过 Store 内部接口读取 private payload，公开 DTO 永远 redacted。
 worker 不用自己的 cwd 重新解释，也不重新读取 prompt file；执行前
