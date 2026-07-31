@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -121,6 +122,84 @@ func TestSessionExecutorRejectsProfileDriftBeforeExecution(t *testing.T) {
 	}
 	if secondGenerator.calls != 0 {
 		t.Fatalf("generator calls=%d", secondGenerator.calls)
+	}
+}
+
+func TestSessionExecutionOutcomeRequiresReconciliationForRunningFact(
+	t *testing.T,
+) {
+	runtimeErr := &contract.RuntimeError{
+		Code: contract.ErrorInternal, Phase: contract.PhaseRun,
+		Message: "persist finalization",
+	}
+	result := session.RunResult{
+		SessionID:   "session_44444444444444444444444444444444",
+		TurnID:      "turn_44444444444444444444444444444444",
+		RunID:       "run_44444444444444444444444444444444",
+		ExecutionID: "execution_44444444444444444444444444444444",
+		State:       session.TurnRunning,
+		Error:       runtimeErr,
+	}
+	originalErr := &contract.RuntimeError{
+		Code: contract.ErrorProviderUnavailable, Phase: contract.PhaseProvider,
+		Message: "original provider failure",
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := sessionExecutionOutcome(result, resultJSON, originalErr)
+	if outcome.State != StateNeedsReconciliation ||
+		outcome.Error != runtimeErr ||
+		string(outcome.Result) != string(resultJSON) {
+		t.Fatalf("outcome=%#v", outcome)
+	}
+}
+
+func TestSessionExecutorPreparePublishesCLIProfileDefaults(t *testing.T) {
+	commands, err := runtimecommand.NewCatalog(
+		map[string]runtimecommand.Profile{
+			"cli": {
+				Command: "codex",
+				Model:   "gpt-fixture",
+				Effort:  runtimecommand.EffortHigh,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := model.NewCatalog(map[string]model.Profile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := profile.NewCatalog(commands, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := newSessionExecutorService(
+		t,
+		profiles,
+		&sessionExecutorGenerator{},
+	)
+	executor := &SessionExecutor{Profiles: profiles, Sessions: sessions}
+	cwd := t.TempDir()
+
+	prepared, err := executor.Prepare(context.Background(), Request{
+		Kind:           KindSession,
+		SessionID:      "session_33333333333333333333333333333333",
+		ProfileID:      "cli",
+		Input:          "hello",
+		InvocationBase: cwd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Model != "gpt-fixture" ||
+		prepared.Effort != string(runtimecommand.EffortHigh) ||
+		prepared.CWD != cwd ||
+		len(prepared.PrivateRequest) == 0 {
+		t.Fatalf("prepared=%#v", prepared)
 	}
 }
 

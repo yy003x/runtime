@@ -3,24 +3,32 @@ package http
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/model"
 )
 
 type stubGenerator struct {
-	events []contract.Event
-	result contract.ModelResult
-	err    *contract.RuntimeError
+	events        []contract.Event
+	result        contract.ModelResult
+	err           *contract.RuntimeError
+	generateCalls *int
 }
 
 func (stub stubGenerator) Generate(
 	context.Context,
 	contract.GenerateRequest,
 ) (contract.ModelResult, *contract.RuntimeError) {
+	if stub.generateCalls != nil {
+		(*stub.generateCalls)++
+	}
 	return stub.result, stub.err
 }
 
@@ -38,6 +46,41 @@ func (stub stubGenerator) GenerateStream(
 		}
 	}
 	return stub.result, stub.err
+}
+
+func (stubGenerator) ExecutionSnapshot(
+	profileID string,
+) (model.ExecutionSnapshot, error) {
+	if profileID != "api" {
+		return model.ExecutionSnapshot{}, fmt.Errorf(
+			"unknown fixture profile %q", profileID,
+		)
+	}
+	profile := model.Profile{
+		Driver:   model.DriverOpenAICompatible,
+		Endpoint: "https://example.invalid/v1/chat/completions",
+		Model:    "fixture",
+		Auth: model.Auth{
+			Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
+		},
+		Timeout: "1m",
+	}
+	profileJSON, err := json.Marshal(profile)
+	if err != nil {
+		return model.ExecutionSnapshot{}, err
+	}
+	sum := sha256.Sum256(profileJSON)
+	return model.ExecutionSnapshot{
+		SchemaVersion: model.ExecutionSnapshotSchemaVersion,
+		ProfileID:     profileID,
+		Profile:       profile,
+		ProfileDigest: "sha256:" + hex.EncodeToString(sum[:]),
+		DriverIdentity: model.DriverExecutionIdentity{
+			Driver:                model.DriverOpenAICompatible,
+			Implementation:        "transport.http.stub-generator",
+			ImplementationVersion: 1,
+		},
+	}, nil
 }
 
 func TestHandlerStrictJSONAndNormalResult(t *testing.T) {
@@ -80,6 +123,66 @@ func TestHandlerStrictJSONAndNormalResult(t *testing.T) {
 	}
 	if current.Message.Content != "ok" {
 		t.Fatalf("result=%#v", current)
+	}
+}
+
+func TestHandlerRejectsNonObjectRequestBeforeGenerate(t *testing.T) {
+	calls := 0
+	handler := NewHandler(stubGenerator{generateCalls: &calls})
+	for _, body := range []string{`null`, `[]`, `"value"`} {
+		request := httptest.NewRequest(
+			"POST", "/v1/model/generate", strings.NewReader(body),
+		)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != 400 ||
+			!strings.Contains(recorder.Body.String(), `"code":"invalid_request"`) {
+			t.Fatalf(
+				"body=%s status=%d response=%s",
+				body, recorder.Code, recorder.Body.String(),
+			)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid object requests invoked generator %d times", calls)
+	}
+}
+
+func TestHandlerAllowsNullInsideToolInputSchema(t *testing.T) {
+	calls := 0
+	handler := NewHandler(stubGenerator{
+		generateCalls: &calls,
+		result: contract.ModelResult{
+			Message:      contract.Message{Role: contract.RoleAssistant, Content: "ok"},
+			FinishReason: contract.FinishStop,
+		},
+	})
+	request := httptest.NewRequest(
+		"POST",
+		"/v1/model/generate",
+		strings.NewReader(`{
+			"model_profile":"fixture",
+			"input":{
+				"messages":[{"role":"user","content":"hello"}],
+				"tools":[{
+					"name":"nullable",
+					"input_schema":{
+						"type":["string","null"],
+						"default":null
+					}
+				}]
+			}
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("generator calls=%d", calls)
 	}
 }
 

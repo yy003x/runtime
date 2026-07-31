@@ -5,6 +5,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	runtimecommand "github.com/yy003x/runtime/command"
@@ -13,6 +14,10 @@ import (
 )
 
 const SchemaVersion = 2
+
+// ErrConflict marks a Session state conflict that callers may safely map to a
+// public conflict response without treating Store failures as user errors.
+var ErrConflict = errors.New("session state conflict")
 
 type SessionState string
 
@@ -26,7 +31,6 @@ const (
 type TurnState string
 
 const (
-	TurnPending        TurnState = "pending"
 	TurnRunning        TurnState = "running"
 	TurnRequiresAction TurnState = "requires_action"
 	TurnCompleted      TurnState = "completed"
@@ -88,6 +92,7 @@ type Turn struct {
 	TaskID           string                       `json:"task_id,omitempty"`
 	ProfileID        string                       `json:"profile_id"`
 	ProfileKind      profile.Kind                 `json:"profile_kind"`
+	AgentOwned       bool                         `json:"agent_owned,omitempty"`
 	State            TurnState                    `json:"state"`
 	CaptureQuality   CaptureQuality               `json:"capture_quality,omitempty"`
 	PendingToolCalls []contract.ToolCall          `json:"pending_tool_calls,omitempty"`
@@ -271,4 +276,5 @@ type GCResult struct {
 	DryRun     bool     `json:"dry_run"`
 	Candidates []string `json:"candidates"`
 	Moved      []string `json:"moved,omitempty"`
+	Skipped    []string `json:"skipped,omitempty"`
 }

@@ -1,21 +1,20 @@
 package session
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/yy003x/runtime/internal/identity"
+	"github.com/yy003x/runtime/internal/strictjson"
 	"github.com/yy003x/runtime/profile"
 )
 
@@ -25,11 +24,24 @@ const (
 )
 
 type Store struct {
-	sessionsDir string
-	historyDir  string
-	stateDir    string
-	lockDir     string
-	now         func() time.Time
+	sessionsDir   string
+	historyDir    string
+	stateDir      string
+	lockDir       string
+	journalDir    string
+	moveDir       string
+	invocationDir string
+	now           func() time.Time
+
+	mutationMu         sync.Mutex
+	activeMutations    map[string]*sessionMutation
+	mutationFailpoint  func(stage, relativePath string)
+	mutationErrorpoint func(stage, relativePath string) error
+
+	directoryIdentityMu sync.Mutex
+	directoryIdentities map[string]safeFileIdentity
+	lockIdentityMu      sync.Mutex
+	lockIdentities      map[string]safeFileIdentity
 }
 
 func NewStore(sessionsDir, stateDir string) (*Store, error) {
@@ -41,34 +53,102 @@ func NewStore(sessionsDir, stateDir string) (*Store, error) {
 			return nil, fmt.Errorf("%s is required", label)
 		}
 	}
-	store := &Store{
-		sessionsDir: filepath.Clean(sessionsDir),
-		historyDir:  filepath.Join(filepath.Clean(sessionsDir), "_system"),
-		stateDir:    filepath.Clean(stateDir),
-		lockDir:     filepath.Join(filepath.Clean(stateDir), "session-locks"),
-		now:         time.Now,
+	canonicalSessionsDir, err := canonicalStorePath(sessionsDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sessions directory: %w", err)
 	}
-	if info, err := os.Lstat(store.stateDir); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return nil, fmt.Errorf(
-				"state directory must be a directory, not a symlink",
-			)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	canonicalStateDir, err := canonicalStorePath(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve state directory: %w", err)
+	}
+	store := &Store{
+		sessionsDir:         canonicalSessionsDir,
+		historyDir:          filepath.Join(canonicalSessionsDir, "_system"),
+		stateDir:            canonicalStateDir,
+		lockDir:             filepath.Join(canonicalStateDir, "session-locks"),
+		journalDir:          filepath.Join(canonicalStateDir, "session-mutations"),
+		moveDir:             filepath.Join(canonicalStateDir, "session-trash-moves"),
+		invocationDir:       filepath.Join(canonicalStateDir, "session-invocations"),
+		now:                 time.Now,
+		activeMutations:     make(map[string]*sessionMutation),
+		directoryIdentities: make(map[string]safeFileIdentity),
+		lockIdentities:      make(map[string]safeFileIdentity),
+	}
+	recoveredMove, err := store.recoverTrashMoves()
+	if err != nil {
+		return nil, err
+	}
+	if err := store.recoverExistingMutations(); err != nil {
 		return nil, err
 	}
 	if err := store.validateExistingSchema(); err != nil {
 		return nil, err
 	}
+	if recoveredMove {
+		if err := store.rebuildIndex(); err != nil {
+			return nil, fmt.Errorf(
+				"rebuild Session index after trash move recovery: %w", err,
+			)
+		}
+		if err := store.completeAllTrashMoves(); err != nil {
+			return nil, fmt.Errorf(
+				"complete Session trash move recovery: %w", err,
+			)
+		}
+	}
 	return store, nil
 }
 
 func (store *Store) ensure() error {
-	for _, directory := range []string{
-		store.sessionsDir, store.historyDir,
-		filepath.Join(store.historyDir, "trash"), store.lockDir,
+	sessions, err := store.ensurePinnedRoot(store.sessionsDir)
+	if err != nil {
+		return err
+	}
+	defer sessions.close()
+	history, err := sessions.openDirectory("_system", true)
+	if err != nil {
+		return err
+	}
+	if err := store.pinOpenedDirectory(history); err != nil {
+		history.close()
+		return err
+	}
+	trash, err := history.openDirectory("trash", true)
+	if err != nil {
+		history.close()
+		return err
+	}
+	if err := store.pinOpenedDirectory(trash); err != nil {
+		trash.close()
+		history.close()
+		return err
+	}
+	if err := trash.close(); err != nil {
+		history.close()
+		return err
+	}
+	if err := history.close(); err != nil {
+		return err
+	}
+
+	state, err := store.ensurePinnedRoot(store.stateDir)
+	if err != nil {
+		return err
+	}
+	defer state.close()
+	for _, name := range []string{
+		"session-locks", "session-mutations", "session-trash-moves",
+		"session-invocations",
 	} {
-		if err := ensureDirectory(directory); err != nil {
+		child, err := state.openDirectory(name, true)
+		if err != nil {
+			return err
+		}
+		if err := store.pinOpenedDirectory(child); err != nil {
+			child.close()
+			return err
+		}
+		if err := child.close(); err != nil {
 			return err
 		}
 	}
@@ -76,22 +156,20 @@ func (store *Store) ensure() error {
 }
 
 func (store *Store) validateExistingSchema() error {
-	info, err := os.Lstat(store.sessionsDir)
+	sessions, err := store.openSessionsDirectory()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("sessions directory must be a directory, not a symlink")
-	}
-	entries, err := os.ReadDir(store.sessionsDir)
+	defer sessions.close()
+	entries, err := sessions.entries()
 	if err != nil {
 		return err
 	}
-	if historyInfo, err := os.Lstat(store.historyDir); err == nil {
-		if historyInfo.Mode()&os.ModeSymlink != 0 || !historyInfo.IsDir() {
+	if historyInfo, err := sessions.statEntry("_system"); err == nil {
+		if !historyInfo.isDirectory() {
 			return fmt.Errorf(
 				"session store history must be a directory, not a symlink",
 			)
@@ -100,42 +178,68 @@ func (store *Store) validateExistingSchema() error {
 		return err
 	}
 	indexPath := filepath.Join(store.historyDir, "index.json")
-	if _, err := os.Lstat(indexPath); err == nil {
-		var index struct {
-			SchemaVersion int       `json:"schema_version"`
-			Sessions      []Session `json:"sessions"`
-		}
-		if err := readStrictJSON(indexPath, &index); err != nil {
+	history, historyErr := store.openPinnedDirectory(store.historyDir)
+	if historyErr == nil {
+		defer history.close()
+	}
+	if historyErr == nil {
+		if _, err := history.statEntry("index.json"); err == nil {
+			var index struct {
+				SchemaVersion int       `json:"schema_version"`
+				Sessions      []Session `json:"sessions"`
+			}
+			if err := history.readStrictJSON(
+				"index.json", maxFactLineBytes, &index,
+			); err != nil {
+				return err
+			}
+			if index.SchemaVersion != SchemaVersion {
+				return unsupportedFactSchema(indexPath, index.SchemaVersion)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if index.SchemaVersion != SchemaVersion {
-			return unsupportedFactSchema(indexPath, index.SchemaVersion)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	} else if !errors.Is(historyErr, os.ErrNotExist) {
+		return historyErr
 	}
 	for _, entry := range entries {
-		if entry.Name() == "_system" {
-			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+		if entry.name == "_system" {
+			if !entry.isDirectory() {
 				return fmt.Errorf(
 					"session store history must be a directory, not a symlink",
 				)
 			}
 			continue
 		}
-		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if !entry.isDirectory() {
 			return fmt.Errorf(
 				"session store contains unsupported entry %q",
-				entry.Name(),
+				entry.name,
 			)
 		}
-		if err := identity.Validate(entry.Name(), "session"); err != nil {
+		if err := identity.Validate(entry.name, "session"); err != nil {
 			return fmt.Errorf(
 				"session store contains invalid directory %q: %w",
-				entry.Name(), err,
+				entry.name, err,
 			)
 		}
-		if err := store.validateSessionFacts(entry.Name()); err != nil {
+		err := store.withSessionFileLock(entry.name, func() error {
+			root, err := store.openSessionRoot(entry.name)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if err := root.close(); err != nil {
+				return err
+			}
+			if err := store.recoverMutationLocked(entry.name); err != nil {
+				return err
+			}
+			return store.validateSessionFacts(entry.name)
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -153,7 +257,7 @@ func (store *Store) validateSessionFacts(sessionID string) error {
 			store.sessionFile(sessionID), sessionValue.ID,
 		)
 	}
-	if err := validateSessionRootLayout(store.sessionDir(sessionID)); err != nil {
+	if err := store.validateSessionRootLayout(sessionID); err != nil {
 		return err
 	}
 	if err := store.validateTurnFacts(sessionID); err != nil {
@@ -204,8 +308,14 @@ func (store *Store) validateSessionFacts(sessionID string) error {
 	return nil
 }
 
-func validateSessionRootLayout(root string) error {
-	entries, err := os.ReadDir(root)
+func (store *Store) validateSessionRootLayout(sessionID string) error {
+	rootPath := store.sessionDir(sessionID)
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return err
+	}
+	defer root.close()
+	entries, err := root.entries()
 	if err != nil {
 		return err
 	}
@@ -216,16 +326,19 @@ func validateSessionRootLayout(root string) error {
 		"turns": true, "executions": true, "context": true,
 	}
 	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s contains a symlink", root)
+		if entry.isRegular() && isOwnedAtomicTempName(entry.name) {
+			continue
+		}
+		if entry.isSymlink() {
+			return fmt.Errorf("%s contains a symlink", rootPath)
 		}
 		switch {
-		case files[entry.Name()] && !entry.IsDir():
-		case directories[entry.Name()] && entry.IsDir():
+		case files[entry.name] && entry.isRegular():
+		case directories[entry.name] && entry.isDirectory():
 		default:
 			return fmt.Errorf(
 				"%s contains unsupported Session fact %q",
-				root, entry.Name(),
+				rootPath, entry.name,
 			)
 		}
 	}
@@ -233,84 +346,144 @@ func validateSessionRootLayout(root string) error {
 }
 
 func (store *Store) validateTurnFacts(sessionID string) error {
-	root := filepath.Join(store.sessionDir(sessionID), "turns")
-	entries, err := os.ReadDir(root)
+	rootPath := filepath.Join(store.sessionDir(sessionID), "turns")
+	sessionRoot, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return err
+	}
+	defer sessionRoot.close()
+	root, err := sessionRoot.openDirectory("turns", false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	defer root.close()
+	entries, err := root.entries()
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
-			return fmt.Errorf("%s contains unsupported turn entry %q", root, entry.Name())
+		if !entry.isDirectory() {
+			return fmt.Errorf(
+				"%s contains unsupported turn entry %q",
+				rootPath, entry.name,
+			)
 		}
-		if err := identity.Validate(entry.Name(), "turn"); err != nil {
-			return fmt.Errorf("%s contains invalid turn %q: %w", root, entry.Name(), err)
+		if err := identity.Validate(entry.name, "turn"); err != nil {
+			return fmt.Errorf(
+				"%s contains invalid turn %q: %w",
+				rootPath, entry.name, err,
+			)
 		}
-		turnRoot := filepath.Join(root, entry.Name())
-		children, err := os.ReadDir(turnRoot)
+		turnRelativePath := filepath.Join("turns", entry.name)
+		turnRoot, err := sessionRoot.openDirectory(
+			turnRelativePath, false,
+		)
 		if err != nil {
 			return err
 		}
+		children, err := turnRoot.entries()
+		closeErr := turnRoot.close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		turnPath := filepath.Join(rootPath, entry.name)
 		hasTurn := false
 		for _, child := range children {
-			if child.Type()&os.ModeSymlink != 0 || child.IsDir() {
-				return fmt.Errorf("%s contains unsupported fact %q", turnRoot, child.Name())
+			if child.isRegular() && isOwnedAtomicTempName(child.name) {
+				continue
 			}
-			path := filepath.Join(turnRoot, child.Name())
-			switch child.Name() {
+			if !child.isRegular() {
+				return fmt.Errorf(
+					"%s contains unsupported fact %q",
+					turnPath, child.name,
+				)
+			}
+			path := filepath.Join(turnPath, child.name)
+			relativePath := filepath.Join(turnRelativePath, child.name)
+			switch child.name {
 			case "turn.json":
 				hasTurn = true
 				var value Turn
-				if err := readStrictJSON(path, &value); err != nil {
+				if err := sessionRoot.readStrictJSON(
+					relativePath, maxFactLineBytes, &value,
+				); err != nil {
 					return err
 				}
 				if value.SchemaVersion != SchemaVersion {
 					return unsupportedFactSchema(path, value.SchemaVersion)
 				}
-				if value.ID != entry.Name() || value.SessionID != sessionID {
+				if value.ID != entry.name || value.SessionID != sessionID {
 					return fmt.Errorf("%s identity does not match its path", path)
 				}
 			case "context-manifest.json":
 				var value ContextManifest
-				if err := readStrictJSON(path, &value); err != nil {
+				if err := sessionRoot.readStrictJSON(
+					relativePath, maxFactLineBytes, &value,
+				); err != nil {
 					return err
 				}
 				if value.SchemaVersion != SchemaVersion {
 					return unsupportedFactSchema(path, value.SchemaVersion)
 				}
-				if value.TurnID != entry.Name() || value.SessionID != sessionID {
+				if value.TurnID != entry.name || value.SessionID != sessionID {
 					return fmt.Errorf("%s identity does not match its path", path)
 				}
 			default:
-				return fmt.Errorf("%s contains unsupported fact %q", turnRoot, child.Name())
+				return fmt.Errorf(
+					"%s contains unsupported fact %q",
+					turnPath, child.name,
+				)
 			}
 		}
 		if !hasTurn {
-			return fmt.Errorf("%s is missing turn.json", turnRoot)
+			return fmt.Errorf("%s is missing turn.json", turnPath)
 		}
 	}
 	return nil
 }
 
 func (store *Store) validateExecutionFacts(sessionID string) error {
-	root := filepath.Join(store.sessionDir(sessionID), "executions")
-	entries, err := os.ReadDir(root)
+	rootPath := filepath.Join(store.sessionDir(sessionID), "executions")
+	sessionRoot, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return err
+	}
+	defer sessionRoot.close()
+	root, err := sessionRoot.openDirectory("executions", false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	defer root.close()
+	entries, err := root.entries()
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() ||
-			filepath.Ext(entry.Name()) != ".json" {
-			return fmt.Errorf("%s contains unsupported execution fact %q", root, entry.Name())
+		if entry.isRegular() && isOwnedAtomicTempName(entry.name) {
+			continue
 		}
-		executionID := strings.TrimSuffix(entry.Name(), ".json")
+		if !entry.isRegular() ||
+			filepath.Ext(entry.name) != ".json" {
+			return fmt.Errorf(
+				"%s contains unsupported execution fact %q",
+				rootPath, entry.name,
+			)
+		}
+		executionID := strings.TrimSuffix(entry.name, ".json")
 		if err := identity.Validate(executionID, "execution"); err != nil {
-			return fmt.Errorf("%s contains invalid execution %q: %w", root, entry.Name(), err)
+			return fmt.Errorf(
+				"%s contains invalid execution %q: %w",
+				rootPath, entry.name, err,
+			)
 		}
 		value, err := store.loadExecution(sessionID, executionID)
 		if err != nil {
@@ -319,7 +492,7 @@ func (store *Store) validateExecutionFacts(sessionID string) error {
 		if value.ID != executionID || value.SessionID != sessionID {
 			return fmt.Errorf(
 				"%s identity does not match its path",
-				filepath.Join(root, entry.Name()),
+				filepath.Join(rootPath, entry.name),
 			)
 		}
 	}
@@ -327,23 +500,41 @@ func (store *Store) validateExecutionFacts(sessionID string) error {
 }
 
 func (store *Store) validateContextFacts(sessionID string) error {
-	root := filepath.Join(store.sessionDir(sessionID), "context")
-	entries, err := os.ReadDir(root)
+	rootPath := filepath.Join(store.sessionDir(sessionID), "context")
+	sessionRoot, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return err
+	}
+	defer sessionRoot.close()
+	root, err := sessionRoot.openDirectory("context", false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	defer root.close()
+	entries, err := root.entries()
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		if entry.Name() != "current.json" ||
-			entry.Type()&os.ModeSymlink != 0 ||
-			entry.IsDir() {
-			return fmt.Errorf("%s contains unsupported context fact %q", root, entry.Name())
+		if entry.isRegular() && isOwnedAtomicTempName(entry.name) {
+			continue
 		}
-		path := filepath.Join(root, entry.Name())
+		if entry.name != "current.json" || !entry.isRegular() {
+			return fmt.Errorf(
+				"%s contains unsupported context fact %q",
+				rootPath, entry.name,
+			)
+		}
+		path := filepath.Join(rootPath, entry.name)
 		var value ContextManifest
-		if err := readStrictJSON(path, &value); err != nil {
+		if err := sessionRoot.readStrictJSON(
+			filepath.Join("context", entry.name),
+			maxFactLineBytes,
+			&value,
+		); err != nil {
 			return err
 		}
 		if value.SchemaVersion != SchemaVersion {
@@ -365,6 +556,11 @@ func unsupportedFactSchema(path string, version int) error {
 	)
 }
 
+func isOwnedAtomicTempName(name string) bool {
+	return strings.HasPrefix(name, ".runtime-") &&
+		strings.HasSuffix(name, ".tmp")
+}
+
 func (store *Store) withLock(sessionID string, fn func() error) error {
 	if err := identity.Validate(sessionID, "session"); err != nil {
 		return err
@@ -372,22 +568,86 @@ func (store *Store) withLock(sessionID string, fn func() error) error {
 	if err := store.ensure(); err != nil {
 		return err
 	}
-	lockPath := filepath.Join(store.lockDir, sessionID+".lock")
-	file, err := openRegularForLock(lockPath)
+	return store.withSessionFileLock(sessionID, func() error {
+		if err := store.beginMutation(sessionID); err != nil {
+			return err
+		}
+		callbackErr := fn()
+		if callbackErr == nil {
+			callbackErr = store.hitMutationErrorpoint(
+				"after_mutation_callback", "",
+			)
+		}
+		finishErr := store.finishMutation(sessionID, callbackErr == nil)
+		switch {
+		case callbackErr != nil && finishErr != nil:
+			return errors.Join(
+				callbackErr,
+				fmt.Errorf("restore Session mutation: %w", finishErr),
+			)
+		case callbackErr != nil:
+			return callbackErr
+		default:
+			return finishErr
+		}
+	})
+}
+
+func (store *Store) withSessionFileLock(
+	sessionID string,
+	fn func() error,
+) error {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return err
+	}
+	if err := store.ensure(); err != nil {
+		return err
+	}
+	lockDirectory, err := store.openPinnedDirectory(store.lockDir)
+	if err != nil {
+		return err
+	}
+	defer lockDirectory.close()
+	file, err := lockDirectory.openRegularForLock(sessionID + ".lock")
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	if err := store.pinLockIdentity(
+		filepath.Join(store.lockDir, sessionID+".lock"), file,
+	); err != nil {
+		return err
+	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("lock session %s: %w", sessionID, err)
 	}
 	defer unix.Flock(int(file.Fd()), unix.LOCK_UN) //nolint:errcheck
-	return fn()
+	store.hitMutationFailpoint("after_session_lock_acquired", sessionID)
+	if err := lockDirectory.verifyVisibleRegular(
+		sessionID+".lock", file,
+	); err != nil {
+		return err
+	}
+	callbackErr := fn()
+	visibleErr := lockDirectory.verifyVisibleRegular(
+		sessionID+".lock", file,
+	)
+	if visibleErr != nil {
+		return errors.Join(callbackErr, visibleErr)
+	}
+	return callbackErr
 }
 
 func (store *Store) loadSession(sessionID string) (Session, error) {
 	var value Session
-	if err := readStrictJSON(store.sessionFile(sessionID), &value); err != nil {
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	defer root.close()
+	if err := root.readStrictJSON(
+		"session.json", maxFactLineBytes, &value,
+	); err != nil {
 		return Session{}, err
 	}
 	if value.SchemaVersion != SchemaVersion {
@@ -402,7 +662,16 @@ func (store *Store) loadSession(sessionID string) (Session, error) {
 }
 
 func (store *Store) writeSession(value Session) error {
-	return atomicJSON(store.sessionFile(value.ID), value, 0o600)
+	path := store.sessionFile(value.ID)
+	relativePath, err := store.prepareReplace(value.ID, path)
+	if err != nil {
+		return err
+	}
+	if err := store.atomicMutationJSON(value.ID, relativePath, value); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", relativePath)
+	return nil
 }
 
 func (store *Store) loadTurn(sessionID, turnID string) (Turn, error) {
@@ -410,7 +679,15 @@ func (store *Store) loadTurn(sessionID, turnID string) (Turn, error) {
 		return Turn{}, err
 	}
 	var value Turn
-	if err := readStrictJSON(store.turnFile(sessionID, turnID), &value); err != nil {
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return Turn{}, err
+	}
+	defer root.close()
+	relativePath := filepath.Join("turns", turnID, "turn.json")
+	if err := root.readStrictJSON(
+		relativePath, maxFactLineBytes, &value,
+	); err != nil {
 		return Turn{}, err
 	}
 	if value.SchemaVersion != SchemaVersion {
@@ -427,17 +704,38 @@ func (store *Store) loadTurn(sessionID, turnID string) (Turn, error) {
 }
 
 func (store *Store) writeTurn(value Turn) error {
-	return atomicJSON(store.turnFile(value.SessionID, value.ID), value, 0o600)
+	path := store.turnFile(value.SessionID, value.ID)
+	relativePath, err := store.prepareReplace(value.SessionID, path)
+	if err != nil {
+		return err
+	}
+	if err := store.atomicMutationJSON(
+		value.SessionID, relativePath, value,
+	); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", relativePath)
+	return nil
 }
 
 func (store *Store) writeExecution(value Execution) error {
 	if err := identity.Validate(value.ID, "execution"); err != nil {
 		return err
 	}
-	return atomicJSON(
-		filepath.Join(store.sessionDir(value.SessionID), "executions", value.ID+".json"),
-		value, 0o600,
+	path := filepath.Join(
+		store.sessionDir(value.SessionID), "executions", value.ID+".json",
 	)
+	relativePath, err := store.prepareReplace(value.SessionID, path)
+	if err != nil {
+		return err
+	}
+	if err := store.atomicMutationJSON(
+		value.SessionID, relativePath, value,
+	); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", relativePath)
+	return nil
 }
 
 func (store *Store) loadExecution(
@@ -450,7 +748,16 @@ func (store *Store) loadExecution(
 		store.sessionDir(sessionID), "executions", executionID+".json",
 	)
 	var value Execution
-	if err := readStrictJSON(path, &value); err != nil {
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return Execution{}, err
+	}
+	defer root.close()
+	if err := root.readStrictJSON(
+		filepath.Join("executions", executionID+".json"),
+		maxFactLineBytes,
+		&value,
+	); err != nil {
 		return Execution{}, err
 	}
 	if value.SchemaVersion != SchemaVersion {
@@ -579,29 +886,73 @@ func (store *Store) writeManifest(value ContextManifest) error {
 	turnPath := filepath.Join(
 		store.sessionDir(value.SessionID), "turns", value.TurnID, "context-manifest.json",
 	)
-	if err := atomicJSON(turnPath, value, 0o600); err != nil {
+	turnRelativePath, err := store.prepareReplace(value.SessionID, turnPath)
+	if err != nil {
 		return err
 	}
+	if err := store.atomicMutationJSON(
+		value.SessionID, turnRelativePath, value,
+	); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", turnRelativePath)
 	currentPath := filepath.Join(store.sessionDir(value.SessionID), "context", "current.json")
-	return atomicJSON(currentPath, value, 0o600)
+	currentRelativePath, err := store.prepareReplace(value.SessionID, currentPath)
+	if err != nil {
+		return err
+	}
+	if err := store.atomicMutationJSON(
+		value.SessionID, currentRelativePath, value,
+	); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", currentRelativePath)
+	return nil
 }
 
 func (store *Store) appendMessage(session *Session, value MessageRecord) error {
 	session.MessageCount++
 	value.Sequence = session.MessageCount
-	return appendJSONLine(filepath.Join(store.sessionDir(session.ID), "messages.jsonl"), value)
+	path := filepath.Join(store.sessionDir(session.ID), "messages.jsonl")
+	relativePath, err := store.prepareAppend(session.ID, path)
+	if err != nil {
+		return err
+	}
+	if err := store.appendMutationJSONLine(
+		session.ID, relativePath, value,
+	); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", relativePath)
+	return nil
 }
 
 func (store *Store) appendEvent(session *Session, value EventRecord) error {
 	session.EventCount++
 	value.Sequence = session.EventCount
-	return appendJSONLine(filepath.Join(store.sessionDir(session.ID), "events.jsonl"), value)
+	path := filepath.Join(store.sessionDir(session.ID), "events.jsonl")
+	relativePath, err := store.prepareAppend(session.ID, path)
+	if err != nil {
+		return err
+	}
+	if err := store.appendMutationJSONLine(
+		session.ID, relativePath, value,
+	); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", relativePath)
+	return nil
 }
 
 func (store *Store) messages(sessionID string) ([]MessageRecord, error) {
 	var values []MessageRecord
-	err := readJSONLines(
-		filepath.Join(store.sessionDir(sessionID), "messages.jsonl"),
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer root.close()
+	err = root.readJSONLines(
+		"messages.jsonl", maxFactFileBytes, maxFactLineBytes,
 		func(data []byte) error {
 			var value MessageRecord
 			if err := decodeStrict(data, &value); err != nil {
@@ -616,8 +967,13 @@ func (store *Store) messages(sessionID string) ([]MessageRecord, error) {
 
 func (store *Store) events(sessionID string) ([]EventRecord, error) {
 	var values []EventRecord
-	err := readJSONLines(
-		filepath.Join(store.sessionDir(sessionID), "events.jsonl"),
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer root.close()
+	err = root.readJSONLines(
+		"events.jsonl", maxFactFileBytes, maxFactLineBytes,
 		func(data []byte) error {
 			var value EventRecord
 			if err := decodeStrict(data, &value); err != nil {
@@ -631,24 +987,44 @@ func (store *Store) events(sessionID string) ([]EventRecord, error) {
 }
 
 func (store *Store) list(filter ListFilter) ([]Session, error) {
+	if err := ValidateListFilter(filter); err != nil {
+		return nil, err
+	}
 	if err := store.ensure(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(store.sessionsDir)
+	sessions, err := store.openSessionsDirectory()
+	if err != nil {
+		return nil, err
+	}
+	defer sessions.close()
+	entries, err := sessions.entries()
 	if err != nil {
 		return nil, err
 	}
 	values := make([]Session, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if !entry.isDirectory() {
 			continue
 		}
-		if err := identity.Validate(entry.Name(), "session"); err != nil {
+		if err := identity.Validate(entry.name, "session"); err != nil {
 			continue
 		}
-		value, err := store.loadSession(entry.Name())
+		var value Session
+		err := store.withLock(entry.name, func() error {
+			var err error
+			value, err = store.loadSession(entry.name)
+			if errors.Is(err, os.ErrNotExist) {
+				value = Session{}
+				return nil
+			}
+			return err
+		})
 		if err != nil {
 			return nil, err
+		}
+		if value.ID == "" {
+			continue
 		}
 		if filter.State != "" && value.State != filter.State {
 			continue
@@ -661,25 +1037,52 @@ func (store *Store) list(filter ListFilter) ([]Session, error) {
 	return values, nil
 }
 
-func (store *Store) rebuildIndex() error {
+func (store *Store) rebuildIndex() (resultErr error) {
 	if err := store.ensure(); err != nil {
 		return err
 	}
-	lock, err := openRegularForLock(filepath.Join(store.lockDir, "index.lock"))
+	lockDirectory, err := store.openPinnedDirectory(store.lockDir)
+	if err != nil {
+		return err
+	}
+	defer lockDirectory.close()
+	lock, err := lockDirectory.openRegularForLock("index.lock")
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	if err := store.pinLockIdentity(
+		filepath.Join(store.lockDir, "index.lock"), lock,
+	); err != nil {
+		return err
+	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("lock session index: %w", err)
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck
+	store.hitMutationFailpoint("after_index_lock_acquired", "index.lock")
+	if err := lockDirectory.verifyVisibleRegular("index.lock", lock); err != nil {
+		return err
+	}
+	defer func() {
+		visibleErr := lockDirectory.verifyVisibleRegular(
+			"index.lock", lock,
+		)
+		if visibleErr != nil {
+			resultErr = errors.Join(resultErr, visibleErr)
+		}
+	}()
 	values, err := store.list(ListFilter{})
 	if err != nil {
 		return err
 	}
-	return atomicJSON(
-		filepath.Join(store.historyDir, "index.json"),
+	history, err := store.openPinnedDirectory(store.historyDir)
+	if err != nil {
+		return err
+	}
+	defer history.close()
+	return history.atomicJSON(
+		"index.json",
 		map[string]any{"schema_version": SchemaVersion, "sessions": values},
 		0o600,
 	)
@@ -697,184 +1100,10 @@ func (store *Store) turnFile(sessionID, turnID string) string {
 	return filepath.Join(store.sessionDir(sessionID), "turns", turnID, "turn.json")
 }
 
-func ensureDirectory(path string) error {
-	info, err := os.Lstat(path)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("%s must be a directory, not a symlink", path)
-		}
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return fmt.Errorf("create directory %s: %w", path, err)
-	}
-	return nil
-}
-
-func openRegularForLock(path string) (*os.File, error) {
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("lock path %s must be a regular file", path)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open lock %s: %w", path, err)
-	}
-	return file, nil
-}
-
-func atomicJSON(path string, value any, mode os.FileMode) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	parent := filepath.Dir(path)
-	if err := ensureDirectory(parent); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to replace symlink %s", path)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	temp, err := os.CreateTemp(parent, ".runtime-*.tmp")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(mode); err != nil {
-		temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return err
-	}
-	return syncDirectory(parent)
-}
-
-func appendJSONLine(path string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	if len(data) > maxFactLineBytes {
-		return fmt.Errorf("fact exceeds %d bytes", maxFactLineBytes)
-	}
-	data = append(data, '\n')
-	parent := filepath.Dir(path)
-	if err := ensureDirectory(parent); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return fmt.Errorf("%s must be a regular file, not a symlink", path)
-		}
-		if info.Size()+int64(len(data)) > maxFactFileBytes {
-			return fmt.Errorf("%s exceeds %d bytes", path, maxFactFileBytes)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	return file.Sync()
-}
-
-func readStrictJSON(path string, value any) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("%s must be a regular file, not a symlink", path)
-	}
-	if info.Size() > maxFactLineBytes {
-		return fmt.Errorf("%s exceeds %d bytes", path, maxFactLineBytes)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	return decodeStrict(data, value)
-}
-
 func decodeStrict(data []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
+	limit := int64(len(data))
+	if limit == 0 {
+		limit = 1
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return fmt.Errorf("unexpected trailing JSON")
-		}
-		return err
-	}
-	return nil
-}
-
-func readJSONLines(path string, accept func([]byte) error) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("%s must be a regular file, not a symlink", path)
-	}
-	if info.Size() > maxFactFileBytes {
-		return fmt.Errorf("%s exceeds %d bytes", path, maxFactFileBytes)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64<<10), maxFactLineBytes)
-	line := 0
-	for scanner.Scan() {
-		line++
-		if err := accept(scanner.Bytes()); err != nil {
-			return fmt.Errorf("%s line %d: %w", path, line, err)
-		}
-	}
-	return scanner.Err()
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return strictjson.Decode(bytes.NewReader(data), limit, value)
 }

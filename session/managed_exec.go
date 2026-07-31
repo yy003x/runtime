@@ -16,14 +16,17 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
+	"golang.org/x/sys/unix"
 )
 
 const (
-	maxCanonicalStdoutBytes    = 16 << 20
-	maxDiagnosticStderrBytes   = 256 << 10
-	maxInvocationManifestBytes = 1 << 20
-	execHelperArgument         = "__sn_private_session_exec_helper"
-	execHelperManifestEnv      = "SN_PRIVATE_SESSION_EXEC_MANIFEST"
+	maxCanonicalStdoutBytes     = 16 << 20
+	maxDiagnosticStderrBytes    = 256 << 10
+	maxInvocationManifestBytes  = 1 << 20
+	execHelperArgument          = "__sn_private_session_exec_helper"
+	execHelperManifestEnv       = "SN_PRIVATE_SESSION_EXEC_MANIFEST"
+	execHelperManifestDirIDEnv  = "SN_PRIVATE_SESSION_EXEC_MANIFEST_DIR_ID"
+	execHelperManifestFileIDEnv = "SN_PRIVATE_SESSION_EXEC_MANIFEST_FILE_ID"
 )
 
 type helperInvocationManifest struct {
@@ -31,6 +34,13 @@ type helperInvocationManifest struct {
 	Argv        []string `json:"argv"`
 	Environment []string `json:"environment"`
 	CWD         string   `json:"cwd"`
+}
+
+type invocationManifestHandle struct {
+	path              string
+	name              string
+	directoryIdentity safeFileIdentity
+	fileIdentity      safeFileIdentity
 }
 
 type managedResult struct {
@@ -70,11 +80,13 @@ func (service *Service) executeManagedCLI(
 	if err := service.persistExecution(execution); err != nil {
 		return managedFailure(contract.ErrorInternal, err.Error())
 	}
-	manifestPath, err := service.writeInvocationManifest(invocation)
+	manifest, err := service.writeInvocationManifest(invocation)
 	if err != nil {
 		return managedFailure(contract.ErrorInternal, "prepare private invocation manifest")
 	}
-	defer os.Remove(manifestPath)
+	defer func() {
+		_ = service.store.removeInvocationManifest(manifest)
+	}()
 	executable, err := os.Executable()
 	if err != nil {
 		return managedFailure(contract.ErrorInternal, "resolve Runtime executable")
@@ -86,8 +98,17 @@ func (service *Service) executeManagedCLI(
 	defer handshakeWriter.Close()
 	command := exec.Command(executable, execHelperArgument)
 	command.Env = append(
-		append([]string(nil), service.environ...),
-		execHelperManifestEnv+"="+manifestPath,
+		withoutEnvironmentKeys(
+			service.environ,
+			execHelperManifestEnv,
+			execHelperManifestDirIDEnv,
+			execHelperManifestFileIDEnv,
+		),
+		execHelperManifestEnv+"="+manifest.path,
+		execHelperManifestDirIDEnv+"="+
+			encodeSafeFileIdentity(manifest.directoryIdentity),
+		execHelperManifestFileIDEnv+"="+
+			encodeSafeFileIdentity(manifest.fileIdentity),
 	)
 	command.ExtraFiles = []*os.File{handshakeReader}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -257,21 +278,21 @@ func (service *Service) persistExecution(value Execution) error {
 
 func (service *Service) writeInvocationManifest(
 	invocation runtimecommand.Invocation,
-) (string, error) {
-	directory := filepath.Join(service.store.stateDir, "session-invocations")
-	if err := ensureDirectory(directory); err != nil {
-		return "", err
+) (invocationManifestHandle, error) {
+	if err := service.store.ensure(); err != nil {
+		return invocationManifestHandle{}, err
 	}
-	temp, err := os.CreateTemp(directory, ".invocation-*.json")
+	directory, err := service.store.openPinnedDirectory(
+		service.store.invocationDir,
+	)
 	if err != nil {
-		return "", err
+		return invocationManifestHandle{}, err
 	}
-	path := temp.Name()
-	if err := temp.Close(); err != nil {
-		os.Remove(path)
-		return "", err
+	defer directory.close()
+	directoryIdentity, err := directory.identity()
+	if err != nil {
+		return invocationManifestHandle{}, err
 	}
-	os.Remove(path)
 	value := helperInvocationManifest{
 		Path: invocation.Path, Argv: append([]string(nil), invocation.Argv...),
 		Environment: append([]string(nil), invocation.Environment...),
@@ -279,32 +300,125 @@ func (service *Service) writeInvocationManifest(
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return "", err
+		return invocationManifestHandle{}, err
 	}
 	if len(data) > maxInvocationManifestBytes {
-		return "", fmt.Errorf("private invocation manifest exceeds size limit")
+		return invocationManifestHandle{}, fmt.Errorf(
+			"private invocation manifest exceeds size limit",
+		)
 	}
-	if err := atomicJSON(path, value, 0o600); err != nil {
-		return "", err
+	name, file, err := createRandomRegularAt(
+		directory, ".invocation-", ".json", 0o600,
+	)
+	if err != nil {
+		return invocationManifestHandle{}, err
 	}
-	return path, nil
+	var initialStat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &initialStat); err != nil {
+		_ = file.Close()
+		// Without an inode identity there is no safe conditional unlink.
+		// Leave the random private entry for bounded startup cleanup.
+		return invocationManifestHandle{}, err
+	}
+	cleanup := true
+	fileIdentity := safeFileIdentity{
+		dev: uint64(initialStat.Dev),
+		ino: uint64(initialStat.Ino),
+	}
+	defer func() {
+		if file != nil {
+			_ = file.Close()
+		}
+		if cleanup {
+			_ = directory.removeRegular(name, &fileIdentity)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return invocationManifestHandle{}, err
+	}
+	if err := file.Sync(); err != nil {
+		return invocationManifestHandle{}, err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		return invocationManifestHandle{}, err
+	}
+	entry := safeDirectoryEntry{
+		name:  name,
+		mode:  uint32(stat.Mode),
+		size:  stat.Size,
+		dev:   uint64(stat.Dev),
+		ino:   uint64(stat.Ino),
+		nlink: uint64(stat.Nlink),
+		mtime: statModifiedTime(stat),
+	}
+	if !entry.isRegular() ||
+		entry.nlink != 1 ||
+		entry.identity() != fileIdentity ||
+		os.FileMode(entry.mode).Perm() != 0o600 ||
+		entry.size > maxInvocationManifestBytes {
+		return invocationManifestHandle{}, fmt.Errorf(
+			"invalid private invocation manifest",
+		)
+	}
+	visible, err := directory.statEntry(name)
+	if err != nil {
+		return invocationManifestHandle{}, err
+	}
+	if !visible.sameIdentity(fileIdentity) ||
+		!visible.isRegular() ||
+		visible.nlink != 1 {
+		return invocationManifestHandle{}, fmt.Errorf(
+			"private invocation manifest changed while creating",
+		)
+	}
+	if err := file.Close(); err != nil {
+		file = nil
+		return invocationManifestHandle{}, err
+	}
+	file = nil
+	if err := directory.sync(); err != nil {
+		return invocationManifestHandle{}, err
+	}
+	cleanup = false
+	return invocationManifestHandle{
+		path:              filepath.Join(directory.path, name),
+		name:              name,
+		directoryIdentity: directoryIdentity,
+		fileIdentity:      fileIdentity,
+	}, nil
 }
 
-func (service *Service) cleanupInvocationManifests() error {
-	directory := filepath.Join(service.store.stateDir, "session-invocations")
-	info, err := os.Lstat(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+func (store *Store) removeInvocationManifest(
+	manifest invocationManifestHandle,
+) error {
+	directory, err := store.openPinnedDirectory(store.invocationDir)
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf(
-			"private invocation directory must be a directory, not a symlink",
-		)
+	defer directory.close()
+	identity, err := directory.identity()
+	if err != nil {
+		return err
 	}
-	entries, err := os.ReadDir(directory)
+	if identity != manifest.directoryIdentity {
+		return fmt.Errorf("private invocation directory changed identity")
+	}
+	return directory.removeRegular(manifest.name, &manifest.fileIdentity)
+}
+
+func (service *Service) cleanupInvocationManifests() error {
+	if err := service.store.ensure(); err != nil {
+		return err
+	}
+	directory, err := service.store.openPinnedDirectory(
+		service.store.invocationDir,
+	)
+	if err != nil {
+		return err
+	}
+	defer directory.close()
+	entries, err := directory.entries()
 	if err != nil {
 		return err
 	}
@@ -314,28 +428,60 @@ func (service *Service) cleanupInvocationManifests() error {
 		if removed >= 1000 {
 			break
 		}
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if !entry.isRegular() || entry.nlink != 1 {
 			continue
 		}
-		if !strings.HasPrefix(entry.Name(), ".invocation-") ||
-			!strings.HasSuffix(entry.Name(), ".json") {
+		if !strings.HasPrefix(entry.name, ".invocation-") ||
+			!strings.HasSuffix(entry.name, ".json") ||
+			os.FileMode(entry.mode).Perm() != 0o600 ||
+			entry.size > maxInvocationManifestBytes ||
+			!entry.mtime.Before(cutoff) {
 			continue
 		}
-		path := filepath.Join(directory, entry.Name())
-		info, err := entry.Info()
+		data, opened, err := directory.readRegularFact(
+			entry.name, maxInvocationManifestBytes,
+		)
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
+		if opened.identity() != entry.identity() {
+			return fmt.Errorf("private invocation manifest changed during cleanup")
+		}
+		var manifest helperInvocationManifest
+		if err := decodeStrict(data, &manifest); err != nil ||
+			manifest.Path == "" ||
+			len(manifest.Argv) == 0 ||
+			manifest.CWD == "" {
 			continue
 		}
-		if err := os.Remove(path); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
+		identity := opened.identity()
+		if err := directory.removeRegular(entry.name, &identity); err != nil {
 			return err
 		}
 		removed++
 	}
 	return nil
+}
+
+func withoutEnvironmentKeys(
+	environment []string,
+	keys ...string,
+) []string {
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	result := make([]string, 0, len(environment))
+	for _, value := range environment {
+		key, _, found := strings.Cut(value, "=")
+		if found {
+			if _, reserved := blocked[key]; reserved {
+				continue
+			}
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 func managedFailure(code contract.ErrorCode, message string) managedResult {

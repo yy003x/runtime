@@ -48,6 +48,8 @@ func (executor *SessionExecutor) Prepare(
 		return Request{}, runtimeErr
 	}
 	request.CWD = prepared.CWD
+	request.Model = prepared.Model
+	request.Effort = prepared.Effort
 	request.RequestDigest = prepared.SnapshotDigest()
 	request.ConfigDigest = prepared.ConfigDigest()
 	request.BasePromptDigest = prepared.BasePromptDigest()
@@ -146,6 +148,29 @@ func (executor *SessionExecutor) Execute(
 				Code: contract.ErrorInternal, Phase: contract.PhaseRun,
 				Message: "encode Session result: " + err.Error(),
 			},
+		}
+	}
+	return sessionExecutionOutcome(result, resultJSON, runtimeErr)
+}
+
+func sessionExecutionOutcome(
+	result session.RunResult,
+	resultJSON json.RawMessage,
+	runtimeErr *contract.RuntimeError,
+) ExecutionOutcome {
+	if result.State == session.TurnRunning {
+		if result.Error != nil {
+			runtimeErr = result.Error
+		} else if runtimeErr == nil {
+			runtimeErr = &contract.RuntimeError{
+				Code: contract.ErrorInternal, Phase: contract.PhaseRun,
+				Message: "Session execution remains open and requires reconciliation",
+			}
+		}
+		return ExecutionOutcome{
+			State:  StateNeedsReconciliation,
+			Result: resultJSON,
+			Error:  runtimeErr,
 		}
 	}
 	if runtimeErr != nil {

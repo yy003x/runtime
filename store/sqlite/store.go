@@ -4,6 +4,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,11 +19,12 @@ import (
 
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/identity"
+	"github.com/yy003x/runtime/internal/strictjson"
 	runtime "github.com/yy003x/runtime/run"
 )
 
 const (
-	schemaVersion   = 2
+	schemaVersion   = 4
 	maxPayloadBytes = 4 << 20
 )
 
@@ -32,7 +34,8 @@ type Store struct {
 }
 
 type Options struct {
-	Now func() time.Time
+	Now           func() time.Time
+	SkipReconcile bool
 }
 
 func Open(path string, options Options) (*Store, error) {
@@ -102,9 +105,11 @@ func Open(path string, options Options) (*Store, error) {
 		now = time.Now
 	}
 	store := &Store{db: db, now: now}
-	if err := store.Reconcile(context.Background()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("reconcile SQLite Run Store: %w", err)
+	if !options.SkipReconcile {
+		if err := store.Reconcile(context.Background()); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("reconcile SQLite Run Store: %w", err)
+		}
 	}
 	return store, nil
 }
@@ -165,6 +170,7 @@ func migrate(db *sql.DB) error {
 			result_json BLOB,
 			error_json BLOB,
 			pause_json BLOB,
+			resume_accepted_at TEXT,
 			retry_of TEXT,
 			cancel_requested INTEGER NOT NULL DEFAULT 0,
 			settled_sequence INTEGER NOT NULL DEFAULT 0,
@@ -197,10 +203,15 @@ func migrate(db *sql.DB) error {
 			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
 			sequence INTEGER NOT NULL,
 			request_digest TEXT NOT NULL,
+			request_json BLOB NOT NULL,
 			provider_request_id TEXT,
+			result_json BLOB,
+			result_digest TEXT,
+			error_json BLOB,
 			state TEXT NOT NULL,
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			UNIQUE (run_id, sequence)
 		)`,
 		`CREATE TABLE tool_effects (
 			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
@@ -214,6 +225,14 @@ func migrate(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (run_id, call_id),
 			UNIQUE (run_id, idempotency_key)
+		)`,
+		`CREATE TABLE resumes (
+			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+			sequence INTEGER NOT NULL,
+			input_json BLOB NOT NULL,
+			input_digest TEXT NOT NULL,
+			accepted_at TEXT NOT NULL,
+			PRIMARY KEY (run_id, sequence)
 		)`,
 		`CREATE TABLE queue (
 			run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
@@ -234,7 +253,7 @@ func migrate(db *sql.DB) error {
 func validateRunRows(db *sql.DB) error {
 	rows, err := db.Query(
 		`SELECT run_id, kind, session_id, state, request_json,
-		        private_request_json, settled_sequence
+		        private_request_json, resume_accepted_at, settled_sequence
 		   FROM runs`,
 	)
 	if err != nil {
@@ -247,10 +266,11 @@ func validateRunRows(db *sql.DB) error {
 		var sessionID sql.NullString
 		var state runtime.State
 		var requestJSON, privateJSON []byte
+		var resumeAcceptedAt sql.NullString
 		var settledSequence uint64
 		if err := rows.Scan(
 			&runID, &kind, &sessionID, &state, &requestJSON,
-			&privateJSON, &settledSequence,
+			&privateJSON, &resumeAcceptedAt, &settledSequence,
 		); err != nil {
 			return err
 		}
@@ -298,6 +318,24 @@ func validateRunRows(db *sql.DB) error {
 		if _, err := marshalPrivateRequest(privateJSON); err != nil {
 			return fmt.Errorf("run %s private request: %w", runID, err)
 		}
+		if resumeAcceptedAt.Valid {
+			if len(request.Resume) == 0 {
+				return fmt.Errorf(
+					"run %s has resume_accepted_at without resume input",
+					runID,
+				)
+			}
+			if _, err := parseTime(resumeAcceptedAt.String); err != nil {
+				return fmt.Errorf(
+					"run %s resume_accepted_at: %w", runID, err,
+				)
+			}
+		} else if len(request.Resume) != 0 {
+			return fmt.Errorf(
+				"run %s has resume input without resume_accepted_at",
+				runID,
+			)
+		}
 	}
 	return rows.Err()
 }
@@ -309,6 +347,11 @@ func (store *Store) Create(
 ) (runtime.Record, error) {
 	if err := identity.Validate(runID, "run"); err != nil {
 		return runtime.Record{}, err
+	}
+	if len(request.Resume) != 0 {
+		return runtime.Record{}, fmt.Errorf(
+			"resume is invalid when creating a Run",
+		)
 	}
 	requestJSON, err := marshalPayload(request)
 	if err != nil {
@@ -386,14 +429,19 @@ func (store *Store) Get(
 	if err := identity.Validate(runID, "run"); err != nil {
 		return runtime.Record{}, err
 	}
-	return scanRecord(store.db.QueryRowContext(
+	value, err := scanRecord(store.db.QueryRowContext(
 		ctx,
 		`SELECT run_id, state, request_json, result_json, error_json,
-		        pause_json, retry_of, cancel_requested, settled_sequence,
+		        pause_json, resume_accepted_at, retry_of, cancel_requested,
+		        settled_sequence,
 		        created_at, updated_at
 		   FROM runs WHERE run_id = ?`,
 		runID,
 	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.Record{}, fmt.Errorf("%w: %s", runtime.ErrNotFound, runID)
+	}
+	return value, err
 }
 
 func (store *Store) PrivateRequest(
@@ -421,11 +469,13 @@ func (store *Store) List(
 	ctx context.Context,
 	filter runtime.ListFilter,
 ) ([]runtime.Record, error) {
-	if filter.Limit <= 0 || filter.Limit > 1000 {
-		filter.Limit = 100
+	filter, err := runtime.NormalizeListFilter(filter)
+	if err != nil {
+		return nil, err
 	}
 	query := `SELECT run_id, state, request_json, result_json, error_json,
-	                 pause_json, retry_of, cancel_requested, settled_sequence,
+	                 pause_json, resume_accepted_at, retry_of, cancel_requested,
+	                 settled_sequence,
 	                 created_at, updated_at
 	            FROM runs WHERE 1=1`
 	var arguments []any
@@ -455,6 +505,55 @@ func (store *Store) List(
 	return values, rows.Err()
 }
 
+func (store *Store) CancellationReservations(
+	ctx context.Context,
+	afterRunID string,
+	limit int,
+) ([]runtime.Record, error) {
+	if afterRunID != "" {
+		if err := identity.Validate(afterRunID, "run"); err != nil {
+			return nil, err
+		}
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := store.db.QueryContext(
+		ctx,
+		`SELECT run_id, state, request_json, result_json, error_json,
+		        pause_json, resume_accepted_at, retry_of, cancel_requested,
+		        settled_sequence, created_at, updated_at
+		   FROM runs
+		  WHERE cancel_requested = 1
+		    AND state IN (?, ?)
+		    AND run_id > ?
+		  ORDER BY run_id
+		  LIMIT ?`,
+		runtime.StateQueued, runtime.StatePaused, afterRunID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]runtime.Record, 0)
+	for rows.Next() {
+		value, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		if !value.CancelRequested ||
+			value.State != runtime.StateQueued &&
+				value.State != runtime.StatePaused {
+			return nil, fmt.Errorf(
+				"cancellation reservation query returned run %s in state %s",
+				value.ID, value.State,
+			)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
 func (store *Store) Start(
 	ctx context.Context,
 	runID string,
@@ -469,13 +568,21 @@ func (store *Store) Start(
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var state runtime.State
+	var cancelRequested int
 	if err := tx.QueryRowContext(
-		ctx, `SELECT state FROM runs WHERE run_id = ?`, runID,
-	).Scan(&state); err != nil {
+		ctx,
+		`SELECT state, cancel_requested FROM runs WHERE run_id = ?`,
+		runID,
+	).Scan(&state, &cancelRequested); err != nil {
 		return runtime.Record{}, err
 	}
 	if state != runtime.StateQueued {
 		return runtime.Record{}, fmt.Errorf("run %s is %s, not queued", runID, state)
+	}
+	if cancelRequested != 0 {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s", runtime.ErrCancelReserved, runID,
+		)
 	}
 	if _, err := tx.ExecContext(
 		ctx,
@@ -511,7 +618,8 @@ func (store *Store) Claim(
 		`SELECT q.run_id
 		   FROM queue q
 		   JOIN runs r ON r.run_id = q.run_id
-		  WHERE r.state = ? AND q.available_at <= ?
+		  WHERE r.state = ? AND r.cancel_requested = 0
+		    AND q.available_at <= ?
 		  ORDER BY q.available_at, r.created_at
 		  LIMIT 1`,
 		runtime.StateQueued, formatTime(store.now().UTC()),
@@ -614,7 +722,7 @@ func (store *Store) Events(
 	}
 	rows, err := store.db.QueryContext(
 		ctx,
-		`SELECT event_json FROM events
+		`SELECT run_id, sequence, event_json FROM events
 		  WHERE run_id = ? AND sequence > ?
 		  ORDER BY sequence LIMIT ?`,
 		runID, afterSequence, limit,
@@ -625,8 +733,10 @@ func (store *Store) Events(
 	defer rows.Close()
 	var values []contract.Event
 	for rows.Next() {
+		var rowRunID string
+		var rowSequence uint64
 		var data []byte
-		if err := rows.Scan(&data); err != nil {
+		if err := rows.Scan(&rowRunID, &rowSequence, &data); err != nil {
 			return nil, err
 		}
 		var value contract.Event
@@ -636,15 +746,63 @@ func (store *Store) Events(
 		if err := value.Validate(); err != nil {
 			return nil, err
 		}
+		if rowRunID != runID || value.Sequence != rowSequence {
+			return nil, fmt.Errorf(
+				"event row identity does not match its JSON payload",
+			)
+		}
+		switch {
+		case value.Checkpoint != nil &&
+			value.Checkpoint.RunID != rowRunID:
+			return nil, fmt.Errorf(
+				"checkpoint event run_id does not match its row",
+			)
+		case value.Agent != nil && value.Agent.RunID != rowRunID:
+			return nil, fmt.Errorf(
+				"agent event run_id does not match its row",
+			)
+		case value.Run != nil && value.Run.RunID != rowRunID:
+			return nil, fmt.Errorf(
+				"run event run_id does not match its row",
+			)
+		}
 		values = append(values, value)
 	}
 	return values, rows.Err()
+}
+
+func (store *Store) LatestEventSequence(
+	ctx context.Context,
+	runID string,
+) (uint64, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return 0, err
+	}
+	var sequence uint64
+	if err := store.db.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(MAX(sequence), 0) FROM events WHERE run_id = ?`,
+		runID,
+	).Scan(&sequence); err != nil {
+		return 0, err
+	}
+	return sequence, nil
 }
 
 func (store *Store) SaveCheckpoint(
 	ctx context.Context,
 	checkpoint runtime.Checkpoint,
 ) error {
+	if err := validateCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	if checkpoint.CreatedAt.IsZero() {
+		checkpoint.CreatedAt = store.now().UTC()
+	}
+	return insertCheckpoint(ctx, store.db, checkpoint)
+}
+
+func validateCheckpoint(checkpoint runtime.Checkpoint) error {
 	if err := identity.Validate(checkpoint.ID, "checkpoint"); err != nil {
 		return err
 	}
@@ -655,10 +813,19 @@ func (store *Store) SaveCheckpoint(
 		!json.Valid(checkpoint.State) {
 		return fmt.Errorf("checkpoint state is invalid or too large")
 	}
-	if checkpoint.CreatedAt.IsZero() {
-		checkpoint.CreatedAt = store.now().UTC()
-	}
-	_, err := store.db.ExecContext(
+	return nil
+}
+
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertCheckpoint(
+	ctx context.Context,
+	execer sqlExecer,
+	checkpoint runtime.Checkpoint,
+) error {
+	_, err := execer.ExecContext(
 		ctx,
 		`INSERT INTO checkpoints (
 			checkpoint_id, run_id, sequence, state_json, created_at
@@ -679,8 +846,30 @@ func (store *Store) LatestCheckpoint(
 		ctx,
 		`SELECT checkpoint_id, run_id, sequence, state_json, created_at
 		   FROM checkpoints WHERE run_id = ?
-		  ORDER BY sequence DESC, created_at DESC LIMIT 1`,
+		  ORDER BY sequence DESC, created_at DESC, rowid DESC LIMIT 1`,
 		runID,
+	).Scan(&value.ID, &value.RunID, &value.Sequence, &value.State, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.Checkpoint{}, false, nil
+	}
+	if err != nil {
+		return runtime.Checkpoint{}, false, err
+	}
+	value.CreatedAt, err = parseTime(created)
+	return value, err == nil, err
+}
+
+func (store *Store) Checkpoint(
+	ctx context.Context,
+	checkpointID string,
+) (runtime.Checkpoint, bool, error) {
+	var value runtime.Checkpoint
+	var created string
+	err := store.db.QueryRowContext(
+		ctx,
+		`SELECT checkpoint_id, run_id, sequence, state_json, created_at
+		   FROM checkpoints WHERE checkpoint_id = ?`,
+		checkpointID,
 	).Scan(&value.ID, &value.RunID, &value.Sequence, &value.State, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.Checkpoint{}, false, nil
@@ -699,24 +888,55 @@ func (store *Store) StartModelCall(
 	if err := identity.Validate(call.ID, "model_call"); err != nil {
 		return err
 	}
-	if call.Sequence <= 0 || call.RequestDigest == "" {
+	if call.Sequence <= 0 {
 		return fmt.Errorf("model call sequence and request digest are required")
 	}
+	requestJSON, requestDigest, err := canonicalModelRequest(call.Request)
+	if err != nil {
+		return fmt.Errorf("model call request: %w", err)
+	}
+	if call.RequestDigest != "" && call.RequestDigest != requestDigest {
+		return fmt.Errorf("model call request digest does not match")
+	}
+	call.RequestDigest = requestDigest
 	now := store.now().UTC()
 	if call.CreatedAt.IsZero() {
 		call.CreatedAt = now
 	}
-	_, err := store.db.ExecContext(
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var maximum int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(MAX(sequence), 0)
+		   FROM model_calls
+		  WHERE run_id = ?`,
+		call.RunID,
+	).Scan(&maximum); err != nil {
+		return err
+	}
+	if call.Sequence != maximum+1 {
+		return fmt.Errorf(
+			"model call sequence=%d, next durable sequence=%d",
+			call.Sequence, maximum+1,
+		)
+	}
+	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO model_calls (
-			model_call_id, run_id, sequence, request_digest,
+			model_call_id, run_id, sequence, request_digest, request_json,
 			provider_request_id, state, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
-		call.ID, call.RunID, call.Sequence, call.RequestDigest,
+		) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+		call.ID, call.RunID, call.Sequence, call.RequestDigest, requestJSON,
 		nullString(call.ProviderRequestID), formatTime(call.CreatedAt),
 		formatTime(now),
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (store *Store) FinishModelCall(
@@ -727,13 +947,51 @@ func (store *Store) FinishModelCall(
 		call.State != "cancelled" {
 		return fmt.Errorf("invalid model call terminal state %q", call.State)
 	}
+	var resultJSON, errorJSON []byte
+	switch call.State {
+	case "completed":
+		if len(call.Result) == 0 || !json.Valid(call.Result) {
+			return fmt.Errorf("completed model call requires a valid result")
+		}
+		sum := sha256.Sum256(call.Result)
+		wantDigest := fmt.Sprintf("sha256:%x", sum[:])
+		if call.ResultDigest != wantDigest {
+			return fmt.Errorf("completed model call result digest does not match")
+		}
+		if call.Error != nil {
+			return fmt.Errorf("completed model call cannot contain an error")
+		}
+		resultJSON = cloneBytes(call.Result)
+	case "failed", "cancelled":
+		if len(call.Result) != 0 || call.ResultDigest != "" {
+			return fmt.Errorf(
+				"%s model call cannot contain a result",
+				call.State,
+			)
+		}
+		if call.Error == nil {
+			return fmt.Errorf("%s model call requires an error", call.State)
+		}
+		if err := call.Error.Validate(); err != nil {
+			return fmt.Errorf("model call error: %w", err)
+		}
+		var err error
+		errorJSON, err = marshalPayload(call.Error)
+		if err != nil {
+			return err
+		}
+	}
 	result, err := store.db.ExecContext(
 		ctx,
 		`UPDATE model_calls
-		    SET state = ?, provider_request_id = ?, updated_at = ?
+		    SET state = ?, provider_request_id = ?,
+		        result_json = ?, result_digest = ?, error_json = ?,
+		        updated_at = ?
 		  WHERE model_call_id = ? AND run_id = ? AND state = 'running'`,
 		call.State, nullString(call.ProviderRequestID),
-		formatTime(store.now().UTC()), call.ID, call.RunID,
+		nullableBytes(resultJSON), nullString(call.ResultDigest),
+		nullableBytes(errorJSON), formatTime(store.now().UTC()),
+		call.ID, call.RunID,
 	)
 	if err != nil {
 		return err
@@ -748,24 +1006,453 @@ func (store *Store) FinishModelCall(
 	return nil
 }
 
+func (store *Store) LatestModelCall(
+	ctx context.Context,
+	runID string,
+) (runtime.ModelCall, bool, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return runtime.ModelCall{}, false, err
+	}
+	row := store.db.QueryRowContext(
+		ctx,
+		`SELECT model_call_id, run_id, sequence, request_digest, request_json,
+		        provider_request_id, result_json, result_digest, error_json,
+		        state, created_at, updated_at
+		   FROM model_calls
+		  WHERE run_id = ?
+		  ORDER BY sequence DESC
+		  LIMIT 1`,
+		runID,
+	)
+	value, err := scanModelCall(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.ModelCall{}, false, nil
+	}
+	if err != nil {
+		return runtime.ModelCall{}, false, err
+	}
+	return value, true, nil
+}
+
+func (store *Store) ModelCalls(
+	ctx context.Context,
+	runID string,
+) ([]runtime.ModelCall, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return nil, err
+	}
+	rows, err := store.db.QueryContext(
+		ctx,
+		`SELECT model_call_id, run_id, sequence, request_digest, request_json,
+		        provider_request_id, result_json, result_digest, error_json,
+		        state, created_at, updated_at
+		   FROM model_calls
+		  WHERE run_id = ?
+		  ORDER BY sequence`,
+		runID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]runtime.ModelCall, 0)
+	for rows.Next() {
+		value, err := scanModelCall(rows)
+		if err != nil {
+			return nil, err
+		}
+		if value.RunID != runID ||
+			value.Sequence != len(values)+1 ||
+			len(values) >= 128 {
+			return nil, fmt.Errorf(
+				"model call journal for run %s is not contiguous and bounded",
+				runID,
+			)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func (store *Store) Resumes(
+	ctx context.Context,
+	runID string,
+) ([]runtime.ResumeRecord, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return nil, err
+	}
+	rows, err := store.db.QueryContext(
+		ctx,
+		`SELECT run_id, sequence, input_json, input_digest, accepted_at
+		   FROM resumes
+		  WHERE run_id = ?
+		  ORDER BY sequence`,
+		runID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]runtime.ResumeRecord, 0)
+	for rows.Next() {
+		var value runtime.ResumeRecord
+		var inputJSON []byte
+		var acceptedAt string
+		if err := rows.Scan(
+			&value.RunID, &value.Sequence, &inputJSON,
+			&value.InputDigest, &acceptedAt,
+		); err != nil {
+			return nil, err
+		}
+		canonical, digest, err := canonicalJSONValue(inputJSON)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resume sequence=%d input is invalid: %w",
+				value.Sequence, err,
+			)
+		}
+		if value.RunID != runID ||
+			value.Sequence != len(values)+1 ||
+			value.InputDigest != digest ||
+			!validSHA256Digest(value.InputDigest) ||
+			!bytes.Equal(inputJSON, canonical) {
+			return nil, fmt.Errorf(
+				"resume journal for run %s is not canonical and contiguous",
+				runID,
+			)
+		}
+		value.AcceptedAt, err = parseTime(acceptedAt)
+		if err != nil {
+			return nil, err
+		}
+		value.Input = canonical
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+type modelCallScanner interface {
+	Scan(...any) error
+}
+
+func scanModelCall(
+	scanner modelCallScanner,
+) (runtime.ModelCall, error) {
+	var value runtime.ModelCall
+	var providerRequestID sql.NullString
+	var requestJSON, resultJSON, errorJSON []byte
+	var resultDigest sql.NullString
+	var createdAt, updatedAt string
+	err := scanner.Scan(
+		&value.ID, &value.RunID, &value.Sequence, &value.RequestDigest,
+		&requestJSON, &providerRequestID, &resultJSON, &resultDigest, &errorJSON,
+		&value.State, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return runtime.ModelCall{}, err
+	}
+	switch value.State {
+	case "running", "completed", "failed", "cancelled":
+	default:
+		return runtime.ModelCall{}, fmt.Errorf(
+			"model call %s has invalid state %q", value.ID, value.State,
+		)
+	}
+	canonicalRequest, requestDigest, err := canonicalModelRequest(requestJSON)
+	if err != nil {
+		return runtime.ModelCall{}, fmt.Errorf(
+			"model call %s request is invalid: %w", value.ID, err,
+		)
+	}
+	if !validSHA256Digest(value.RequestDigest) ||
+		value.RequestDigest != requestDigest {
+		return runtime.ModelCall{}, fmt.Errorf(
+			"model call %s request digest does not match",
+			value.ID,
+		)
+	}
+	if !bytes.Equal(requestJSON, canonicalRequest) {
+		return runtime.ModelCall{}, fmt.Errorf(
+			"model call %s request_json is not canonical",
+			value.ID,
+		)
+	}
+	value.Request = canonicalRequest
+	value.ProviderRequestID = providerRequestID.String
+	value.Result = cloneBytes(resultJSON)
+	value.ResultDigest = resultDigest.String
+	switch value.State {
+	case "completed":
+		if len(value.Result) == 0 || !json.Valid(value.Result) ||
+			value.ResultDigest == "" || len(errorJSON) != 0 {
+			return runtime.ModelCall{}, fmt.Errorf(
+				"completed model call %s has invalid durable evidence",
+				value.ID,
+			)
+		}
+		sum := sha256.Sum256(value.Result)
+		if value.ResultDigest != fmt.Sprintf("sha256:%x", sum[:]) {
+			return runtime.ModelCall{}, fmt.Errorf(
+				"model call %s result digest does not match",
+				value.ID,
+			)
+		}
+	case "failed", "cancelled":
+		if len(value.Result) != 0 || value.ResultDigest != "" ||
+			len(errorJSON) == 0 {
+			return runtime.ModelCall{}, fmt.Errorf(
+				"%s model call %s has invalid durable evidence",
+				value.State, value.ID,
+			)
+		}
+		var runtimeErr contract.RuntimeError
+		if err := decodeStrict(errorJSON, &runtimeErr); err != nil {
+			return runtime.ModelCall{}, err
+		}
+		if err := runtimeErr.Validate(); err != nil {
+			return runtime.ModelCall{}, err
+		}
+		value.Error = &runtimeErr
+	case "running":
+		if len(value.Result) != 0 || value.ResultDigest != "" ||
+			len(errorJSON) != 0 {
+			return runtime.ModelCall{}, fmt.Errorf(
+				"running model call %s has terminal evidence",
+				value.ID,
+			)
+		}
+	}
+	value.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return runtime.ModelCall{}, err
+	}
+	value.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return runtime.ModelCall{}, err
+	}
+	return value, nil
+}
+
+func validSHA256Digest(value string) bool {
+	if len(value) != len("sha256:")+sha256.Size*2 ||
+		!strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, current := range value[len("sha256:"):] {
+		if current < '0' || current > '9' &&
+			(current < 'a' || current > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalModelRequest(
+	value json.RawMessage,
+) (json.RawMessage, string, error) {
+	var request contract.GenerateRequest
+	if err := strictjson.DecodeObject(
+		bytes.NewReader(value), maxPayloadBytes, &request,
+	); err != nil {
+		return nil, "", err
+	}
+	if err := request.Validate(); err != nil {
+		return nil, "", err
+	}
+	canonical, err := json.Marshal(request)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return canonical, fmt.Sprintf("sha256:%x", sum[:]), nil
+}
+
 func (store *Store) PrepareToolEffect(
 	ctx context.Context,
 	effect runtime.ToolEffect,
+	checkpoint runtime.Checkpoint,
 ) error {
+	if err := validateCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	if checkpoint.RunID != effect.RunID {
+		return fmt.Errorf("tool effect and checkpoint run_id do not match")
+	}
+	if strings.TrimSpace(effect.CallID) == "" ||
+		strings.TrimSpace(effect.IdempotencyKey) == "" ||
+		strings.TrimSpace(effect.Name) == "" {
+		return fmt.Errorf(
+			"tool effect call_id, idempotency_key, and name are required",
+		)
+	}
 	requestJSON, err := marshalPayload(effect.Request)
 	if err != nil {
 		return err
 	}
-	_, err = store.db.ExecContext(
+	now := store.now().UTC()
+	if checkpoint.CreatedAt.IsZero() {
+		checkpoint.CreatedAt = now
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := insertCheckpoint(ctx, tx, checkpoint); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(
 		ctx,
 		`INSERT INTO tool_effects (
 			run_id, call_id, idempotency_key, name, state,
 			request_json, updated_at
 		) VALUES (?, ?, ?, ?, 'prepared', ?, ?)`,
 		effect.RunID, effect.CallID, effect.IdempotencyKey, effect.Name,
-		requestJSON, formatTime(store.now().UTC()),
+		requestJSON, formatTime(now),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (store *Store) ToolEffect(
+	ctx context.Context,
+	runID, callID string,
+) (runtime.ToolEffect, bool, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return runtime.ToolEffect{}, false, err
+	}
+	if strings.TrimSpace(callID) == "" {
+		return runtime.ToolEffect{}, false, fmt.Errorf("tool effect call_id is required")
+	}
+	var value runtime.ToolEffect
+	var requestJSON, resultJSON, errorJSON []byte
+	var updatedAt string
+	err := store.db.QueryRowContext(
+		ctx,
+		`SELECT run_id, call_id, idempotency_key, name, state,
+		        request_json, result_json, error_json, updated_at
+		   FROM tool_effects
+		  WHERE run_id = ? AND call_id = ?`,
+		runID, callID,
+	).Scan(
+		&value.RunID, &value.CallID, &value.IdempotencyKey, &value.Name,
+		&value.State, &requestJSON, &resultJSON, &errorJSON, &updatedAt,
 	)
-	return err
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.ToolEffect{}, false, nil
+	}
+	if err != nil {
+		return runtime.ToolEffect{}, false, err
+	}
+	switch value.State {
+	case "prepared", "started", "completed", "failed":
+	default:
+		return runtime.ToolEffect{}, false, fmt.Errorf(
+			"tool effect %s/%s has invalid state %q",
+			runID, callID, value.State,
+		)
+	}
+	value.Request = cloneBytes(requestJSON)
+	value.Result = cloneBytes(resultJSON)
+	if len(errorJSON) > 0 {
+		var runtimeErr contract.RuntimeError
+		if err := decodeStrict(errorJSON, &runtimeErr); err != nil {
+			return runtime.ToolEffect{}, false, err
+		}
+		value.Error = &runtimeErr
+	}
+	switch value.State {
+	case "prepared", "started":
+		if len(value.Result) != 0 || value.Error != nil {
+			return runtime.ToolEffect{}, false, fmt.Errorf(
+				"%s tool effect %s/%s has terminal evidence",
+				value.State, runID, callID,
+			)
+		}
+	case "completed":
+		if len(value.Result) == 0 || !json.Valid(value.Result) ||
+			value.Error != nil {
+			return runtime.ToolEffect{}, false, fmt.Errorf(
+				"completed tool effect %s/%s has invalid result evidence",
+				runID, callID,
+			)
+		}
+	case "failed":
+		if len(value.Result) != 0 || value.Error == nil {
+			return runtime.ToolEffect{}, false, fmt.Errorf(
+				"failed tool effect %s/%s has invalid error evidence",
+				runID, callID,
+			)
+		}
+	}
+	value.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return runtime.ToolEffect{}, false, err
+	}
+	return value, true, nil
+}
+
+func (store *Store) ToolEffects(
+	ctx context.Context,
+	runID string,
+) ([]runtime.ToolEffect, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return nil, err
+	}
+	rows, err := store.db.QueryContext(
+		ctx,
+		`SELECT call_id FROM tool_effects
+		  WHERE run_id = ?
+		  ORDER BY rowid`,
+		runID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var callIDs []string
+	for rows.Next() {
+		var callID string
+		if err := rows.Scan(&callID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if len(callIDs) >= 1024 {
+			rows.Close()
+			return nil, fmt.Errorf(
+				"tool effect journal for run %s exceeds its bound",
+				runID,
+			)
+		}
+		callIDs = append(callIDs, callID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	values := make([]runtime.ToolEffect, 0, len(callIDs))
+	for _, callID := range callIDs {
+		value, exists, err := store.ToolEffect(ctx, runID, callID)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf(
+				"tool effect %s/%s disappeared while reading journal",
+				runID, callID,
+			)
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func (store *Store) StartToolEffect(
@@ -832,9 +1519,82 @@ func (store *Store) NeedsReconciliation(
 	runID string,
 	runtimeErr *contract.RuntimeError,
 ) (runtime.Record, error) {
-	return store.transitionNonTerminal(
-		ctx, runID, runtime.StateNeedsReconciliation, nil, runtimeErr,
+	return store.needsReconciliation(ctx, runID, runtimeErr, false)
+}
+
+func (store *Store) NeedsCancellationReconciliation(
+	ctx context.Context,
+	runID string,
+	runtimeErr *contract.RuntimeError,
+) (runtime.Record, error) {
+	return store.needsReconciliation(ctx, runID, runtimeErr, true)
+}
+
+func (store *Store) needsReconciliation(
+	ctx context.Context,
+	runID string,
+	runtimeErr *contract.RuntimeError,
+	cancellationReserved bool,
+) (runtime.Record, error) {
+	errorJSON, err := marshalNullable(runtimeErr)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	cancelRequested := 0
+	if cancellationReserved {
+		cancelRequested = 1
+	}
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE runs
+		    SET state = ?, pause_json = NULL, error_json = ?,
+		        updated_at = ?
+		  WHERE run_id = ?
+		    AND state IN (?, ?, ?)
+		    AND cancel_requested = ?`,
+		runtime.StateNeedsReconciliation, errorJSON,
+		formatTime(store.now().UTC()), runID,
+		runtime.StateRunning, runtime.StateQueued, runtime.StatePaused,
+		cancelRequested,
 	)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	if affected != 1 {
+		var current runtime.State
+		var reserved int
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT state, cancel_requested FROM runs WHERE run_id = ?`,
+			runID,
+		).Scan(&current, &reserved); err == nil &&
+			!cancellationReserved && reserved != 0 {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: run %s", runtime.ErrCancelReserved, runID,
+			)
+		}
+		return runtime.Record{}, fmt.Errorf(
+			"run %s cannot enter needs_reconciliation", runID,
+		)
+	}
+	if _, err := tx.ExecContext(
+		ctx, `DELETE FROM queue WHERE run_id = ?`, runID,
+	); err != nil {
+		return runtime.Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return runtime.Record{}, err
+	}
+	return store.Get(ctx, runID)
 }
 
 func (store *Store) transitionNonTerminal(
@@ -853,7 +1613,7 @@ func (store *Store) transitionNonTerminal(
 		`UPDATE runs
 		    SET state = ?, pause_json = ?, error_json = ?,
 		        updated_at = ?
-		  WHERE run_id = ? AND state = ?`,
+		  WHERE run_id = ? AND state = ? AND cancel_requested = 0`,
 		state, nullableBytes(pause), errorJSON, formatTime(store.now().UTC()),
 		runID, runtime.StateRunning,
 	)
@@ -865,6 +1625,19 @@ func (store *Store) transitionNonTerminal(
 		return runtime.Record{}, err
 	}
 	if affected != 1 {
+		var cancelRequested int
+		var current runtime.State
+		if err := store.db.QueryRowContext(
+			ctx,
+			`SELECT state, cancel_requested FROM runs WHERE run_id = ?`,
+			runID,
+		).Scan(&current, &cancelRequested); err == nil &&
+			current == runtime.StateRunning &&
+			cancelRequested != 0 {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: run %s", runtime.ErrCancelReserved, runID,
+			)
+		}
 		return runtime.Record{}, fmt.Errorf("run %s is not running", runID)
 	}
 	return store.Get(ctx, runID)
@@ -876,6 +1649,31 @@ func (store *Store) Settle(
 	state runtime.State,
 	resultJSON json.RawMessage,
 	runtimeErr *contract.RuntimeError,
+) (runtime.Record, error) {
+	return store.settle(
+		ctx, runID, state, resultJSON, runtimeErr, false,
+	)
+}
+
+func (store *Store) SettleCancellation(
+	ctx context.Context,
+	runID string,
+	state runtime.State,
+	resultJSON json.RawMessage,
+	runtimeErr *contract.RuntimeError,
+) (runtime.Record, error) {
+	return store.settle(
+		ctx, runID, state, resultJSON, runtimeErr, true,
+	)
+}
+
+func (store *Store) settle(
+	ctx context.Context,
+	runID string,
+	state runtime.State,
+	resultJSON json.RawMessage,
+	runtimeErr *contract.RuntimeError,
+	cancellationReserved bool,
 ) (runtime.Record, error) {
 	if !state.Terminal() {
 		return runtime.Record{}, fmt.Errorf("state %q is not terminal", state)
@@ -895,10 +1693,13 @@ func (store *Store) Settle(
 	defer tx.Rollback() //nolint:errcheck
 	var current runtime.State
 	var settled uint64
+	var cancelRequested int
 	if err := tx.QueryRowContext(
 		ctx,
-		`SELECT state, settled_sequence FROM runs WHERE run_id = ?`, runID,
-	).Scan(&current, &settled); err != nil {
+		`SELECT state, settled_sequence, cancel_requested
+		   FROM runs WHERE run_id = ?`,
+		runID,
+	).Scan(&current, &settled, &cancelRequested); err != nil {
 		return runtime.Record{}, err
 	}
 	if current.Terminal() || settled != 0 {
@@ -909,6 +1710,16 @@ func (store *Store) Settle(
 		current != runtime.StateNeedsReconciliation {
 		return runtime.Record{}, fmt.Errorf(
 			"run %s in state %s cannot settle as %s", runID, current, state,
+		)
+	}
+	if !cancellationReserved && cancelRequested != 0 {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s", runtime.ErrCancelReserved, runID,
+		)
+	}
+	if cancellationReserved && cancelRequested == 0 {
+		return runtime.Record{}, fmt.Errorf(
+			"run %s has no cancellation reservation", runID,
 		)
 	}
 	sequence, err := nextSequence(ctx, tx, runID)
@@ -981,80 +1792,253 @@ func (store *Store) RequestCancel(
 	ctx context.Context,
 	runID string,
 ) (runtime.Record, error) {
-	value, err := store.Get(ctx, runID)
-	if err != nil {
-		return runtime.Record{}, err
-	}
-	switch value.State {
-	case runtime.StateQueued, runtime.StatePaused:
-		runtimeErr := &contract.RuntimeError{
-			Code: contract.ErrorCancelled, Phase: contract.PhaseRun,
-			Message: "run was cancelled",
-		}
-		return store.Settle(ctx, runID, runtime.StateCancelled, nil, runtimeErr)
-	case runtime.StateRunning:
-		_, err := store.db.ExecContext(
-			ctx,
-			`UPDATE runs SET cancel_requested = 1, updated_at = ?
-			  WHERE run_id = ? AND state = ?`,
-			formatTime(store.now().UTC()), runID, runtime.StateRunning,
-		)
-		if err != nil {
-			return runtime.Record{}, err
-		}
-		return store.Get(ctx, runID)
-	case runtime.StateNeedsReconciliation:
-		return runtime.Record{}, fmt.Errorf(
-			"run %s needs reconciliation and cannot be marked safely cancelled", runID,
-		)
-	default:
-		return value, nil
-	}
-}
-
-func (store *Store) Resume(
-	ctx context.Context,
-	runID string,
-	input json.RawMessage,
-) (runtime.Record, error) {
-	if len(input) == 0 || len(input) > maxPayloadBytes || !json.Valid(input) {
-		return runtime.Record{}, fmt.Errorf("resume input is invalid or too large")
-	}
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return runtime.Record{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var state runtime.State
-	var requestJSON []byte
+	var cancelRequested int
 	if err := tx.QueryRowContext(
 		ctx,
-		`SELECT state, request_json FROM runs WHERE run_id = ?`, runID,
-	).Scan(&state, &requestJSON); err != nil {
+		`SELECT state, cancel_requested FROM runs WHERE run_id = ?`,
+		runID,
+	).Scan(&state, &cancelRequested); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: %s", runtime.ErrNotFound, runID,
+			)
+		}
+		return runtime.Record{}, err
+	}
+	switch state {
+	case runtime.StateQueued, runtime.StatePaused:
+		if cancelRequested == 0 {
+			if _, err := tx.ExecContext(
+				ctx,
+				`UPDATE runs
+				    SET cancel_requested = 1, updated_at = ?
+				  WHERE run_id = ? AND state = ?`,
+				formatTime(store.now().UTC()), runID, state,
+			); err != nil {
+				return runtime.Record{}, err
+			}
+		}
+		if _, err := tx.ExecContext(
+			ctx, `DELETE FROM queue WHERE run_id = ?`, runID,
+		); err != nil {
+			return runtime.Record{}, err
+		}
+	case runtime.StateRunning:
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE runs SET cancel_requested = 1, updated_at = ?
+			  WHERE run_id = ? AND state = ?`,
+			formatTime(store.now().UTC()), runID, runtime.StateRunning,
+		); err != nil {
+			return runtime.Record{}, err
+		}
+	case runtime.StateNeedsReconciliation:
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s needs reconciliation and cannot be marked safely cancelled",
+			runtime.ErrConflict, runID,
+		)
+	default:
+		// Terminal cancellation is already settled.
+	}
+	if err := tx.Commit(); err != nil {
+		return runtime.Record{}, err
+	}
+	return store.Get(ctx, runID)
+}
+
+func (store *Store) Resume(
+	ctx context.Context,
+	runID string,
+	input json.RawMessage,
+	constraint runtime.ResumeConstraint,
+) (runtime.Record, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return runtime.Record{}, err
+	}
+	canonicalInput, inputDigest, err := canonicalJSONValue(input)
+	if err != nil {
+		return runtime.Record{}, fmt.Errorf(
+			"resume input is invalid or too large: %w", err,
+		)
+	}
+	if len(constraint.Pause) == 0 ||
+		len(constraint.Pause) > maxPayloadBytes ||
+		!json.Valid(constraint.Pause) {
+		return runtime.Record{}, fmt.Errorf(
+			"resume pause constraint is invalid or too large",
+		)
+	}
+	if constraint.NotAfter != nil && constraint.NotAfter.IsZero() {
+		return runtime.Record{}, fmt.Errorf(
+			"resume expiry constraint is invalid",
+		)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	reservation, err := tx.ExecContext(
+		ctx,
+		`UPDATE runs
+		    SET updated_at = updated_at
+		  WHERE run_id = ? AND state = ? AND cancel_requested = 0
+		    AND pause_json = ?`,
+		runID, runtime.StatePaused, constraint.Pause,
+	)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	affected, err := reservation.RowsAffected()
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	if affected != 1 {
+		var current runtime.State
+		var currentCancel int
+		var currentPause []byte
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT state, cancel_requested, pause_json
+			   FROM runs WHERE run_id = ?`,
+			runID,
+		).Scan(
+			&current, &currentCancel, &currentPause,
+		); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return runtime.Record{}, fmt.Errorf(
+					"%w: %s", runtime.ErrNotFound, runID,
+				)
+			}
+			return runtime.Record{}, err
+		}
+		if current != runtime.StatePaused {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: run %s is %s, not paused",
+				runtime.ErrConflict, runID, current,
+			)
+		}
+		if currentCancel != 0 {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: run %s", runtime.ErrCancelReserved, runID,
+			)
+		}
+		if bytes.Equal(currentPause, constraint.Pause) {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: run %s resume lost its paused reservation",
+				runtime.ErrConflict, runID,
+			)
+		}
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s active pause changed before resume",
+			runtime.ErrConflict, runID,
+		)
+	}
+	// This exact no-op write is the acceptance linearization reservation.
+	// SQLite now holds the writer slot for the transaction, so acceptedAt
+	// cannot be sampled before waiting behind another writer.
+	var state runtime.State
+	var cancelRequested int
+	var requestJSON []byte
+	var pauseJSON []byte
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT state, cancel_requested, request_json, pause_json
+		   FROM runs WHERE run_id = ?`,
+		runID,
+	).Scan(
+		&state, &cancelRequested, &requestJSON, &pauseJSON,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: %s", runtime.ErrNotFound, runID,
+			)
+		}
 		return runtime.Record{}, err
 	}
 	if state != runtime.StatePaused {
-		return runtime.Record{}, fmt.Errorf("run %s is %s, not paused", runID, state)
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s is %s, not paused",
+			runtime.ErrConflict, runID, state,
+		)
+	}
+	if cancelRequested != 0 {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s", runtime.ErrCancelReserved, runID,
+		)
+	}
+	if !bytes.Equal(pauseJSON, constraint.Pause) {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s active pause changed before resume",
+			runtime.ErrConflict, runID,
+		)
+	}
+	acceptedAt := store.now().UTC()
+	if constraint.NotAfter != nil &&
+		acceptedAt.After(constraint.NotAfter.UTC()) {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s pause has expired",
+			runtime.ErrConflict, runID,
+		)
 	}
 	var request runtime.Request
 	if err := decodeStrict(requestJSON, &request); err != nil {
 		return runtime.Record{}, err
 	}
-	request.Resume = append([]byte(nil), input...)
+	request.Resume = cloneBytes(canonicalInput)
 	requestJSON, err = marshalPayload(request)
 	if err != nil {
 		return runtime.Record{}, err
 	}
-	now := formatTime(store.now().UTC())
+	now := formatTime(acceptedAt)
+	var resumeSequence int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(MAX(sequence), 0) + 1
+		   FROM resumes WHERE run_id = ?`,
+		runID,
+	).Scan(&resumeSequence); err != nil {
+		return runtime.Record{}, err
+	}
 	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO resumes (
+			run_id, sequence, input_json, input_digest, accepted_at
+		) VALUES (?, ?, ?, ?, ?)`,
+		runID, resumeSequence, canonicalInput, inputDigest,
+		now,
+	); err != nil {
+		return runtime.Record{}, err
+	}
+	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE runs
 		    SET state = ?, request_json = ?, pause_json = NULL,
-		        error_json = NULL, cancel_requested = 0, updated_at = ?
-		  WHERE run_id = ?`,
-		runtime.StateQueued, requestJSON, now, runID,
-	); err != nil {
+		        error_json = NULL, cancel_requested = 0,
+		        resume_accepted_at = ?, updated_at = ?
+		  WHERE run_id = ? AND state = ? AND cancel_requested = 0
+		    AND pause_json = ?`,
+		runtime.StateQueued, requestJSON, now,
+		now, runID, runtime.StatePaused, constraint.Pause,
+	)
+	if err != nil {
 		return runtime.Record{}, err
+	}
+	affected, err = result.RowsAffected()
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	if affected != 1 {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: run %s resume lost its paused reservation",
+			runtime.ErrConflict, runID,
+		)
 	}
 	if _, err := tx.ExecContext(
 		ctx,
@@ -1073,6 +2057,24 @@ func (store *Store) Resume(
 	return store.Get(ctx, runID)
 }
 
+func canonicalJSONValue(
+	value json.RawMessage,
+) (json.RawMessage, string, error) {
+	var raw json.RawMessage
+	if err := strictjson.Decode(
+		bytes.NewReader(value), maxPayloadBytes, &raw,
+	); err != nil {
+		return nil, "", err
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return nil, "", err
+	}
+	canonical := compact.Bytes()
+	sum := sha256.Sum256(canonical)
+	return cloneBytes(canonical), fmt.Sprintf("sha256:%x", sum[:]), nil
+}
+
 func (store *Store) Reconcile(ctx context.Context) error {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1080,22 +2082,30 @@ func (store *Store) Reconcile(ctx context.Context) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	rows, err := tx.QueryContext(
-		ctx, `SELECT run_id, kind FROM runs WHERE state = ?`, runtime.StateRunning,
+		ctx,
+		`SELECT run_id, kind, cancel_requested
+		   FROM runs WHERE state = ?`,
+		runtime.StateRunning,
 	)
 	if err != nil {
 		return err
 	}
 	type runningRun struct {
-		id   string
-		kind runtime.Kind
+		id              string
+		kind            runtime.Kind
+		cancelRequested bool
 	}
 	var running []runningRun
 	for rows.Next() {
 		var value runningRun
-		if err := rows.Scan(&value.id, &value.kind); err != nil {
+		var cancelRequested int
+		if err := rows.Scan(
+			&value.id, &value.kind, &cancelRequested,
+		); err != nil {
 			rows.Close()
 			return err
 		}
+		value.cancelRequested = cancelRequested != 0
 		running = append(running, value)
 	}
 	if err := rows.Close(); err != nil {
@@ -1156,6 +2166,22 @@ func (store *Store) Reconcile(ctx context.Context) error {
 				    SET state = ?, error_json = ?, updated_at = ?
 				  WHERE run_id = ?`,
 				runtime.StateNeedsReconciliation, errorJSON, now, runID,
+			); err != nil {
+				return err
+			}
+			continue
+		}
+		if current.cancelRequested {
+			if _, err := tx.ExecContext(
+				ctx,
+				`UPDATE runs SET state = ?, updated_at = ?
+				  WHERE run_id = ?`,
+				runtime.StateQueued, now, runID,
+			); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(
+				ctx, `DELETE FROM queue WHERE run_id = ?`, runID,
 			); err != nil {
 				return err
 			}
@@ -1275,12 +2301,14 @@ func scanRecord(row scanner) (runtime.Record, error) {
 	var value runtime.Record
 	var requestJSON []byte
 	var resultJSON, errorJSON, pauseJSON []byte
+	var resumeAcceptedAt sql.NullString
 	var retryOf sql.NullString
 	var cancelRequested int
 	var createdAt, updatedAt string
 	err := row.Scan(
 		&value.ID, &value.State, &requestJSON, &resultJSON, &errorJSON,
-		&pauseJSON, &retryOf, &cancelRequested, &value.SettledSequence,
+		&pauseJSON, &resumeAcceptedAt, &retryOf, &cancelRequested,
+		&value.SettledSequence,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -1292,6 +2320,20 @@ func scanRecord(row scanner) (runtime.Record, error) {
 	value.SchemaVersion = schemaVersion
 	value.Result = cloneBytes(resultJSON)
 	value.Pause = cloneBytes(pauseJSON)
+	if resumeAcceptedAt.Valid {
+		acceptedAt, parseErr := parseTime(resumeAcceptedAt.String)
+		if parseErr != nil {
+			return runtime.Record{}, parseErr
+		}
+		value.ResumeAcceptedAt = &acceptedAt
+	}
+	if (len(value.Request.Resume) != 0) !=
+		(value.ResumeAcceptedAt != nil) {
+		return runtime.Record{}, fmt.Errorf(
+			"run %s resume input and acceptance time are inconsistent",
+			value.ID,
+		)
+	}
 	value.RetryOf = retryOf.String
 	value.CancelRequested = cancelRequested != 0
 	if len(errorJSON) > 0 {
@@ -1387,7 +2429,7 @@ func marshalPayload(value any) ([]byte, error) {
 	return data, nil
 }
 
-func marshalNullable(value any) ([]byte, error) {
+func marshalNullable(value *contract.RuntimeError) ([]byte, error) {
 	if value == nil {
 		return nil, nil
 	}

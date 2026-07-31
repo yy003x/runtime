@@ -52,7 +52,9 @@ func (handler *Handler) ServeHTTP(writer nethttp.ResponseWriter, request *nethtt
 		return
 	}
 	var input contract.GenerateRequest
-	if err := strictjson.Decode(request.Body, maxRequestBytes, &input); err != nil {
+	if err := strictjson.DecodeObject(
+		request.Body, maxRequestBytes, &input,
+	); err != nil {
 		writeError(writer, nethttp.StatusBadRequest, &contract.RuntimeError{
 			Code: contract.ErrorInvalidRequest, Phase: contract.PhaseTransport,
 			Message: err.Error(),
@@ -189,6 +191,8 @@ func statusForError(runtimeErr *contract.RuntimeError) int {
 		return nethttp.StatusBadGateway
 	case contract.ErrorConflict:
 		return nethttp.StatusConflict
+	case contract.ErrorNotFound:
+		return nethttp.StatusNotFound
 	case contract.ErrorCancelled:
 		return 499
 	default:

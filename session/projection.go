@@ -30,7 +30,7 @@ func buildProjection(
 ) (projection, *contract.RuntimeError) {
 	messages := make([]contract.Message, 0, len(records))
 	for _, record := range records {
-		messages = append(messages, record.Message)
+		messages = append(messages, canonicalMessageRecord(record))
 	}
 	messageJSON, err := json.Marshal(messages)
 	if err != nil {
@@ -127,12 +127,13 @@ func projectCLIHistory(
 		html.EscapeString(sessionID),
 	)
 	for _, record := range history {
-		messageJSON, _ := json.Marshal(record.Message)
+		message := canonicalMessageRecord(record)
+		messageJSON, _ := json.Marshal(message)
 		fmt.Fprintf(
 			&builder,
 			"<turn sequence=\"%d\" role=\"%s\">%s</turn>\n",
 			record.Sequence,
-			html.EscapeString(string(record.Message.Role)),
+			html.EscapeString(string(message.Role)),
 			html.EscapeString(string(messageJSON)),
 		)
 	}

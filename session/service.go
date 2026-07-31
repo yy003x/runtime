@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -70,6 +69,12 @@ func (service *Service) Run(
 	ctx context.Context,
 	request RunRequest,
 ) (RunResult, *contract.RuntimeError) {
+	if service == nil || service.profiles == nil || service.models == nil {
+		return RunResult{}, sessionRuntimeError(
+			contract.ErrorInternal,
+			"Session execution service is unavailable",
+		)
+	}
 	entry, exists := service.profiles.Resolve(request.ProfileID)
 	if !exists {
 		return RunResult{}, sessionRuntimeError(
@@ -188,8 +193,9 @@ func (service *Service) findExistingRun(
 	found := false
 	var runtimeErr *contract.RuntimeError
 	err := service.store.withLock(sessionID, func() error {
-		turnsDir := filepath.Join(service.store.sessionDir(sessionID), "turns")
-		entries, err := os.ReadDir(turnsDir)
+		entries, err := service.store.sessionDirectoryEntries(
+			sessionID, "turns",
+		)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -197,10 +203,10 @@ func (service *Service) findExistingRun(
 			return err
 		}
 		for _, directory := range entries {
-			if !directory.IsDir() || directory.Type()&os.ModeSymlink != 0 {
+			if !directory.isDirectory() {
 				continue
 			}
-			turn, err := service.store.loadTurn(sessionID, directory.Name())
+			turn, err := service.store.loadTurn(sessionID, directory.name)
 			if err != nil {
 				return err
 			}
@@ -279,7 +285,8 @@ func (service *Service) resultFromTurn(
 		CaptureQuality: turn.CaptureQuality, Error: turn.Error,
 		PendingActions: append([]contract.ToolCall(nil), turn.PendingToolCalls...),
 	}
-	if assistant != nil {
+	if assistant != nil &&
+		!(turn.AgentOwned && turn.State != TurnCompleted) {
 		current := cloneContractMessage(*assistant)
 		result.Message = &current
 	}
@@ -294,6 +301,14 @@ func cloneContractMessage(value contract.Message) contract.Message {
 		)
 	}
 	return value
+}
+
+func canonicalMessageRecord(value MessageRecord) contract.Message {
+	message := cloneContractMessage(value.Message)
+	if value.IsError {
+		message.IsError = true
+	}
+	return message
 }
 
 func (service *Service) begin(
@@ -412,7 +427,16 @@ func (service *Service) begin(
 		result.Error = runtimeErr
 		return startedExecution{ids: ids, result: result}, runtimeErr
 	}
-	_ = service.store.rebuildIndex()
+	if err := service.store.rebuildIndex(); err != nil {
+		runtimeErr := sessionRuntimeError(
+			contract.ErrorInternal,
+			"Session turn was started but index rebuild failed: "+err.Error(),
+		)
+		result.Error = runtimeErr
+		return startedExecution{
+			ids: ids, projection: built, result: result,
+		}, runtimeErr
+	}
 	return startedExecution{ids: ids, projection: built, result: result}, nil
 }
 
@@ -487,7 +511,7 @@ func (service *Service) runModel(
 ) (RunResult, *contract.RuntimeError) {
 	if err := service.markExecutionRunning(started.ids); err != nil {
 		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
-		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+		return service.finishFailureResult(started.ids, runtimeErr)
 	}
 	generateRequest := contract.GenerateRequest{
 		ModelProfile: entry.ID,
@@ -510,8 +534,7 @@ func (service *Service) runModel(
 		},
 	)
 	if runtimeErr != nil {
-		result := service.finishFailure(started.ids, runtimeErr)
-		return result, runtimeErr
+		return service.finishFailureResult(started.ids, runtimeErr)
 	}
 	return service.finishModel(started.ids, modelResult)
 }
@@ -540,7 +563,7 @@ func (service *Service) runCommand(
 		runtimeErr := sessionRuntimeError(
 			contract.ErrorInternal, "CLI execution snapshot is missing",
 		)
-		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+		return service.finishFailureResult(started.ids, runtimeErr)
 	}
 	prompt := joinPromptFragments(
 		request.Snapshot.BasePrompt, started.projection.commandPrompt,
@@ -570,14 +593,14 @@ func (service *Service) runCommand(
 		if errors.As(err, &runtimeErr) {
 			safe := *runtimeErr
 			safe.Message = "build CLI canonical invocation failed"
-			return service.finishFailure(started.ids, &safe), &safe
+			return service.finishFailureResult(started.ids, &safe)
 		}
 		runtimeErr = sessionRuntimeError(
 			contract.ErrorInvalidRequest,
 			"build CLI canonical invocation failed",
 		)
 		runtimeErr.Phase = contract.PhaseTransport
-		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+		return service.finishFailureResult(started.ids, runtimeErr)
 	}
 	var turn Turn
 	if err := service.store.withLock(started.ids.session, func() error {
@@ -586,7 +609,7 @@ func (service *Service) runCommand(
 		return loadErr
 	}); err != nil {
 		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
-		return service.finishFailure(started.ids, runtimeErr), runtimeErr
+		return service.finishFailureResult(started.ids, runtimeErr)
 	}
 	executionResult := service.executeManagedCLI(
 		ctx, started.ids, turn, invocation,
@@ -707,13 +730,204 @@ func (service *Service) finishModelResult(
 		return service.store.writeSession(sessionValue)
 	})
 	if err != nil {
-		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
-		result.State = TurnFailed
+		recovered := service.recoverFinalizationFailure(ids, err)
+		return recovered.result, recovered.runtimeErr
+	}
+	if err := service.store.rebuildIndex(); err != nil {
+		runtimeErr := sessionRuntimeError(
+			contract.ErrorInternal,
+			"Session result was committed but index rebuild failed: "+
+				err.Error(),
+		)
 		result.Error = runtimeErr
 		return result, runtimeErr
 	}
-	_ = service.store.rebuildIndex()
 	return result, nil
+}
+
+type finalizationRecovery struct {
+	result     RunResult
+	runtimeErr *contract.RuntimeError
+}
+
+func (service *Service) recoverFinalizationFailure(
+	ids executionIDs,
+	persistErr error,
+) finalizationRecovery {
+	runtimeErr := sessionRuntimeError(
+		contract.ErrorInternal,
+		"persist Session finalization; explicit reconciliation required: "+
+			persistErr.Error(),
+	)
+	recovery := finalizationRecovery{
+		result: RunResult{
+			SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
+			ExecutionID: ids.execution, State: TurnRunning, Error: runtimeErr,
+		},
+		runtimeErr: runtimeErr,
+	}
+	err := service.store.withLock(ids.session, func() error {
+		sessionValue, err := service.store.loadSession(ids.session)
+		if err != nil {
+			return err
+		}
+		turn, err := service.store.loadTurn(ids.session, ids.turn)
+		if err != nil {
+			return err
+		}
+		execution, err := service.store.loadExecution(
+			ids.session, ids.execution,
+		)
+		if err != nil {
+			return err
+		}
+		if err := validateFinalizationCorrelation(
+			ids, sessionValue, turn, execution,
+		); err != nil {
+			return err
+		}
+		if finalizationFactsCommitted(sessionValue, turn, execution) {
+			assistant, err := service.lastAssistantForTurn(
+				ids.session, ids.turn,
+			)
+			if err != nil {
+				return err
+			}
+			recovery.result = service.resultFromTurn(turn, assistant)
+			recovery.result.ExitCode = execution.ExitCode
+			recovery.runtimeErr = turn.Error
+			return nil
+		}
+		if !finalizationFactsRunning(sessionValue, turn, execution) {
+			return fmt.Errorf(
+				"Session finalization facts are neither terminal nor the " +
+					"expected running execution",
+			)
+		}
+		now := service.now().UTC()
+		sessionValue.State = SessionBlocked
+		sessionValue.UpdatedAt = now
+		turn.Error = runtimeErr
+		turn.UpdatedAt = now
+		if err := service.store.writeTurn(turn); err != nil {
+			return err
+		}
+		if err := service.store.writeSession(sessionValue); err != nil {
+			return err
+		}
+		recovery.result = service.resultFromTurn(turn, nil)
+		recovery.result.ExitCode = execution.ExitCode
+		return nil
+	})
+	if err != nil {
+		recovery.runtimeErr = sessionRuntimeError(
+			contract.ErrorInternal,
+			fmt.Sprintf(
+				"%s; recovery failed: %v", runtimeErr.Message, err,
+			),
+		)
+		recovery.result = RunResult{
+			SessionID: ids.session, TurnID: ids.turn, RunID: ids.run,
+			ExecutionID: ids.execution, State: TurnRunning,
+			Error: recovery.runtimeErr,
+		}
+		return recovery
+	}
+	if err := service.store.rebuildIndex(); err != nil {
+		recovery.runtimeErr = sessionRuntimeError(
+			contract.ErrorInternal,
+			"Session recovery was committed but index rebuild failed: "+
+				err.Error(),
+		)
+		recovery.result.Error = recovery.runtimeErr
+	}
+	return recovery
+}
+
+func validateFinalizationCorrelation(
+	ids executionIDs,
+	sessionValue Session,
+	turn Turn,
+	execution Execution,
+) error {
+	if sessionValue.ID != ids.session ||
+		turn.ID != ids.turn ||
+		turn.SessionID != ids.session ||
+		turn.RunID != ids.run ||
+		turn.ExecutionID != ids.execution ||
+		execution.ID != ids.execution ||
+		execution.SessionID != ids.session ||
+		execution.TurnID != ids.turn ||
+		execution.RunID != ids.run ||
+		execution.ProfileID != turn.ProfileID ||
+		execution.ProfileKind != turn.ProfileKind ||
+		execution.RequestDigest != turn.RequestDigest ||
+		execution.ConfigDigest != turn.ConfigDigest ||
+		execution.BasePromptDigest != turn.BasePromptDigest ||
+		execution.CWD != turn.CWD {
+		return fmt.Errorf("Session finalization correlation does not match")
+	}
+	return nil
+}
+
+func finalizationFactsCommitted(
+	sessionValue Session,
+	turn Turn,
+	execution Execution,
+) bool {
+	if sessionValue.ActiveTurnID != "" ||
+		execution.State != ExecutionSettled {
+		return false
+	}
+	switch turn.State {
+	case TurnCompleted:
+		return sessionValue.State == SessionIdle &&
+			execution.Outcome == OutcomeCompleted
+	case TurnRequiresAction:
+		return sessionValue.State == SessionBlocked &&
+			execution.Outcome == OutcomeCompleted
+	case TurnFailed:
+		return sessionValue.State == SessionIdle &&
+			(execution.Outcome == OutcomeFailed ||
+				execution.Outcome == OutcomeUnknown)
+	case TurnCancelled:
+		return sessionValue.State == SessionIdle &&
+			execution.Outcome == OutcomeCancelled
+	default:
+		return false
+	}
+}
+
+func finalizationFactsRunning(
+	sessionValue Session,
+	turn Turn,
+	execution Execution,
+) bool {
+	return sessionValue.ActiveTurnID == turn.ID &&
+		(sessionValue.State == SessionActive ||
+			sessionValue.State == SessionBlocked) &&
+		turn.State == TurnRunning &&
+		(execution.State == ExecutionSpawnIntent ||
+			execution.State == ExecutionRunning)
+}
+
+func (service *Service) lastAssistantForTurn(
+	sessionID, turnID string,
+) (*contract.Message, error) {
+	messages, err := service.store.messages(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var assistant *contract.Message
+	for _, record := range messages {
+		if record.TurnID != turnID ||
+			record.Message.Role != contract.RoleAssistant {
+			continue
+		}
+		current := cloneContractMessage(record.Message)
+		assistant = &current
+	}
+	return assistant, nil
 }
 
 func (service *Service) finishManagedCommand(
@@ -801,12 +1015,18 @@ func (service *Service) finishManagedCommand(
 		return service.store.writeSession(sessionValue)
 	})
 	if err != nil {
-		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
-		result.State = TurnFailed
+		recovered := service.recoverFinalizationFailure(ids, err)
+		return recovered.result, recovered.runtimeErr
+	}
+	if err := service.store.rebuildIndex(); err != nil {
+		runtimeErr := sessionRuntimeError(
+			contract.ErrorInternal,
+			"Session result was committed but index rebuild failed: "+
+				err.Error(),
+		)
 		result.Error = runtimeErr
 		return result, runtimeErr
 	}
-	_ = service.store.rebuildIndex()
 	return result, executionResult.runtimeErr
 }
 
@@ -858,13 +1078,27 @@ func (service *Service) finishFailure(
 		return service.store.writeSession(sessionValue)
 	})
 	if err != nil {
+		result = service.recoverFinalizationFailure(ids, err).result
+	}
+	if indexErr := service.store.rebuildIndex(); indexErr != nil {
 		result.Error = sessionRuntimeError(
 			contract.ErrorInternal,
-			fmt.Sprintf("%s; persist failure: %v", runtimeErr.Message, err),
+			"Session failure was committed but index rebuild failed: "+
+				indexErr.Error(),
 		)
 	}
-	_ = service.store.rebuildIndex()
 	return result
+}
+
+func (service *Service) finishFailureResult(
+	ids executionIDs,
+	runtimeErr *contract.RuntimeError,
+) (RunResult, *contract.RuntimeError) {
+	result := service.finishFailure(ids, runtimeErr)
+	if result.State == TurnRunning && result.Error != nil {
+		return result, result.Error
+	}
+	return result, runtimeErr
 }
 
 func (service *Service) loadActive(ids executionIDs) (Session, Turn, error) {
