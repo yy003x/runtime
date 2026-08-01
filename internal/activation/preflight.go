@@ -285,7 +285,7 @@ func preflightRunDatabase(path string, expectedVersion int) error {
 	}
 	if version != expectedVersion {
 		return fmt.Errorf(
-			"Run database uses schema %d; expected %d; export with the previous binary or move runtime.db and sidecars to a recoverable backup",
+			"Run database uses unsupported schema %d; expected %d; move runtime.db and its sidecars to a recoverable backup before initializing current state",
 			version, expectedVersion,
 		)
 	}

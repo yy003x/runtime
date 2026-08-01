@@ -77,17 +77,6 @@ func Main(args []string) int {
 	}
 	switch args[0] {
 	case "profile":
-		if len(args) == 2 && args[1] == "list" {
-			executable, executableErr := os.Executable()
-			if executableErr != nil {
-				return output.fail(executableErr)
-			}
-			if gateErr := activation.RequireLegacyProfileListGate(
-				paths.Home, executable, paths.ResourcesDir,
-			); gateErr != nil {
-				return output.fail(gateErr)
-			}
-		}
 		err = runVNextProfileNamespace(paths, args[1:], output)
 	case "session":
 		err = runSessionNamespaceVNext(paths, args[1:], output)

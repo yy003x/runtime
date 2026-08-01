@@ -111,13 +111,15 @@ func (driver *Driver) Stream(
 }
 
 type requestBody struct {
-	Model       string           `json:"model"`
-	System      string           `json:"system,omitempty"`
-	Messages    []messagePayload `json:"messages"`
-	Tools       []toolPayload    `json:"tools,omitempty"`
-	MaxTokens   int64            `json:"max_tokens"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	Stream      bool             `json:"stream"`
+	Model         string           `json:"model"`
+	System        string           `json:"system,omitempty"`
+	Messages      []messagePayload `json:"messages"`
+	Tools         []toolPayload    `json:"tools,omitempty"`
+	MaxTokens     int64            `json:"max_tokens"`
+	Temperature   *float64         `json:"temperature,omitempty"`
+	TopP          *float64         `json:"top_p,omitempty"`
+	StopSequences []string         `json:"stop_sequences,omitempty"`
+	Stream        bool             `json:"stream"`
 }
 
 type messagePayload struct {
@@ -183,8 +185,11 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 	}
 	return json.Marshal(requestBody{
 		Model: resolved.Model, System: request.System, Messages: messages, Tools: tools,
-		MaxTokens:   *request.Options.MaxOutputTokens,
-		Temperature: request.Options.Temperature, Stream: true,
+		MaxTokens:     *request.Options.MaxOutputTokens,
+		Temperature:   request.Options.Temperature,
+		TopP:          request.Options.TopP,
+		StopSequences: request.Options.StopSequences,
+		Stream:        true,
 	})
 }
 

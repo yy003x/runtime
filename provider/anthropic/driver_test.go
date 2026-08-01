@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,8 +30,22 @@ func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		attempts.Add(1)
+		if request.URL.Path != "/v1/messages" {
+			t.Errorf("path=%q", request.URL.Path)
+		}
 		if request.Header.Get("x-api-key") != "secret" {
 			t.Errorf("x-api-key=%q", request.Header.Get("x-api-key"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["top_p"] != float64(0.9) {
+			t.Errorf("top_p=%v", body["top_p"])
+		}
+		stop, ok := body["stop_sequences"].([]any)
+		if !ok || len(stop) != 1 || stop[0] != "END" {
+			t.Errorf("stop_sequences=%v", body["stop_sequences"])
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintln(writer, `event: message_start`)
@@ -47,13 +62,17 @@ func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 	defer server.Close()
 
 	maxTokens := int64(1024)
+	topP := 0.9
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver:   model.DriverAnthropicCompatible,
-			Endpoint: server.URL + "/v1/messages", Model: "fixture",
-			Auth:     model.Auth{Header: "x-api-key", FromEnv: "MODEL_API_KEY"},
-			Defaults: model.Defaults{MaxTokens: &maxTokens},
-			Timeout:  "1m",
+			Driver:  model.DriverAnthropicCompatible,
+			BaseURL: server.URL, Model: "fixture",
+			Auth: model.Auth{Header: "x-api-key", FromEnv: "MODEL_API_KEY"},
+			Defaults: model.Defaults{
+				MaxTokens: &maxTokens, TopP: &topP,
+				StopSequences: []string{"END"},
+			},
+			Timeout: "1m",
 		},
 	})
 	if err != nil {
@@ -121,6 +140,14 @@ func TestEncodeRequestPreservesToolResultError(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, field := range [][]byte{
+		[]byte(`"temperature"`), []byte(`"top_p"`),
+		[]byte(`"stop_sequences"`),
+	} {
+		if bytes.Contains(payload, field) {
+			t.Fatalf("unset field %s was sent: %s", field, payload)
+		}
 	}
 	var body requestBody
 	if err := json.Unmarshal(payload, &body); err != nil {

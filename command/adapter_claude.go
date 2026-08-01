@@ -142,7 +142,7 @@ var claudeOptions = newOptionParser([]optionSpec{
 	{name: "--strict-mcp-config", aliases: []string{"--strict-mcp-config"}, arity: arityFlag, scope: scopeCommon, kind: kindGeneric},
 	{name: "--system-prompt", aliases: []string{"--system-prompt"}, arity: arityValue, scope: scopeCommon, kind: kindGeneric},
 	{name: "--tools", aliases: []string{"--tools"}, arity: arityVariadic, minValues: 1, scope: scopeCommon, kind: kindGeneric},
-	{name: "--verbose", aliases: []string{"--verbose"}, arity: arityFlag, scope: scopeCommon, kind: kindGeneric},
+	{name: "--verbose", aliases: []string{"--verbose"}, arity: arityFlag, scope: scopeCommon, kind: kindCanonicalForbidden, forbidInCanon: true},
 	{name: "--print", aliases: []string{"-p", "--print"}, arity: arityFlag, scope: scopeExec, kind: kindMode},
 	{name: "--fallback-model", aliases: []string{"--fallback-model"}, arity: arityValue, scope: scopeExec, kind: kindGeneric},
 	{name: "--max-budget-usd", aliases: []string{"--max-budget-usd"}, arity: arityValue, scope: scopeExec, kind: kindGeneric},

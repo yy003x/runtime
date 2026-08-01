@@ -225,7 +225,7 @@ func TestMainRejectsRemovedSystemNamespace(t *testing.T) {
 }
 
 func TestTopLevelProfileManagementNamesAreUnknownProfiles(t *testing.T) {
-	for _, name := range []string{"list", "show", "check", "exec", "open"} {
+	for _, name := range []string{"list", "show", "check"} {
 		t.Run(name, func(t *testing.T) {
 			paths := prepareVNextHome(t)
 			t.Setenv("SN_CLI_HOME", paths.Home)

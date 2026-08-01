@@ -91,7 +91,6 @@ type transactionArtifact struct {
 	OriginalExists bool   `json:"original_exists"`
 	OriginalDigest string `json:"original_digest,omitempty"`
 	NewDigest      string `json:"new_digest"`
-	Remove         bool   `json:"remove,omitempty"`
 	BackedUp       bool   `json:"backed_up"`
 	Installed      bool   `json:"installed"`
 }
@@ -139,14 +138,11 @@ func UpgradeActivate(
 		return UpgradeResult{}, fmt.Errorf("load payload release manifest: %w", err)
 	}
 	if manifest.ActivationEpoch != 2 || manifest.ContractVersion != 3 ||
-		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 4 ||
-		manifest.MinimumUpdaterEpoch != 2 ||
-		manifest.LegacySelfUpdate != "blocked" {
+		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 4 {
 		return UpgradeResult{}, fmt.Errorf(
-			"payload activation contract is incompatible: epoch=%d contract=%d session_schema=%d run_schema=%d minimum_updater_epoch=%d legacy_self_update=%q",
+			"payload activation contract is incompatible: epoch=%d contract=%d session_schema=%d run_schema=%d",
 			manifest.ActivationEpoch, manifest.ContractVersion,
 			manifest.SessionSchemaVersion, manifest.RunSchemaVersion,
-			manifest.MinimumUpdaterEpoch, manifest.LegacySelfUpdate,
 		)
 	}
 	if err := validatePayload(payload, candidate); err != nil {
@@ -371,7 +367,7 @@ func UpgradeActivate(
 			journalPath, journal, err,
 		)
 	}
-	if err := installLegacyBarriers(journalPath, &journal, guard); err != nil {
+	if err := installActivationBarriers(journalPath, &journal); err != nil {
 		return UpgradeResult{}, rollbackAfterCommitError(
 			journalPath, journal, err,
 		)
@@ -449,7 +445,7 @@ func managedServerExclusions(
 
 func validateActiveHomeShape(target string) error {
 	for _, name := range []string{
-		"bin", "configs", "commands", "resources",
+		"bin", "configs", "resources",
 		"sessions", "state", "tmp",
 	} {
 		path := filepath.Join(target, name)
@@ -909,14 +905,9 @@ func validateCandidateCommand(
 	return nil
 }
 
-// Keep the schema-2 artifact order so an interrupted activation created by
-// the previous binary remains recoverable. New transactions use commands only
-// as a removal tombstone; it is never staged or installed.
 var transactionArtifactNames = []string{
-	"resources", "commands", "runtime.json", "bin", "configs",
+	"resources", "runtime.json", "bin", "configs",
 }
-
-const obsoleteCommandsArtifact = "commands"
 
 func barrierFile(stageRoot, name string) string {
 	return filepath.Join(stageRoot, "barriers", name)
@@ -964,15 +955,6 @@ func newTransactionJournal(
 		if statErr != nil {
 			return transactionJournal{}, statErr
 		}
-		if name == obsoleteCommandsArtifact {
-			journal.Artifacts = append(journal.Artifacts, transactionArtifact{
-				Name: name, Target: targetPath, Backup: backupPath,
-				OriginalExists: originalExists,
-				OriginalDigest: originalDigest,
-				Remove:         true,
-			})
-			continue
-		}
 		stagedPath := filepath.Join(desired, name)
 		newDigest, digestErr := treeDigest(stagedPath)
 		if digestErr != nil {
@@ -987,12 +969,10 @@ func newTransactionJournal(
 	return journal, nil
 }
 
-func installLegacyBarriers(
+func installActivationBarriers(
 	journalPath string,
 	journal *transactionJournal,
-	guard []byte,
 ) error {
-	_ = guard
 	for _, name := range []string{"bin", "configs"} {
 		artifact, err := journalArtifact(journal, name)
 		if err != nil {
@@ -1107,37 +1087,6 @@ func commitUpgradeTransaction(
 				}
 			}
 		}
-		if artifact.Remove {
-			current, inspectErr := inspectPath(artifact.Target)
-			if inspectErr != nil {
-				return rollbackAfterCommitError(
-					journalPath, *journal, inspectErr,
-				)
-			}
-			if current.Exists {
-				return rollbackAfterCommitError(
-					journalPath, *journal,
-					fmt.Errorf(
-						"obsolete target %s appeared during activation",
-						name,
-					),
-				)
-			}
-			artifact.Installed = true
-			if err := syncDirectory(
-				filepath.Dir(artifact.Target),
-			); err != nil {
-				return rollbackAfterCommitError(
-					journalPath, *journal, err,
-				)
-			}
-			if err := writeJournal(journalPath, *journal); err != nil {
-				return rollbackAfterCommitError(
-					journalPath, *journal, err,
-				)
-			}
-			continue
-		}
 		if err := durableRename(artifact.Staged, artifact.Target); err != nil {
 			return rollbackAfterCommitError(journalPath, *journal, err)
 		}
@@ -1191,7 +1140,7 @@ func recoverUpgradeTransaction(target, journalPath string) error {
 			if info, statErr := os.Lstat(path); statErr == nil &&
 				info.Mode().IsRegular() {
 				return fmt.Errorf(
-					"legacy activation barrier exists without a recovery journal: %s",
+					"activation barrier exists without a recovery journal: %s",
 					path,
 				)
 			} else if statErr != nil &&
@@ -1279,7 +1228,7 @@ func rollbackUpgradeTransaction(
 		}
 	}
 	for _, name := range []string{
-		"configs", "runtime.json", "commands", "resources",
+		"configs", "runtime.json", "resources",
 	} {
 		artifact, err := journalArtifact(&journal, name)
 		if err != nil {
@@ -1496,7 +1445,7 @@ func ensureRollbackBinBarrier(journal transactionJournal) error {
 			return err
 		}
 	case target.Exists && backup.Exists && target.Mode.IsDir():
-		// A legacy process can win the tiny rename gap by recreating bin.
+		// Another process can win the tiny rename gap by recreating bin.
 		// Only an empty directory is safe to discard; os.Remove fails closed
 		// when it contains anything.
 		if err := os.Remove(bin.Target); err != nil {
@@ -1608,15 +1557,6 @@ func verifyTransactionState(
 			return err
 		}
 		if wantNew {
-			if artifact.Remove {
-				if target.Exists {
-					return fmt.Errorf(
-						"obsolete target %s remains after activation",
-						artifact.Name,
-					)
-				}
-				continue
-			}
 			if !target.Exists || target.Digest != artifact.NewDigest {
 				return fmt.Errorf(
 					"activated target %s does not match the staged release",
@@ -1729,18 +1669,11 @@ func readJournal(path string) (transactionJournal, error) {
 			value.StageRoot, "backup",
 			fmt.Sprintf("%02d-%s", index, filepath.Base(name)),
 		)
-		removeArtifact := name == obsoleteCommandsArtifact &&
-			artifact.Remove
-		if removeArtifact {
-			expectedStaged = ""
-		}
 		if artifact.Name != name ||
 			artifact.Target != expectedTarget ||
 			artifact.Staged != expectedStaged ||
 			artifact.Backup != expectedBackup ||
-			(removeArtifact && artifact.NewDigest != "") ||
-			(!removeArtifact && !validDigest(artifact.NewDigest)) ||
-			artifact.Remove && name != obsoleteCommandsArtifact ||
+			!validDigest(artifact.NewDigest) ||
 			(artifact.OriginalExists &&
 				!validDigest(artifact.OriginalDigest)) ||
 			(!artifact.OriginalExists &&

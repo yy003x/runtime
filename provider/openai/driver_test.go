@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,7 +45,14 @@ func TestDriverStreamsTextAndFragmentedToolCallInOneAttempt(t *testing.T) {
 			t.Errorf("max_completion_tokens=%v", body["max_completion_tokens"])
 		}
 		if _, exists := body["max_tokens"]; exists {
-			t.Errorf("deprecated max_tokens was sent")
+			t.Errorf("unexpected max_tokens wire field was sent")
+		}
+		if body["top_p"] != float64(0.9) {
+			t.Errorf("top_p=%v", body["top_p"])
+		}
+		stop, ok := body["stop"].([]any)
+		if !ok || len(stop) != 1 || stop[0] != "END" {
+			t.Errorf("stop=%v", body["stop"])
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintln(writer, `data: {"id":"req-1","model":"wire-model","choices":[{"delta":{"content":"hello "}}]}`)
@@ -55,7 +63,7 @@ func TestDriverStreamsTextAndFragmentedToolCallInOneAttempt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := newService(t, server.URL+"/v1/chat/completions", server.Client())
+	service := newService(t, server.URL, server.Client())
 	var events []contract.Event
 	result, runtimeErr := service.GenerateStream(
 		context.Background(),
@@ -93,7 +101,7 @@ func TestDriverMapsRateLimitWithoutRetry(t *testing.T) {
 		http.Error(writer, "rate limited", http.StatusTooManyRequests)
 	}))
 	defer server.Close()
-	service := newService(t, server.URL+"/v1/chat/completions", server.Client())
+	service := newService(t, server.URL, server.Client())
 	_, runtimeErr := service.Generate(context.Background(), request())
 	if runtimeErr == nil || runtimeErr.Code != contract.ErrorRateLimited ||
 		runtimeErr.RetryAfterMS != 2000 || attempts.Load() != 1 {
@@ -101,17 +109,39 @@ func TestDriverMapsRateLimitWithoutRetry(t *testing.T) {
 	}
 }
 
-func newService(t *testing.T, endpoint string, client *http.Client) *model.Service {
+func TestEncodeRequestOmitsUnsetCommonOptions(t *testing.T) {
+	maxTokens := int64(64)
+	payload, err := encodeRequest(model.ResolvedModel{Model: "fixture"}, contract.ModelRequest{
+		Messages: []contract.Message{{Role: contract.RoleUser, Content: "hello"}},
+		Options:  contract.GenerateOptions{MaxOutputTokens: &maxTokens},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range [][]byte{
+		[]byte(`"temperature"`), []byte(`"top_p"`), []byte(`"stop"`),
+	} {
+		if bytes.Contains(payload, field) {
+			t.Fatalf("unset field %s was sent: %s", field, payload)
+		}
+	}
+}
+
+func newService(t *testing.T, baseURL string, client *http.Client) *model.Service {
 	t.Helper()
 	maxTokens := int64(1024)
+	topP := 0.9
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver: model.DriverOpenAICompatible, Endpoint: endpoint, Model: "fixture",
+			Driver: model.DriverOpenAICompatible, BaseURL: baseURL, Model: "fixture",
 			Auth: model.Auth{
 				Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY",
 			},
-			Defaults: model.Defaults{MaxCompletionTokens: &maxTokens},
-			Timeout:  "1m",
+			Defaults: model.Defaults{
+				MaxTokens: &maxTokens, TopP: &topP,
+				StopSequences: []string{"END"},
+			},
+			Timeout: "1m",
 		},
 	})
 	if err != nil {

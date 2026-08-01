@@ -157,11 +157,13 @@ func TestKernelContinuesAfterReadOnlyToolError(t *testing.T) {
 	}).Run(
 		context.Background(),
 		agent.LoopState{
-			RunID:        "run_11111111111111111111111111111111",
-			ModelProfile: "api",
+			SchemaVersion: agent.LoopStateSchemaVersion,
+			RunID:         "run_11111111111111111111111111111111",
+			ModelProfile:  "api",
 			Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "read missing.txt",
 			}},
+			BaseMessageCount: 1,
 		},
 		func(event contract.Event) error {
 			events = append(events, event)
@@ -255,11 +257,13 @@ func TestKernelTreatsWriteDirectorySyncFailureAsUnknown(t *testing.T) {
 	}).Run(
 		context.Background(),
 		agent.LoopState{
-			RunID:        "run_22222222222222222222222222222222",
-			ModelProfile: "api",
+			SchemaVersion: agent.LoopStateSchemaVersion,
+			RunID:         "run_22222222222222222222222222222222",
+			ModelProfile:  "api",
 			Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "write value.txt",
 			}},
+			BaseMessageCount: 1,
 		},
 		nil,
 	)

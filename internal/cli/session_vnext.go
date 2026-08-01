@@ -19,7 +19,6 @@ import (
 	"github.com/yy003x/runtime/internal/identity"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
-	runtimemodel "github.com/yy003x/runtime/model"
 	runtimeprofile "github.com/yy003x/runtime/profile"
 	runtime "github.com/yy003x/runtime/run"
 	"github.com/yy003x/runtime/session"
@@ -563,16 +562,15 @@ func parseSessionReconcileOptions(
 }
 
 type sessionInvocation struct {
-	sessionID      string
-	taskID         string
-	retention      session.Retention
-	profileID      string
-	input          string
-	model          string
-	effort         string
-	cwd            string
-	modelOptions   contract.GenerateOptions
-	tokenLimitFlag string
+	sessionID    string
+	taskID       string
+	retention    session.Retention
+	profileID    string
+	input        string
+	model        string
+	effort       string
+	cwd          string
+	modelOptions contract.GenerateOptions
 }
 
 func runSessionExecution(
@@ -740,14 +738,7 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 				return value, cliValidationf("--cwd requires value")
 			}
 			value.cwd = args[index]
-		case "--max-completion-tokens", "--max-tokens":
-			if value.tokenLimitFlag != "" {
-				return value, cliValidationf(
-					"%s and %s are mutually exclusive",
-					value.tokenLimitFlag, current,
-				)
-			}
-			value.tokenLimitFlag = current
+		case "--max-tokens":
 			index++
 			if index >= len(args) || args[index] == "" ||
 				strings.HasPrefix(args[index], "--") {
@@ -817,7 +808,9 @@ func validateSessionProfileOptions(
 		return cliValidationf("unknown profile %q", invocation.profileID)
 	}
 	hasModelOptions := invocation.modelOptions.MaxOutputTokens != nil ||
-		invocation.modelOptions.Temperature != nil
+		invocation.modelOptions.Temperature != nil ||
+		invocation.modelOptions.TopP != nil ||
+		len(invocation.modelOptions.StopSequences) > 0
 	if entry.Kind == runtimeprofile.KindCommand {
 		if hasModelOptions {
 			return cliValidationf(
@@ -841,16 +834,6 @@ func validateSessionProfileOptions(
 	}
 	if !hasModelOptions {
 		return nil
-	}
-	if invocation.tokenLimitFlag == "" {
-		return nil
-	}
-	expected := modelTokenLimitOption(runtimemodel.DriverName(entry.Model.Driver))
-	if invocation.tokenLimitFlag != expected {
-		return cliValidationf(
-			"%s is invalid for %s; use %s",
-			invocation.tokenLimitFlag, entry.Model.Driver, expected,
-		)
 	}
 	return nil
 }

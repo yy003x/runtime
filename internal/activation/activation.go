@@ -38,13 +38,11 @@ func RequireNoGuard(stateDir string) error {
 }
 
 type Manifest struct {
-	SchemaVersion        int    `json:"schema_version"`
-	ActivationEpoch      int    `json:"activation_epoch"`
-	ContractVersion      int    `json:"contract_version"`
-	SessionSchemaVersion int    `json:"session_schema_version"`
-	RunSchemaVersion     int    `json:"run_schema_version"`
-	MinimumUpdaterEpoch  int    `json:"minimum_updater_epoch"`
-	LegacySelfUpdate     string `json:"legacy_self_update"`
+	SchemaVersion        int `json:"schema_version"`
+	ActivationEpoch      int `json:"activation_epoch"`
+	ContractVersion      int `json:"contract_version"`
+	SessionSchemaVersion int `json:"session_schema_version"`
+	RunSchemaVersion     int `json:"run_schema_version"`
 }
 
 func LoadManifest(resourcesDir string) (Manifest, []byte, error) {
@@ -65,58 +63,4 @@ func LoadManifest(resourcesDir string) (Manifest, []byte, error) {
 		return Manifest{}, nil, fmt.Errorf("unsupported release activation manifest")
 	}
 	return manifest, data, nil
-}
-
-// RequireLegacyProfileListGate rejects the exact validation command used by
-// the v0.1.1 updater when a contract-v3 candidate is staged outside its target
-// Runtime home.
-func RequireLegacyProfileListGate(
-	home, binaryPath, _ string,
-) error {
-	staged, err := isStaged(home, binaryPath)
-	if err != nil {
-		return err
-	}
-	if !staged {
-		return nil
-	}
-	manifest, _, err := LoadManifest(
-		filepath.Join(filepath.Dir(binaryPath), "resources"),
-	)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if manifest.ActivationEpoch < 2 {
-		return nil
-	}
-	return fmt.Errorf(
-		"contract-v3 candidate cannot be activated by the legacy updater; use the current install.sh",
-	)
-}
-
-func isStaged(home, binaryPath string) (bool, error) {
-	expected := filepath.Join(filepath.Clean(home), "bin", "sn-cli")
-	current, err := filepath.Abs(binaryPath)
-	if err != nil {
-		return false, err
-	}
-	expected, err = filepath.Abs(expected)
-	if err != nil {
-		return false, err
-	}
-	currentInfo, err := os.Stat(current)
-	if err != nil {
-		return false, err
-	}
-	expectedInfo, err := os.Stat(expected)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return !os.SameFile(currentInfo, expectedInfo), nil
 }

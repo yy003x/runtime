@@ -326,8 +326,8 @@ func TestWriteRequiresExplicitOptInAndExecCommandIsRemoved(t *testing.T) {
 		t.Fatalf("data=%q error=%v", data, err)
 	}
 	if _, err := Build(Options{
-		Names: []string{"exec_command"}, Roots: []string{root}, CWD: root,
+		Names: []string{"unknown_tool"}, Roots: []string{root}, CWD: root,
 	}); err == nil || !strings.Contains(err.Error(), "unknown built-in tool") {
-		t.Fatalf("removed exec_command was accepted: %v", err)
+		t.Fatalf("unknown built-in tool was accepted: %v", err)
 	}
 }

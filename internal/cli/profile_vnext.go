@@ -99,7 +99,11 @@ func runLoadedVNextProfile(
 		); err != nil {
 			return err
 		}
-		return output.line("Endpoint: %s", entry.Model.Endpoint)
+		endpoint, err := entry.Model.ResolvedEndpoint()
+		if err != nil {
+			return err
+		}
+		return output.line("Endpoint: %s", endpoint)
 	case "check":
 		if len(args) > 2 {
 			return cliValidationf("profile check accepts at most one profile ID")
@@ -472,7 +476,7 @@ func splitTypedOption(value string) (string, string, bool) {
 
 func parseDirectModelInput(
 	profileID string,
-	modelProfile runtimemodel.Profile,
+	_ runtimemodel.Profile,
 	args []string,
 ) (contract.GenerateRequest, bool, error) {
 	request := contract.GenerateRequest{ModelProfile: profileID}
@@ -543,23 +547,16 @@ func parseDirectModelInput(
 			}
 			system = value
 			index = next
-		case "--max-completion-tokens", "--max-tokens":
-			expected := modelTokenLimitOption(modelProfile.Driver)
-			if current != expected {
-				return contract.GenerateRequest{}, stream, cliValidationf(
-					"%s is invalid for %s; use %s",
-					current, modelProfile.Driver, expected,
-				)
-			}
+		case "--max-tokens":
 			value, next, err := directModelOptionValue(
-				args, index, expected,
+				args, index, "--max-tokens",
 			)
 			if err != nil {
 				return contract.GenerateRequest{}, stream, err
 			}
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || parsed <= 0 {
-				return contract.GenerateRequest{}, stream, cliValidationf("%s must be positive", expected)
+				return contract.GenerateRequest{}, stream, cliValidationf("--max-tokens must be positive")
 			}
 			request.Input.Options.MaxOutputTokens = &parsed
 			index = next
@@ -652,17 +649,6 @@ func directModelOptionValue(
 		return "", index, cliValidationf("%s requires value", name)
 	}
 	return args[index], index, nil
-}
-
-func modelTokenLimitOption(driver runtimemodel.DriverName) string {
-	switch driver {
-	case runtimemodel.DriverOpenAICompatible:
-		return "--max-completion-tokens"
-	case runtimemodel.DriverAnthropicCompatible:
-		return "--max-tokens"
-	default:
-		return "--max-tokens"
-	}
 }
 
 func readModelRequest(path string) (contract.ModelRequest, error) {

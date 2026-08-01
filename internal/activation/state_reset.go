@@ -43,7 +43,7 @@ type runtimeStateResetOwner struct {
 // prove that path swaps and interrupted tombstone cleanup fail closed.
 var runtimeStateResetTestHook func(string) error
 
-// resetRuntimeState removes only the incompatible Session and durable Run
+// resetRuntimeState removes only the existing Session and durable Run
 // state owned by Runtime. Every mutation is relative to pinned home/state
 // directory descriptors. An entry is first renamed into an owned tombstone,
 // then cleaned without following symlinks. A committed activation can

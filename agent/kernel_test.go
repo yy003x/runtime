@@ -188,10 +188,12 @@ func TestKernelExecutesSequentialToolLoop(t *testing.T) {
 	state, outcome, runtimeErr := kernel.Run(
 		context.Background(),
 		LoopState{
-			RunID:        "run_00000000000000000000000000000001",
-			ModelProfile: "api", Messages: []contract.Message{{
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         "run_00000000000000000000000000000001",
+			ModelProfile:  "api", Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "start",
 			}},
+			BaseMessageCount: 1,
 		},
 		func(event contract.Event) error {
 			events = append(events, event)
@@ -229,6 +231,34 @@ func TestKernelExecutesSequentialToolLoop(t *testing.T) {
 		if events[index].Type != want {
 			t.Fatalf("events[%d]=%s want=%s", index, events[index].Type, want)
 		}
+	}
+}
+
+func TestKernelRejectsMissingLoopStateSchema(t *testing.T) {
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, outcome, runtimeErr := (&Kernel{
+		Model: &kernelModel{}, Tools: registry, Effects: NewMemoryEffects(),
+	}).Run(
+		context.Background(),
+		LoopState{
+			RunID:        "run_10101010101010101010101010101010",
+			ModelProfile: "api",
+			Messages: []contract.Message{{
+				Role: contract.RoleUser, Content: "start",
+			}},
+			BaseMessageCount: 1,
+		},
+		nil,
+	)
+	if runtimeErr == nil ||
+		runtimeErr.Code != contract.ErrorInvalidRequest ||
+		runtimeErr.Message != "unsupported loop state schema" ||
+		outcome.StopReason != "invalid_state" ||
+		state.SchemaVersion != 0 {
+		t.Fatalf("state=%#v outcome=%#v error=%v", state, outcome, runtimeErr)
 	}
 }
 
@@ -337,12 +367,14 @@ func TestKernelFreezesKnownModelTerminalOutcomes(t *testing.T) {
 			state, outcome, runtimeErr := kernel.Run(
 				context.Background(),
 				LoopState{
-					RunID:        "run_11111111111111111111111111111111",
-					ModelProfile: "api",
+					SchemaVersion: LoopStateSchemaVersion,
+					RunID:         "run_11111111111111111111111111111111",
+					ModelProfile:  "api",
 					Messages: []contract.Message{{
 						Role: contract.RoleUser, Content: "start",
 					}},
-					TotalTokens: testCase.totalTokens,
+					BaseMessageCount: 1,
+					TotalTokens:      testCase.totalTokens,
 				},
 				func(event contract.Event) error {
 					events = append(events, event)
@@ -565,10 +597,12 @@ func TestKernelPauseAndResume(t *testing.T) {
 	state, outcome, runtimeErr := kernel.Run(
 		context.Background(),
 		LoopState{
-			RunID:        "run_00000000000000000000000000000002",
-			ModelProfile: "api", Messages: []contract.Message{{
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         "run_00000000000000000000000000000002",
+			ModelProfile:  "api", Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "start",
 			}},
+			BaseMessageCount: 1,
 		},
 		nil,
 	)
@@ -642,10 +676,12 @@ func TestKernelRejectsUnknownToolBeforeSideEffect(t *testing.T) {
 	_, outcome, runtimeErr := kernel.Run(
 		context.Background(),
 		LoopState{
-			RunID:        "run_00000000000000000000000000000003",
-			ModelProfile: "api", Messages: []contract.Message{{
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         "run_00000000000000000000000000000003",
+			ModelProfile:  "api", Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "start",
 			}},
+			BaseMessageCount: 1,
 		}, nil,
 	)
 	if runtimeErr == nil ||
@@ -696,11 +732,13 @@ func TestKernelPersistsOnlyExplicitKnownToolFailure(t *testing.T) {
 	}).Run(
 		context.Background(),
 		LoopState{
-			RunID:        "run_88888888888888888888888888888888",
-			ModelProfile: "api",
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         "run_88888888888888888888888888888888",
+			ModelProfile:  "api",
 			Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "start",
 			}},
+			BaseMessageCount: 1,
 		},
 		nil,
 	)
@@ -768,11 +806,13 @@ func TestKernelRejectsArgumentsOutsideToolInputSchemaBeforeSideEffect(
 			}).Run(
 				context.Background(),
 				LoopState{
-					RunID:        "run_55555555555555555555555555555555",
-					ModelProfile: "api",
+					SchemaVersion: LoopStateSchemaVersion,
+					RunID:         "run_55555555555555555555555555555555",
+					ModelProfile:  "api",
 					Messages: []contract.Message{{
 						Role: contract.RoleUser, Content: "start",
 					}},
+					BaseMessageCount: 1,
 				},
 				func(event contract.Event) error {
 					switch event.Type {
@@ -857,11 +897,13 @@ func TestKernelExecutionSnapshotGatePrecedesToolEffects(t *testing.T) {
 		}).Run(
 			context.Background(),
 			LoopState{
-				RunID:        "run_12121212121212121212121212121212",
-				ModelProfile: "api",
+				SchemaVersion: LoopStateSchemaVersion,
+				RunID:         "run_12121212121212121212121212121212",
+				ModelProfile:  "api",
 				Messages: []contract.Message{{
 					Role: contract.RoleUser, Content: "start",
 				}},
+				BaseMessageCount: 1,
 			},
 			func(event contract.Event) error {
 				switch event.Type {
@@ -918,7 +960,8 @@ func TestKernelExecutionSnapshotGatePrecedesToolEffects(t *testing.T) {
 		}).Run(
 			context.Background(),
 			LoopState{
-				RunID: runID, ModelProfile: "api",
+				SchemaVersion: LoopStateSchemaVersion,
+				RunID:         runID, ModelProfile: "api",
 				Messages: []contract.Message{
 					{Role: contract.RoleUser, Content: "start"},
 					{
@@ -926,7 +969,8 @@ func TestKernelExecutionSnapshotGatePrecedesToolEffects(t *testing.T) {
 						ToolCalls: []contract.ToolCall{call},
 					},
 				},
-				Round: 1, ToolCallCount: 1,
+				BaseMessageCount: 1,
+				Round:            1, ToolCallCount: 1,
 				SeenToolCallIDs:           []string{call.ID},
 				PendingToolCalls:          []contract.ToolCall{call},
 				PendingEffectCheckpointID: checkpointID,
@@ -988,7 +1032,8 @@ func TestKernelExecutionSnapshotGatePrecedesToolEffects(t *testing.T) {
 		}).Run(
 			context.Background(),
 			LoopState{
-				RunID: runID, ModelProfile: "api",
+				SchemaVersion: LoopStateSchemaVersion,
+				RunID:         runID, ModelProfile: "api",
 				Messages: []contract.Message{
 					{Role: contract.RoleUser, Content: "start"},
 					{
@@ -996,7 +1041,8 @@ func TestKernelExecutionSnapshotGatePrecedesToolEffects(t *testing.T) {
 						ToolCalls: []contract.ToolCall{call},
 					},
 				},
-				Round: 1, ToolCallCount: 1,
+				BaseMessageCount: 1,
+				Round:            1, ToolCallCount: 1,
 				SeenToolCallIDs:            []string{call.ID},
 				PendingToolCalls:           []contract.ToolCall{call},
 				PendingEffectCheckpointID:  checkpointID,
@@ -1093,7 +1139,8 @@ func TestKernelRejectsPreparedEffectThatDiffersFromCheckpoint(t *testing.T) {
 			}).Run(
 				context.Background(),
 				LoopState{
-					RunID: validRequest.RunID, ModelProfile: "api",
+					SchemaVersion: LoopStateSchemaVersion,
+					RunID:         validRequest.RunID, ModelProfile: "api",
 					Messages: []contract.Message{
 						{Role: contract.RoleUser, Content: "start"},
 						{
@@ -1101,7 +1148,8 @@ func TestKernelRejectsPreparedEffectThatDiffersFromCheckpoint(t *testing.T) {
 							ToolCalls: []contract.ToolCall{call},
 						},
 					},
-					ToolCallCount: 1, SeenToolCallIDs: []string{call.ID},
+					BaseMessageCount: 1,
+					ToolCallCount:    1, SeenToolCallIDs: []string{call.ID},
 					PendingToolCalls:          []contract.ToolCall{call},
 					PendingEffectCheckpointID: validRequest.CheckpointID,
 					PendingCheckpointID:       validRequest.CheckpointID,
@@ -1183,7 +1231,8 @@ func TestKernelRecoveryDoesNotDuplicateDurableToolMessage(t *testing.T) {
 	}).Run(
 		context.Background(),
 		LoopState{
-			RunID: runID, ModelProfile: "api",
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         runID, ModelProfile: "api",
 			Messages: []contract.Message{
 				{Role: contract.RoleUser, Content: "start"},
 				{
@@ -1196,7 +1245,8 @@ func TestKernelRecoveryDoesNotDuplicateDurableToolMessage(t *testing.T) {
 					Content:    "durable result",
 				},
 			},
-			Round: 1, ToolCallCount: 1,
+			BaseMessageCount: 1,
+			Round:            1, ToolCallCount: 1,
 			SeenToolCallIDs:           []string{call.ID},
 			PendingToolCalls:          []contract.ToolCall{call},
 			PendingEffectCheckpointID: checkpointID,
@@ -1430,11 +1480,13 @@ func TestKernelDurableTerminalEventFailureNeedsReconciliation(
 			}).Run(
 				context.Background(),
 				LoopState{
-					RunID:        "run_33333333333333333333333333333333",
-					ModelProfile: "api",
+					SchemaVersion: LoopStateSchemaVersion,
+					RunID:         "run_33333333333333333333333333333333",
+					ModelProfile:  "api",
 					Messages: []contract.Message{{
 						Role: contract.RoleUser, Content: "start",
 					}},
+					BaseMessageCount: 1,
 				},
 				func(event contract.Event) error {
 					if event.Type == testCase.rejectType {
@@ -1469,7 +1521,7 @@ func TestKernelResumeValidatesBeforeAppendingMessage(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"boolean"}`),
 	}
 	state := LoopState{
-		SchemaVersion: 2,
+		SchemaVersion: LoopStateSchemaVersion,
 		RunID:         "run_44444444444444444444444444444444",
 		ModelProfile:  "api",
 		Messages: []contract.Message{{
@@ -1600,10 +1652,12 @@ func TestKernelEnforcesRoundBudget(t *testing.T) {
 	_, outcome, runtimeErr := kernel.Run(
 		context.Background(),
 		LoopState{
-			RunID:        "run_00000000000000000000000000000004",
-			ModelProfile: "api", Messages: []contract.Message{{
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         "run_00000000000000000000000000000004",
+			ModelProfile:  "api", Messages: []contract.Message{{
 				Role: contract.RoleUser, Content: "start",
 			}},
+			BaseMessageCount: 1,
 		}, nil,
 	)
 	if runtimeErr == nil || outcome.StopReason != "round_budget" {

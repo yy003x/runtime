@@ -109,6 +109,8 @@ type requestBody struct {
 	Tools               []toolPayload    `json:"tools,omitempty"`
 	MaxCompletionTokens *int64           `json:"max_completion_tokens,omitempty"`
 	Temperature         *float64         `json:"temperature,omitempty"`
+	TopP                *float64         `json:"top_p,omitempty"`
+	Stop                []string         `json:"stop,omitempty"`
 	Stream              bool             `json:"stream"`
 	StreamOptions       map[string]bool  `json:"stream_options,omitempty"`
 }
@@ -170,6 +172,8 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 		Model: resolved.Model, Messages: messages, Tools: tools,
 		MaxCompletionTokens: request.Options.MaxOutputTokens,
 		Temperature:         request.Options.Temperature,
+		TopP:                request.Options.TopP,
+		Stop:                request.Options.StopSequences,
 		Stream:              true,
 		StreamOptions:       map[string]bool{"include_usage": true},
 	})

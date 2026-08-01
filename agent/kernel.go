@@ -763,12 +763,6 @@ func (kernel *Kernel) validate(state *LoopState) *contract.RuntimeError {
 	if err := kernel.effectiveBudget().Validate(); err != nil {
 		return agentError(contract.ErrorInvalidRequest, "agent budget: "+err.Error())
 	}
-	if state.SchemaVersion == 0 {
-		state.SchemaVersion = LoopStateSchemaVersion
-		if state.BaseMessageCount == 0 {
-			state.BaseMessageCount = len(state.Messages)
-		}
-	}
 	if state.SchemaVersion != LoopStateSchemaVersion {
 		return agentError(contract.ErrorInvalidRequest, "unsupported loop state schema")
 	}

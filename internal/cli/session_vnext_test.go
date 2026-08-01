@@ -16,7 +16,7 @@ import (
 	"github.com/yy003x/runtime/session"
 )
 
-func TestSessionInvocationUsesTypedCLIOverridesAndRejectsCarrierOptions(t *testing.T) {
+func TestSessionInvocationUsesTypedCLIOverridesAndRejectsUnknownOptions(t *testing.T) {
 	value, err := parseSessionInvocation([]string{
 		"--model", "gpt-5.6-sol", "--effort", "high",
 		"--cwd", "work", "cx", "继续",
@@ -29,14 +29,11 @@ func TestSessionInvocationUsesTypedCLIOverridesAndRejectsCarrierOptions(t *testi
 		value.input != "继续" {
 		t.Fatalf("value=%#v", value)
 	}
-	for _, option := range []string{
-		"--prompt-file", "--session-file", "--terminal-driver",
-		"--command-arg", "--launch",
-	} {
+	for _, option := range []string{"--unknown", "--unsupported"} {
 		if _, err := parseSessionInvocation(
 			[]string{option, "value", "cx", "input"},
 		); err == nil {
-			t.Fatalf("accepted removed option %s", option)
+			t.Fatalf("accepted unknown option %s", option)
 		}
 	}
 	if _, err := parseSessionInvocation([]string{
@@ -61,7 +58,7 @@ func TestSessionInvocationUsesTypedCLIOverridesAndRejectsCarrierOptions(t *testi
 	}
 }
 
-func TestSessionInvocationAndProfileCompatibilityAreCLIValidation(t *testing.T) {
+func TestSessionInvocationAndProfileMismatchAreCLIValidation(t *testing.T) {
 	_, err := parseSessionInvocation([]string{"--unknown"})
 	var validationErr *cliValidationError
 	if err == nil || !errors.As(err, &validationErr) {
@@ -81,15 +78,6 @@ func TestSessionInvocationAndProfileCompatibilityAreCLIValidation(t *testing.T) 
 	for _, invocation := range []sessionInvocation{
 		{profileID: "missing"},
 		{profileID: "api-cx", model: "override"},
-		{
-			profileID: "api-cx", tokenLimitFlag: "--max-tokens",
-			modelOptions: contract.GenerateOptions{
-				MaxOutputTokens: func() *int64 {
-					value := int64(32)
-					return &value
-				}(),
-			},
-		},
 	} {
 		err := validateSessionProfileOptions(invocation, profiles)
 		validationErr = nil
@@ -130,12 +118,12 @@ func TestCanonicalSessionDeleteConflict(t *testing.T) {
 	}
 }
 
-func TestSessionToolResultActionIsNotPublic(t *testing.T) {
+func TestSessionUnknownActionDoesNotCreateState(t *testing.T) {
 	paths := prepareVNextHome(t)
 	err := runSessionNamespaceVNext(
 		paths,
 		[]string{
-			"tool-result",
+			"unknown-action",
 			"--session-id", "session_00000000000000000000000000000000",
 			"--turn-id", "turn_00000000000000000000000000000000",
 			"--tool-call-id", "call_missing",
@@ -148,7 +136,7 @@ func TestSessionToolResultActionIsNotPublic(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 	if _, statErr := os.Stat(paths.SessionsDir); !os.IsNotExist(statErr) {
-		t.Fatalf("removed action bootstrapped Session state: %v", statErr)
+		t.Fatalf("unknown action bootstrapped Session state: %v", statErr)
 	}
 }
 
@@ -235,9 +223,9 @@ func TestRenderSessionGCResultIncludesSkippedCount(t *testing.T) {
 	}
 }
 
-func TestSessionTokenLimitFlagMatchesModelDriver(t *testing.T) {
+func TestSessionTokenLimitFlagIsProviderNeutral(t *testing.T) {
 	openAIInvocation, err := parseSessionInvocation([]string{
-		"--max-completion-tokens", "128", "api-cx", "hello",
+		"--max-tokens", "128", "api-cx", "hello",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -254,18 +242,6 @@ func TestSessionTokenLimitFlagMatchesModelDriver(t *testing.T) {
 		openAIInvocation, openAIProfiles,
 	); err != nil {
 		t.Fatal(err)
-	}
-
-	invalidInvocation, err := parseSessionInvocation([]string{
-		"--max-tokens", "128", "api-cx", "hello",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateSessionProfileOptions(
-		invalidInvocation, openAIProfiles,
-	); err == nil || !strings.Contains(err.Error(), "--max-completion-tokens") {
-		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -343,15 +319,6 @@ func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
 		{"gc", "--older-than-hours", "2562048"},
 		{"gc", "--older-than-hours", ""},
 		{"show", "--session-id", "session_1", "trailing"},
-		{
-			"tool-result",
-			"--session-id", "session_1",
-			"--turn-id", "turn_1",
-			"--tool-call-id", "call_1",
-			"--idempotency-key", "key_1",
-			"--content", "",
-			"--content-file", "result.txt",
-		},
 	} {
 		output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 		if err := runSessionNamespaceVNext(paths, args, output); err == nil {

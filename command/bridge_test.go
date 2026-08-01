@@ -139,6 +139,53 @@ func TestBuildClaudeCanonicalIsStateless(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeCanonicalRejectsVerboseButNativePreservesIt(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "claude")
+	prompt := "typed prompt"
+	profile := Profile{Command: commandPath, Args: []string{"--verbose"}}
+	native, err := Build(BuildRequest{
+		Mode: ModeExec, OutputProtocol: OutputNative,
+		Profile:              profile,
+		ArgvPrompt:           &prompt,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(
+		native.Argv,
+		[]string{commandPath, "--verbose", "-p", "--", prompt},
+	) {
+		t.Fatalf("argv=%q", native.Argv)
+	}
+
+	_, err = Build(BuildRequest{
+		Mode: ModeExec, OutputProtocol: OutputCanonical,
+		Profile:              profile,
+		ArgvPrompt:           &prompt,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorInvalidRequest ||
+		runtimeErr.Phase != contract.PhaseProfile ||
+		!strings.Contains(runtimeErr.Message, "--verbose is incompatible with canonical output") {
+		t.Fatalf("error=%v", err)
+	}
+
+	runtimeErr = nil
+	err = CheckProfile(profile)
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorInvalidRequest ||
+		runtimeErr.Phase != contract.PhaseProfile ||
+		!strings.Contains(runtimeErr.Message, "--verbose is incompatible with canonical output") {
+		t.Fatalf("profile check error=%v", err)
+	}
+}
+
 func TestBuildUsesImmutableInheritedSnapshotForArgsEnvAndCWD(t *testing.T) {
 	root := t.TempDir()
 	commandPath := writeCommandFixture(t, root, "codex")

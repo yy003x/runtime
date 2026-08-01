@@ -219,7 +219,7 @@ func TestServerLockRejectsSymlink(t *testing.T) {
 	}
 }
 
-func TestServerInfoPublishesVNextContractWithoutLegacyScheduler(t *testing.T) {
+func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	paths := prepareVNextHome(t)
 	writeVNextCommand(t, paths.ConfigDir, "cx")
 	writeVNextModel(
@@ -288,14 +288,18 @@ func TestServerInfoPublishesVNextContractWithoutLegacyScheduler(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := raw["features"]; exists {
-		t.Fatal("legacy features were published")
+	allowed := map[string]struct{}{
+		"schema_version": {}, "contract_version": {}, "version": {},
+		"runtime_home": {}, "profiles": {}, "run_database": {},
+		"configured_address": {}, "namespaces": {}, "capabilities": {},
 	}
-	if _, exists := raw["scheduler"]; exists {
-		t.Fatal("legacy scheduler was published")
+	for name := range raw {
+		if _, exists := allowed[name]; !exists {
+			t.Fatalf("unexpected server info field %q", name)
+		}
 	}
-	if _, exists := raw["address"]; exists {
-		t.Fatal("configured address was published as runtime address")
+	if len(raw) != len(allowed) {
+		t.Fatalf("server info fields=%v", raw)
 	}
 
 	stdout.Reset()

@@ -236,19 +236,19 @@ func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
 	}
 }
 
-func TestParseDirectModelInputRejectsLegacyModelOverride(t *testing.T) {
+func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 	openAIProfile := vNextTestModelProfile("openai-compatible")
 	if _, _, err := parseDirectModelInput(
 		"api", openAIProfile, []string{"--model", "other", "hello"},
 	); err == nil {
-		t.Fatal("legacy --model override was accepted")
+		t.Fatal("unsupported --model override was accepted")
 	}
 	request, stream, err := parseDirectModelInput(
 		"api",
 		openAIProfile,
 		[]string{
 			"--stream", "--temperature", "0.2",
-			"--max-completion-tokens", "128", "hello",
+			"--max-tokens", "128", "hello",
 		},
 	)
 	if err != nil || !stream || request.Input.Options.Temperature == nil ||
@@ -256,11 +256,6 @@ func TestParseDirectModelInputRejectsLegacyModelOverride(t *testing.T) {
 		*request.Input.Options.MaxOutputTokens != 128 ||
 		len(request.Input.Messages) != 1 {
 		t.Fatalf("request=%#v stream=%v error=%v", request, stream, err)
-	}
-	if _, _, err := parseDirectModelInput(
-		"api", openAIProfile, []string{"--max-tokens", "128", "hello"},
-	); err == nil {
-		t.Fatal("Anthropic max_tokens was accepted for OpenAI")
 	}
 	anthropicProfile := vNextTestModelProfile("anthropic-compatible")
 	if _, _, err := parseDirectModelInput(
@@ -278,7 +273,7 @@ func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) 
 		[]string{
 			"--stream", "--system", "system",
 			"--temperature", "0.5",
-			"--max-completion-tokens", "128",
+			"--max-tokens", "128",
 			"--", "--leading-input",
 		},
 	)
@@ -297,8 +292,8 @@ func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) 
 		{"--system", "one", "--system", "two", "input"},
 		{"--temperature", "0.1", "--temperature", "0.2", "input"},
 		{
-			"--max-completion-tokens", "1",
-			"--max-completion-tokens", "2", "input",
+			"--max-tokens", "1",
+			"--max-tokens", "2", "input",
 		},
 		{"--request-file", "one", "--request-file", "two"},
 		{"--system", "--stream", "input"},
@@ -488,7 +483,7 @@ func TestParseCommandProfileOptionsExecGrammarAndTerminator(t *testing.T) {
 		t.Fatalf("options=%#v error=%v", options, err)
 	}
 	for _, args := range [][]string{
-		{"--interactive"},
+		{"--unknown"},
 		{"--exec=maybe"},
 		{"--effort", "extreme"},
 		{"--effort", "high", "--effort", "max"},
@@ -582,7 +577,7 @@ func writeVNextModel(t *testing.T, dir, id, endpoint string) {
 		"auth": map[string]any{
 			"header": "Authorization", "scheme": "Bearer", "from_env": "MODEL_API_KEY",
 		},
-		"defaults": map[string]any{"max_completion_tokens": 1024},
+		"defaults": map[string]any{"max_tokens": 1024},
 		"timeout":  "1m",
 	}
 	data, err := json.Marshal(value)
