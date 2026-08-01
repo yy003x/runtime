@@ -9,7 +9,9 @@ import (
 )
 
 func TestValidateModelProfile(t *testing.T) {
-	maxCompletionTokens := int64(1024)
+	maxTokens := int64(1024)
+	oversizedDefault := int64(32_767)
+	invalidTopP := 1.1
 	profile := Profile{
 		Driver:   DriverOpenAICompatible,
 		Endpoint: "https://example.invalid/v1/chat/completions",
@@ -20,7 +22,7 @@ func TestValidateModelProfile(t *testing.T) {
 		},
 		Headers: map[string]string{"X-Client": "runtime-test"},
 		Defaults: Defaults{
-			MaxCompletionTokens: &maxCompletionTokens,
+			MaxTokens: &maxTokens,
 		},
 		Timeout: "5m",
 	}
@@ -49,24 +51,88 @@ func TestValidateModelProfile(t *testing.T) {
 				Header: "Authorization", Scheme: "Bearer", FromEnv: "${KEY}",
 			}, Timeout: "1m",
 		},
-		"wrong_openai_token_limit": {
-			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1",
-			Model: "x", Auth: Auth{
-				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
-			}, Defaults: Defaults{MaxTokens: &maxCompletionTokens}, Timeout: "1m",
-		},
-		"wrong_anthropic_token_limit": {
+		"missing_anthropic_token_limit": {
 			Driver: DriverAnthropicCompatible, Endpoint: "https://example.invalid/v1",
 			Model: "x", Auth: Auth{
 				Header: "x-api-key", FromEnv: "KEY",
-			}, Defaults: Defaults{
-				MaxCompletionTokens: &maxCompletionTokens,
 			}, Timeout: "1m",
+		},
+		"default_context_without_input_budget": {
+			Driver: DriverAnthropicCompatible, Endpoint: "https://example.invalid/v1/messages",
+			Model: "x", Auth: Auth{
+				Header: "x-api-key", FromEnv: "KEY",
+			}, Defaults: Defaults{MaxTokens: &oversizedDefault}, Timeout: "1m",
+		},
+		"invalid_top_p": {
+			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1/chat/completions",
+			Model: "x", Auth: Auth{
+				Header: "Authorization", FromEnv: "KEY",
+			}, Defaults: Defaults{TopP: &invalidTopP}, Timeout: "1m",
+		},
+		"empty_stop_sequence": {
+			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1/chat/completions",
+			Model: "x", Auth: Auth{
+				Header: "Authorization", FromEnv: "KEY",
+			}, Defaults: Defaults{StopSequences: []string{""}}, Timeout: "1m",
 		},
 	} {
 		if err := value.Validate(); err == nil {
 			t.Fatalf("%s was accepted: %#v", name, value)
 		}
+	}
+}
+
+func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		profile Profile
+		want    string
+	}{
+		"explicit": {
+			profile: Profile{
+				Driver:   DriverOpenAICompatible,
+				Endpoint: "https://example.invalid/custom/chat?region=cn",
+			},
+			want: "https://example.invalid/custom/chat?region=cn",
+		},
+		"openai_base": {
+			profile: Profile{
+				Driver:  DriverOpenAICompatible,
+				BaseURL: "https://example.invalid/provider/",
+			},
+			want: "https://example.invalid/provider/v1/chat/completions",
+		},
+		"anthropic_base": {
+			profile: Profile{
+				Driver:  DriverAnthropicCompatible,
+				BaseURL: "https://example.invalid/provider",
+			},
+			want: "https://example.invalid/provider/v1/messages",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := testCase.profile.ResolvedEndpoint()
+			if err != nil || got != testCase.want {
+				t.Fatalf("endpoint=%q want=%q error=%v", got, testCase.want, err)
+			}
+		})
+	}
+	for name, profile := range map[string]Profile{
+		"missing": {Driver: DriverOpenAICompatible},
+		"both": {
+			Driver:   DriverOpenAICompatible,
+			Endpoint: "https://example.invalid/v1/chat/completions",
+			BaseURL:  "https://example.invalid",
+		},
+		"base_query": {
+			Driver:  DriverOpenAICompatible,
+			BaseURL: "https://example.invalid/provider?region=cn",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := profile.ResolvedEndpoint(); err == nil {
+				t.Fatalf("profile=%#v was accepted", profile)
+			}
+		})
 	}
 }
 
@@ -122,17 +188,50 @@ func TestEffectiveContextBudgetUsesConservativeReservation(t *testing.T) {
 	maxOutput := int64(12_000)
 	profile := Profile{
 		Driver:   DriverOpenAICompatible,
-		Defaults: Defaults{MaxCompletionTokens: &maxOutput},
+		Defaults: Defaults{MaxTokens: &maxOutput},
 		Context: ContextPolicy{
 			WindowTokens: 32_768, ReservedOutputTokens: 4_096,
 		},
 	}
-	window, reserved, input, configured := profile.EffectiveContextBudget()
-	if !configured || window != 32_768 || reserved != 12_000 ||
+	window, reserved, input, explicit := profile.EffectiveContextBudget()
+	if !explicit || window != 32_768 || reserved != 12_000 ||
 		input != 20_768 {
 		t.Fatalf(
-			"window=%d reserved=%d input=%d configured=%t",
-			window, reserved, input, configured,
+			"window=%d reserved=%d input=%d explicit=%t",
+			window, reserved, input, explicit,
+		)
+	}
+}
+
+func TestEffectiveContextBudgetUsesConservativeDefaultsAndRequestLimit(t *testing.T) {
+	maxOutput := int64(12_000)
+	profile := Profile{
+		Driver:   DriverOpenAICompatible,
+		Defaults: Defaults{MaxTokens: &maxOutput},
+	}
+	window, reserved, input, explicit := profile.EffectiveContextBudget()
+	if explicit || window != 32_768 || reserved != 12_000 || input != 20_768 {
+		t.Fatalf(
+			"window=%d reserved=%d input=%d explicit=%t",
+			window, reserved, input, explicit,
+		)
+	}
+	lowerRequestLimit := int64(4_096)
+	window, reserved, input, explicit =
+		profile.EffectiveContextBudgetForRequest(&lowerRequestLimit)
+	if explicit || window != 32_768 || reserved != 12_000 || input != 20_768 {
+		t.Fatalf(
+			"lower override: window=%d reserved=%d input=%d explicit=%t",
+			window, reserved, input, explicit,
+		)
+	}
+	higherRequestLimit := int64(16_000)
+	window, reserved, input, explicit =
+		profile.EffectiveContextBudgetForRequest(&higherRequestLimit)
+	if explicit || window != 32_768 || reserved != 16_000 || input != 16_768 {
+		t.Fatalf(
+			"higher override: window=%d reserved=%d input=%d explicit=%t",
+			window, reserved, input, explicit,
 		)
 	}
 }

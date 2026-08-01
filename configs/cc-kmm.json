@@ -1,0 +1,14 @@
+{
+  "type": "cli",
+  "command": "claude",
+  "model": "claude-fable-5",
+  "exec": false,
+  "args": [
+    "--dangerously-skip-permissions"
+  ],
+  "env": {
+    "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip",
+    "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn",
+    "ANTHROPIC_API_KEY": "${KMM_API_KEY}"
+  }
+}

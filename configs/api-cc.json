@@ -1,14 +1,18 @@
 {
   "type": "api",
   "driver": "anthropic-compatible",
-  "endpoint": "https://api.kuaimaai.com.cn/v1/messages",
-  "model": "claude-fable-5",
+  "base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
+  "model": "glm-5.2",
   "auth": {
     "header": "x-api-key",
-    "from_env": "KMM_API_KEY"
+    "from_env": "BAILIAN_API_KEY"
   },
   "defaults": {
     "max_tokens": 16384
+  },
+  "context": {
+    "window_tokens": 1048576,
+    "reserved_output_tokens": 16384
   },
   "timeout": "50m"
 }

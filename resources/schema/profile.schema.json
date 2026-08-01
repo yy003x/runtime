@@ -99,28 +99,38 @@
       "required": [
         "type",
         "driver",
-        "endpoint",
         "model",
         "auth",
         "timeout"
       ],
       "properties": {
         "type": {
+          "description": "Selects the API Profile domain.",
           "const": "api"
         },
         "driver": {
+          "description": "Selects the Provider wire protocol adapter.",
           "enum": [
             "openai-compatible",
             "anthropic-compatible"
           ]
         },
         "endpoint": {
+          "description": "Optional complete Provider HTTPS endpoint; mutually exclusive with base_url.",
           "type": "string",
           "format": "uri",
           "x-sn-url-semantics": "absolute HTTPS URL with host, explicit non-root path, no userinfo, no fragment",
           "pattern": "^https://[^/?#@]+/[^?#]+(?:\\?[^#]*)?$"
         },
+        "base_url": {
+          "description": "Optional Provider HTTPS base URL; Runtime appends the driver default API path and preserves an existing path prefix.",
+          "type": "string",
+          "format": "uri",
+          "x-sn-url-semantics": "absolute HTTPS URL with host, optional path prefix, no userinfo, query, or fragment",
+          "pattern": "^https://[^/?#@]+(?:/[^?#]*)?$"
+        },
         "model": {
+          "description": "Provider model identifier sent in each request.",
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
@@ -128,6 +138,7 @@
           "pattern": "\\S"
         },
         "auth": {
+          "description": "Environment-backed authentication header configuration; no secret value is stored here.",
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -136,20 +147,24 @@
           ],
           "properties": {
             "header": {
+              "description": "HTTP header that carries the resolved authentication value.",
               "type": "string",
               "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
             },
             "scheme": {
+              "description": "Optional authentication prefix such as Bearer; omission sends the secret directly.",
               "type": "string",
               "pattern": "^(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+)?$"
             },
             "from_env": {
+              "description": "Environment variable containing the authentication secret.",
               "type": "string",
               "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
             }
           }
         },
         "headers": {
+          "description": "Optional non-secret literal HTTP headers; authentication and sensitive headers are forbidden.",
           "type": "object",
           "maxProperties": 128,
           "x-sn-forbid-auth-header-match": true,
@@ -182,18 +197,12 @@
           }
         },
         "defaults": {
+          "description": "Provider-neutral default generation options applied when a request does not override them.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_completion_tokens": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            },
             "max_tokens": {
+              "description": "Default maximum output tokens; adapters map it to their native wire field.",
               "type": [
                 "integer",
                 "null"
@@ -202,16 +211,39 @@
               "maximum": 9223372036854775807
             },
             "temperature": {
+              "description": "Default sampling temperature shared by API drivers.",
               "type": [
                 "number",
                 "null"
               ],
               "minimum": 0,
               "maximum": 2
+            },
+            "top_p": {
+              "description": "Optional default nucleus sampling probability; target models or compatible services may reject unsupported values.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "stop_sequences": {
+              "description": "Optional default stop sequences; adapters map them to their native wire field and target model support may vary.",
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "x-sn-max-bytes": 1024,
+                "pattern": "^[^\\x00]+$"
+              }
             }
           }
         },
         "timeout": {
+          "description": "Timeout for one Provider attempt as a Go duration, greater than zero and no more than 24h.",
           "type": "string",
           "x-sn-duration-min": "1ns",
           "x-sn-duration-max": "24h",
@@ -225,26 +257,33 @@
           ]
         },
         "context": {
+          "description": "Local Session projection policy; these fields are not sent to the Provider.",
           "type": "object",
           "additionalProperties": false,
           "x-sn-input-budget-minimum": 2,
           "properties": {
             "window_tokens": {
+              "description": "Local Session context window; zero or omission uses the conservative default.",
+              "default": 32768,
               "type": "integer",
               "minimum": 0,
               "maximum": 9223372036854775807
             },
             "reserved_output_tokens": {
+              "description": "Local Session output reservation; zero or omission defaults to 8192 and never undercuts a configured output limit.",
+              "default": 8192,
               "type": "integer",
               "minimum": 0,
               "maximum": 9223372036854775807
             },
             "keep_recent_turns": {
+              "description": "Accepted, validated and frozen into snapshots, but current Session projection does not yet trim history with it.",
               "type": "integer",
               "minimum": 0,
               "maximum": 9223372036854775807
             },
             "summary_enabled": {
+              "description": "Accepted and frozen into snapshots, but current Session does not yet perform history summarization.",
               "type": [
                 "boolean",
                 "null"
@@ -253,35 +292,29 @@
           }
         }
       },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "driver": {
-                "const": "openai-compatible"
-              }
-            },
+          "required": [
+            "endpoint"
+          ],
+          "not": {
             "required": [
-              "driver"
+              "base_url"
             ]
-          },
-          "then": {
-            "properties": {
-              "defaults": {
-                "not": {
-                  "properties": {
-                    "max_tokens": {
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "max_tokens"
-                  ]
-                }
-              }
-            }
           }
         },
+        {
+          "required": [
+            "base_url"
+          ],
+          "not": {
+            "required": [
+              "endpoint"
+            ]
+          }
+        }
+      ],
+      "allOf": [
         {
           "if": {
             "properties": {
@@ -306,16 +339,6 @@
                   "max_tokens": {
                     "type": "integer"
                   }
-                },
-                "not": {
-                  "properties": {
-                    "max_completion_tokens": {
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "max_completion_tokens"
-                  ]
                 }
               }
             }

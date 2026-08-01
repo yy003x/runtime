@@ -179,6 +179,16 @@ func (service *Service) GenerateStream(
 		value := *profile.Defaults.Temperature
 		input.Options.Temperature = &value
 	}
+	if input.Options.TopP == nil && profile.Defaults.TopP != nil {
+		value := *profile.Defaults.TopP
+		input.Options.TopP = &value
+	}
+	if len(input.Options.StopSequences) == 0 &&
+		len(profile.Defaults.StopSequences) > 0 {
+		input.Options.StopSequences = append(
+			[]string(nil), profile.Defaults.StopSequences...,
+		)
+	}
 	callContext, cancel := context.WithTimeout(ctx, time.Duration(resolved.Timeout))
 	defer cancel()
 

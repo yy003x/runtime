@@ -88,6 +88,10 @@ func (catalog *Catalog) resolve(
 			profile.Auth.FromEnv,
 		)
 	}
+	endpoint, err := profile.ResolvedEndpoint()
+	if err != nil {
+		return ResolvedModel{}, "", err
+	}
 	headers := make(map[string]string, len(profile.Headers)+1)
 	for name, value := range profile.Headers {
 		headers[name] = value
@@ -105,7 +109,7 @@ func (catalog *Catalog) resolve(
 		return values
 	}
 	return ResolvedModel{
-		ID: id, Driver: profile.Driver, Endpoint: profile.Endpoint, Model: profile.Model,
+		ID: id, Driver: profile.Driver, Endpoint: endpoint, Model: profile.Model,
 		Defaults: profile.Defaults, Timeout: profile.TimeoutDuration(),
 		headers: headerSource,
 	}, secret, nil
@@ -128,14 +132,7 @@ func (resolved ResolvedModel) RequestHeaders() map[string]string {
 }
 
 func (resolved ResolvedModel) DefaultTokenLimit() *int64 {
-	switch resolved.Driver {
-	case DriverOpenAICompatible:
-		return resolved.Defaults.MaxCompletionTokens
-	case DriverAnthropicCompatible:
-		return resolved.Defaults.MaxTokens
-	default:
-		return nil
-	}
+	return resolved.Defaults.MaxTokens
 }
 
 func cloneProfile(profile Profile) Profile {
@@ -146,10 +143,6 @@ func cloneProfile(profile Profile) Profile {
 			result.Headers[name] = value
 		}
 	}
-	if profile.Defaults.MaxCompletionTokens != nil {
-		value := *profile.Defaults.MaxCompletionTokens
-		result.Defaults.MaxCompletionTokens = &value
-	}
 	if profile.Defaults.MaxTokens != nil {
 		value := *profile.Defaults.MaxTokens
 		result.Defaults.MaxTokens = &value
@@ -157,6 +150,15 @@ func cloneProfile(profile Profile) Profile {
 	if profile.Defaults.Temperature != nil {
 		value := *profile.Defaults.Temperature
 		result.Defaults.Temperature = &value
+	}
+	if profile.Defaults.TopP != nil {
+		value := *profile.Defaults.TopP
+		result.Defaults.TopP = &value
+	}
+	if profile.Defaults.StopSequences != nil {
+		result.Defaults.StopSequences = append(
+			[]string(nil), profile.Defaults.StopSequences...,
+		)
 	}
 	if profile.Context.SummaryEnabled != nil {
 		value := *profile.Context.SummaryEnabled

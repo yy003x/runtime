@@ -27,7 +27,7 @@ const (
 	KindModel   Kind = "api"
 )
 
-var ReservedIDs = []string{"list", "show", "check", "exec", "open"}
+var ReservedIDs = []string{"list", "show", "check"}
 
 type Entry struct {
 	ID      string           `json:"id"`
@@ -132,9 +132,9 @@ func loadFile(path string) (Kind, command.Profile, model.Profile, error) {
 		case KindModel:
 			return len(parts) == 2 &&
 				(parts[0] == "defaults" &&
-					(parts[1] == "max_completion_tokens" ||
-						parts[1] == "max_tokens" ||
-						parts[1] == "temperature") ||
+					(parts[1] == "max_tokens" ||
+						parts[1] == "temperature" ||
+						parts[1] == "top_p") ||
 					parts[0] == "context" &&
 						parts[1] == "summary_enabled")
 		default:

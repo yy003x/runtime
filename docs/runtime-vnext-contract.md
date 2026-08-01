@@ -30,9 +30,8 @@ Profile 位于 `configs/<id>.json`，必须以 `type=cli|api` 分流。CLI Profi
 command args env model effort prompt exec cwd
 ```
 
-不接受 `binary`、`transport`、`prompt_delivery` 或 `effort_adapter`。API Profile
-保持自己的 Provider schema。不存在 command ID、shortcut 映射或 raw/native argv
-passthrough。
+loader 只接受上述字段。API Profile 保持自己的 Provider schema。不存在 command
+ID、第二层映射或 raw/native argv passthrough。
 
 执行矩阵：
 
@@ -44,14 +43,15 @@ passthrough。
 | `sn-cli session run|submit` API | API | Session executor | Turn/Execution |
 | `sn-cli tmux start` | 固定 interactive | Tmux window | 无 Session |
 
-`launch` 不属于公开 Profile。Session 和 Tmux 不读取 Profile `exec`。
+Session 和 Tmux 由各自入口固定 execution mode，不读取 Profile `exec` 默认值。
 
 Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Claude。adapter
 用显式 option grammar：
 
 - 区分 command/common、exec-only 和 mode selector；
 - 识别并替换 model、effort、exec 和 canonical-output selector；
-- 对重复、stateful、改变 final shape 或无法安全归类的配置 fail closed；
+- 对重复、stateful、改变 final shape 或无法安全归类的配置 fail closed；Claude
+  `--verbose` 会把 canonical JSON result 改成逐轮数组，必须在 Profile 检查阶段拒绝；
 - Profile/Session/Tmux 输入用 `--` 结束 options，并保证 prompt 为最终 argv token；
 - file、stdin、合并 prompt 与单个 argv/env token 上限为 128,000 bytes；
 - spawn 前校验 env expansion、cwd、PATH、单 token 与总 argv/env budget。
@@ -63,8 +63,8 @@ leading global `--json` 不包装其原生输出。
 `sn-cli <id>` 与 `sn-cli profile <id>` 使用同一 Profile loader、typed parser、
 执行 service 和输出语义。固定根 namespace
 `profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理 action
-`list|show|check` 和已退役 action 名 `exec|open`，都是保留 Profile ID；loader
-遇到冲突即失败，且不会恢复旧 `profile exec|open` action。
+`list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。其余合法 ID 在
+隐式入口和 `profile` namespace 下都按 Profile 执行。
 
 `profile check` 是纯静态校验，不解析真实 env/PATH/cwd，不读取 prompt file。
 
@@ -81,11 +81,25 @@ leading global `--json` 不包装其原生输出。
 Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。secret 只从
 `auth.from_env` 解析，不进入 Profile output、event 或数据库。
 
-OpenAI-compatible Chat Completions 使用 `max_completion_tokens`；
-Anthropic-compatible Messages 使用 `max_tokens`。Canonical
-`max_output_tokens` 由 Driver 映射到 wire 字段。Canonical tool Message 的
-`is_error` 必须随历史保留；Anthropic-compatible Driver 将其映射到
+Profile 默认输出上限统一配置为 `defaults.max_tokens`，CLI override 统一为
+`--max-tokens`。Canonical request 使用 `max_output_tokens`；OpenAI-compatible
+Driver 将它映射为 wire `max_completion_tokens`，Anthropic-compatible Driver 映射为
+wire `max_tokens`。共有的可选 `temperature`、`top_p`、`stop_sequences` 同样先进入
+canonical request，其中 OpenAI 将停止序列映射为 `stop`；未配置时 adapter 不发送，
+目标模型不保证支持每个可选参数。Canonical tool Message 的
+`is_error` 必须保存在 canonical tool Message；Anthropic-compatible Driver 将其映射到
 `tool_result.is_error`，不能只保留在 lifecycle event 中。
+
+API Profile 必须在完整 `endpoint` 与 `base_url` 中二选一。`endpoint` 原样请求；
+`base_url` 保留已有路径前缀，OpenAI-compatible 追加 `/v1/chat/completions`，
+Anthropic-compatible 追加 `/v1/messages`。`base_url` 不接受 query 或 fragment；
+非默认路径使用显式 `endpoint`。
+
+Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作为 Provider
+请求字段。未声明或为 `0` 时使用保守默认窗口 `32768`；输出预留使用显式
+`context.reserved_output_tokens`、Profile 默认输出上限和请求级输出上限的最大值，
+都未声明时默认 `8192`。输入预算是窗口减去有效输出预留，必须至少为 `2`；较低的
+请求级输出上限不能扩大 Profile 输入预算，较高值必须收紧输入预算。
 
 ## 4. Session
 
@@ -108,8 +122,8 @@ CLI executor 固定 command adapter exec/canonical：
 
 - Codex：`exec --ephemeral --json`，只有唯一 `turn.completed` 前最后一个 completed
   `agent_message` 可成为 assistant；
-- Claude：`-p --output-format json`，只接受唯一、成功、`is_error=false` 的
-  `type=result` document；
+- Claude：`-p --output-format json`，不允许 `--verbose` 改写 stdout shape，只接受
+  唯一、成功、`is_error=false` 的 `type=result` document；
 - OS exit=0 与 protocol success terminal 都必须满足；
 - stdout 只承载机器协议，stderr 只承载诊断；partial output 不伪造成 assistant。
 
@@ -148,7 +162,7 @@ snapshot 单独保存 `session_request_digest/session_config_digest`，并用它
 Session projection；不得把包含 Agent、Provider 和 tool identity 的 combined
 digest 写成 Session 自己的 profile-only digest。
 
-Session fact `schema_version=2`。旧 schema 不读、不迁移。
+Session fact 必须显式声明 `schema_version=2`；缺失或不相等都拒绝，不推断、不补齐。
 
 文件型 Session Store 的一次 mutation 可能同时涉及 message/event JSONL、
 Session/Turn/Execution 和 context manifest。它在 Session `flock` 内使用私有
@@ -277,8 +291,8 @@ trailing data、`null` root 与 `null pause_id`；`input` 自身可为任意单�
 Run Record 不序列化最新 resume input。
 
 默认 tool 只读。`write_file` 必须在 `runtime.json` 显式启用，且受 workspace
-roots、symlink 和大小门禁。builtin `exec_command` 已移除：root/path 检查不是
-OS sandbox，旧配置包含该名称时 fail closed。
+roots、symlink 和大小门禁。builtin 集合不提供任意 subprocess 执行能力；
+root/path 检查不是 OS sandbox，未知 tool 名称一律 fail closed。
 `read_file`、`list_directory` 在参数 schema 验证通过后的无副作用文件系统拒绝，
 以尺寸受限的稳定 JSON `ToolResult{IsError:true}` 闭合 effect 并允许下一轮模型继续；
 内部结果编码失败或正常输出超限仍按未知 effect 安全收口。
@@ -351,7 +365,7 @@ reservation，只有 cancellation-owned publish 可以消费它。
 result 带显式 acknowledgement marker，重复调用幂等返回该 record；普通 terminal
 Agent Run 不会被误报为已 reconciliation。
 
-SQLite `PRAGMA user_version=4`。unknown、更高、旧或混合 schema fail closed。
+SQLite `PRAGMA user_version=4`。缺失、不相等或混合 schema fail closed。
 
 ## 8. CLI 与 HTTP
 
@@ -392,24 +406,21 @@ malformed resource ID 是 `invalid_request/400`；合法 ID 指向不存在的�
 `not_found/404`；Store 故障是 `internal/500`。不得用空 list/event 假装目标资源
 存在，也不得把 Store 故障降级成 not-found。
 
-## 9. 激活与非兼容声明
+## 9. 激活协议
 
-contract-v3 archive 带 activation epoch。legacy v0.1.1 updater 的 staged
-`profile list` 必须在 release payload、binary、配置或受管 resource file mutation
-前失败；v0.1.1 自身不可反向修复的 layout bootstrap 只允许创建其固定的空 legacy
-directory。当前 installer/updater 只能由 staged candidate 在
-maintenance/lifecycle lock、quiescence 和 schema preflight 全部通过后激活。
+contract-v3 archive 带当前 activation epoch、contract、Session 和 Run schema
+版本。installer/updater 只能由 staged candidate 在 maintenance/lifecycle lock、
+quiescence 和 exact-schema preflight 全部通过后激活。
 
-staged gate 读取 candidate payload 自身的 `resources/release.json`，不信任
-active/merged home 的同名文件，也没有环境 token bypass。在创建 target
-目录、lock、stage 或停止 server 前，candidate 必须先对 payload 执行完整
+candidate 读取 payload 自身的 `resources/release.json`。在创建 target 目录、lock、
+stage 或停止 server 前，candidate 必须先对 payload 执行完整
 `profile check`，并以 required/no-follow/inode-pinned 方式校验 `runtime.json`、
-`tmux.conf` 和两个具有固定 `$id`/root shape 且可编译的 JSON Schema；构造 merged
-staged home 后再次验证同一组契约。激活事务先持久化 journal 与 state guard，再用
-no-replace regular file
-暂时占用 active `bin/`、`configs/`；
-二次进程扫描按 inode 和 PID/start-token 判定。任何无法证明全旧或全新的恢复状态都
-保留 guard/barrier，禁止自动放行。journal 在 `committed|rolled_back` terminal
+`tmux.conf` 和两个具有固定 `$id`/root shape 且可编译的 JSON Schema；构造 staged
+home 后再次验证同一组契约。激活事务先持久化 journal 与 state guard，再用
+no-replace regular file 暂时占用 active `bin/`、`configs/`；
+二次进程扫描按 inode 和 PID/start-token 判定。任何无法证明 all-original 或
+all-staged 的恢复状态都保留 guard/barrier，禁止自动放行。journal 在
+`committed|rolled_back` terminal
 phase 仍阻断所有入口，直到 stage、rename、guard/journal 的 durable cleanup 完成。
 installer 只允许 home 外部的 install-dir；activation mutation 前使用稳定
 directory FD、durable owner sidecar 和 no-clobber `symlinkat` 预留 command link，
@@ -418,18 +429,18 @@ owner 内容、parent/link/owner inode 和 exact target 后才可复用。
 
 运行中的 server、managed Tmux window、active/unknown Session execution、
 queued/running/paused/needs-reconciliation Run、目标 home binary process 或
-schema 1 状态都阻止激活。`--overwrite-configs` 不绕过运行态门禁。
+任意 unsupported schema 状态都阻止激活。`--overwrite-configs` 不绕过运行态门禁。
 
 唯一例外是仓库根目录的 local-source `make install`：它不是 release/update
 语义，固定覆盖 source configs，并由 staged candidate 在 lifecycle lock 内安全
-停止 server。该模式仍要求 Tmux 和目标 binary process quiescent，但允许不解析旧
-Session/Run schema；只有发布 artifact 全部提交并验证后，才在 guard 下幂等删除
+停止 server。该模式仍要求 Tmux 和目标 binary process quiescent，并显式授权在不
+解析现有 Session/Run state 的情况下重置本地运行态；只有 staged artifact 全部提交
+并验证后，才在 guard 下幂等删除
 `sessions/`、`state/session-locks/`、`state/session-invocations/`、
 `state/session-mutations/`、`state/session-trash-moves/` 和
 `state/runtime.db*`，然后解除 journal。安装终态固定为 server stopped，且这项
 reset 授权不能由 archive installer 或 `server update` 获得。
 
-vNext 不读取旧 Profile 字段、旧 Session carrier、旧 Session/SQLite schema、旧
-Run artifact、旧 SDK contract、command shortcut 或旧 namespace shim。所有有效
-CLI/API Profile 都同时支持 `sn-cli <id>` 和 `sn-cli profile <id>`，并由
-`type=cli|api` 选择 adapter。
+所有公开配置、Session/Run fact、SDK request 和 machine output 都必须完整符合当前
+schema。所有有效 CLI/API Profile 同时支持 `sn-cli <id>` 和
+`sn-cli profile <id>`，并由 `type=cli|api` 选择 adapter。

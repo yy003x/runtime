@@ -10,6 +10,7 @@ import (
 func TestGenerateRequestValidation(t *testing.T) {
 	maxTokens := int64(1024)
 	temperature := 0.2
+	topP := 0.9
 	request := GenerateRequest{
 		ModelProfile: "fixture",
 		Input: ModelRequest{
@@ -17,8 +18,11 @@ func TestGenerateRequestValidation(t *testing.T) {
 			Tools: []ToolSpec{{
 				Name: "weather", InputSchema: json.RawMessage(`{"type":"object"}`),
 			}},
-			Options: GenerateOptions{MaxOutputTokens: &maxTokens, Temperature: &temperature},
-			Trace:   TraceContext{Labels: map[string]string{"task": "fixture"}},
+			Options: GenerateOptions{
+				MaxOutputTokens: &maxTokens, Temperature: &temperature,
+				TopP: &topP, StopSequences: []string{"END"},
+			},
+			Trace: TraceContext{Labels: map[string]string{"task": "fixture"}},
 		},
 	}
 	if err := request.Validate(); err != nil {
@@ -27,6 +31,27 @@ func TestGenerateRequestValidation(t *testing.T) {
 	request.Input.Tools[0].InputSchema = json.RawMessage(`[]`)
 	if err := request.Validate(); err == nil {
 		t.Fatal("array input schema was accepted")
+	}
+}
+
+func TestModelRequestValidationRejectsInvalidCommonOptions(t *testing.T) {
+	invalidTopP := 1.1
+	for name, options := range map[string]GenerateOptions{
+		"top_p":      {TopP: &invalidTopP},
+		"empty_stop": {StopSequences: []string{""}},
+		"too_many_stops": {
+			StopSequences: []string{"1", "2", "3", "4", "5"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := ModelRequest{
+				Messages: []Message{{Role: RoleUser, Content: "hello"}},
+				Options:  options,
+			}
+			if err := request.Validate(); err == nil {
+				t.Fatalf("options=%#v were accepted", options)
+			}
+		})
 	}
 }
 

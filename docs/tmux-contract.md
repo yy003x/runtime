@@ -1,6 +1,6 @@
 # Tmux 管理契约
 
-`sn-cli tmux` 是独立的 interactive process manager，不是 Session carrier。
+`sn-cli tmux` 是独立的 interactive process manager，不创建或写入 Session。
 它只接受 `type=cli` Profile，忽略 Profile 的 `exec` 默认值并固定使用 adapter
 interactive mode；初始 prompt 是最终 argv token，只有后续 `send` 使用 tmux
 paste。

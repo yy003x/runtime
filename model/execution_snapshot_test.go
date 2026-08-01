@@ -10,6 +10,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 ) {
 	maxTokens := int64(2048)
 	temperature := 0.25
+	topP := 0.9
 	summaryEnabled := true
 	profile := Profile{
 		Driver:   DriverOpenAICompatible,
@@ -23,8 +24,10 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 			"X-Zeta": "z", "X-Alpha": "a",
 		},
 		Defaults: Defaults{
-			MaxCompletionTokens: &maxTokens,
-			Temperature:         &temperature,
+			MaxTokens:     &maxTokens,
+			Temperature:   &temperature,
+			TopP:          &topP,
+			StopSequences: []string{"END"},
 		},
 		Timeout: "90s",
 		Context: ContextPolicy{
@@ -78,7 +81,9 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	}
 
 	first.Profile.Headers["X-Alpha"] = "mutated"
-	*first.Profile.Defaults.MaxCompletionTokens = 1
+	*first.Profile.Defaults.MaxTokens = 1
+	*first.Profile.Defaults.TopP = 0.1
+	first.Profile.Defaults.StopSequences[0] = "mutated"
 	*first.Profile.Context.SummaryEnabled = false
 	second, err := service.ExecutionSnapshot("snapshot")
 	if err != nil {
@@ -93,7 +98,9 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 		t.Fatal(err)
 	}
 	if second.Profile.Headers["X-Alpha"] != "a" ||
-		*second.Profile.Defaults.MaxCompletionTokens != 2048 ||
+		*second.Profile.Defaults.MaxTokens != 2048 ||
+		*second.Profile.Defaults.TopP != 0.9 ||
+		second.Profile.Defaults.StopSequences[0] != "END" ||
 		!*second.Profile.Context.SummaryEnabled {
 		t.Fatalf("snapshot shares mutable Profile storage: %#v", second.Profile)
 	}

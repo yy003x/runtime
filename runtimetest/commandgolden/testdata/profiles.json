@@ -1,7 +1,7 @@
 {
-  "captured_at": "2026-07-28",
-  "source_head": "3ea8726dfe57e73a01fc99f1f6a5b20cb7519ffb",
-  "installed_build": "sn-cli v0.0.0-dev+f2d06d6 (commit f2d06d6, built 2026-07-27T07:33:53Z, dirty, go1.26.4)",
+  "captured_at": "2026-07-31",
+  "source_head": "3613b252ed265a4afcab2518b5f9dd631808bc08+worktree",
+  "installed_build": "current source build",
   "profiles": [
     {
       "id": "commit",
@@ -42,12 +42,13 @@
     {
       "id": "cc",
       "argv": [
-        "--dangerously-skip-permissions",
         "--model",
-        "claude-fable-5"
+        "glm-5.2",
+        "--effort",
+        "max"
       ],
       "env": {
-        "ANTHROPIC_BASE_URL": "https://api.kuaimaai.com.cn",
+        "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/apps/anthropic",
         "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip"
       }
     },

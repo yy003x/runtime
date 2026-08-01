@@ -127,11 +127,11 @@ preflight 与激活，不能先分段替换 resources/configs/binary。
 - 无 active/unknown Session execution；
 - 无 queued/running/paused/needs-reconciliation Run；
 - 无其它进程正在执行目标 home 的 `sn-cli|sn-server`；
-- active Profile、Session fact 和 SQLite schema 与 candidate 兼容。
+- active Profile、Session fact 和 SQLite schema 与 candidate 的当前 contract 精确一致。
 
 默认保留合法 active configs，只补缺失模板；`--overwrite-configs` 显式替换
-Profile 和 runtime config，但不绕过运行态或 schema 门禁。schema 1
-必须先用旧版 export，再停服、备份/reset；不自动 migration。
+Profile 和 runtime config，但不绕过运行态或 schema 门禁。unsupported state
+必须先停服并整体移到可恢复备份；Runtime 不做自动 migration。
 
 根目录 `make install` 是仅面向本地源码调试的例外策略：固定使用完整 source
 bundle，校验 candidate 后自动停止受管 server，全量覆盖 source configs，并在新
@@ -139,16 +139,10 @@ artifact 已完整提交且 activation guard 仍生效时丢弃 Session/Run 状�
 重启。该 local-source 授权不进入 archive/network installer 或 `server update`，
 也不绕过 Tmux、目标 binary process、路径和 journal 门禁。
 
-legacy v0.1.1 updater 的 staged validation 会被 contract-v3 candidate 在任何
-release payload、binary、配置或受管 resource file mutation 前拒绝；旧版自身的
-layout bootstrap 只能留下固定空 legacy directory。升级 v0.1.1 必须使用当前
-release 的 `install.sh`；若恢复一键 self-update，需先发布兼容 schema 1 的 bridge
-updater。
-
-staged gate 只读取 candidate payload 自身的 manifest，不接受环境 token 绕过。
+candidate preflight 只读取 payload 自身的 manifest，不接受环境 token 绕过。
 任何 target mutation 或停服前，candidate 先对 payload 执行完整 Profile 语义检查，
 并 required/no-follow 校验 runtime、Tmux resource 和固定 identity/root shape 的
-可编译 Schema；merged staged home 再做二次检查。新版 activation 先持久化
+可编译 Schema；staged home 再做二次检查。activation 先持久化
 journal/state guard，再以 no-replace regular file
 暂时占用 active `bin/`、`configs/`；二次 quiescence 使用原 binary inode 和
 coordinator PID/start-token。journal 自身持续作为入口 barrier；

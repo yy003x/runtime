@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/yy003x/runtime/contract"
 )
 
 type DriverName string
@@ -14,6 +16,9 @@ type DriverName string
 const (
 	DriverOpenAICompatible    DriverName = "openai-compatible"
 	DriverAnthropicCompatible DriverName = "anthropic-compatible"
+
+	defaultContextWindowTokens  int64 = 32_768
+	defaultReservedOutputTokens int64 = 8_192
 )
 
 type Auth struct {
@@ -23,9 +28,10 @@ type Auth struct {
 }
 
 type Defaults struct {
-	MaxCompletionTokens *int64   `json:"max_completion_tokens,omitempty"`
-	MaxTokens           *int64   `json:"max_tokens,omitempty"`
-	Temperature         *float64 `json:"temperature,omitempty"`
+	MaxTokens     *int64   `json:"max_tokens,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+	TopP          *float64 `json:"top_p,omitempty"`
+	StopSequences []string `json:"stop_sequences,omitempty"`
 }
 
 type ContextPolicy struct {
@@ -37,7 +43,8 @@ type ContextPolicy struct {
 
 type Profile struct {
 	Driver   DriverName        `json:"driver"`
-	Endpoint string            `json:"endpoint"`
+	Endpoint string            `json:"endpoint,omitempty"`
+	BaseURL  string            `json:"base_url,omitempty"`
 	Model    string            `json:"model"`
 	Auth     Auth              `json:"auth"`
 	Headers  map[string]string `json:"headers,omitempty"`
@@ -52,14 +59,8 @@ func (profile Profile) Validate() error {
 	default:
 		return fmt.Errorf("unsupported driver %q", profile.Driver)
 	}
-	endpoint, err := url.Parse(profile.Endpoint)
-	if err != nil {
-		return fmt.Errorf("endpoint: %w", err)
-	}
-	if endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil ||
-		endpoint.Fragment != "" || !endpoint.IsAbs() ||
-		endpoint.EscapedPath() == "" || endpoint.EscapedPath() == "/" {
-		return fmt.Errorf("endpoint must be a complete HTTPS URL with an explicit path and without userinfo or fragment")
+	if _, err := profile.ResolvedEndpoint(); err != nil {
+		return err
 	}
 	if strings.TrimSpace(profile.Model) == "" || len(profile.Model) > 1024 {
 		return fmt.Errorf("model is required and must not exceed 1024 bytes")
@@ -93,43 +94,32 @@ func (profile Profile) Validate() error {
 			return fmt.Errorf("headers[%q] exceeds 8192 bytes", name)
 		}
 	}
-	if profile.Defaults.MaxCompletionTokens != nil &&
-		*profile.Defaults.MaxCompletionTokens <= 0 {
-		return fmt.Errorf("defaults.max_completion_tokens must be positive")
-	}
 	if profile.Defaults.MaxTokens != nil && *profile.Defaults.MaxTokens <= 0 {
 		return fmt.Errorf("defaults.max_tokens must be positive")
 	}
-	switch profile.Driver {
-	case DriverOpenAICompatible:
-		if profile.Defaults.MaxTokens != nil {
-			return fmt.Errorf(
-				"openai-compatible defaults use max_completion_tokens, not max_tokens",
-			)
-		}
-	case DriverAnthropicCompatible:
-		if profile.Defaults.MaxCompletionTokens != nil {
-			return fmt.Errorf(
-				"anthropic-compatible defaults use max_tokens, not max_completion_tokens",
-			)
-		}
-		if profile.Defaults.MaxTokens == nil {
-			return fmt.Errorf("anthropic-compatible defaults.max_tokens is required")
+	if profile.Driver == DriverAnthropicCompatible && profile.Defaults.MaxTokens == nil {
+		return fmt.Errorf("anthropic-compatible defaults.max_tokens is required")
+	}
+	if profile.Defaults.Temperature != nil {
+		if err := contract.ValidateTemperature(*profile.Defaults.Temperature); err != nil {
+			return fmt.Errorf("defaults.temperature: %w", err)
 		}
 	}
-	if profile.Defaults.Temperature != nil &&
-		(*profile.Defaults.Temperature < 0 || *profile.Defaults.Temperature > 2) {
-		return fmt.Errorf("defaults.temperature must be between 0 and 2")
+	if profile.Defaults.TopP != nil {
+		if err := contract.ValidateTopP(*profile.Defaults.TopP); err != nil {
+			return fmt.Errorf("defaults.top_p: %w", err)
+		}
+	}
+	if err := contract.ValidateStopSequences(profile.Defaults.StopSequences); err != nil {
+		return fmt.Errorf("defaults.stop_sequences: %w", err)
 	}
 	if profile.Context.WindowTokens < 0 || profile.Context.ReservedOutputTokens < 0 ||
 		profile.Context.KeepRecentTurns < 0 {
 		return fmt.Errorf("context numeric values must not be negative")
 	}
-	if profile.Context.WindowTokens > 0 {
-		_, _, inputBudget, _ := profile.EffectiveContextBudget()
-		if inputBudget < 2 {
-			return fmt.Errorf("context window must leave at least 2 input tokens")
-		}
+	_, _, inputBudget, _ := profile.EffectiveContextBudget()
+	if inputBudget < 2 {
+		return fmt.Errorf("context window must leave at least 2 input tokens")
 	}
 	timeout, err := time.ParseDuration(profile.Timeout)
 	if err != nil || timeout <= 0 || timeout > 24*time.Hour {
@@ -140,31 +130,85 @@ func (profile Profile) Validate() error {
 
 func (profile Profile) EffectiveContextBudget() (
 	window, reserved, inputBudget int64,
-	configured bool,
+	explicit bool,
+) {
+	return profile.EffectiveContextBudgetForRequest(nil)
+}
+
+func (profile Profile) EffectiveContextBudgetForRequest(
+	maxOutputTokens *int64,
+) (
+	window, reserved, inputBudget int64,
+	explicit bool,
 ) {
 	window = profile.Context.WindowTokens
-	if window <= 0 {
-		return 0, 0, 0, false
+	explicit = window > 0
+	if !explicit {
+		window = defaultContextWindowTokens
 	}
 	reserved = profile.Context.ReservedOutputTokens
 	if reserved == 0 {
-		reserved = 8192
+		reserved = defaultReservedOutputTokens
 	}
 	if tokenLimit := profile.DefaultTokenLimit(); tokenLimit != nil &&
 		*tokenLimit > reserved {
 		reserved = *tokenLimit
 	}
-	return window, reserved, window - reserved, true
+	if maxOutputTokens != nil && *maxOutputTokens > reserved {
+		reserved = *maxOutputTokens
+	}
+	return window, reserved, window - reserved, explicit
 }
 
 func (profile Profile) DefaultTokenLimit() *int64 {
-	switch profile.Driver {
+	return profile.Defaults.MaxTokens
+}
+
+func (profile Profile) ResolvedEndpoint() (string, error) {
+	hasEndpoint := profile.Endpoint != ""
+	hasBaseURL := profile.BaseURL != ""
+	if hasEndpoint == hasBaseURL {
+		return "", fmt.Errorf("exactly one of endpoint or base_url is required")
+	}
+	if hasEndpoint {
+		endpoint, err := url.Parse(profile.Endpoint)
+		if err != nil {
+			return "", fmt.Errorf("endpoint: %w", err)
+		}
+		if endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil ||
+			endpoint.Fragment != "" || !endpoint.IsAbs() ||
+			endpoint.EscapedPath() == "" || endpoint.EscapedPath() == "/" {
+			return "", fmt.Errorf("endpoint must be a complete HTTPS URL with an explicit path and without userinfo or fragment")
+		}
+		return endpoint.String(), nil
+	}
+	baseURL, err := url.Parse(profile.BaseURL)
+	if err != nil {
+		return "", fmt.Errorf("base_url: %w", err)
+	}
+	if baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
+		baseURL.RawQuery != "" || baseURL.Fragment != "" || !baseURL.IsAbs() {
+		return "", fmt.Errorf("base_url must be an absolute HTTPS URL without userinfo, query, or fragment")
+	}
+	path, err := defaultEndpointPath(profile.Driver)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := url.JoinPath(profile.BaseURL, path)
+	if err != nil {
+		return "", fmt.Errorf("base_url: %w", err)
+	}
+	return resolved, nil
+}
+
+func defaultEndpointPath(driver DriverName) (string, error) {
+	switch driver {
 	case DriverOpenAICompatible:
-		return profile.Defaults.MaxCompletionTokens
+		return "v1/chat/completions", nil
 	case DriverAnthropicCompatible:
-		return profile.Defaults.MaxTokens
+		return "v1/messages", nil
 	default:
-		return nil
+		return "", fmt.Errorf("unsupported driver %q", driver)
 	}
 }
 

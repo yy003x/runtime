@@ -23,8 +23,8 @@ state/
   runtime.db
 ```
 
-Session fact 固定 `schema_version=2`，SQLite 固定 `PRAGMA user_version=4`。schema 1、
-unknown、更高或混合状态 fail closed，不提供 runtime reader 或自动 migration。
+Session fact 固定 `schema_version=2`，SQLite 固定 `PRAGMA user_version=4`。缺失、
+不相等或混合状态 fail closed，不提供版本推断、字段补齐或自动 migration。
 
 写入使用 Session-scoped `flock`、大小限制和 directory-FD relative filesystem
 操作。已有路径逐组件以 `O_NOFOLLOW` 打开；`sessions/`、`state/`、Session root
@@ -78,7 +78,7 @@ per-Session undo journal：
    且完整 scope 校验通过后才允许回滚；缺 marker、nonce 不符或有未登记内容时，
    不删除任何 fact、temp 或 forensic journal；
 8. recovery 不调用 Provider、不执行 command/tool，也不重放外部 effect；无
-   durable journal 的未知旧 partial state 不做启发式修复。
+   durable journal 的未知 partial state 不做启发式修复。
 
 journal 使用独立的私有 `mutation_version=3`，不属于 canonical fact；owner marker
 只在未清理 mutation 中短暂存在，也不是 canonical fact。因此
@@ -149,6 +149,12 @@ ID 不复用。每个 Turn 可选择 API 或 CLI Profile；executor/provider 只
   Profile base prompt；
 - manifest 记录 profile、request/config/base-prompt digest、sequence range、
   token estimate、capacity、pressure 和 correlation；
+- API Profile 未声明 `context.window_tokens` 时使用 `32768` 保守窗口并记录
+  `capacity_source=conservative_default`；显式窗口记录为 `profile`；
+- request options 使用 Provider-neutral `max_output_tokens`、`temperature`、`top_p`
+  和 `stop_sequences`；Profile 的统一 `defaults.max_tokens` 由 adapter 转为 wire 字段；
+- 有效输出预留取 `reserved_output_tokens`、Profile 默认输出上限和请求级输出上限的
+  最大值；默认预留为 `8192`，输入预算至少保留 `2` 个 Token；
 - overflow Turn 仍记录 user input、failed 状态和 typed error；
 - projection 不改写或删除原始 messages。
 

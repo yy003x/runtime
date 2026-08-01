@@ -13,8 +13,7 @@
 namespace 或 Profile ID 后的 `--json` 不属于 root。例如 `sn-cli cx --json` 会
 进入 Profile typed parser，并因未知 option 失败，而不会原样传给 Codex。固定根
 namespace `profile|session|tmux|agent|run|server|help|version` 和 Profile 管理
-action `list|show|check`、已退役 action 名 `exec|open` 都是保留 Profile ID，
-不能被配置覆盖；保留 `exec|open` 不表示恢复旧 action。
+action `list|show|check` 都是保留 Profile ID，不能被配置覆盖。
 
 ## Profile
 
@@ -32,8 +31,9 @@ sn-cli profile check [id]
 parser，并返回相同 stdout/stderr/exit。`type=cli|api` 选择 command 或 model
 adapter，不通过 Profile ID 或单独映射推断。
 
-不存在 `profile exec|open` action。CLI Profile 在 adapter 校验后 process
-replacement；API Profile 做一次 API call。二者都不创建 Session 或 durable Run。
+除 `list|show|check` 外，`profile` namespace 后的第一个 token 是 Profile ID。
+CLI Profile 在 adapter 校验后 process replacement；API Profile 做一次 API call。
+二者都不创建 Session 或 durable Run。
 
 CLI Profile prompt 按 Profile `prompt`、`--prompt`、piped stdin、位置 input 合并。
 effective `exec=true` 时 prompt 必须非空，`exec=false` 时允许空 prompt。Runtime

@@ -151,10 +151,6 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			document: `{"agent":{"tools":["unknown"]}}`,
 		},
 		{
-			name:     "removed_exec_command",
-			document: `{"agent":{"tools":["exec_command"]}}`,
-		},
-		{
 			name:     "duplicate_tool",
 			document: `{"agent":{"tools":["read_file","read_file"]}}`,
 		},

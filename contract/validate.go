@@ -12,16 +12,18 @@ import (
 )
 
 const (
-	maxSystemBytes     = 1 << 20
-	maxMessageBytes    = 1 << 20
-	maxSchemaBytes     = 256 << 10
-	maxArgumentsBytes  = 256 << 10
-	maxMessages        = 4096
-	maxTools           = 256
-	maxToolCalls       = 256
-	maxLabels          = 32
-	maxLabelKeyBytes   = 64
-	maxLabelValueBytes = 512
+	maxSystemBytes       = 1 << 20
+	maxMessageBytes      = 1 << 20
+	maxSchemaBytes       = 256 << 10
+	maxArgumentsBytes    = 256 << 10
+	maxMessages          = 4096
+	maxTools             = 256
+	maxToolCalls         = 256
+	maxLabels            = 32
+	maxLabelKeyBytes     = 64
+	maxLabelValueBytes   = 512
+	maxStopSequences     = 4
+	maxStopSequenceBytes = 1024
 )
 
 func (request GenerateRequest) Validate() error {
@@ -70,6 +72,14 @@ func (request ModelRequest) Validate() error {
 			return fmt.Errorf("options.temperature: %w", err)
 		}
 	}
+	if request.Options.TopP != nil {
+		if err := ValidateTopP(*request.Options.TopP); err != nil {
+			return fmt.Errorf("options.top_p: %w", err)
+		}
+	}
+	if err := ValidateStopSequences(request.Options.StopSequences); err != nil {
+		return fmt.Errorf("options.stop_sequences: %w", err)
+	}
 	if len(request.Trace.Labels) > maxLabels {
 		return fmt.Errorf("trace.labels exceed %d items", maxLabels)
 	}
@@ -94,6 +104,33 @@ func (request ModelRequest) Validate() error {
 func ValidateTemperature(value float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 2 {
 		return fmt.Errorf("must be a finite number between 0 and 2")
+	}
+	return nil
+}
+
+// ValidateTopP enforces the Provider-neutral nucleus sampling range.
+func ValidateTopP(value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+		return fmt.Errorf("must be a finite number between 0 and 1")
+	}
+	return nil
+}
+
+// ValidateStopSequences enforces the common Provider stop-sequence envelope.
+func ValidateStopSequences(values []string) error {
+	if len(values) > maxStopSequences {
+		return fmt.Errorf("must not exceed %d items", maxStopSequences)
+	}
+	for index, value := range values {
+		if value == "" {
+			return fmt.Errorf("[%d] must not be empty", index)
+		}
+		if len(value) > maxStopSequenceBytes {
+			return fmt.Errorf("[%d] exceeds %d bytes", index, maxStopSequenceBytes)
+		}
+		if err := validateText(value, fmt.Sprintf("[%d]", index)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

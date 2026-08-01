@@ -26,7 +26,7 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(configDir, "api-cx.json"),
-		[]byte(`{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},"timeout":"1m"}`),
+		[]byte(`{"type":"api","driver":"openai-compatible","base_url":"https://example.invalid/provider","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},"timeout":"1m"}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -51,6 +51,32 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsUnreservedProfileIDs(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "configs")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"exec", "open"} {
+		if err := os.WriteFile(
+			filepath.Join(configDir, id+".json"),
+			[]byte(`{"type":"cli","command":"codex"}`),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalog, err := Load(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"exec", "open"} {
+		entry, exists := catalog.Resolve(id)
+		if !exists || entry.Kind != KindCommand {
+			t.Fatalf("profile %q entry=%#v exists=%v", id, entry, exists)
+		}
+	}
+}
+
 func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
@@ -62,14 +88,7 @@ func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	required := map[string]bool{
-		"api-cc.json": true, "api-cx.json": true,
-		"cc-bai.json": true, "cc.json": true,
-		"commit.json": true, "cx-adv.json": true,
-		"cx-deep.json": true, "cx-image.json": true,
-		"cx-remote.json": true, "cx-spark.json": true,
-		"cx.json": true,
-	}
+	required := map[string]bool{"api-cc.json": true, "api-cx.json": true}
 	for _, file := range files {
 		delete(required, filepath.Base(file))
 		kind, cliProfile, _, err := loadFile(file)
@@ -84,6 +103,33 @@ func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
 	}
 	if len(required) != 0 {
 		t.Fatalf("source profiles are missing required files: %v", required)
+	}
+}
+
+func TestSourceAPIProfilesResolveDriverDefaultEndpoints(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"api-cc.json": "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages",
+		"api-cx.json": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+	} {
+		t.Run(name, func(t *testing.T) {
+			kind, _, apiProfile, err := loadFile(filepath.Join(
+				workingDirectory, "..", "configs", name,
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind != KindModel {
+				t.Fatalf("kind=%q", kind)
+			}
+			got, err := apiProfile.ResolvedEndpoint()
+			if err != nil || got != want {
+				t.Fatalf("endpoint=%q want=%q error=%v", got, want, err)
+			}
+		})
 	}
 }
 
@@ -110,8 +156,8 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 			errorText: "unknown field",
 		},
 		{
-			name: "legacy_cli_fields", fileName: "cx.json",
-			content:   `{"type":"cli","binary":"codex","transport":"tty","prompt_delivery":"manual"}`,
+			name: "unknown_cli_field", fileName: "cx.json",
+			content:   `{"type":"cli","command":"codex","unexpected":true}`,
 			errorText: "unknown field",
 		},
 		{
@@ -130,29 +176,19 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 			errorText: "reserved profile ID",
 		},
 		{
-			name: "reserved_legacy_exec", fileName: "exec.json",
-			content:   `{"type":"cli","command":"codex"}`,
-			errorText: "reserved profile ID",
+			name: "endpoint_and_base_url", fileName: "api-cx.json",
+			content:   `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","base_url":"https://example.invalid","model":"fixture","auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},"timeout":"1m"}`,
+			errorText: "exactly one",
 		},
 		{
-			name: "reserved_legacy_open", fileName: "open.json",
-			content:   `{"type":"cli","command":"codex"}`,
-			errorText: "reserved profile ID",
+			name: "missing_endpoint_and_base_url", fileName: "api-cx.json",
+			content:   `{"type":"api","driver":"openai-compatible","model":"fixture","auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},"timeout":"1m"}`,
+			errorText: "exactly one",
 		},
 		{
-			name: "legacy_openai_token_limit", fileName: "api-cx.json",
-			content:   `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},"defaults":{"max_output_tokens":1024},"timeout":"1m"}`,
-			errorText: "unknown field",
-		},
-		{
-			name: "anthropic_token_limit_on_openai", fileName: "api-cx.json",
-			content:   `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},"defaults":{"max_tokens":1024},"timeout":"1m"}`,
-			errorText: "max_completion_tokens",
-		},
-		{
-			name: "openai_token_limit_on_anthropic", fileName: "api-cc.json",
-			content:   `{"type":"api","driver":"anthropic-compatible","endpoint":"https://example.invalid/v1/messages","model":"fixture","auth":{"header":"x-api-key","from_env":"MODEL_API_KEY"},"defaults":{"max_completion_tokens":1024},"timeout":"1m"}`,
-			errorText: "max_tokens",
+			name: "default_context_without_input_budget", fileName: "api-cc.json",
+			content:   `{"type":"api","driver":"anthropic-compatible","endpoint":"https://example.invalid/v1/messages","model":"fixture","auth":{"header":"x-api-key","from_env":"MODEL_API_KEY"},"defaults":{"max_tokens":32767},"timeout":"1m"}`,
+			errorText: "context window",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

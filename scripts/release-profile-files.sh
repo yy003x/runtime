@@ -5,13 +5,13 @@
 SN_CLI_RELEASE_PROFILE_FILES=(
   api-cc.json
   api-cx.json
-  cc-bai.json
+  cc-glm.json
+  cc-kmm.json
   cc.json
   commit.json
   cx-adv.json
   cx-deep.json
   cx-image.json
-  cx-remote.json
   cx-spark.json
   cx.json
 )

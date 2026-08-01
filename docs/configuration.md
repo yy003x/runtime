@@ -13,8 +13,8 @@ release asset 不按 glob 收集未登记的本地 Profile。根目录 `make ins
 和 provider smoke 仍按 `configs/*.json` 读取全部 source Profile，便于本地调试。
 
 Profile loader 只读 active `configs/*.json`。每份文件必须用 `type=cli|api`
-显式选择执行域；不存在 command ID 或第二层映射，也不 fallback 到无 `type` 的
-旧 Profile、`binary/transport/prompt_delivery/effort_adapter` 或 `runtime.yaml`。
+显式选择执行域；不存在 command ID 或第二层映射。loader 只接受本节列出的当前
+字段，缺失领域标识或出现未知字段都会失败。
 
 `resources/schema/profile.schema.json` 和 `runtime.schema.json` 是公开的 JSON
 文档结构契约；Go loader 是涉及 adapter grammar、环境引用、跨字段关系、duration
@@ -61,6 +61,9 @@ loader。测试保持单向不变量：任何 loader-valid 配置必须 schema-v
 `model`、`effort` 和 `exec` 不直接拼接到配置尾部。adapter 会识别并替换
 `args` 中同类 selector，重建 command/global options、mode selector、mode-only
 options、`--` 和最终 prompt 的正确顺序；重复或无法安全归类的配置 fail closed。
+所有 CLI Profile 都必须支持 Session canonical plan。Claude `--verbose` 会把
+`--output-format json` 的单个 result object 改成逐轮数组，因此属于 canonical
+incompatible 参数，`profile check` 会在执行前拒绝。
 
 ### Profile typed 参数
 
@@ -106,11 +109,6 @@ leading global `--json` 不包装 CLI Profile 的 stdout/stderr/exit code。`exe
 只选择目标命令的 interactive 或 non-interactive mode，不表示后台运行，也不表示
 在哪个终端承载。
 
-随 release 提供的 `cx-remote` 是受管远程任务 Profile：固定
-`gpt-5.6-sol/xhigh`、`workspace-write`、`approval=never`，工作目录之外只增加
-`${HOME}/mycode`，并使用隔离的 `CODEX_HOME=${HOME}/.codex-ait`。调用方应通过
-`session run|submit` 使用它，不再动态拼沙箱、`--add-dir`、model 或 effort。
-
 ### 隐式 Profile 与保留 ID
 
 `sn-cli <profile-id>` 直接解析 `configs/<profile-id>.json`，完全等价于
@@ -123,9 +121,8 @@ sn-cli api-cc "回复 OK"
 ```
 
 固定根 namespace `profile|session|tmux|agent|run|server|help|version`、Profile
-管理 action `list|show|check`，以及已退役 action 名 `exec|open` 是保留 Profile
-ID。`configs/` 出现同名文件时 loader fail closed；`exec|open` 只保留名字，不
-恢复旧 action，也不按路由优先级静默遮蔽。
+管理 action `list|show|check` 是保留 Profile ID。`configs/` 出现同名文件时
+loader fail closed；其余合法 ID 都可以作为 Profile 名称。
 
 `profile list|show|check` 是管理 action。`show` 不展开 secret；`check` 只做静态、
 符号化验证，不解析真实 env/PATH/cwd，不读取 prompt file，也不调用 Provider。
@@ -136,11 +133,58 @@ scheduler 或 Run 配置错误不会阻止一次 Profile 查询或调用。
 
 API Profile 保持独立 schema，不增加 CLI-only 字段。OpenAI-compatible 示例：
 
+API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`、`/* */` 或
+`#` 注释，未列出的字段会被 loader 拒绝：
+
+| 字段 | 必填 / 适用 driver | Runtime 语义 |
+| --- | --- | --- |
+| `type` | 必填 | 固定为 `api`，选择 API Profile 领域 |
+| `driver` | 必填 | `openai-compatible` 或 `anthropic-compatible`，选择 wire driver |
+| `endpoint` | 与 `base_url` 二选一 | 完整 HTTPS endpoint，必须包含显式非根路径；Runtime 原样请求 |
+| `base_url` | 与 `endpoint` 二选一 | HTTPS 基础地址；保留已有路径前缀，并按 driver 拼接默认 API 路径 |
+| `model` | 必填 | 发送给 Provider 的模型名 |
+| `auth.header` | 必填 | 承载认证值的 HTTP header 名 |
+| `auth.scheme` | 可选 | 认证值前缀，例如 `Bearer`；空值表示直接使用 secret |
+| `auth.from_env` | 必填 | secret 所在环境变量名；配置和 snapshot 都不保存 secret 值 |
+| `headers.<name>` | 可选 | 额外的非 secret literal HTTP header；不能覆盖认证或敏感 header |
+| `defaults.max_tokens` | OpenAI 可选；Anthropic 必填 | 统一默认输出上限；adapter 分别映射为 `max_completion_tokens` 或 `max_tokens` |
+| `defaults.temperature` | 可选；两者 | 默认采样温度，范围 `0..2` |
+| `defaults.top_p` | 可选；取决于目标模型 | 默认 nucleus sampling 概率，范围 `0..1`；部分新模型不支持 |
+| `defaults.stop_sequences` | 可选；取决于目标模型 | 默认停止序列，最多 4 个非空字符串；OpenAI 映射为 `stop` |
+| `timeout` | 必填 | 单次 Provider attempt 超时，Go duration，范围 `(0, 24h]` |
+| `context.window_tokens` | 可选 | Session 本地总上下文容量；省略或 `0` 时为 `32768` |
+| `context.reserved_output_tokens` | 可选 | Session 本地输出预留；省略或 `0` 时基础默认值为 `8192` |
+| `context.keep_recent_turns` | 可选；当前未生效 | 当前只校验、冻结和参与 digest，Session 投影尚未据此裁剪历史 |
+| `context.summary_enabled` | 可选；当前未生效 | 当前只解析、冻结和参与 digest，Session 尚未执行历史摘要 |
+
+当前 source API Profile 的字段使用情况：
+
+| 字段 | `api-cc.json` | `api-cx.json` |
+| --- | --- | --- |
+| `type` | `api` | `api` |
+| `driver` | `anthropic-compatible` | `openai-compatible` |
+| `endpoint` | 未设置；由 `base_url` 解析 | 未设置；由 `base_url` 解析 |
+| `base_url` | `https://dashscope.aliyuncs.com/apps/anthropic`，拼接 `/v1/messages` | `https://…/compatible-mode`，拼接 `/v1/chat/completions` |
+| `model` | `glm-5.2` | `qwen3.7-max` |
+| `auth.header` | `x-api-key` | `Authorization` |
+| `auth.scheme` | 未设置；`x-api-key` 直接使用 secret | `Bearer` |
+| `auth.from_env` | `BAILIAN_API_KEY` | `ALIYUN_API_KEY` |
+| `headers.<name>` | 未使用；当前没有额外 literal header | 未使用；当前没有额外 literal header |
+| `defaults.max_tokens` | `16384` | `16384`，adapter 转为 wire `max_completion_tokens` |
+| `defaults.temperature` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
+| `defaults.top_p` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
+| `defaults.stop_sequences` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
+| `timeout` | `50m` | `5m` |
+| `context.window_tokens` | `1048576` | 未设置；使用保守默认 `32768` |
+| `context.reserved_output_tokens` | `16384` | 未设置；受默认输出上限抬高，有效值为 `16384` |
+| `context.keep_recent_turns` | 未设置，且当前投影逻辑未消费 | 未设置，且当前投影逻辑未消费 |
+| `context.summary_enabled` | 未设置，且当前摘要逻辑未实现 | 未设置，且当前摘要逻辑未实现 |
+
 ```json
 {
   "type": "api",
   "driver": "openai-compatible",
-  "endpoint": "https://example.invalid/v1/chat/completions",
+  "base_url": "https://example.invalid/provider",
   "model": "example",
   "auth": {
     "header": "Authorization",
@@ -148,8 +192,9 @@ API Profile 保持独立 schema，不增加 CLI-only 字段。OpenAI-compatible 
     "from_env": "MODEL_API_KEY"
   },
   "defaults": {
-    "max_completion_tokens": 16384,
-    "temperature": 0.2
+    "max_tokens": 16384,
+    "temperature": 0.2,
+    "stop_sequences": ["END"]
   },
   "timeout": "5m",
   "context": {
@@ -167,7 +212,7 @@ Anthropic-compatible 使用 Messages API 原生字段：
 {
   "type": "api",
   "driver": "anthropic-compatible",
-  "endpoint": "https://example.invalid/v1/messages",
+  "base_url": "https://example.invalid/provider",
   "model": "example",
   "auth": {
     "header": "x-api-key",
@@ -181,15 +226,31 @@ Anthropic-compatible 使用 Messages API 原生字段：
 }
 ```
 
-`endpoint` 必须是完整 HTTPS endpoint。`headers` 只允许非 secret literal；
-认证值只从 `auth.from_env` 获取。直接 API Profile 与 API Session Turn 共同支持：
+`endpoint` 与 `base_url` 必须且只能配置一个。`base_url` 不允许 query 或 fragment；
+OpenAI-compatible 默认拼接 `/v1/chat/completions`，Anthropic-compatible 默认拼接
+`/v1/messages`。例如 `https://example.invalid/provider` 会保留 `/provider` 前缀。
+需要非默认路径或 query 时使用显式 `endpoint`。
+
+`headers` 只允许非 secret literal；认证值只从 `auth.from_env` 获取。直接 API
+Profile 与 API Session Turn 共同支持：
 
 ```text
-OpenAI-compatible: --max-completion-tokens <n>
-Anthropic-compatible: --max-tokens <n>
-共有: --temperature <0..2>
+共有: --max-tokens <n> --temperature <0..2>
 Profile direct only: --system <text> --stream --request-file <path|->
 ```
+
+`temperature`、`top_p` 与 `stop_sequences` 都只在 Profile 或 request 显式配置时发送；
+具体 Provider 和模型可能进一步限制这些参数。通常只调整 `temperature` 或 `top_p`
+之一，避免同时改变两个采样维度。
+
+`context.window_tokens` 是 Session 本地投影使用的总上下文容量，不会发送给
+Provider。省略或设为 `0` 时使用保守默认 `32768`，ContextManifest 记录
+`capacity_source=conservative_default`；显式正值记录为 `profile`。
+`context.reserved_output_tokens` 省略或设为 `0` 时默认 `8192`。实际输出预留取
+该值、Profile 默认输出上限以及请求级输出上限中的最大值，因此较低的请求 override
+不会扩大输入预算，较高值会收紧输入预算。输入预算计算为
+`input_budget_tokens = window_tokens - effective_reserved_output_tokens`，且必须至少
+保留 `2` 个输入 Token。
 
 `--request-file` 读取 Runtime canonical `ModelRequest`，不是原始 Provider
 payload。Driver 内部使用 Provider streaming 构建 canonical event，`--stream`
@@ -198,10 +259,10 @@ payload。Driver 内部使用 Provider streaming 构建 canonical event，`--str
 Durable Agent 创建 Run 时会把完整 API Profile、Profile digest 和 concrete
 Provider driver semantic identity 冻结进 Store-private execution snapshot。
 `auth.from_env` 只保存变量名、header 和 scheme，resolved secret value 不持久化也
-不参与 digest；相同变量名下轮换 secret 不构成 drift。endpoint、model、literal
-headers、defaults、context、timeout、driver 或 `from_env` 名称变化都会改变
-snapshot。这里的 current config 指当前执行进程已经加载的 Profile，不表示每轮从
-磁盘重新读取文件。
+不参与 digest；相同变量名下轮换 secret 不构成 drift。`base_url`、`endpoint`、
+model、literal headers、defaults、context、timeout、driver 或 `from_env` 名称变化
+都会改变 snapshot。这里的 current config 指当前执行进程已经加载的 Profile，
+不表示每轮从磁盘重新读取文件。
 
 ## Session 与 Tmux
 
@@ -214,9 +275,8 @@ Session 与 Tmux 不读取 Profile `exec`：
   `exec=false`，在专用 tmux server 的 `sn-session` 中创建一个 window；
 - 隐式和显式 Profile direct 才使用 Profile `exec` 默认值。
 
-Session 不再提供 `--prompt-file`、`--session-file`、`--terminal-driver`、
-`--command-arg`、`--launch` 或 `attach/send/interrupt/stop`。输入只来自 piped
-stdin 和最后一个位置参数。
+Session 公开输入只来自 piped stdin 和最后一个位置参数；CLI Turn override 仅限
+`--model`、`--effort` 和 `--cwd`。
 Tmux 管理详见 [Tmux 管理契约](tmux-contract.md)。
 
 `session list|show|messages|events|logs|executions|execution|reconcile`
@@ -255,8 +315,7 @@ loaded snapshot 比较，不按当前配置生成一份新 snapshot。
 
 文件缺失时使用代码默认值。存在时必须是 regular file、非 symlink、严格 JSON，
 未知字段失败。`workspace_roots` 未配置时以当前启动 cwd 为唯一 root；默认 tool
-只读，`write_file` 必须显式启用；`exec_command` 已移除，配置该名称会失败。
-`tools` 和
+只读，`write_file` 必须显式启用；其它 tool 名称会被严格拒绝。`tools` 和
 `workspace_roots` 显式配置时必须是 array，不能写 `null`。duration 使用 Go
 duration 语法，并额外满足：
 
@@ -278,22 +337,21 @@ current snapshot 必须完整相等，但恢复 durable terminal/effect、取消
 未被 snapshot 其它字段表达的行为时必须同步 bump，不能用 build 或 release version
 代替。
 
-## 升级 schema
+## 版本与激活 schema
 
 contract v3 使用 Session fact `schema_version=2` 和 SQLite
-`PRAGMA user_version=4`，不读取旧 schema，也不自动 migration。普通
-network/archive 安装需要在升级前：
+`PRAGMA user_version=4`。Runtime 只读取这组完整 schema，不做版本推断、字段补齐或
+自动 migration。普通 network/archive 安装前需要：
 
-1. 用旧 binary 导出需要保留的 Session；
-2. 停止 `sn-server` 和所有 `sn-cli tmux` managed window；
-3. 把 `sessions/` 与 `state/runtime.db*` 移到可恢复备份；
-4. 旧字段 Profile 需要显式备份后使用 `install.sh --overwrite-configs`，或手工改成
-   新 schema；
+1. 停止 `sn-server` 和所有 `sn-cli tmux` managed window；
+2. 确认 active Profile、Session fact 和 `state/runtime.db*` 都符合当前 schema；
+3. 不需要保留的 unsupported state 应整体移到可恢复备份后重新初始化；
+4. 需要全量替换 Profile 时显式使用 `install.sh --overwrite-configs`；
 5. 再执行当前 release 的 `install.sh`。
 
 安装和 self-update 必须在替换 binary/resources 前完成 active-home preflight。
 `--overwrite-configs` 只授权替换配置，不绕过 live server、Tmux、Session 或 Run
-门禁。v0.1.1 legacy updater 不允许直接激活 contract-v3 release。
+门禁，也不授权迁移或修改 unsupported Session/Run state。
 
 根目录 `make install` 是独立的本地源码调试策略，不使用上述数据保留流程，也不
 需要额外 Make 变量。它固定校验并安装完整 source bundle，自动安全停止受管
@@ -316,8 +374,8 @@ activation mutation 前先持久化 `.sn-cli.<link-name>.owner.json`、持有其
 
 激活期间 `${SN_CLI_HOME}/state/activation.guard.json` 与 durable journal 保护 v3
 入口，active `bin/`、`configs/` 还会短暂替换为 regular-file barrier 以阻断
-v0.1.1 的 layout 初始化。恢复只接受 journal 中 exact artifact set、owner
-PID/start-token 与 old/new/guard digest 一致的状态。journal 在
+并发路径重建。恢复只接受 journal 中 exact artifact set、owner PID/start-token
+与 original/staged/guard digest 一致的状态。journal 在
 `committed|rolled_back` terminal phase 仍是入口 barrier，直到目录树、rename、
 guard/journal 删除都按顺序 fsync 完成。
 
