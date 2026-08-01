@@ -1,11 +1,11 @@
 {
   "type": "api",
   "driver": "anthropic-compatible",
-  "base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
+  "base_url": "https://open.bigmodel.cn/api/anthropic",
   "model": "glm-5.2",
   "auth": {
     "header": "x-api-key",
-    "from_env": "BAILIAN_API_KEY"
+    "from_env": "Z_AI_API_KEY"
   },
   "defaults": {
     "max_tokens": 16384

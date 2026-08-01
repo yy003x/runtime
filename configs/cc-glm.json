@@ -1,7 +1,8 @@
 {
   "type": "cli",
   "command": "claude",
-  "model": "glm-5.2",
+  "model": "glm-5.2[1m]",
+  "effort": "max",
   "exec": true,
   "args": [
     "--dangerously-skip-permissions",
@@ -10,9 +11,13 @@
     "--no-session-persistence"
   ],
   "env": {
-    "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip",
     "NO_COLOR": "1",
-    "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/apps/anthropic",
-    "ANTHROPIC_API_KEY": "${BAILIAN_API_KEY}"
+    "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip",
+    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+    "ANTHROPIC_API_KEY": "${Z_AI_API_KEY}",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1m]",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000"
   }
 }
