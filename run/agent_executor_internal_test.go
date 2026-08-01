@@ -125,6 +125,7 @@ func TestValidateAgentSessionPrefixProjectionRequiresSafeBoundary(
 		Arguments: json.RawMessage(`{}`),
 	}
 	state := agent.LoopState{
+		SchemaVersion:    agent.LoopStateSchemaVersion,
 		BaseMessageCount: 1,
 		Messages: []contract.Message{
 			{Role: contract.RoleUser, Content: "start"},
@@ -267,7 +268,8 @@ func TestValidateExistingAgentSessionResultRequiresExactTerminalEvidence(
 		},
 	}
 	state := agent.LoopState{
-		RunID: runID, ModelProfile: "api", Messages: messages,
+		SchemaVersion: agent.LoopStateSchemaVersion,
+		RunID:         runID, ModelProfile: "api", Messages: messages,
 		BaseMessageCount: turn.BaseMessageCount,
 		TerminalOutcome: &agent.Outcome{
 			State: agent.StateCompleted, StopReason: "stop",

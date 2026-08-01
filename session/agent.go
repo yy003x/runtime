@@ -215,7 +215,7 @@ func (service *Service) findAgentTurn(
 			var lastAssistant *contract.Message
 			currentTurnMessages := 0
 			for _, record := range records {
-				message := canonicalMessageRecord(record)
+				message := cloneContractMessage(record.Message)
 				messages = append(messages, message)
 				if record.TurnID == turn.ID {
 					currentTurnMessages++
@@ -636,7 +636,7 @@ func (service *Service) SettleAgent(
 		canonicalMessages := make([]contract.Message, 0, len(records))
 		existingCurrent := make([]contract.Message, 0)
 		for _, record := range records {
-			message := canonicalMessageRecord(record)
+			message := cloneContractMessage(record.Message)
 			canonicalMessages = append(canonicalMessages, message)
 			if record.TurnID == turn.TurnID {
 				existingCurrent = append(
@@ -682,7 +682,7 @@ func (service *Service) SettleAgent(
 			if err := service.store.appendMessage(&sessionValue, MessageRecord{
 				Time: now, TurnID: turn.TurnID, RunID: turn.RunID,
 				ExecutionID: turn.ExecutionID, ProfileID: turn.ProfileID,
-				Message: cloneContractMessage(message), IsError: message.IsError,
+				Message: cloneContractMessage(message),
 			}); err != nil {
 				return err
 			}

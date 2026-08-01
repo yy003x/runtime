@@ -303,14 +303,6 @@ func cloneContractMessage(value contract.Message) contract.Message {
 	return value
 }
 
-func canonicalMessageRecord(value MessageRecord) contract.Message {
-	message := cloneContractMessage(value.Message)
-	if value.IsError {
-		message.IsError = true
-	}
-	return message
-}
-
 func (service *Service) begin(
 	ids executionIDs,
 	request RunRequest,
@@ -1144,7 +1136,9 @@ func validateRunRequest(request RunRequest, entry profile.Entry) error {
 		return fmt.Errorf("unsupported retention %q", request.Retention)
 	}
 	hasModelOptions := request.ModelOptions.MaxOutputTokens != nil ||
-		request.ModelOptions.Temperature != nil
+		request.ModelOptions.Temperature != nil ||
+		request.ModelOptions.TopP != nil ||
+		len(request.ModelOptions.StopSequences) > 0
 	if request.ModelOptions.MaxOutputTokens != nil &&
 		*request.ModelOptions.MaxOutputTokens <= 0 {
 		return fmt.Errorf("model_options.max_output_tokens must be positive")
@@ -1154,6 +1148,26 @@ func validateRunRequest(request RunRequest, entry profile.Entry) error {
 			*request.ModelOptions.Temperature,
 		); err != nil {
 			return fmt.Errorf("model_options.temperature: %w", err)
+		}
+	}
+	if request.ModelOptions.TopP != nil {
+		if err := contract.ValidateTopP(*request.ModelOptions.TopP); err != nil {
+			return fmt.Errorf("model_options.top_p: %w", err)
+		}
+	}
+	if err := contract.ValidateStopSequences(
+		request.ModelOptions.StopSequences,
+	); err != nil {
+		return fmt.Errorf("model_options.stop_sequences: %w", err)
+	}
+	if entry.Kind == profile.KindModel && entry.Model != nil {
+		_, _, inputBudget, _ := entry.Model.EffectiveContextBudgetForRequest(
+			request.ModelOptions.MaxOutputTokens,
+		)
+		if inputBudget < 2 {
+			return fmt.Errorf(
+				"model context policy leaves fewer than 2 input tokens",
+			)
 		}
 	}
 	if entry.Kind == profile.KindCommand {

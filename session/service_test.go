@@ -44,6 +44,85 @@ func TestValidateRunRequestRejectsNonFiniteTemperature(t *testing.T) {
 	}
 }
 
+func TestValidateRunRequestRejectsInvalidCommonModelOptions(t *testing.T) {
+	entry := profile.Entry{
+		ID: "api", Kind: profile.KindModel,
+		Model: &model.Profile{Driver: model.DriverOpenAICompatible},
+	}
+	invalidTopP := 1.1
+	for name, options := range map[string]contract.GenerateOptions{
+		"top_p":          {TopP: &invalidTopP},
+		"stop_sequences": {StopSequences: []string{""}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateRunRequest(RunRequest{
+				ProfileID: "api", Input: "hello", ModelOptions: options,
+			}, entry)
+			if err == nil {
+				t.Fatalf("options=%#v were accepted", options)
+			}
+		})
+	}
+}
+
+func TestValidateRunRequestRejectsOutputLimitWithoutInputBudget(t *testing.T) {
+	maxOutput := int64(32_767)
+	entry := profile.Entry{
+		ID: "api", Kind: profile.KindModel,
+		Model: &model.Profile{Driver: model.DriverAnthropicCompatible},
+	}
+	err := validateRunRequest(RunRequest{
+		ProfileID: "api",
+		Input:     "hello",
+		ModelOptions: contract.GenerateOptions{
+			MaxOutputTokens: &maxOutput,
+		},
+	}, entry)
+	if err == nil || !strings.Contains(err.Error(), "fewer than 2 input tokens") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestBuildProjectionUsesConservativeContextBudget(t *testing.T) {
+	profileDefault := int64(12_000)
+	requestLimit := int64(16_000)
+	entry := profile.Entry{
+		ID: "api", Kind: profile.KindModel,
+		Model: &model.Profile{
+			Driver: model.DriverAnthropicCompatible,
+			Defaults: model.Defaults{
+				MaxTokens: &profileDefault,
+			},
+		},
+	}
+	built, runtimeErr := buildProjection(
+		entry,
+		"session_77777777777777777777777777777777",
+		"turn_77777777777777777777777777777777",
+		"run_77777777777777777777777777777777",
+		"execution_77777777777777777777777777777777",
+		"",
+		RunRequest{
+			ProfileID: "api", Input: "hello",
+			ModelOptions: contract.GenerateOptions{
+				MaxOutputTokens: &requestLimit,
+			},
+		},
+		nil,
+		time.Unix(1, 0).UTC(),
+	)
+	if runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	manifest := built.manifest
+	if manifest.CapacitySource != "conservative_default" ||
+		manifest.ContextWindowTokens != 32_768 ||
+		manifest.ReservedOutputTokens != 16_000 ||
+		manifest.InputBudgetTokens != 16_768 {
+		t.Fatalf("manifest=%#v", manifest)
+	}
+}
+
 func TestSettleAgentRejectsShortOrForgedCanonicalPrefix(t *testing.T) {
 	service := newTestService(t, &scriptedGenerator{}, nil, nil)
 	sessionID, err := NewID()
@@ -483,19 +562,6 @@ func TestModelSessionPreservesToolRelationsAndIdempotency(t *testing.T) {
 		!messages[2].IsError ||
 		messages[3].Role != contract.RoleUser {
 		t.Fatalf("messages=%#v", messages)
-	}
-}
-
-func TestCanonicalMessageRecordPreservesLegacyToolError(t *testing.T) {
-	message := canonicalMessageRecord(MessageRecord{
-		Message: contract.Message{
-			Role: contract.RoleTool, ToolCallID: "call-legacy",
-			Content: "failed",
-		},
-		IsError: true,
-	})
-	if !message.IsError || message.ToolCallID != "call-legacy" {
-		t.Fatalf("message=%#v", message)
 	}
 }
 
@@ -1102,7 +1168,7 @@ func TestReconcileRequiresExplicitAcknowledgementForAPIUnknownOutcome(
 	}
 }
 
-func TestStoreRejectsSchemaOneWithoutMigration(t *testing.T) {
+func TestStoreRejectsUnsupportedSchema(t *testing.T) {
 	root := t.TempDir()
 	sessionID := "session_" + strings.Repeat("1", 32)
 	sessionDir := filepath.Join(root, "sessions", sessionID)
@@ -1112,7 +1178,7 @@ func TestStoreRejectsSchemaOneWithoutMigration(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(sessionDir, "session.json"),
 		[]byte(`{
-  "schema_version": 1,
+  "schema_version": 999,
   "session_id": "`+sessionID+`",
   "state": "idle",
   "retention": "standard",
@@ -1127,7 +1193,7 @@ func TestStoreRejectsSchemaOneWithoutMigration(t *testing.T) {
 	}
 	if _, err := NewStore(
 		filepath.Join(root, "sessions"), filepath.Join(root, "state"),
-	); err == nil || !strings.Contains(err.Error(), "unsupported Session schema_version 1") {
+	); err == nil || !strings.Contains(err.Error(), "unsupported Session schema_version 999") {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -1148,8 +1214,8 @@ func TestStoreRejectsMixedOrUnknownSessionFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(sessionDir, "legacy-execution.json"),
-		[]byte(`{"schema_version":1}`),
+		filepath.Join(sessionDir, "unsupported-execution.json"),
+		[]byte(`{"schema_version":999}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -1289,12 +1355,15 @@ func TestGCOnlyMovesExpiredEphemeralSessions(t *testing.T) {
 	if len(applied.Moved) != 1 {
 		t.Fatalf("applied=%#v", applied)
 	}
+	if applied.Skipped == nil || len(applied.Skipped) != 0 {
+		t.Fatalf("applied skipped=%#v", applied.Skipped)
+	}
 	data, err := json.Marshal(applied)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), `"skipped"`) {
-		t.Fatalf("empty skipped field was not omitted: %s", data)
+	if !strings.Contains(string(data), `"skipped":[]`) {
+		t.Fatalf("empty skipped field is not a stable array: %s", data)
 	}
 }
 
@@ -1330,7 +1399,7 @@ func TestGCApplyRechecksCandidatesAfterConcurrentChanges(t *testing.T) {
 		t.Fatalf("preview=%#v", preview)
 	}
 
-	// 模拟在 GC 扫描后、应用旧候选列表前先取得 Session lock 的并发操作。
+	// 模拟在 GC 扫描后、应用扫描候选列表前先取得 Session lock 的并发操作。
 	if _, err := service.ConfigureRetention(
 		sessions["pinned"].ID, RetentionPinned,
 	); err != nil {

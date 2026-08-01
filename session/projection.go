@@ -30,7 +30,7 @@ func buildProjection(
 ) (projection, *contract.RuntimeError) {
 	messages := make([]contract.Message, 0, len(records))
 	for _, record := range records {
-		messages = append(messages, canonicalMessageRecord(record))
+		messages = append(messages, cloneContractMessage(record.Message))
 	}
 	messageJSON, err := json.Marshal(messages)
 	if err != nil {
@@ -65,33 +65,36 @@ func buildProjection(
 		manifest.MessageSequenceEnd = records[len(records)-1].Sequence
 	}
 	if entry.Kind == profile.KindModel {
-		window, reserved, inputBudget, configured :=
-			entry.Model.EffectiveContextBudget()
+		window, reserved, inputBudget, explicit :=
+			entry.Model.EffectiveContextBudgetForRequest(
+				request.ModelOptions.MaxOutputTokens,
+			)
 		manifest.ContextWindowTokens = window
 		manifest.ReservedOutputTokens = reserved
-		if configured {
+		manifest.InputBudgetTokens = inputBudget
+		manifest.CapacitySource = "conservative_default"
+		if explicit {
 			manifest.CapacitySource = "profile"
-			manifest.InputBudgetTokens = inputBudget
-			if manifest.InputBudgetTokens <= 0 {
-				return projection{}, sessionRuntimeError(
-					contract.ErrorInvalidRequest,
-					"model context policy leaves no input budget",
-				)
-			}
-			pressureThreshold := manifest.InputBudgetTokens * 8 / 10
-			if estimatedTokens > pressureThreshold {
-				manifest.PressureState = "high"
-			}
-			if estimatedTokens > manifest.InputBudgetTokens {
-				manifest.PressureState = "overflow"
-				return projection{}, sessionRuntimeError(
-					contract.ErrorContextOverflow,
-					fmt.Sprintf(
-						"estimated context %d tokens exceeds input budget %d",
-						estimatedTokens, manifest.InputBudgetTokens,
-					),
-				)
-			}
+		}
+		if manifest.InputBudgetTokens < 2 {
+			return projection{}, sessionRuntimeError(
+				contract.ErrorInvalidRequest,
+				"model context policy leaves fewer than 2 input tokens",
+			)
+		}
+		pressureThreshold := manifest.InputBudgetTokens * 8 / 10
+		if estimatedTokens > pressureThreshold {
+			manifest.PressureState = "high"
+		}
+		if estimatedTokens > manifest.InputBudgetTokens {
+			manifest.PressureState = "overflow"
+			return projection{}, sessionRuntimeError(
+				contract.ErrorContextOverflow,
+				fmt.Sprintf(
+					"estimated context %d tokens exceeds input budget %d",
+					estimatedTokens, manifest.InputBudgetTokens,
+				),
+			)
 		}
 		return projection{modelMessages: messages, manifest: manifest}, nil
 	}
@@ -127,7 +130,7 @@ func projectCLIHistory(
 		html.EscapeString(sessionID),
 	)
 	for _, record := range history {
-		message := canonicalMessageRecord(record)
+		message := cloneContractMessage(record.Message)
 		messageJSON, _ := json.Marshal(message)
 		fmt.Fprintf(
 			&builder,

@@ -88,7 +88,7 @@ func Open(path string, options Options) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("SQLite journal_mode=%q, want wal", journalMode)
 	}
-	if err := migrate(db); err != nil {
+	if err := initializeSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func quickCheck(db *sql.DB) error {
 	return nil
 }
 
-func migrate(db *sql.DB) error {
+func initializeSchema(db *sql.DB) error {
 	var version int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
@@ -244,7 +244,7 @@ func migrate(db *sql.DB) error {
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
-			return fmt.Errorf("migrate Runtime database: %w", err)
+			return fmt.Errorf("initialize Runtime database schema: %w", err)
 		}
 	}
 	return tx.Commit()

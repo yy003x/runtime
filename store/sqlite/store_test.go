@@ -21,13 +21,13 @@ import (
 	runtime "github.com/yy003x/runtime/run"
 )
 
-func TestOpenRejectsSchemaOneBeforeEnablingWAL(t *testing.T) {
+func TestOpenRejectsUnsupportedSchemaBeforeEnablingWAL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+	if _, err := db.Exec("PRAGMA user_version = 999"); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestOpenRejectsSchemaOneBeforeEnablingWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Open(path, Options{}); err == nil ||
-		!strings.Contains(err.Error(), "unsupported Runtime database schema 1") {
+		!strings.Contains(err.Error(), "unsupported Runtime database schema 999") {
 		t.Fatalf("error=%v", err)
 	}
 	db, err = sql.Open("sqlite", path)
@@ -359,7 +359,8 @@ func TestPrepareToolEffectCommitsCheckpointAndEffectAtomically(t *testing.T) {
 				t.Fatal(err)
 			}
 			stateJSON, err := json.Marshal(agent.LoopState{
-				SchemaVersion: 1, RunID: record.ID, ModelProfile: "api",
+				SchemaVersion: agent.LoopStateSchemaVersion,
+				RunID:         record.ID, ModelProfile: "api", BaseMessageCount: 1,
 				Messages: []contract.Message{{
 					Role: contract.RoleUser, Content: "start",
 				}},
@@ -447,7 +448,7 @@ func TestReconcileSeparatesSafeReplayFromUnknownToolEffect(t *testing.T) {
 		Name: "write", Request: json.RawMessage(`{"path":"x"}`),
 	}, runtime.Checkpoint{
 		ID:    "checkpoint_" + strings.Repeat("1", 32),
-		RunID: unknown.ID, State: json.RawMessage(`{"schema_version":1}`),
+		RunID: unknown.ID, State: json.RawMessage(`{"schema_version":2}`),
 	}); err != nil {
 		t.Fatal(err)
 	}

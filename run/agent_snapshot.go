@@ -71,6 +71,8 @@ func (executor *AgentExecutor) validateAgentRequestShape(
 	if request.Model != "" || request.Effort != "" ||
 		request.ModelOptions.MaxOutputTokens != nil ||
 		request.ModelOptions.Temperature != nil ||
+		request.ModelOptions.TopP != nil ||
+		len(request.ModelOptions.StopSequences) > 0 ||
 		request.BasePromptDigest != "" {
 		return fmt.Errorf(
 			"model, effort, model_options, and base_prompt_digest are invalid for agent runs",

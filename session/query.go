@@ -375,7 +375,6 @@ func (service *Service) SubmitToolResult(
 				Role: contract.RoleTool, ToolCallID: input.ToolCallID,
 				Content: input.Content, IsError: input.IsError,
 			},
-			IsError: input.IsError,
 		}
 		if err := service.store.appendMessage(&sessionValue, message); err != nil {
 			return err
@@ -540,7 +539,9 @@ func (service *Service) GC(options GCOptions) (GCResult, error) {
 		}
 	}
 	sort.Strings(candidates)
-	result := GCResult{DryRun: !options.Apply, Candidates: candidates}
+	result := GCResult{
+		DryRun: !options.Apply, Candidates: candidates, Skipped: []string{},
+	}
 	if !options.Apply {
 		return result, nil
 	}
@@ -558,7 +559,7 @@ func (service *Service) applyGCCandidates(
 	cutoff time.Time,
 ) ([]string, []string, error) {
 	var moved []string
-	var skipped []string
+	skipped := make([]string, 0)
 	for _, sessionID := range candidates {
 		candidateMoved := false
 		candidateSkipped := false

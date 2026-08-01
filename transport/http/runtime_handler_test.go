@@ -636,7 +636,7 @@ func TestRuntimeHandlerSessionCreateSeparatesValidationFromStoreFailure(
 	}
 }
 
-func TestRuntimeHandlerToolResultRouteIsNotPublicWithoutMutation(
+func TestRuntimeHandlerUnknownSessionSubresourceDoesNotMutate(
 	t *testing.T,
 ) {
 	handler, _ := newRuntimeHandlerTest(t)
@@ -656,13 +656,8 @@ func TestRuntimeHandlerToolResultRouteIsNotPublicWithoutMutation(
 	}
 	response := performJSON(
 		t, handler, http.MethodPost,
-		"/v1/sessions/"+value.ID+
-			"/turns/turn_00000000000000000000000000000000/tool-results",
-		`{
-			"tool_call_id":"call_missing",
-			"idempotency_key":"missing-turn",
-			"content":"result"
-		}`,
+		"/v1/sessions/"+value.ID+"/unknown",
+		`{}`,
 	)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf(
@@ -674,7 +669,7 @@ func TestRuntimeHandlerToolResultRouteIsNotPublicWithoutMutation(
 		t.Fatal(err)
 	}
 	if after != before {
-		t.Fatalf("missing turn mutated Session: before=%#v after=%#v", before, after)
+		t.Fatalf("unknown route mutated Session: before=%#v after=%#v", before, after)
 	}
 }
 

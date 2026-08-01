@@ -445,7 +445,7 @@ func (service *Service) releaseReconciledAgentSession(
 ) error {
 	if sessionValue.ActiveTurnID != turnID {
 		// The target was already released, or a later Turn owns the current
-		// Session state. In either case the old Run must not overwrite it.
+		// Session state. In either case the earlier Run must not overwrite it.
 		return nil
 	}
 	sessionValue.State = SessionIdle

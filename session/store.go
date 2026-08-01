@@ -550,8 +550,8 @@ func (store *Store) validateContextFacts(sessionID string) error {
 func unsupportedFactSchema(path string, version int) error {
 	return fmt.Errorf(
 		"%s uses unsupported Session schema_version %d; expected %d; "+
-			"export with the previous binary or move the complete state to a "+
-			"recoverable backup before initializing schema %d",
+			"move the complete state to a recoverable backup before "+
+			"initializing schema %d",
 		path, version, SchemaVersion, SchemaVersion,
 	)
 }

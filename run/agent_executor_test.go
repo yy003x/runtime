@@ -454,7 +454,7 @@ func TestDurableAgentRecoversToolEffectWithoutUnsafeReplay(t *testing.T) {
 			wantRunState: runtime.StateNeedsReconciliation,
 		},
 		{
-			name: "old_loop_schema", effectState: "schema_old",
+			name: "unsupported_loop_schema", effectState: "schema_unsupported",
 			wantRunState: runtime.StateNeedsReconciliation,
 		},
 		{
@@ -740,7 +740,7 @@ func TestDurableAgentRecoversToolEffectWithoutUnsafeReplay(t *testing.T) {
 				if err := db.Close(); err != nil {
 					t.Fatal(err)
 				}
-			case "tampered_profile", "round_zero", "schema_old",
+			case "tampered_profile", "round_zero", "schema_unsupported",
 				"seen_missing":
 				var tamperedState agent.LoopState
 				if err := json.Unmarshal(stateJSON, &tamperedState); err != nil {
@@ -751,8 +751,8 @@ func TestDurableAgentRecoversToolEffectWithoutUnsafeReplay(t *testing.T) {
 					tamperedState.ModelProfile = "other"
 				case "round_zero":
 					tamperedState.Round = 0
-				case "schema_old":
-					tamperedState.SchemaVersion = 1
+				case "schema_unsupported":
+					tamperedState.SchemaVersion = 999
 				case "seen_missing":
 					tamperedState.ToolCallCount = 0
 					tamperedState.SeenToolCallIDs = nil

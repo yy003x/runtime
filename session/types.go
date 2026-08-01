@@ -114,7 +114,6 @@ type MessageRecord struct {
 	ExecutionID string           `json:"execution_id"`
 	ProfileID   string           `json:"profile_id"`
 	Message     contract.Message `json:"message"`
-	IsError     bool             `json:"is_error,omitempty"`
 }
 
 type EventRecord struct {
@@ -276,5 +275,5 @@ type GCResult struct {
 	DryRun     bool     `json:"dry_run"`
 	Candidates []string `json:"candidates"`
 	Moved      []string `json:"moved,omitempty"`
-	Skipped    []string `json:"skipped,omitempty"`
+	Skipped    []string `json:"skipped"`
 }

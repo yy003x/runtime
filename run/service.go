@@ -727,10 +727,9 @@ func (service *Service) ReconcileRun(
 		}
 		return Record{}, runError(contract.ErrorInternal, err.Error())
 	}
-	// Session reconciliation historically treats its immutable terminal fact as
-	// the idempotency marker. Agent reconciliation writes an explicit result
-	// marker so an unrelated terminal Agent Run is not misreported as
-	// reconciled.
+	// Session reconciliation uses its immutable terminal fact as the idempotency
+	// marker. Agent reconciliation writes an explicit result marker so an
+	// unrelated terminal Agent Run is not misreported as reconciled.
 	if record.State.Terminal() {
 		if record.Request.Kind == KindSession ||
 			agentReconciliationAcknowledged(record.Result) {
