@@ -3,11 +3,15 @@
 本文是 Runtime vNext 公开 CLI 的详细用户手册，覆盖 `sn-cli` 当前实现的命令、
 子命令、参数、输入输出、状态、典型场景和示例。
 
+每条命令的详细说明统一按「语法 / 作用 / 参数 / 示例 / 适用场景」组织；需要快速
+定位某条命令时，先看 [命令速查表](#命令速查表)，再跳到对应编号章节。
+
 本文只描述当前协议。所有入口、配置和 machine output 都按本文的完整结构严格校验；
 架构约束和内部一致性要求仍以 `docs/` 下的专题契约为准。
 
 ## 目录
 
+- [命令速查表](#命令速查表)
 - [1. 应该使用哪个入口](#1-应该使用哪个入口)
 - [2. 完整命令树](#2-完整命令树)
 - [3. 全局调用规则](#3-全局调用规则)
@@ -24,6 +28,97 @@
 - [14. 常见错误与排查](#14-常见错误与排查)
 - [15. 内部入口和协议边界](#15-内部入口和协议边界)
 - [16. 相关契约文档](#16-相关契约文档)
+
+## 命令速查表
+
+下表按 namespace 列出 `sn-cli` 的全部公开命令，每条一行，便于快速定位。「记录」列表示
+该命令是否产生执行记录：`否`＝执行但不持久化；`session`＝写入文件型 Session；
+`durable`＝创建 SQLite Durable Run；`—`＝只读 / 管理 / 控制面，不产生执行记录。
+
+### 直接调用与 profile
+
+| 命令 | 作用 | 记录 | 示例 |
+|---|---|:---:|---|
+| `sn-cli <id>` | 隐式 Profile 一次调用，等价于 `profile <id>` | 否 | `sn-cli cx` |
+| `sn-cli profile <id>` | 一次 CLI/API 调用，不记录 | 否 | `sn-cli profile cx --exec "回复OK"` |
+| `sn-cli profile list` | 列出所有 Profile 的 ID 与类型 | — | `sn-cli profile list` |
+| `sn-cli profile show <id>` | 查看 Profile 实际配置 | — | `sn-cli profile show cx` |
+| `sn-cli profile check [id]` | 校验 Profile 结构与分流 | — | `sn-cli profile check` |
+
+### session
+
+| 命令 | 作用 | 记录 | 示例 |
+|---|---|:---:|---|
+| `session run` | 同步执行一个有记录的 Turn | session | `sn-cli session run cx "分析当前仓库"` |
+| `session submit` | 提交 durable queued Session Turn | durable | `sn-cli session submit cx-deep "后台执行"` |
+| `session list` | 列出或按状态过滤 Session | — | `sn-cli session list --state blocked` |
+| `session show` | 查看 Session 状态与事实 | — | `sn-cli session show --session-id <id>` |
+| `session messages` | 读取消息历史，支持增量 | — | `sn-cli session messages --session-id <id> --after-seq 10` |
+| `session events` | 读取生命周期与 Execution 事件 | — | `sn-cli session events --session-id <id>` |
+| `session logs` | 查看最近活动（默认 tail 120） | — | `sn-cli session logs --session-id <id>` |
+| `session executions` | 列出 Session 的全部 Execution | — | `sn-cli session executions --session-id <id>` |
+| `session execution` | 查看单个 Execution 详情 | — | `sn-cli session execution --session-id <id> --execution-id <id>` |
+| `session reconcile` | 收口 blocked / unknown Execution | — | `sn-cli session reconcile --session-id <id> --terminate` |
+| `session configure` | 修改 Session retention | — | `sn-cli session configure --session-id <id> --retention pinned` |
+| `session export` | 导出 Session 到文件 | — | `sn-cli session export --session-id <id> --output ./out.json` |
+| `session delete` | 删除非活跃 Session（移入 trash） | — | `sn-cli session delete --session-id <id>` |
+| `session gc` | 回收过期 ephemeral Session | — | `sn-cli session gc --older-than-hours 72 --apply` |
+
+### tmux
+
+| 命令 | 作用 | 记录 | 示例 |
+|---|---|:---:|---|
+| `tmux start` | 创建一个 managed 交互窗口 | 否 | `sn-cli tmux start cx "打开长期任务"` |
+| `tmux list` | 列出 managed 窗口 | — | `sn-cli tmux list` |
+| `tmux show` | 查看窗口身份与状态 | — | `sn-cli tmux show --tmux-id <id>` |
+| `tmux send` | 向窗口发送输入 | — | `sn-cli tmux send --tmux-id <id> "继续"` |
+| `tmux attach` | 进入 managed 窗口 | — | `sn-cli tmux attach --tmux-id <id>` |
+| `tmux interrupt` | 对 running 窗口发送 C-c | — | `sn-cli tmux interrupt --tmux-id <id>` |
+| `tmux stop` | 按身份停止窗口 | — | `sn-cli tmux stop --tmux-id <id>` |
+
+### agent
+
+| 命令 | 作用 | 记录 | 示例 |
+|---|---|:---:|---|
+| `agent run` | API-only 自主 model/tool 循环 | durable | `sn-cli agent run --profile api-cx "审查并报告"` |
+
+### run
+
+| 命令 | 作用 | 记录 | 示例 |
+|---|---|:---:|---|
+| `run submit` | 提交 durable Run 到队列 | durable | `sn-cli run submit --kind agent --profile api-cx "后台任务"` |
+| `run get` | 获取完整 Run Record | — | `sn-cli run get --run-id <id>` |
+| `run list` | 列出或按状态/kind 过滤 Run | — | `sn-cli run list --state failed` |
+| `run result` | 读取当前 result/error/state | — | `sn-cli run result --run-id <id>` |
+| `run events` | 读取持久化事件 | — | `sn-cli run events --run-id <id>` |
+| `run watch` | 流式追踪事件直到终态 | — | `sn-cli run watch --run-id <id>` |
+| `run cancel` | 取消 Run（queued/paused/running） | — | `sn-cli run cancel --run-id <id>` |
+| `run resume` | 恢复 paused Run | — | `sn-cli run resume --run-id <id> --input-file ./resume.json` |
+| `run retry` | 重试终态 Run | durable | `sn-cli run retry --run-id <id>` |
+| `run reconcile` | 收口 unknown outcome Run | — | `sn-cli run reconcile --run-id <id>` |
+| `run gc` | 永久回收过期终态 Run | — | `sn-cli run gc --older-than 720h --apply` |
+
+### server
+
+| 命令 | 作用 | 记录 | 示例 |
+|---|---|:---:|---|
+| `server info` | 显示 Runtime/Profile/数据库信息 | — | `sn-cli server info` |
+| `server doctor` | 本机依赖与 Profile 解析检查 | — | `sn-cli server doctor` |
+| `server start` | 启动 worker + HTTP（后台） | — | `sn-cli --json server start` |
+| `server status` | 查看 server 运行状态 | — | `sn-cli server status` |
+| `server stop` | 停止 server（幂等） | — | `sn-cli server stop` |
+| `server update` | 检查/下载/激活新版本 | — | `sn-cli server update --check` |
+| `server upgrade-check` | 升级前 preflight 检查 | — | `sn-cli server upgrade-check` |
+
+### 其他
+
+| 命令 | 作用 | 示例 |
+|---|---|---|
+| `help` / `-h` / `--help` | 显示根命令帮助 | `sn-cli --help` |
+| `version` / `--version` | 显示构建版本 | `sn-cli --version` |
+
+> 内部入口 `sn-cli __sn_tmux_helper` 与 `sn-cli server upgrade-activate` 不属于日常
+> 用户 API，见 [§15. 内部入口和协议边界](#15-内部入口和协议边界)。
 
 ## 1. 应该使用哪个入口
 
@@ -949,6 +1044,12 @@ sn-cli session run
 
 用途：在当前进程中同步执行一个有记录的 Session Turn。
 
+返回结果中的 `run_id` 是该 Session Turn 的执行关联 ID。`session run` 不创建
+SQLite Durable Run，因此不能默认用这个 ID 调用 `sn-cli run get`；应通过
+`session show|messages|events|executions` 查询会话事实。只有已经写入 Durable
+Run Store 的 ID（例如由 `session submit`、`run submit`、`agent run` 或
+`run retry` 创建）才进入 `sn-cli run ...` 控制面。
+
 所有 option 必须位于 `<profile-id>` 前：
 
 ```bash
@@ -1037,6 +1138,21 @@ sn-cli session submit [options] <profile-id> [INPUT]
 - 提交本身不要求 server 已运行；从队列取出并执行需要 `sn-server` worker。
 - `submit` 不会自动启动 server。
 - 相对 `--cwd` 在提交时按调用方 cwd 解析并固化。
+
+两者的执行与 ID 边界：
+
+| 对比项 | `session run` | `session submit` |
+|---|---|---|
+| 执行位置 | 当前 CLI 进程 | `sn-server` worker |
+| 返回时机 | 当前 Turn 收口后 | Durable Run 进入 `queued` 后 |
+| 持久化 | 文件型 Session | SQLite Durable Run；执行时写入文件型 Session |
+| `run_id` | Session Turn 执行关联 ID | Durable Run ID，同时关联 Session Turn |
+| `sn-cli run get|watch|result` | 不适用 | 支持 |
+
+`session submit` 是面向 Session 的专用 durable 提交入口，可视为比
+`run submit --kind session` 更贴近 Session 语义的调用面，但不是参数完全相同的 alias：
+它支持 `--retention`、API `--max-tokens/--temperature`，并沿用 Session 的 stdin
+与 positional input 合并规则；`run submit` 是统一的底层队列入口，不读取 stdin。
 
 示例：
 
@@ -1982,6 +2098,21 @@ agent
 session
 ```
 
+Run 不是 Session 或 Agent 的第二套执行引擎，而是两者共用的持久控制面。它把提交方、
+执行任务的 worker 和查询/控制任务的调用方解耦，使提交进程退出后仍可排队、观察、
+取消、恢复和重试：
+
+```text
+submitter ──submit──> SQLite Durable Run ──dequeue──> sn-server worker
+                              │                         ├─ kind=session → Session executor
+                              │                         └─ kind=agent   → Agent Kernel
+                              └─ get/list/events/watch/cancel/retry <── observer
+```
+
+`kind=session` 执行一个有记录的 Session Turn；`kind=agent` 执行 API-only
+model/tool loop。两种执行都复用同一组 Run 状态、event、result/error 和 terminal
+barrier，而不是各自实现一套后台队列与取消协议。
+
 ### 9.1 Run 状态
 
 ```text
@@ -2032,6 +2163,12 @@ sn-cli run submit
 - 不从 stdin 读取。
 - 只创建 `queued` Run。
 - 不自动启动 `sn-server`。
+
+提交 Session 任务时，`session submit` 与
+`run submit --kind session` 都会创建 `kind=session` Durable Run。前者面向 Session
+使用者并保留完整 Session 参数；后者面向调度器和统一控制面。需要
+`--retention`、API token limit、temperature 或 stdin input 时使用
+`session submit`。
 
 #### `--kind agent`
 

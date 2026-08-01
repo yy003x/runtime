@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Runtime vNext — social preview</title>
+<style>
+  :root{
+    --bg0:#0b1020; --bg1:#0d1526;
+    --fg:#f5f7fa; --muted:#9fadc4; --dim:#6b7a92;
+    --accent:#00ADD8; --accent2:#7CDBFF; --purple:#a78bfa;
+    --card:rgba(255,255,255,0.045); --border:rgba(255,255,255,0.09);
+    --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:-apple-system,"SF Pro Display",system-ui,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    width:1280px;height:640px;overflow:hidden;
+    font-family:var(--sans);color:var(--fg);
+    background:
+      radial-gradient(900px 520px at 86% -12%, rgba(0,173,216,0.20), transparent 60%),
+      radial-gradient(760px 540px at -5% 112%, rgba(167,139,250,0.14), transparent 60%),
+      linear-gradient(160deg,var(--bg0),var(--bg1));
+  }
+  .wrap{padding:54px 72px;height:100%;display:flex;flex-direction:column}
+
+  .top{display:flex;align-items:center;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-size:18px;color:var(--muted);letter-spacing:.4px}
+  .dot{width:12px;height:12px;border-radius:50%;background:var(--accent);box-shadow:0 0 18px var(--accent)}
+  .pills{display:flex;gap:10px}
+  .pill{font-family:var(--mono);font-size:14px;color:var(--accent2);border:1px solid var(--border);background:var(--card);padding:6px 13px;border-radius:999px}
+
+  .title{margin-top:34px}
+  h1{margin:0;font-size:66px;font-weight:700;letter-spacing:-1.5px;line-height:1.02}
+  h1 .v{color:var(--accent)}
+  .tag{margin-top:14px;font-size:24px;color:var(--muted);max-width:900px;line-height:1.35}
+
+  .grid{margin-top:30px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:22px 26px}
+  .card h3{margin:0 0 16px;font-size:12px;letter-spacing:1.6px;text-transform:uppercase;color:var(--dim);font-weight:600}
+
+  /* profile routing — fixed columns so the branch glyphs line up */
+  .tree{font-family:var(--mono);font-size:19px;display:grid;row-gap:8px}
+  .r{display:grid;grid-template-columns:104px 40px 52px 26px 1fr;align-items:center}
+  .r .k{color:var(--fg)}
+  .r .b{color:var(--accent2)}
+  .r .o{color:var(--muted)}
+  .r .ar{color:var(--accent2);text-align:center}
+  .r .out{color:var(--purple)}
+
+  /* execution boundaries — two columns */
+  .bounds{display:grid;grid-template-columns:1fr 1fr;column-gap:26px;row-gap:10px;font-family:var(--mono);font-size:19px}
+  .bnd{display:grid;grid-template-columns:84px 24px 1fr;align-items:center}
+  .bnd .k{color:var(--fg)}
+  .bnd .ar{color:var(--accent2);text-align:center}
+  .bnd .out{color:var(--purple)}
+
+  .foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;padding-top:18px}
+  .repo{font-family:var(--mono);font-size:17px;color:var(--dim)}
+  .lic{font-family:var(--mono);font-size:15px;color:var(--dim)}
+</style>
+</head>
+<body>
+ <div class="wrap">
+   <div class="top">
+     <div class="brand"><span class="dot"></span>sn-cli</div>
+     <div class="pills">
+       <span class="pill">Go 1.25</span>
+       <span class="pill">Apache-2.0</span>
+     </div>
+   </div>
+
+   <div class="title">
+     <h1>Runtime <span class="v">vNext</span></h1>
+     <div class="tag">A local-first Go runtime for AI agents and model calls.</div>
+   </div>
+
+   <div class="grid">
+     <div class="card">
+       <h3>Profile routing</h3>
+       <div class="tree">
+         <div class="r"><span class="k">profile</span><span class="b">─┬─</span><span class="o">cli</span><span class="ar">→</span><span class="out">Command Bridge</span></div>
+         <div class="r"><span class="k"></span><span class="b">└─</span><span class="o">api</span><span class="ar">→</span><span class="out">Model Core</span></div>
+       </div>
+     </div>
+     <div class="card">
+       <h3>Execution boundaries</h3>
+       <div class="bounds">
+         <div class="bnd"><span class="k">session</span><span class="ar">→</span><span class="out">Session</span></div>
+         <div class="bnd"><span class="k">tmux</span><span class="ar">→</span><span class="out">Window</span></div>
+         <div class="bnd"><span class="k">agent</span><span class="ar">→</span><span class="out">Kernel</span></div>
+         <div class="bnd"><span class="k">run</span><span class="ar">→</span><span class="out">SQLite WAL</span></div>
+       </div>
+     </div>
+   </div>
+
+   <div class="foot">
+     <div class="repo">github.com/yy003x/runtime</div>
+     <div class="lic">Apache-2.0</div>
+   </div>
+ </div>
+</body>
+</html>

@@ -1,10 +1,146 @@
 # Runtime vNext
 
-Runtime vNext 是一个本地优先的 Go Agent Runtime。它把一次命令/模型调用、
-canonical Session、长期 Tmux TUI、Agent loop 和 durable Run 分成独立边界。
+[![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/runtime)](https://goreportcard.com/report/github.com/yy003x/runtime)
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-完整命令、参数、场景和示例请直接阅读
-[sn-cli 详细使用手册](SN-CLI-USAGE.md)。
+**A local-first Go runtime for running AI agents and model calls — unifying CLI wrappers, model APIs, durable sessions, long-lived tmux windows, autonomous agent loops, and a durable background queue behind one CLI and HTTP API.**
+
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+---
+
+## What it is
+
+Runtime vNext is a self-hosted execution layer for AI coding agents and model
+calls. Instead of bolting session state, retry, cancellation, and tool loops
+onto ad-hoc scripts, it gives you a small set of strict, composable entry
+points:
+
+- Wrap **Codex / Claude** CLIs behind a typed profile, or call a **model API**
+  directly (OpenAI-compatible and Anthropic-compatible drivers).
+- Record multi-turn **sessions** to a crash-consistent, file-based store.
+- Keep a long-lived interactive **tmux** window you can attach to later.
+- Run an autonomous **agent** loop (model → tool → tool-result → model).
+- Submit **durable runs** to a SQLite queue and control them via CLI or HTTP.
+
+Everything is **local-first**: your data lives under `${SN_CLI_HOME:-~/.sn}`
+(SQLite WAL for runs, regular files for sessions). Contracts are **strict and
+fail-closed** — unknown fields, schema drift, and ambiguous crash states are
+rejected rather than silently papered over.
+
+### Who it's for
+
+- Developers who wrap Codex/Claude CLIs and want real session/run management
+  instead of shell one-liners.
+- Teams that want a scriptable, durable, self-hosted alternative to hosted
+  agent platforms.
+- Anyone building agent workflows who needs resumable runs, cancellation, and a
+  clean HTTP control plane.
+
+## Features
+
+- 🖥️ **Local-first** — runs, sessions, and state stay on your machine under `~/.sn`.
+- 🔌 **Provider-neutral** — OpenAI-compatible and Anthropic-compatible drivers
+  behind one canonical model contract.
+- 🧱 **Typed profiles** — `type=cli|api` routes to a Command Bridge or a Model
+  Core; one config layer, no hidden mappings.
+- 💾 **Durable & resumable runs** — SQLite WAL queue with cancel, retry, resume,
+  and reconcile semantics that survive process exits.
+- 🗂️ **Crash-consistent sessions** — atomic, journal-backed file store with
+  identity-checked recovery (no heuristic repairs).
+- 🤖 **Autonomous agent loops** — model + configured builtin tools (`read_file`,
+  `list_directory`, opt-in `write_file`) with budget limits and streaming events.
+- 🪟 **Long-lived tmux windows** — a dedicated tmux server you can start, send,
+  attach, interrupt, and stop by stable ID.
+- 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
+  unknown fields and ambiguous states fail closed.
+- 🌐 **HTTP / SSE control plane** — a loopback `sn-server` exposes the full
+  Session / Run / Agent / Model API.
+
+## Quick start
+
+### Install
+
+One-line install from a GitHub Release (no source build needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
+```
+
+Or build from source (requires Go 1.25):
+
+```bash
+git clone https://github.com/yy003x/runtime.git
+cd runtime
+make build sn-cli-build
+make install
+```
+
+Verify the install and the active profiles:
+
+```bash
+sn-cli --version
+sn-cli profile list      # list active profiles and their types
+sn-cli profile check     # validate every profile's structure
+```
+
+> **Profiles are user-owned config files.** The bundled profiles under
+> `~/.sn/configs/*.json` are **working examples** wired to specific providers
+> and models (e.g. `api-cx` → Aliyun qwen, `api-cc` → GLM). To actually call a
+> model, supply your own key via the referenced environment variable (e.g.
+> `ALIYUN_API_KEY`) or edit the profile to point at your own endpoint and model.
+> See [Configuration](#configuration) and the
+> [sn-cli reference](SN-CLI-USAGE.md).
+
+### Your first calls
+
+```bash
+# One model API call (needs the profile's auth env var set)
+sn-cli api-cx "Reply OK"
+
+# Open the Codex/Claude interactive TUI
+sn-cli cx
+
+# Run a CLI one-shot and wait for it to exit
+sn-cli cx --exec "Summarize this repo"
+```
+
+### A recorded session
+
+```bash
+# Run one recorded turn, then reuse the same session across turns/providers
+sn-cli --json session run api-cx "First turn"     # grab session_id from JSON
+sn-cli session run --session-id <session_id> api-cc "Second turn"
+sn-cli session messages --session-id <session_id> # read the history
+```
+
+### A durable background run
+
+`session submit` / `run submit` only enqueue — a worker must be running to
+dequeue. Start the server first:
+
+```bash
+sn-cli --json server start
+sn-cli --json session submit --task-id analysis --cwd "$PWD" cx-deep "Run in background"
+sn-cli run watch --run-id <run_id>     # stream events until it settles
+```
+
+### An autonomous agent loop
+
+```bash
+sn-cli agent run --profile api-cx --max-wall-time 20m "Review this repo and report"
+```
+
+The full set of commands, arguments, and end-to-end workflows is in the
+[sn-cli reference](SN-CLI-USAGE.md).
+
+## Concepts
+
+One CLI, several execution boundaries. Each entry has a clearly defined scope
+and persistence target:
 
 ```text
 sn-cli <id> ──────────┐
@@ -17,250 +153,128 @@ sn-cli agent run ─────> Agent Kernel ─────> model + configur
 sn-cli run ... ───────> Run Harness ──────> SQLite WAL
 ```
 
-## 快速开始
-
-构建并覆盖安装当前源码：
-
-```bash
-make build sn-cli-build
-make install
-```
-
-确认 active Profile：
-
-```bash
-sn-cli --version
-sn-cli profile list
-sn-cli profile show cx-deep
-sn-cli profile check
-```
-
-常用调用：
-
-```bash
-sn-cli cx
-sn-cli cx --exec --effort high "分析当前仓库"
-sn-cli api-cx "只调用一次模型"
-sn-cli session run api-cx "保留这次会话"
-sn-cli tmux start cx "打开长期交互窗口"
-sn-cli agent run --profile api-cx "完成这个任务"
-```
-
-要让后台队列实际出队执行，需要启动 `sn-server`：
-
-```bash
-sn-cli --json server start
-sn-cli session submit --task-id background-analysis --cwd "$PWD" cx-deep "执行后台任务"
-sn-cli run list --state queued
-```
-
-管理命令需要稳定 machine output 时，把 `--json` 放在整个命令的第一项：
-
-```bash
-sn-cli --json server status
-```
-
-## 执行边界
-
-| 入口 | 作用 | 持久化 |
+| Entry | Purpose | Persisted |
 |---|---|---|
-| `sn-cli <profile-id>` | 一次 CLI/API Profile 调用 | 无 |
-| `sn-cli profile <profile-id>` | 与隐式 Profile 完全等价 | 无 |
-| `sn-cli session run|submit` | Session、Turn、Message、Event、Execution | 文件型 Session |
-| `sn-cli tmux ...` | 专用 Tmux interactive window | Tmux registry，不保存 transcript |
-| `sn-cli agent run` | API-only model/tool loop | Durable Run，Session 可选 |
-| `sn-cli run ...` | Durable Run 队列和控制面 | SQLite WAL |
+| `sn-cli <profile-id>` | one CLI/API profile call (no record) | — |
+| `sn-cli profile <profile-id>` | identical to the implicit form | — |
+| `sn-cli session run\|submit` | Session / Turn / Message / Event / Execution | file-based session |
+| `sn-cli tmux ...` | dedicated tmux interactive window | tmux registry (no transcript) |
+| `sn-cli agent run` | API-only model/tool loop | durable run (session optional) |
+| `sn-cli run ...` | durable run queue & control plane | SQLite WAL |
 
-Profile 的 `type=cli|api` 决定 command adapter 或 Provider adapter。Session
-不自动执行 tool call；Tmux 不创建 Session；`session submit` 和 `run submit`
-不会自动启动 server。Session 内部保留 `requires_action` projection，但 stock
-CLI/HTTP 不发布 tool-result 写入口。
+Key boundaries worth remembering up front:
 
-CLI Profile 的 file、stdin、合并 prompt 与单个 argv/env token 上限统一为
-128,000 bytes；超过上限时在启动目标 CLI 前返回 `context_overflow`。
-Claude Profile 不得配置会把单结果 JSON 改为逐轮数组的 `--verbose`；
-`profile check` 在启动目标 CLI 前拒绝该 canonical-incompatible 参数。
+- A **profile** is `cli` (wraps a CLI) or `api` (calls a model). `type` decides the adapter.
+- **Sessions never auto-execute tool calls** — a tool call from the model pauses
+  the turn at `requires_action`. Autonomous tool loops belong to `agent run`.
+- **Tmux never creates a session** — it only manages an interactive window.
+- **Submitting a run doesn't start the server** — enqueue and worker are decoupled.
 
-Agent tool effect 的结果无法确认时，Run 进入 `needs_reconciliation`，不自动
-重放。显式 `run reconcile` 保留 effect evidence 并以 failed 收口；如果 Agent
-绑定了 Session，该 Session 在收口前保持 blocked。Agent `paused` 只通过
-`run resume` 恢复。Tool 参数和 Resume input 使用完整 JSON Schema 校验；
-Resume body 是携带 `pause_id` 与 `input` 的 strict envelope。Agent checkpoint
-使用 LoopState schema 2 的 `base_message_count` 重建完整 model/tool/resume
-message journal，并核对 durable model request/result digest、usage 与 budget；
-任何无 durable evidence 或不在 provider-safe closed prefix 内的消息都会 fail
-closed。
+The precise contracts (state machines, crash recovery, digest/drift gating,
+filesystem safety model) live in the [contract docs](#documentation); this README
+intentionally stays at the usage level.
 
-Agent request 不接受 per-Run `cwd`；tool workspace 来自 `runtime.json`。
-pause/resume 是 Kernel extension，底层 `run resume` CLI/API 保留，但 stock
-capability 不宣称默认工具会产生 Pause。builtin 只提供 `read_file`、
-`list_directory` 和显式启用的 `write_file`，不提供任意 subprocess 执行能力。
-server-owned running Run 通过 SQLite cancellation polling 接收
-独立进程发出的 `run cancel`。
+## Configuration
 
-Durable Agent 在创建 Run 前冻结 private non-secret execution snapshot，绑定
-Agent contract、完整 API Profile、Provider driver semantic identity、tool
-implementation/config/definitions，以及可选的独立 Session digests。公开 Run 只
-暴露 combined `request_digest/config_digest`；resolved `auth.from_env` value 不
-持久化且允许在同一变量名下轮换。每个新的 model/tool side effect 都要求 current
-loaded snapshot 匹配；已持久化 terminal/effect 的恢复、cancel 和 reconcile 不依赖
-current Profile、Provider 或 tool 仍存在。
-
-公开配置、Session/Run fact 和 machine output 只接受当前完整 schema；Runtime
-不提供字段 alias、自动 migration、第二套 reader 或 compatibility shim。
-
-## 目录架构
-
-源码按领域和依赖方向组织：
+Profiles are a single config layer — one JSON file per profile:
 
 ```text
-agent/                  Agent Kernel 领域
-command/                CLI Command Bridge 领域
-contract/               Provider-neutral request/event/error 契约
-model/                  一次模型调用与 profile 领域
-profile/                command/model catalog 门面
-run/                    durable Run application domain
-session/                本地会话与 context projection
-tmux/                   专用 tmux server/window 管理
-provider/
-  openai/               OpenAI-compatible driver
-  anthropic/            Anthropic-compatible driver
-store/sqlite/           Run Store adapter
-transport/
-  http/                 HTTP/SSE adapter
-internal/
-  cli/                  只负责 decode/call/encode 的 CLI adapter
-  runtimebootstrap/     dependency wiring
-  runtimeconfig/        runtime.json loader
-  toolbuiltin/          受 root 约束的内置工具 adapter
-cmd/
-  sn-cli/
-  sn-server/
-configs/
-  *.json                source CLI/API Profile
-  runtime/runtime.json  source runtime template
-resources/
-  schema/               严格 JSON Schema
-  tmux.conf             固定 tmux bootstrap
-  release.json          activation/schema epoch
-runtimetest/            faux provider、PTY、golden、scenario
+<runtime-home>/configs/<profile-id>.json   # source: configs/*.json
+<runtime-home>/runtime.json                # source: configs/runtime/runtime.json
+<runtime-home>/resources/                  # JSON schemas, tmux.conf, release.json
 ```
 
-领域包不读取 CLI 参数、不打开配置目录，也不依赖 HTTP。`internal/runtimebootstrap`
-是 composition root；Provider、SQLite、CLI、HTTP 和 builtin tool 都是 adapter。
+The profile ID is the filename without `.json`. A CLI profile wraps a command;
+an API profile points at a provider:
 
-## Runtime Home
+```jsonc
+// configs/cx.json — a CLI profile wrapping the Codex CLI
+{
+  "type": "cli",
+  "command": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "xhigh",
+  "env": { "CODEX_HOME": "${HOME}/.codex-aip" }
+}
 
-默认 `${SN_CLI_HOME:-~/.sn}`：
+// configs/api-cx.json — an API profile calling a model endpoint
+{
+  "type": "api",
+  "driver": "openai-compatible",
+  "base_url": "https://your-provider/compatible-mode",
+  "model": "your-model",
+  "auth": { "header": "Authorization", "scheme": "Bearer", "from_env": "YOUR_API_KEY" },
+  "defaults": { "max_tokens": 16384 },
+  "timeout": "5m"
+}
+```
+
+Secrets are read only from environment variables (`auth.from_env`) — never
+written into profile files. `runtime.json` configures the agent's builtin tools,
+budgets, scheduler, and run retention. Full field reference, override order, and
+examples: [sn-cli reference](SN-CLI-USAGE.md) and
+[configuration contract](docs/configuration.md).
+
+## Project layout
 
 ```text
-bin/
-  sn-cli
-  sn-server
-configs/
-resources/schema/
-resources/tmux.conf
-resources/release.json
-runtime.json
-sessions/
-state/
-  session-locks/
-  session-invocations/
-  session-mutations/
-  session-trash-moves/
-  runtime.db
-  sn-server.pid
-  sn-server.log
-  sn-server.lease.lock
-  sn-server.lifecycle.lock
-  runtime.maintenance.lock
-  tmux.lock
-  update.json
-tmp/
+agent/       autonomous model/tool loop (Agent Kernel)
+command/     CLI Command Bridge domain
+contract/    provider-neutral request / event / error contract
+model/       single model call + API profile domain
+profile/     command/model catalog facade
+run/         durable run application domain (SQLite)
+session/     local canonical session + context projection
+tmux/        dedicated tmux server / window management
+provider/    openai/ + anthropic/ drivers
+store/sqlite/  run store adapter
+transport/   http/ (HTTP/SSE) adapter
+internal/    cli adapter, runtime bootstrap, config loader, builtin tools
+cmd/         sn-cli, sn-server entry points
+configs/     source CLI/API profiles + runtime template
+resources/   strict JSON schemas, tmux.conf, release.json
 ```
 
-`sessions/` 保存可读、可重建的会话事实；`state/session-mutations/` 保存 private
-`mutation_version=3` undo journal；`state/session-trash-moves/` 保存
-`version=1` 的 delete/GC rename journal；`state/session-invocations/` 保存 managed
-CLI helper 消费即删除的私有 invocation manifest。Session 文件操作使用
-directory-FD relative、no-follow 和 device/inode identity 门禁；JSONL 追加通过
-atomic full-file rewrite 发布，prepared rollback 只有在当前文件仍属于该 mutation，
-且原始 `size + prefix_digest` 匹配时才恢复原前缀。新 Session root 通过随机 nonce
-owner marker 与 journal 绑定。这些 private recovery/transport 文件不属于
-canonical Session fact，canonical Session `schema_version` 仍为 2。
+Domain packages don't read CLI args, don't open the config dir, and don't depend
+on HTTP. `internal/runtimebootstrap` is the composition root; providers, SQLite,
+CLI, HTTP, and builtin tools are all adapters.
 
-`state/runtime.db` 是 durable Run 的唯一事实源。调用方不应直接读取或改写
-`sessions/` 或上述 `state/` 内容，应使用公开 CLI/HTTP。
+## Documentation
 
-## 构建与安装
+| Document | Scope |
+|---|---|
+| [sn-cli reference](SN-CLI-USAGE.md) · 中文 | Full CLI command, argument, scenario, and example reference |
+| [Runtime vNext contract](docs/runtime-vnext-contract.md) | Top-level contracts and architecture |
+| [CLI routing contract](docs/cli-routing-contract.md) | Command routing and ID rules |
+| [Configuration contract](docs/configuration.md) | Profile / runtime config schema |
+| [Session & history contract](docs/session-history-contract.md) | Session state machine and crash recovery |
+| [Tmux contract](docs/tmux-contract.md) | Tmux window management |
+| [Integration architecture](docs/integration-arch.md) | How callers integrate over CLI / HTTP |
 
-```bash
-make check
-make build sn-cli-build
-make V=1 sn-cli-build
-make install
-```
-
-`make install` 是本地源码调试的覆盖入口：校验 candidate，停止受管
-`sn-server`，用当前源码的 Profiles、runtime config 和 resources 更新 active
-home，并清理现有 `sessions/`、`state/session-locks/`、
-`state/session-invocations/`、`state/session-mutations/`、
-`state/session-trash-moves/` 和 `state/runtime.db*`；成功后不自动重启 server。
-安装前必须先停止全部由 `sn-cli tmux` 管理的 live window；preflight 发现仍在运行
-的 managed Tmux 时会拒绝安装，且不会自动关闭交互窗口。
-
-测试和 release check 只使用临时 `SN_CLI_HOME`，不修改 active `~/.sn`。临时安装、
-network/archive installer、升级 schema 和 activation 安全规则见
-[配置契约](docs/configuration.md)与
-[Runtime vNext 契约](docs/runtime-vnext-contract.md)。
-
-## 配置入口
-
-Source：
-
-```text
-configs/*.json
-configs/runtime/runtime.json
-resources/
-```
-
-Active：
-
-```text
-${SN_CLI_HOME:-~/.sn}/configs/*.json
-${SN_CLI_HOME:-~/.sn}/runtime.json
-${SN_CLI_HOME:-~/.sn}/resources/
-```
-
-`configs/*.json` 是唯一 Profile 配置层，必须通过 `type=cli|api` 显式分流。
-Profile ID 来自文件名，不存在额外的第二层映射。
-API Profile 可在完整 `endpoint` 与自动拼接 driver 默认路径的 `base_url` 中二选一；
-`defaults.max_tokens` 是统一输出上限，由 adapter 映射到 Provider wire 字段，另支持
-可选的 `temperature`、`top_p` 和 `stop_sequences`；
-Session 未声明 `context.window_tokens` 时使用 `32768` 的保守窗口与至少 `8192` 的
-输出预留，不把 `max_tokens` 误作上下文窗口。
-参数、字段、覆盖顺序和示例见
-[sn-cli 详细使用手册](SN-CLI-USAGE.md)与
-[配置契约](docs/configuration.md)。
-
-## 文档
-
-- [sn-cli 详细使用手册](SN-CLI-USAGE.md)
-- [Runtime vNext 契约](docs/runtime-vnext-contract.md)
-- [CLI 路由契约](docs/cli-routing-contract.md)
-- [配置契约](docs/configuration.md)
-- [Session 与 history 契约](docs/session-history-contract.md)
-- [Tmux 管理契约](docs/tmux-contract.md)
-- [集成架构](docs/integration-arch.md)
-
-## 验证
+## Build & verify
 
 ```bash
 make fmt-check
 make test-serial
 make test-race
 go vet ./...
-make make-step-contract-test
 make release-check SN_CLI_VERSION=v0.1.0
 git diff --check
 ```
+
+Tests and release checks use a temporary `SN_CLI_HOME` and never touch the
+active `~/.sn`. See the [Makefile](Makefile) for all targets.
+
+## Contributing
+
+This repo follows Conventional Commits with Chinese subjects and strict
+contract/code lock-step: changing a public command requires syncing its tests,
+`sn-cli --help`, this README, and the relevant contract docs. The development
+workflow, architecture boundaries, and verification gates are in
+[`AGENTS.md`](AGENTS.md).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright 2026 yangyang.
