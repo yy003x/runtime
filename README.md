@@ -31,7 +31,7 @@ make install
 ```bash
 sn-cli --version
 sn-cli profile list
-sn-cli profile show cx-remote
+sn-cli profile show cx-deep
 sn-cli profile check
 ```
 
@@ -50,7 +50,7 @@ sn-cli agent run --profile api-cx "完成这个任务"
 
 ```bash
 sn-cli --json server start
-sn-cli session submit --task-id lark-remote --cwd "$PWD" cx-remote "执行远程任务"
+sn-cli session submit --task-id background-analysis --cwd "$PWD" cx-deep "执行后台任务"
 sn-cli run list --state queued
 ```
 
@@ -78,6 +78,8 @@ CLI/HTTP 不发布 tool-result 写入口。
 
 CLI Profile 的 file、stdin、合并 prompt 与单个 argv/env token 上限统一为
 128,000 bytes；超过上限时在启动目标 CLI 前返回 `context_overflow`。
+Claude Profile 不得配置会把单结果 JSON 改为逐轮数组的 `--verbose`；
+`profile check` 在启动目标 CLI 前拒绝该 canonical-incompatible 参数。
 
 Agent tool effect 的结果无法确认时，Run 进入 `needs_reconciliation`，不自动
 重放。显式 `run reconcile` 保留 effect evidence 并以 failed 收口；如果 Agent
@@ -92,8 +94,8 @@ closed。
 Agent request 不接受 per-Run `cwd`；tool workspace 来自 `runtime.json`。
 pause/resume 是 Kernel extension，底层 `run resume` CLI/API 保留，但 stock
 capability 不宣称默认工具会产生 Pause。builtin 只提供 `read_file`、
-`list_directory` 和显式启用的 `write_file`，不提供不具备 OS sandbox 的
-`exec_command`。server-owned running Run 通过 SQLite cancellation polling 接收
+`list_directory` 和显式启用的 `write_file`，不提供任意 subprocess 执行能力。
+server-owned running Run 通过 SQLite cancellation polling 接收
 独立进程发出的 `run cancel`。
 
 Durable Agent 在创建 Run 前冻结 private non-secret execution snapshot，绑定
@@ -104,8 +106,8 @@ implementation/config/definitions，以及可选的独立 Session digests。公�
 loaded snapshot 匹配；已持久化 terminal/effect 的恢复、cancel 和 reconcile 不依赖
 current Profile、Provider 或 tool 仍存在。
 
-不存在 `profile exec|open`、`launch/transport/prompt_delivery`、无 `type` 的旧
-Profile reader 或 Tmux/Session compatibility shim。
+公开配置、Session/Run fact 和 machine output 只接受当前完整 schema；Runtime
+不提供字段 alias、自动 migration、第二套 reader 或 compatibility shim。
 
 ## 目录架构
 
@@ -201,7 +203,7 @@ make install
 
 `make install` 是本地源码调试的覆盖入口：校验 candidate，停止受管
 `sn-server`，用当前源码的 Profiles、runtime config 和 resources 更新 active
-home，并清理旧 `sessions/`、`state/session-locks/`、
+home，并清理现有 `sessions/`、`state/session-locks/`、
 `state/session-invocations/`、`state/session-mutations/`、
 `state/session-trash-moves/` 和 `state/runtime.db*`；成功后不自动重启 server。
 安装前必须先停止全部由 `sn-cli tmux` 管理的 live window；preflight 发现仍在运行
@@ -231,7 +233,12 @@ ${SN_CLI_HOME:-~/.sn}/resources/
 ```
 
 `configs/*.json` 是唯一 Profile 配置层，必须通过 `type=cli|api` 显式分流。
-Profile ID 来自文件名；不存在额外 command shortcut 或 `commands/*.json`。
+Profile ID 来自文件名，不存在额外的第二层映射。
+API Profile 可在完整 `endpoint` 与自动拼接 driver 默认路径的 `base_url` 中二选一；
+`defaults.max_tokens` 是统一输出上限，由 adapter 映射到 Provider wire 字段，另支持
+可选的 `temperature`、`top_p` 和 `stop_sequences`；
+Session 未声明 `context.window_tokens` 时使用 `32768` 的保守窗口与至少 `8192` 的
+输出预留，不把 `max_tokens` 误作上下文窗口。
 参数、字段、覆盖顺序和示例见
 [sn-cli 详细使用手册](SN-CLI-USAGE.md)与
 [配置契约](docs/configuration.md)。

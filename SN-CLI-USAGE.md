@@ -3,8 +3,7 @@
 本文是 Runtime vNext 公开 CLI 的详细用户手册，覆盖 `sn-cli` 当前实现的命令、
 子命令、参数、输入输出、状态、典型场景和示例。
 
-本文描述的是当前协议，不提供旧版 `profile exec|open`、无 `type` Profile、
-`binary/transport/prompt_delivery`、`runtime.yaml` 或旧 namespace 的兼容说明。
+本文只描述当前协议。所有入口、配置和 machine output 都按本文的完整结构严格校验；
 架构约束和内部一致性要求仍以 `docs/` 下的专题契约为准。
 
 ## 目录
@@ -23,7 +22,7 @@
 - [12. HTTP API](#12-http-api)
 - [13. 常见完整工作流](#13-常见完整工作流)
 - [14. 常见错误与排查](#14-常见错误与排查)
-- [15. 内部入口和不支持的旧命令](#15-内部入口和不支持的旧命令)
+- [15. 内部入口和协议边界](#15-内部入口和协议边界)
 - [16. 相关契约文档](#16-相关契约文档)
 
 ## 1. 应该使用哪个入口
@@ -130,8 +129,7 @@ Profile ID：
 - 首字符必须是 ASCII 字母或数字。
 - 后续字符可使用 ASCII 字母、数字、`-`、`_`、`.`。
 - `.` 不能是首字符。
-- 不能使用固定 namespace、管理 action `list/show/check`，或已退役 action 名
-  `exec/open`。
+- 不能使用固定 namespace 或管理 action `list/show/check`。
 
 Runtime 生成的 Session 系列 ID 使用前缀加 32 位小写十六进制：
 
@@ -335,7 +333,7 @@ configs/cx.json      → cx
 configs/api-cx.json  → api-cx
 ```
 
-不存在额外的 command shortcut、`commands/*.json` 或命令映射层。调用方也不应直接
+不存在额外的第二层 Profile 映射。调用方也不应直接
 读写 `sessions/` 和 `state/runtime.db`，应通过公开 CLI 或 HTTP。
 `state/session-mutations/` 是 private `mutation_version=3` crash journal；
 `state/session-trash-moves/` 是 delete/GC 使用的 private `version=1` rename
@@ -356,13 +354,8 @@ Profile 管理 action：
 list show check
 ```
 
-已退役的旧 action 名：
-
-```text
-exec open
-```
-
-上述名称都是保留 Profile ID；`exec/open` 只保留名字，不恢复旧 action。
+固定 namespace 和上述管理 action 是保留 Profile ID；其余合法名称都可以作为
+Profile ID。
 
 ### 4.1 CLI Profile 配置
 
@@ -398,6 +391,9 @@ exec open
 
 `args`、`env` 和 `cwd` 支持 `${VAR_NAME}` 引用。被引用环境变量不存在时，执行明确
 失败。Secret 不应直接写入配置，应通过环境变量传递。
+所有 CLI Profile 都必须能生成 Session canonical invocation。Claude 的
+`--verbose` 会把 `--output-format json` 从单个 result object 改成逐轮数组，因此
+不能写入 Profile `args`，`profile check` 会 fail closed。
 
 `args` 必须遵守一字符串一 argv token：
 
@@ -429,7 +425,7 @@ exec open
 {
   "type": "api",
   "driver": "openai-compatible",
-  "endpoint": "https://example.com/v1/chat/completions",
+  "base_url": "https://example.com/provider",
   "model": "model-name",
   "auth": {
     "header": "Authorization",
@@ -438,8 +434,9 @@ exec open
   },
   "headers": {},
   "defaults": {
-    "max_completion_tokens": 16384,
-    "temperature": 0.2
+    "max_tokens": 16384,
+    "temperature": 0.2,
+    "stop_sequences": ["END"]
   },
   "timeout": "5m",
   "context": {
@@ -459,6 +456,8 @@ anthropic-compatible
 ```
 
 API secret 只通过 `auth.from_env` 读取。`profile show` 不会输出解析后的 secret。
+`endpoint` 与 `base_url` 二选一；后者按 driver 自动追加 `/v1/chat/completions` 或
+`/v1/messages`，并保留已有路径前缀。
 
 ### 4.3 runtime.json
 
@@ -495,8 +494,8 @@ list_directory
 write_file
 ```
 
-默认只启用前两个只读工具。`write_file` 必须显式配置。`exec_command` 已从
-builtin registry 和 `runtime.json` schema 移除；包含该名称的配置会被拒绝。
+默认只启用前两个只读工具。`write_file` 必须显式配置；其它名称不属于 builtin
+registry，配置时会被严格拒绝。
 
 ## 5. Profile 管理和直接调用
 
@@ -775,7 +774,6 @@ sn-cli [--json] <api-profile-id>
   [--stream]
   [--request-file PATH|-]
   [--system TEXT]
-  [--max-completion-tokens POSITIVE_INT]
   [--max-tokens POSITIVE_INT]
   [--temperature FINITE_0_TO_2]
   [--]
@@ -788,8 +786,7 @@ sn-cli [--json] <api-profile-id>
 | `--request-file PATH` | 读取 canonical `ModelRequest` JSON |
 | `--request-file -` | 从 stdin 读取整个 JSON request |
 | `--system TEXT` | 设置 system prompt |
-| `--max-completion-tokens N` | 仅 OpenAI-compatible，正整数 |
-| `--max-tokens N` | 仅 Anthropic-compatible，正整数 |
+| `--max-tokens N` | Provider-neutral 输出上限，正整数；adapter 转为 wire 字段 |
 | `--temperature T` | 有限值 `[0,2]` |
 | `PROMPT` | 最终且最多一个位置参数；省略时从 stdin 读取 |
 
@@ -805,11 +802,11 @@ sn-cli api-cx --temperature 0.2 "回复OK"
 sn-cli api-cx --temperature=0.2 "回复OK"
 ```
 
-Driver 对 token 参数做强校验：
+两个 driver 使用同一个 token 参数：
 
 ```bash
 # OpenAI-compatible
-sn-cli api-cx --max-completion-tokens 2048 "回复OK"
+sn-cli api-cx --max-tokens 2048 "回复OK"
 
 # Anthropic-compatible
 sn-cli api-cc --max-tokens 2048 "回复OK"
@@ -843,7 +840,8 @@ text field 中的 NUL 由 `ModelRequest` validator 拒绝。
   ],
   "options": {
     "max_output_tokens": 1024,
-    "temperature": 0.2
+    "temperature": 0.2,
+    "stop_sequences": ["END"]
   }
 }
 ```
@@ -893,31 +891,21 @@ Profile 应使用 `profile list/show` 查询。
 
 | ID | Adapter | Model | 默认 | 主要用途 |
 |---|---|---|---|---|
-| `api-cc` | Anthropic-compatible | `claude-fable-5` | `max_tokens=16384`、timeout 50m | 单次 Claude-compatible API 调用 |
-| `api-cx` | OpenAI-compatible | `qwen3.7-max` | `max_completion_tokens=16384`、timeout 5m | 单次 OpenAI-compatible API 调用 |
-| `cc` | Claude CLI | `claude-fable-5` | interactive | Claude TUI |
-| `cc-bai` | Claude CLI | `glm-5.2` | high、interactive | 百炼/GLM Claude-compatible TUI |
+| `api-cc` | Anthropic-compatible | `glm-5.2` | `max_tokens=16384`、timeout 50m | 单次 Claude-compatible API 调用 |
+| `api-cx` | OpenAI-compatible | `qwen3.7-max` | `max_tokens=16384`、timeout 5m | 单次 OpenAI-compatible API 调用 |
+| `cc` | Claude CLI | `glm-5.2` | max、interactive | 默认 Claude-compatible TUI |
+| `cc-glm` | Claude CLI | `glm-5.2` | exec、permission bypass | 百炼/GLM 一次执行 |
+| `cc-kmm` | Claude CLI | `claude-fable-5` | interactive、permission bypass | KMM Claude-compatible TUI |
 | `cx` | Codex CLI | `gpt-5.6-sol` | xhigh、interactive | 默认 Codex TUI |
 | `commit` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、exec、read-only | 一次性只读分析或提交计划 |
 | `cx-adv` | Codex CLI | `gpt-5.6-terra` | max、exec、danger-full-access | 高权限一次性任务 |
 | `cx-deep` | Codex CLI | `gpt-5.6-sol` | max、exec、search、danger-full-access | search + 深度执行 |
 | `cx-image` | Codex CLI | `gpt-5.6-sol` | xhigh、exec | 使用 `WB_RUNTIME_IMAGE_PATH` 的图片任务 |
-| `cx-remote` | Codex CLI | `gpt-5.6-sol` | xhigh、exec、search、workspace-write | `${HOME}/mycode` 跨目录任务 |
 | `cx-spark` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、exec、read-only | 快速只读任务 |
 
-`cc` 和 `cc-bai` 的源码配置包含 permission bypass 选项；
+`cc-glm` 和 `cc-kmm` 的源码配置包含 permission bypass 选项；
 `cx-adv`、`cx-deep` 允许 danger-full-access。使用这些 Profile 等于接受对应目标
 CLI 的权限配置，调用前应通过 `profile show` 确认 active 配置。
-
-`cx-remote` 是受管远程任务 Profile，推荐通过 `session run|submit` 使用：
-
-```bash
-sn-cli session submit \
-  --task-id lark-remote \
-  --cwd "$PWD" \
-  cx-remote \
-  "执行远程任务"
-```
 
 ## 6. Session
 
@@ -953,7 +941,6 @@ sn-cli session run
   [--model M]
   [--effort E]
   [--cwd DIR]
-  [--max-completion-tokens N]
   [--max-tokens N]
   [--temperature T]
   <profile-id>
@@ -996,26 +983,17 @@ API Profile 专用参数：
 
 | 参数 | 作用 |
 |---|---|
-| `--max-completion-tokens` | OpenAI-compatible token limit |
-| `--max-tokens` | Anthropic-compatible token limit |
+| `--max-tokens` | Provider-neutral token limit；adapter 转为 wire 字段 |
 | `--temperature` | `[0,2]` |
 
-Session API 当前不支持 `--system`。Session 也不支持：
-
-```text
---prompt-file
---session-file
---terminal-driver
---command-arg
---launch
-```
+Session API 的公开 options 仅限本节语法和表格列出的参数，不暴露 system prompt。
 
 CLI Session 固定使用 managed `exec=true`，忽略 CLI Profile 中的 `exec`：
 
 - 创建受 Session 管理的 child process。
 - 捕获 stdout、stderr 和 exit。
 - Codex 使用 canonical JSONL。
-- Claude 使用 canonical JSON result。
+- Claude 使用唯一的 canonical JSON result；Profile 不允许 `--verbose` 改写结果形态。
 - 将 assistant text 投影为 Session Message。
 - 记录 Execution identity 和终态。
 
@@ -1034,7 +1012,7 @@ sn-cli session run \
 
 # API Session Turn
 sn-cli session run \
-  --max-completion-tokens 4096 \
+  --max-tokens 4096 \
   --temperature 0.2 \
   api-cx \
   "回复OK"
@@ -1071,10 +1049,10 @@ sn-cli session submit \
   "后台执行并记录"
 
 sn-cli session submit \
-  --task-id lark-remote \
+  --task-id background-analysis \
   --cwd "$PWD" \
-  cx-remote \
-  "执行远程任务"
+  cx-deep \
+  "执行后台任务"
 ```
 
 返回的 `run_id` 可用于：
@@ -1923,9 +1901,8 @@ single-link regular file，拒绝 FIFO、hardlink 和超限内容；write 使用
 crypto-random private temp、file fsync、atomic rename 和 parent directory fsync。
 该边界不抵抗已完全控制同 UID 进程、可 ptrace 或可直接操纵既有 fd 的攻击者。
 
-Runtime 不提供 builtin `exec_command`。workspace-root/path 检查不是 OS sandbox，
-不能安全约束任意本机 subprocess；因此旧配置中的 `exec_command` 会在加载
-`runtime.json` 时直接失败，而不是降级或忽略。
+builtin 集合只提供受控文件操作。workspace-root/path 检查不是 OS sandbox，不能
+安全约束任意本机 subprocess，因此 Agent 不提供任意 subprocess 执行能力。
 
 Agent 虽然由当前 CLI 同步等待，但开始执行前会创建 Durable Run、checkpoint 和
 event。可在另一个终端查询：
@@ -2698,7 +2675,7 @@ make install
 - 校验 binary、profiles、runtime config 和 resources。
 - 自动停止受管 `sn-server`。
 - 用源码 `configs/`、runtime config 和 resources 覆盖 active home。
-- 丢弃旧 `sessions/`、`state/session-locks/`、
+- 丢弃现有 `sessions/`、`state/session-locks/`、
   `state/session-invocations/`、`state/session-mutations/`、
   `state/session-trash-moves/` 和 `state/runtime.db*`。
 - 成功后不自动启动 server。
@@ -2873,7 +2850,8 @@ POST /v1/model/generate
     ],
     "options": {
       "max_output_tokens": 4096,
-      "temperature": 0.2
+      "temperature": 0.2,
+      "stop_sequences": ["END"]
     },
     "trace": {
       "labels": {"task_id": "demo"}
@@ -2890,6 +2868,8 @@ POST /v1/model/generate
 | `input.tools` | 否 | canonical tool definitions；Runtime 只传给 Provider |
 | `input.options.max_output_tokens` | 否 | 正整数 |
 | `input.options.temperature` | 否 | 有限数，范围 `[0,2]` |
+| `input.options.top_p` | 否 | 有限数，范围 `[0,1]` |
+| `input.options.stop_sequences` | 否 | 最多 4 个非空字符串，每项最多 1024 bytes |
 | `input.trace.labels` | 否 | 最多 32 个 label |
 
 canonical tool Message 使用 `role=tool`、`tool_call_id`、`content`，并可用
@@ -2973,7 +2953,8 @@ POST /v1/sessions/{session_id}/turns
   "cwd": "",
   "model_options": {
     "max_output_tokens": 4096,
-    "temperature": 0.2
+    "temperature": 0.2,
+    "stop_sequences": ["END"]
   }
 }
 ```
@@ -3311,7 +3292,7 @@ sn-cli run watch --run-id <run_id> |
 ### `error: unknown command "api-cc"`
 
 当前实现中未知一级 token 会按 Profile ID 解析。若仍出现 `unknown command`，通常
-说明运行的是旧 binary。
+说明 binary 与受管 resources 不属于同一份当前构建。
 
 检查：
 
@@ -3390,14 +3371,6 @@ sn-cli session run --effort high cx "执行"
 sn-cli session run cx --effort high "执行"
 ```
 
-Session 也不支持旧参数：
-
-```text
---prompt-file
---terminal-driver
---command-arg
-```
-
 ### `session submit` 或 `run submit` 一直 queued
 
 检查 server：
@@ -3442,7 +3415,7 @@ sn-cli server doctor
 
 不要把 secret 写入 Profile 或命令历史。
 
-## 15. 内部入口和不支持的旧命令
+## 15. 内部入口和协议边界
 
 ### 内部入口
 
@@ -3456,34 +3429,11 @@ sn-cli __sn_tmux_helper --manifest ABS_PATH
 `__sn_tmux_helper` 由 `tmux start` 写入 manifest 后在 pane 中调用，manifest 必须是
 绝对路径。不要手工构造。
 
-### 当前明确不支持
+### 入口职责
 
 ```text
-sn-cli profile exec ...
-sn-cli profile open ...
-sn-cli session send ...
-sn-cli session attach ...
-sn-cli session interrupt ...
-sn-cli session stop ...
-sn-cli <profile-id> --interactive
-```
-
-Profile 配置也不支持：
-
-```text
-binary
-transport
-prompt_delivery
-launch
-无 type 的 Profile
-runtime.yaml
-```
-
-当前对应关系：
-
-```text
-直接交互 TUI  → CLI Profile exec=false
-直接一次执行  → CLI Profile exec=true
+直接交互 TUI  → CLI Profile 的 `exec=false`
+直接一次执行  → CLI Profile 的 `exec=true`
 有记录的执行  → session run|submit
 长期交互窗口  → tmux start
 自动工具循环  → agent run

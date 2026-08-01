@@ -6,8 +6,8 @@
 
 - 哪些能力已经实现并应保留；
 - 哪些能力只实现了底层状态机，公开入口仍不可用；
-- 哪些旧能力已经废弃，应继续拒绝或清理残留；
-- 哪些代码虽然包含 legacy/obsolete 命名，但仍承担升级安全职责；
+- 哪些公开能力、schema 和 owner 属于当前 contract；
+- 哪些代码承担 activation、rollback 和持久化安全职责；
 - 每一批治理的修改范围、验收条件和交付顺序。
 
 事实冲突时按以下顺序处理：
@@ -42,7 +42,7 @@ Git 交付等待用户另行授权。
 - durable CLI Session snapshot 保存 effective model/effort；
 - durable Agent private execution snapshot、combined digest 与 pre-effect drift gate；
 - `SN-CLI-USAGE.md`；
-- `configs/cx-remote.json` 及配套测试、release payload。
+- API Profile 的 `base_url`、统一 `max_tokens` 配置及配套测试、release payload。
 
 2026-07-31 当前工作树重新通过：
 
@@ -97,7 +97,7 @@ pause/resume 和重复 reconcile 回归测试。
 状态：已完成并通过整仓 release gate。
 
 - 当前工作树含多项关键正确性修复；
-- `SN-CLI-USAGE.md` 和 `configs/cx-remote.json` 尚未跟踪；
+- `SN-CLI-USAGE.md` 与当前 Profile 集合尚未全部进入 HEAD；
 - HEAD、工作树和未来 release payload 的行为不一致。
 
 已完成：
@@ -239,12 +239,12 @@ request_digest
 
 用户已于 2026-07-31 整体确认“1–5 全部按候选执行”。当前工作树已实施：
 
-1. 移除 public `session tool-result`，内部保留 `requires_action` 状态机；
-2. pause/resume 只作为 Kernel extension，移除 stock binary 的 resume capability
-   claim，但保留底层 `run resume` CLI/API/state；
+1. Session 公开契约不接受 tool result，内部保留 `requires_action` 状态机；
+2. pause/resume 只作为 Kernel extension；stock capability 不宣称默认工具会产生
+   Pause，底层 `run resume` CLI/API/state 保持可用；
 3. server-owned `running` Run 的跨进程 `run cancel` 使用 SQLite polling；
-4. 拒绝 `run submit --kind agent --cwd`，不再接受后静默忽略；
-5. 移除 builtin `exec_command`，因为当前 workspace-root/path 门禁不是真实 sandbox。
+4. Agent Run request 不包含 per-Run `cwd`，tool workspace 只来自 `runtime.json`；
+5. builtin tool 固定为受控文件操作，不提供任意 subprocess 执行能力。
 
 代码、测试、schema、README、使用手册和正式契约已经同步，并通过本轮完整
 release gate。
@@ -253,21 +253,15 @@ release gate。
 
 状态：已完成并通过整仓 release gate。
 
-- Session 内部存在 `requires_action` 和 `tool-result` 状态机；
-- 公开 Session CLI、HTTP DTO 和 `RunRequest` 没有 tools；
-- 真实 Provider 通常不会在未声明 tools 时返回合法 tool call；
-- `tool-result --error` 的 `IsError` 历史投影问题已修复：canonical Message 保留
-  `is_error`，并映射到 Anthropic `tool_result.is_error`；
-- CLI `session tool-result` 与 HTTP
-  `/v1/sessions/{id}/turns/{turn_id}/tool-results` 已删除；
-- 内部 Session service/state projection 保留，供领域测试和未来显式 extension；
-- 使用手册明确 stock Session 不是手工 tool loop，自动 tool loop 属于 Agent。
+- 公开 Session CLI、HTTP DTO 和 `RunRequest` 不接受 tools 或 tool result；
+- Provider 返回 tool call 时 Session 投影为 `requires_action`，但不自动执行 tool；
+- canonical Message 的 `is_error` 映射到 Anthropic `tool_result.is_error`；
+- 自动 tool loop 只属于 Agent Kernel。
 
 验收：
 
-- CLI/HTTP 已删除路由返回 unknown/not-found 且不创建或修改 Session；
-- canonical internal tool result 的 `is_error` Provider 投影测试继续保留；
-- help、README、使用手册和正式契约不再发布该入口。
+- CLI/HTTP unknown action 不创建或修改 Session；
+- canonical internal tool result 的 `is_error` Provider 投影测试继续保留。
 
 ### GOV-P1-02 Agent pause/resume 产品边界
 
@@ -310,7 +304,7 @@ release gate。
 - apply 在 Session lock 内重新检查 `retention=ephemeral`、`state=idle` 和
   `updated_at < cutoff`；
 - 候选变化或已被其他操作移动时记入 `skipped`，继续处理整批；
-- `GCResult.skipped` 使用 `omitempty`，保持既有 JSON consumer 兼容；
+- `GCResult.skipped` 始终出现在 JSON output，固定当前 machine shape；
 - 回归测试覆盖 pinned、active、blocked、`updated_at` 刷新和仍有效候选。
 
 ### GOV-P1-04 Run 控制面语义
@@ -336,16 +330,14 @@ release gate。
 - 双 SQLite Store/Service 回归测试覆盖 server worker 执行、独立 control
   Service 取消以及最终 terminal barrier。
 
-### GOV-P1-05 Builtin exec sandbox 边界
+### GOV-P1-05 Builtin tool sandbox 边界
 
 状态：已完成并通过整仓 release gate。
 
-- builtin registry 和 handler 已移除 `exec_command`；
-- runtime loader 与 `runtime.schema.json` 只允许
+- builtin registry、runtime loader 与 `runtime.schema.json` 只允许
   `read_file|list_directory|write_file`；
-- 旧配置包含 `exec_command` 时 fail closed，不静默忽略；
-- tool implementation semantic version 已 bump，旧 frozen snapshot 不会错误绑定到
-  新 builtin 实现。
+- 未注册 tool 名称 fail closed，不静默忽略；
+- tool implementation semantic version 参与 frozen/current snapshot 精确匹配。
 
 ### GOV-P1-06 CLI / HTTP validation parity
 
@@ -435,64 +427,32 @@ resolver，并区分 command 不存在与 Profile 配置无效。
 已固定 `profile.Entry` 等嵌套 DTO 的 JSON 字段名，删除测试专用输出分支，统一
 human/machine resource error；`server info` 不再宣称 stock resume capability。
 
-## 7. 已弃用能力
+## 7. 当前协议基线
 
-以下能力继续保持“不兼容、不恢复”：
+- 公开配置、Session/Run fact、Agent LoopState、activation journal 和 machine output
+  都必须完整匹配当前 schema；缺失、未知或不相等时 fail closed。
+- Profile 只从 `configs/*.json` 加载，并由 `type=cli|api` 选择 adapter；不存在第二层
+  ID 映射。
+- 固定 namespace 与 `list|show|check` 是唯一保留 Profile ID；其它合法名称可直接
+  作为 Profile ID。
+- 不提供字段 alias、自动 migration、双写、第二套 reader 或兼容 shim。
+- Provider driver、transaction rollback、filesystem normalization 和 current-state
+  reset 都是当前领域协议的必要组成。
 
-```text
-profile exec
-profile open
-session send
-session attach
-session interrupt
-session stop
-legacy commands/*.json 配置层
-legacy command-ID shortcut
-legacy runtime.yaml
-legacy 无 type Profile
-legacy Profile.binary
-legacy Profile.transport
-legacy Profile.prompt_delivery
-legacy Profile.effort_adapter
-legacy Profile.launch
-legacy Profile --interactive option
-legacy Session --prompt-file/--session-file/--terminal-driver/--command-arg/--launch options
-legacy namespace
-legacy artifact reader
-legacy compatibility shim
-```
+## 8. 当前保留边界
 
-这里的 `command-ID shortcut` 专指第二层 command ID 映射，不包括正式入口
-`sn-cli <profile-id>`；`Profile.transport` 专指已删除的 Profile 字段，不包括当前
-`transport/http` adapter。相关 CLI 应返回明确错误；不增加 fallback。
-
-## 8. 清理候选
-
-### 已删除或 internalize
-
-- `model.LoadProfileDir`
-- `model.DecodeProfile`
-- `model.LoadProfileFile`
-- 仅测试使用的 `runUpdateVNext`
-- 无调用方的 `Service.LatestExecution`
-- `outputs/design/profile-session-command-protocol.md` 历史讨论文件
-- 无生产 owner 的 `transport/cli/generate.go`
-- 从未成为合法 Store fact 的 `TurnPending`
-
-以下字段经复核继续保留：
+以下当前字段经复核继续保留：
 
 - `SessionArchived` 已参与 Store、reconcile、HTTP 和 activation 校验；
-- `ContextManifest.CheckpointRef/CheckpointDigest` 属于 `schema_version=2`，本轮不
-  以 dead-code 清理破坏持久化兼容边界。
+- `ContextManifest.CheckpointRef/CheckpointDigest` 属于当前 `schema_version=2`。
 
-### 不能按旧名称直接删除
+### 当前内部安全入口
 
-- `RequireLegacyProfileListGate`：阻断旧 updater 激活 contract-v3 candidate；
-- activation `commands` tombstone：负责旧目录迁移、回滚和 journal recovery；
 - `__sn_tmux_helper`：Tmux ready/go launch protocol；
 - `server upgrade-activate`：安装和升级内部入口。
 
-这些代码不是公开旧功能，而是当前安全协议的一部分。
+activation maintenance lock、journal、guard、regular-file barrier、rollback 和
+quiescence 是当前安全协议的一部分。
 
 ## 9. 文档治理
 
@@ -529,7 +489,7 @@ Agent reconciliation、HTTP validation 与 not-found 语义应直接与源码和
 ### G0：交付基线
 
 - 保留当前工作树修复；
-- 收拢手册、`cx-remote`、tests 和 release payload；
+- 收拢手册、当前 Profile、tests 和 release payload；
 - 执行完整 release gate。
 
 ### G1：状态机安全
@@ -544,7 +504,7 @@ Agent reconciliation、HTTP validation 与 not-found 语义应直接与源码和
 - GOV-P1-01 Session tools（已完成）；
 - GOV-P1-02 Agent pause/resume（已完成）；
 - GOV-P1-04 cancel 和 agent cwd（已完成）；
-- GOV-P1-05 builtin `exec_command`（已完成）。
+- GOV-P1-05 builtin tool sandbox 边界（已完成）。
 
 ### G3：契约一致性
 
@@ -575,6 +535,6 @@ Agent reconciliation、HTTP validation 与 not-found 语义应直接与源码和
 - CLI、HTTP 和 Store 对相同输入使用相同 validation 规则；
 - JSON Schema 与 Go loader 使用共享 fixture 验证；
 - 无生产调用链的 package、helper 和状态字段已删除或明确标记扩展接口；
-- legacy activation 安全门禁仍完整；
+- 当前 activation journal、guard、barrier、rollback 和 quiescence 门禁完整；
 - 完整 release gate 通过；
 - 没有自动 commit 或 push，除非用户另行明确授权。

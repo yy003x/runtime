@@ -17,8 +17,8 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli run ...`：SQLite durable Run 控制面。
 
 所有有效 CLI/API Profile 都通过同一 Profile ID 路由，并由 `type=cli|api` 选择
-执行 adapter。不恢复旧 `profile exec|open`、无 `type` 的旧 Profile、
-`runtime.yaml`、旧 namespace、旧 artifact reader、command shortcut 或 shim。
+执行 adapter。公开入口、配置、持久化事实和 machine output 只认当前 contract 的
+完整 schema，不提供 alias、自动 migration、第二套 reader 或兼容 shim。
 
 ## 架构边界
 
@@ -57,7 +57,7 @@ state/runtime.db
 
 `configs/*.json` 是唯一 Profile 配置面，必须用 `type=cli|api` 显式分流到独立
 执行领域；不存在第二层 command ID 映射。args 一字符串一 argv token，secret
-只从环境变量解析。旧无 `type` Profile 和 `runtime.yaml` 不作为 fallback。
+只从环境变量解析。loader 严格拒绝当前 schema 之外的字段和缺失的领域标识。
 
 ## 同步门禁
 
