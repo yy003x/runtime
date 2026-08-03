@@ -199,7 +199,7 @@ func (reservation *CommandLinkReservation) verifyPinned() error {
 	); err != nil {
 		return err
 	}
-	if !sameCommandLinkIdentity(current, reservation.linkStat) {
+	if !sameCommandLinkEntryIdentity(current, reservation.linkStat) {
 		return fmt.Errorf("command link reservation identity changed")
 	}
 	var owner unix.Stat_t
@@ -209,7 +209,7 @@ func (reservation *CommandLinkReservation) verifyPinned() error {
 	); err != nil {
 		return err
 	}
-	if !sameCommandLinkIdentity(owner, reservation.ownerStat) {
+	if !sameCommandLinkEntryIdentity(owner, reservation.ownerStat) {
 		return fmt.Errorf("command link durable owner identity changed")
 	}
 	currentOwner, err := readCommandLinkOwner(reservation.ownerFD)
@@ -260,7 +260,7 @@ func (reservation *CommandLinkReservation) verifyVisible() error {
 	); err != nil {
 		return err
 	}
-	if !sameCommandLinkIdentity(visibleLink, reservation.linkStat) {
+	if !sameCommandLinkEntryIdentity(visibleLink, reservation.linkStat) {
 		return fmt.Errorf("visible command link identity changed")
 	}
 	var visibleOwner unix.Stat_t
@@ -270,15 +270,32 @@ func (reservation *CommandLinkReservation) verifyVisible() error {
 	); err != nil {
 		return err
 	}
-	if !sameCommandLinkIdentity(visibleOwner, reservation.ownerStat) {
+	if !sameCommandLinkEntryIdentity(visibleOwner, reservation.ownerStat) {
 		return fmt.Errorf("visible command link owner identity changed")
 	}
 	return nil
 }
 
+// sameCommandLinkIdentity compares only stable directory identity. A directory's
+// ctime advances whenever an entry is added or removed, so it is intentionally
+// excluded here: the parent directory legitimately changes while the command
+// link and its owner sidecar are created or replaced during a reservation.
 func sameCommandLinkIdentity(left unix.Stat_t, right unix.Stat_t) bool {
 	return left.Dev == right.Dev && left.Ino == right.Ino &&
 		left.Mode&unix.S_IFMT == right.Mode&unix.S_IFMT
+}
+
+// sameCommandLinkEntryIdentity compares the pinned link or owner file. Unlike a
+// directory, these single files never change during a healthy reservation, so
+// ctime is included to detect replacement: Linux ext4 reuses a freed inode
+// number for an immediately recreated entry, which makes (Dev, Ino, type) alone
+// indistinguishable from the original. Recreating the file advances ctime,
+// closing that gap. macOS does not recycle the inode this quickly, but ctime
+// still changes there, so the extra comparison is safe across platforms.
+func sameCommandLinkEntryIdentity(left unix.Stat_t, right unix.Stat_t) bool {
+	return sameCommandLinkIdentity(left, right) &&
+		left.Ctim.Sec == right.Ctim.Sec &&
+		left.Ctim.Nsec == right.Ctim.Nsec
 }
 
 func (reservation *CommandLinkReservation) close() error {
@@ -439,7 +456,7 @@ func verifyCommandLinkOwnerName(
 	); err != nil {
 		return err
 	}
-	if !sameCommandLinkIdentity(pinned, visible) {
+	if !sameCommandLinkEntryIdentity(pinned, visible) {
 		return fmt.Errorf("command link durable owner name identity changed")
 	}
 	return nil
