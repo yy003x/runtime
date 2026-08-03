@@ -112,7 +112,7 @@ func TestSourceAPIProfilesResolveDriverDefaultEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
-		"api-cc.json": "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages",
+		"api-cc.json": "https://open.bigmodel.cn/api/anthropic/v1/messages",
 		"api-cx.json": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
 	} {
 		t.Run(name, func(t *testing.T) {

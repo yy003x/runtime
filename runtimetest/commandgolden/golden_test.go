@@ -434,7 +434,7 @@ func newHarness(t *testing.T) testHarness {
 	}
 	baseEnv := removeEnvironment(
 		os.Environ(),
-		"SN_CLI_HOME", "HOME", "PATH", "KMM_API_KEY", "WB_RUNTIME_IMAGE_PATH",
+		"SN_CLI_HOME", "HOME", "PATH", "KMM_API_KEY", "Z_AI_API_KEY", "WB_RUNTIME_IMAGE_PATH",
 		"CODEX_HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "RUNTIME_GOLDEN_CAPTURE",
 		"RUNTIME_GOLDEN_ENV_KEYS", "RUNTIME_GOLDEN_READ_STDIN", "RUNTIME_GOLDEN_EXIT_CODE",
@@ -445,6 +445,7 @@ func newHarness(t *testing.T) testHarness {
 		"HOME="+userHome,
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KMM_API_KEY=fixture-key",
+		"Z_AI_API_KEY=fixture-key",
 		"WB_RUNTIME_IMAGE_PATH="+image,
 	)
 	return testHarness{

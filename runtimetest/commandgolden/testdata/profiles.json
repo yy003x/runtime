@@ -43,13 +43,13 @@
       "id": "cc",
       "argv": [
         "--model",
-        "glm-5.2",
+        "glm-5.2[1m]",
         "--effort",
         "max"
       ],
       "env": {
-        "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/apps/anthropic",
-        "CLAUDE_CONFIG_DIR": "${HOME}/.claude.aip"
+        "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+        "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip"
       }
     },
     {
