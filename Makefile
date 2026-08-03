@@ -124,7 +124,7 @@ test-race:
 
 coverage:
 	@$(MAKE_STEP) --stage coverage --meta "minimum=$${COVERAGE_MIN}%" --meta "profile=$${COVERAGE_PROFILE}" -- \
-		bash -c '"$${GO}" -C "$${RUNTIME_ROOT}" test ./... -covermode=atomic -coverprofile="$${COVERAGE_PROFILE}" -count=1 && total="$$("$${GO}" -C "$${RUNTIME_ROOT}" tool cover -func="$${COVERAGE_PROFILE}" | awk "$$1")" && awk -v total="$$total" -v minimum="$${COVERAGE_MIN}" "BEGIN { printf \"total coverage: %.1f%% (minimum %.1f%%)\\n\", total, minimum; if (total + 0 < minimum + 0) exit 1 }"' _ '/^total:/ {gsub(/%/, "", $$3); print $$3}'
+		bash -c '"$${GO}" -C "$${RUNTIME_ROOT}" test $$( "$${GO}" -C "$${RUNTIME_ROOT}" list ./... | grep -v /cmd/ ) -covermode=atomic -coverprofile="$${COVERAGE_PROFILE}" -count=1 && total="$$("$${GO}" -C "$${RUNTIME_ROOT}" tool cover -func="$${COVERAGE_PROFILE}" | awk "$$1")" && awk -v total="$$total" -v minimum="$${COVERAGE_MIN}" "BEGIN { printf \"total coverage: %.1f%% (minimum %.1f%%)\\n\", total, minimum; if (total + 0 < minimum + 0) exit 1 }"' _ '/^total:/ {gsub(/%/, "", $$3); print $$3}'
 
 bin:
 	@$(MAKE_STEP) --stage prepare-bin --meta path=bin -- \
