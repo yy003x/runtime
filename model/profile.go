@@ -14,20 +14,15 @@ import (
 type DriverName string
 
 const (
-	DriverOpenAICompatible    DriverName = "openai-compatible"
-	DriverAnthropicCompatible DriverName = "anthropic-compatible"
+	DriverOpenAI    DriverName = "openai"
+	DriverAnthropic DriverName = "anthropic"
 
 	defaultContextWindowTokens  int64 = 32_768
 	defaultReservedOutputTokens int64 = 8_192
 )
 
-type Auth struct {
-	Header  string `json:"header"`
-	Scheme  string `json:"scheme"`
-	FromEnv string `json:"from_env"`
-}
-
-type Defaults struct {
+// Parameters carries the model generation defaults merged into each request.
+type Parameters struct {
 	MaxTokens     *int64   `json:"max_tokens,omitempty"`
 	Temperature   *float64 `json:"temperature,omitempty"`
 	TopP          *float64 `json:"top_p,omitempty"`
@@ -41,21 +36,24 @@ type ContextPolicy struct {
 	SummaryEnabled       *bool `json:"summary_enabled,omitempty"`
 }
 
+// Profile is the API-only side of the unified Profile protocol. Authentication
+// is configured directly under headers using ${VAR} references; the runtime
+// expands references and, for the openai driver, prefixes a bare Authorization
+// value with the Bearer scheme.
 type Profile struct {
-	Driver   DriverName        `json:"driver"`
-	Endpoint string            `json:"endpoint,omitempty"`
-	BaseURL  string            `json:"base_url,omitempty"`
-	Model    string            `json:"model"`
-	Auth     Auth              `json:"auth"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Defaults Defaults          `json:"defaults,omitempty"`
-	Timeout  string            `json:"timeout"`
-	Context  ContextPolicy     `json:"context,omitempty"`
+	Driver     DriverName        `json:"driver"`
+	Endpoint   string            `json:"endpoint,omitempty"`
+	BaseURL    string            `json:"base_url,omitempty"`
+	Model      string            `json:"model"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Parameters Parameters        `json:"parameters,omitempty"`
+	Timeout    string            `json:"timeout"`
+	Context    ContextPolicy     `json:"context,omitempty"`
 }
 
 func (profile Profile) Validate() error {
 	switch profile.Driver {
-	case DriverOpenAICompatible, DriverAnthropicCompatible:
+	case DriverOpenAI, DriverAnthropic:
 	default:
 		return fmt.Errorf("unsupported driver %q", profile.Driver)
 	}
@@ -65,15 +63,6 @@ func (profile Profile) Validate() error {
 	if strings.TrimSpace(profile.Model) == "" || len(profile.Model) > 1024 {
 		return fmt.Errorf("model is required and must not exceed 1024 bytes")
 	}
-	if !validHeaderName(profile.Auth.Header) {
-		return fmt.Errorf("auth.header is invalid")
-	}
-	if profile.Auth.Scheme != "" && !validHeaderName(profile.Auth.Scheme) {
-		return fmt.Errorf("auth.scheme must be an HTTP authentication scheme token")
-	}
-	if !validEnvironmentName(profile.Auth.FromEnv) {
-		return fmt.Errorf("auth.from_env must be an environment variable name")
-	}
 	if len(profile.Headers) > 128 {
 		return fmt.Errorf("headers exceed 128 items")
 	}
@@ -81,37 +70,31 @@ func (profile Profile) Validate() error {
 		if !validHeaderName(name) {
 			return fmt.Errorf("headers contains invalid name %q", name)
 		}
-		if secretHeader(name) || strings.EqualFold(name, profile.Auth.Header) {
-			return fmt.Errorf("headers[%q] is reserved for secret authentication", name)
-		}
 		if strings.ContainsAny(value, "\r\n\x00") {
 			return fmt.Errorf("headers[%q] must be a single-line value", name)
-		}
-		if strings.Contains(value, "${") {
-			return fmt.Errorf("headers[%q] cannot contain environment references", name)
 		}
 		if len(value) > 8192 {
 			return fmt.Errorf("headers[%q] exceeds 8192 bytes", name)
 		}
 	}
-	if profile.Defaults.MaxTokens != nil && *profile.Defaults.MaxTokens <= 0 {
-		return fmt.Errorf("defaults.max_tokens must be positive")
+	if profile.Parameters.MaxTokens != nil && *profile.Parameters.MaxTokens <= 0 {
+		return fmt.Errorf("parameters.max_tokens must be positive")
 	}
-	if profile.Driver == DriverAnthropicCompatible && profile.Defaults.MaxTokens == nil {
-		return fmt.Errorf("anthropic-compatible defaults.max_tokens is required")
+	if profile.Driver == DriverAnthropic && profile.Parameters.MaxTokens == nil {
+		return fmt.Errorf("anthropic parameters.max_tokens is required")
 	}
-	if profile.Defaults.Temperature != nil {
-		if err := contract.ValidateTemperature(*profile.Defaults.Temperature); err != nil {
-			return fmt.Errorf("defaults.temperature: %w", err)
+	if profile.Parameters.Temperature != nil {
+		if err := contract.ValidateTemperature(*profile.Parameters.Temperature); err != nil {
+			return fmt.Errorf("parameters.temperature: %w", err)
 		}
 	}
-	if profile.Defaults.TopP != nil {
-		if err := contract.ValidateTopP(*profile.Defaults.TopP); err != nil {
-			return fmt.Errorf("defaults.top_p: %w", err)
+	if profile.Parameters.TopP != nil {
+		if err := contract.ValidateTopP(*profile.Parameters.TopP); err != nil {
+			return fmt.Errorf("parameters.top_p: %w", err)
 		}
 	}
-	if err := contract.ValidateStopSequences(profile.Defaults.StopSequences); err != nil {
-		return fmt.Errorf("defaults.stop_sequences: %w", err)
+	if err := contract.ValidateStopSequences(profile.Parameters.StopSequences); err != nil {
+		return fmt.Errorf("parameters.stop_sequences: %w", err)
 	}
 	if profile.Context.WindowTokens < 0 || profile.Context.ReservedOutputTokens < 0 ||
 		profile.Context.KeepRecentTurns < 0 {
@@ -161,7 +144,7 @@ func (profile Profile) EffectiveContextBudgetForRequest(
 }
 
 func (profile Profile) DefaultTokenLimit() *int64 {
-	return profile.Defaults.MaxTokens
+	return profile.Parameters.MaxTokens
 }
 
 func (profile Profile) ResolvedEndpoint() (string, error) {
@@ -203,9 +186,9 @@ func (profile Profile) ResolvedEndpoint() (string, error) {
 
 func defaultEndpointPath(driver DriverName) (string, error) {
 	switch driver {
-	case DriverOpenAICompatible:
+	case DriverOpenAI:
 		return "v1/chat/completions", nil
-	case DriverAnthropicCompatible:
+	case DriverAnthropic:
 		return "v1/messages", nil
 	default:
 		return "", fmt.Errorf("unsupported driver %q", driver)
@@ -235,30 +218,4 @@ func headerTokenByte(value byte) bool {
 		return true
 	}
 	return strings.ContainsRune("!#$%&'*+-.^_`|~", rune(value))
-}
-
-func validEnvironmentName(value string) bool {
-	if value == "" || !asciiLetter(value[0]) && value[0] != '_' {
-		return false
-	}
-	for index := 1; index < len(value); index++ {
-		current := value[index]
-		if !asciiLetter(current) && (current < '0' || current > '9') && current != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-func asciiLetter(value byte) bool {
-	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
-}
-
-func secretHeader(value string) bool {
-	switch strings.ToLower(value) {
-	case "authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "set-cookie":
-		return true
-	default:
-		return false
-	}
 }

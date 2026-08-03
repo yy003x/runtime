@@ -21,6 +21,7 @@ import (
 	"github.com/yy003x/runtime/internal/cli/config"
 	snupdate "github.com/yy003x/runtime/internal/cli/update"
 	"github.com/yy003x/runtime/internal/cli/version"
+	"github.com/yy003x/runtime/internal/envref"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 )
@@ -415,8 +416,13 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 			}
 		}
 		if entry.Model != nil {
-			if value, exists := os.LookupEnv(entry.Model.Auth.FromEnv); !exists || value == "" {
-				missingAuth = append(missingAuth, entry.Model.Auth.FromEnv)
+			for _, rawValue := range entry.Model.Headers {
+				for _, name := range envref.References(rawValue) {
+					if value, exists := os.LookupEnv(name); exists && value != "" {
+						continue
+					}
+					missingAuth = appendUniqueString(missingAuth, name)
+				}
 			}
 		}
 	}
@@ -458,6 +464,17 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 		len(services.Tools.Definitions()), missingBinaries,
 		invalidCommands, missingAuth,
 	)
+}
+
+// appendUniqueString appends value to values only when it is not already
+// present, keeping the slice duplicate-free.
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func startServer(paths layout.Paths, output *cliOutput) error {

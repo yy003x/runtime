@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/yy003x/runtime/internal/envref"
 )
 
 // MaxTokenBytes stays below Linux's common 128 KiB single-argv-string limit,
@@ -149,7 +151,7 @@ func validateReferences(value string) error {
 		if end < 0 {
 			return fmt.Errorf("environment reference is missing }")
 		}
-		if !validReferenceName(remainder[:end]) {
+		if !envref.ValidName(remainder[:end]) {
 			return fmt.Errorf("invalid environment reference; only ${VAR_NAME} is supported")
 		}
 		value = remainder[end+1:]
@@ -164,24 +166,6 @@ func validateEnvironmentName(value string) error {
 		return fmt.Errorf("invalid environment name %q", value)
 	}
 	return nil
-}
-
-func validReferenceName(value string) bool {
-	if value == "" || !asciiLetter(value[0]) && value[0] != '_' {
-		return false
-	}
-	for index := 1; index < len(value); index++ {
-		if !asciiLetter(value[index]) &&
-			(value[index] < '0' || value[index] > '9') &&
-			value[index] != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-func asciiLetter(value byte) bool {
-	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
 }
 
 func adapterBase(command string) (string, bool) {

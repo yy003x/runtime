@@ -131,7 +131,7 @@ func loadFile(path string) (Kind, command.Profile, model.Profile, error) {
 			return len(parts) == 2 && parts[0] == "env"
 		case KindModel:
 			return len(parts) == 2 &&
-				(parts[0] == "defaults" &&
+				(parts[0] == "parameters" &&
 					(parts[1] == "max_tokens" ||
 						parts[1] == "temperature" ||
 						parts[1] == "top_p") ||

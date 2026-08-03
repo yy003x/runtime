@@ -25,7 +25,7 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	archive := makeArchive(t, map[string]archiveFile{
 		"sn-cli":                        {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n"},
 		"sn-server":                     {mode: 0o755, content: "#!/bin/sh\nprintf server\n"},
-		"configs/new-profile.json":      {mode: 0o644, content: `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"FIXTURE_KEY"},"timeout":"1m"}` + "\n"},
+		"configs/new-profile.json":      {mode: 0o644, content: `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","headers":{"Authorization":"${FIXTURE_KEY}"},"timeout":"1m"}` + "\n"},
 		"runtime.json":                  {mode: 0o644, content: "{\"agent\":{}}\n"},
 		"resources/schema/profile.json": {mode: 0o644, content: "packaged-schema\n"},
 	})
@@ -80,7 +80,7 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	defer func() { runCandidateActivation = previousActivation }()
 	mustWriteUpdate(t, cfg.Paths.Binary, "old\n", 0o755)
 	mustWriteUpdate(t, cfg.Paths.ServerBinary, "old-server\n", 0o755)
-	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"local","auth":{"header":"Authorization","scheme":"Bearer","from_env":"LOCAL_KEY"},"timeout":"1m"}`+"\n", 0o600)
+	mustWriteUpdate(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"local","headers":{"Authorization":"${LOCAL_KEY}"},"timeout":"1m"}`+"\n", 0o600)
 	mustWriteUpdate(t, cfg.Paths.RuntimeConfigFile, "{\"agent\":{}}\n", 0o600)
 	result, err := Apply(context.Background(), cfg, "v2")
 	if err != nil {
@@ -94,8 +94,8 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	}
 	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n")
 	assertUpdateContent(t, cfg.Paths.ServerBinary, "#!/bin/sh\nprintf server\n")
-	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"local","auth":{"header":"Authorization","scheme":"Bearer","from_env":"LOCAL_KEY"},"timeout":"1m"}`+"\n")
-	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new-profile.json"), `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"FIXTURE_KEY"},"timeout":"1m"}`+"\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"local","headers":{"Authorization":"${LOCAL_KEY}"},"timeout":"1m"}`+"\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new-profile.json"), `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","headers":{"Authorization":"${FIXTURE_KEY}"},"timeout":"1m"}`+"\n")
 	assertUpdateContent(t, cfg.Paths.RuntimeConfigFile, "{\"agent\":{}}\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "schema", "profile.json"), "packaged-schema\n")
 }

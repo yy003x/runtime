@@ -1,14 +1,12 @@
 {
   "type": "api",
-  "driver": "openai-compatible",
+  "driver": "openai",
   "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode",
   "model": "qwen3.7-max",
-  "auth": {
-    "header": "Authorization",
-    "scheme": "Bearer",
-    "from_env": "ALIYUN_API_KEY"
+  "headers": {
+    "Authorization": "${ALIYUN_API_KEY}"
   },
-  "defaults": {
+  "parameters": {
     "max_tokens": 16384
   },
   "timeout": "5m"

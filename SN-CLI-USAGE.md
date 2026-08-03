@@ -519,16 +519,13 @@ Profile ID。
 ```json
 {
   "type": "api",
-  "driver": "openai-compatible",
+  "driver": "openai",
   "base_url": "https://example.com/provider",
   "model": "model-name",
-  "auth": {
-    "header": "Authorization",
-    "scheme": "Bearer",
-    "from_env": "API_KEY"
+  "headers": {
+    "Authorization": "${API_KEY}"
   },
-  "headers": {},
-  "defaults": {
+  "parameters": {
     "max_tokens": 16384,
     "temperature": 0.2,
     "stop_sequences": ["END"]
@@ -546,13 +543,14 @@ Profile ID。
 当前 driver：
 
 ```text
-openai-compatible
-anthropic-compatible
+openai
+anthropic
 ```
 
-API secret 只通过 `auth.from_env` 读取。`profile show` 不会输出解析后的 secret。
-`endpoint` 与 `base_url` 二选一；后者按 driver 自动追加 `/v1/chat/completions` 或
-`/v1/messages`，并保留已有路径前缀。
+API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai driver 对裸
+`Authorization` 值（不含空格）自动补 `Bearer ` 前缀，anthropic 不补。`profile show`
+不会输出展开后的 secret。`endpoint` 与 `base_url` 二选一；后者按 driver 自动追加
+`/v1/chat/completions` 或 `/v1/messages`，并保留已有路径前缀。
 
 ### 4.3 runtime.json
 
@@ -640,7 +638,7 @@ sn-cli --json profile show api-cx
 适用场景：
 
 - 查看实际 command、model、effort、exec 和 cwd。
-- 查看 API driver、endpoint、model、defaults 和 timeout。
+- 查看 API driver、endpoint、model、parameters 和 timeout。
 - 调用前确认当前 active 配置，而不是只看源码 `configs/`。
 
 ### 5.3 `profile check`
@@ -668,7 +666,7 @@ sn-cli profile check cx
 - CLI command adapter 是否已登记。
 - args 是否符合 adapter grammar。
 - model/effort/mode/output selector 是否冲突。
-- API endpoint、auth 字段、defaults 和 timeout 结构。
+- API endpoint、headers 字段、parameters 和 timeout 结构。
 
 它不检查：
 
@@ -900,10 +898,10 @@ sn-cli api-cx --temperature=0.2 "回复OK"
 两个 driver 使用同一个 token 参数：
 
 ```bash
-# OpenAI-compatible
+# openai driver
 sn-cli api-cx --max-tokens 2048 "回复OK"
 
-# Anthropic-compatible
+# anthropic driver
 sn-cli api-cc --max-tokens 2048 "回复OK"
 ```
 
@@ -986,8 +984,8 @@ Profile 应使用 `profile list/show` 查询。
 
 | ID | Adapter | Model | 默认 | 主要用途 |
 |---|---|---|---|---|
-| `api-cc` | Anthropic-compatible | `glm-5.2` | `max_tokens=16384`、timeout 50m | 单次 Claude-compatible API 调用 |
-| `api-cx` | OpenAI-compatible | `qwen3.7-max` | `max_tokens=16384`、timeout 5m | 单次 OpenAI-compatible API 调用 |
+| `api-cc` | anthropic | `glm-5.2` | `max_tokens=16384`、timeout 50m | 单次 Claude-compatible API 调用 |
+| `api-cx` | openai | `qwen3.7-max` | `max_tokens=16384`、timeout 5m | 单次 OpenAI-compatible API 调用 |
 | `cc` | Claude CLI | `glm-5.2` | max、interactive | 默认 Claude-compatible TUI |
 | `cc-glm` | Claude CLI | `glm-5.2` | exec、permission bypass | 百炼/GLM 一次执行 |
 | `cc-kmm` | Claude CLI | `claude-fable-5` | interactive、permission bypass | KMM Claude-compatible TUI |
@@ -2057,9 +2055,9 @@ event、watch、Session export、日志或错误输出；公共 Run Record 只�
 private 表示不公开，不表示加密，其中仍包含 endpoint、model、non-secret literal
 header、tool schema、workspace root/cwd identity 等元数据。
 
-`auth.from_env` 只冻结变量名、header 和 scheme，不保存 resolved secret value。
-相同变量名下轮换 secret 不改变 snapshot；下一次 Provider call 使用执行进程当时
-可见的值。修改父 shell 不会改变已经运行的 `sn-server` 环境，需要让实际执行进程
+headers 只冻结 `${VAR}` 引用名（header 名 + 环境变量名），不保存 resolved secret
+value。相同引用名下轮换 secret 不改变 snapshot；下一次 Provider call 使用执行进程
+当时可见的值。修改父 shell 不会改变已经运行的 `sn-server` 环境，需要让实际执行进程
 获得新值。
 
 current snapshot 指执行进程已经加载的 Profile/Provider/tool，不表示每轮重新读取
@@ -2408,7 +2406,7 @@ retry_of=<old_run_id>
 Agent Retry byte-for-byte 保留原 Run 的 private execution snapshot，不根据当前
 Profile 或 `runtime.json` re-freeze。创建新 Run 前会完整比较 current
 model/Provider/tool/Agent/Session identity；任何 drift 都返回 conflict，且不产生
-新的 Run 或 Provider/tool side effect。相同 `auth.from_env` 名称下的 secret value
+新的 Run 或 Provider/tool side effect。相同 `${VAR}` 引用名下的 secret value
 轮换不参与该比较。
 
 ```bash
@@ -2548,7 +2546,7 @@ sn-cli --json server doctor
 - builtin tools。
 - 每个 CLI Profile command 是否能按该 Profile 的 `cwd`、`env`、`${VAR}`
   展开和最终 `PATH` 规则解析。
-- 每个 API Profile 的 auth 环境变量是否非空。
+- 每个 API Profile 的 headers `${VAR}` 引用的环境变量是否非空。
 
 它不会向 Provider 发起真实请求。
 

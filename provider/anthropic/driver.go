@@ -1,4 +1,4 @@
-// Package anthropic implements the SN Runtime Anthropic-compatible wire
+// Package anthropic implements the SN Runtime Anthropic-protocol wire
 // driver. It performs exactly one HTTP attempt and owns no retry or tool loop.
 package anthropic
 
@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	providerName = "anthropic-compatible"
+	providerName = "anthropic"
 
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
-	executionImplementation        = "runtime.provider.anthropic-compatible"
+	executionImplementation        = "runtime.provider.anthropic"
 	executionImplementationVersion = 1
 )
 
@@ -40,21 +40,21 @@ func New(client *http.Client) *Driver {
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver:                model.DriverAnthropicCompatible,
+		Driver:                model.DriverAnthropic,
 		Implementation:        executionImplementation,
 		ImplementationVersion: executionImplementationVersion,
 	}
 }
 
 func (*Driver) Validate(profile model.Profile) error {
-	if profile.Driver != model.DriverAnthropicCompatible {
+	if profile.Driver != model.DriverAnthropic {
 		return fmt.Errorf("anthropic driver cannot serve %q", profile.Driver)
 	}
 	if err := profile.Validate(); err != nil {
 		return err
 	}
-	if profile.Defaults.MaxTokens == nil {
-		return fmt.Errorf("anthropic profile requires defaults.max_tokens")
+	if profile.Parameters.MaxTokens == nil {
+		return fmt.Errorf("anthropic profile requires parameters.max_tokens")
 	}
 	return nil
 }

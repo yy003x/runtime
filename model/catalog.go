@@ -6,21 +6,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yy003x/runtime/internal/envref"
 	"github.com/yy003x/runtime/internal/profileid"
 )
+
+const authorizationHeader = "Authorization"
 
 type Catalog struct {
 	profiles map[string]Profile
 }
 
 type ResolvedModel struct {
-	ID       string
-	Driver   DriverName
-	Endpoint string
-	Model    string
-	Defaults Defaults
-	Timeout  time.Duration
-	headers  func() map[string]string
+	ID         string
+	Driver     DriverName
+	Endpoint   string
+	Model      string
+	Parameters Parameters
+	Timeout    time.Duration
+	headers    func() map[string]string
 }
 
 func NewCatalog(values map[string]Profile, reservedIDs ...string) (*Catalog, error) {
@@ -67,40 +70,47 @@ func (catalog *Catalog) IDs() []string {
 	return values
 }
 
+// resolve expands ${VAR} references in every header, applies driver-specific
+// authentication shaping, and returns the resolved model plus the secret values
+// that must be redacted from streamed events and errors. Only values produced
+// by ${VAR} expansion are treated as secret; literal header values are not.
 func (catalog *Catalog) resolve(
 	id string,
 	getenv func(string) (string, bool),
-) (ResolvedModel, string, error) {
+) (ResolvedModel, []string, error) {
 	profile, exists := catalog.Get(id)
 	if !exists {
-		return ResolvedModel{}, "", fmt.Errorf("model profile %q was not found", id)
-	}
-	secret, exists := getenv(profile.Auth.FromEnv)
-	if !exists || secret == "" {
-		return ResolvedModel{}, "", fmt.Errorf(
-			"authentication environment variable %s is not set",
-			profile.Auth.FromEnv,
-		)
-	}
-	if !validSecretValue(secret) {
-		return ResolvedModel{}, "", fmt.Errorf(
-			"authentication environment variable %s contains invalid header characters",
-			profile.Auth.FromEnv,
-		)
+		return ResolvedModel{}, nil, fmt.Errorf("model profile %q was not found", id)
 	}
 	endpoint, err := profile.ResolvedEndpoint()
 	if err != nil {
-		return ResolvedModel{}, "", err
+		return ResolvedModel{}, nil, err
 	}
-	headers := make(map[string]string, len(profile.Headers)+1)
-	for name, value := range profile.Headers {
+	headers := make(map[string]string, len(profile.Headers))
+	secrets := make([]string, 0, len(profile.Headers))
+	for name, rawValue := range profile.Headers {
+		value, expandErr := envref.Expand(rawValue, getenv)
+		if expandErr != nil {
+			return ResolvedModel{}, nil, fmt.Errorf("headers[%q]: %w", name, expandErr)
+		}
+		if value == "" {
+			return ResolvedModel{}, nil, fmt.Errorf("headers[%q] resolves to an empty value", name)
+		}
+		if !validSecretValue(value) {
+			return ResolvedModel{}, nil, fmt.Errorf(
+				"headers[%q] contains invalid header characters", name,
+			)
+		}
+		sensitive := strings.Contains(rawValue, "${")
+		if sensitive && strings.EqualFold(name, authorizationHeader) &&
+			profile.Driver == DriverOpenAI && !hasAuthScheme(value) {
+			secrets = append(secrets, value)
+			value = bearerScheme + " " + value
+		} else if sensitive {
+			secrets = append(secrets, value)
+		}
 		headers[name] = value
 	}
-	authValue := secret
-	if scheme := strings.TrimSpace(profile.Auth.Scheme); scheme != "" {
-		authValue = scheme + " " + secret
-	}
-	headers[profile.Auth.Header] = authValue
 	headerSource := func() map[string]string {
 		values := make(map[string]string, len(headers))
 		for name, value := range headers {
@@ -110,10 +120,18 @@ func (catalog *Catalog) resolve(
 	}
 	return ResolvedModel{
 		ID: id, Driver: profile.Driver, Endpoint: endpoint, Model: profile.Model,
-		Defaults: profile.Defaults, Timeout: profile.TimeoutDuration(),
+		Parameters: profile.Parameters, Timeout: profile.TimeoutDuration(),
 		headers: headerSource,
-	}, secret, nil
+	}, secrets, nil
 }
+
+// hasAuthScheme reports whether value already begins with an authentication
+// scheme token such as "Bearer" or "Basic", detected by a separating space.
+func hasAuthScheme(value string) bool {
+	return strings.Contains(value, " ")
+}
+
+const bearerScheme = "Bearer"
 
 func validSecretValue(value string) bool {
 	for index := 0; index < len(value); index++ {
@@ -132,7 +150,7 @@ func (resolved ResolvedModel) RequestHeaders() map[string]string {
 }
 
 func (resolved ResolvedModel) DefaultTokenLimit() *int64 {
-	return resolved.Defaults.MaxTokens
+	return resolved.Parameters.MaxTokens
 }
 
 func cloneProfile(profile Profile) Profile {
@@ -143,21 +161,21 @@ func cloneProfile(profile Profile) Profile {
 			result.Headers[name] = value
 		}
 	}
-	if profile.Defaults.MaxTokens != nil {
-		value := *profile.Defaults.MaxTokens
-		result.Defaults.MaxTokens = &value
+	if profile.Parameters.MaxTokens != nil {
+		value := *profile.Parameters.MaxTokens
+		result.Parameters.MaxTokens = &value
 	}
-	if profile.Defaults.Temperature != nil {
-		value := *profile.Defaults.Temperature
-		result.Defaults.Temperature = &value
+	if profile.Parameters.Temperature != nil {
+		value := *profile.Parameters.Temperature
+		result.Parameters.Temperature = &value
 	}
-	if profile.Defaults.TopP != nil {
-		value := *profile.Defaults.TopP
-		result.Defaults.TopP = &value
+	if profile.Parameters.TopP != nil {
+		value := *profile.Parameters.TopP
+		result.Parameters.TopP = &value
 	}
-	if profile.Defaults.StopSequences != nil {
-		result.Defaults.StopSequences = append(
-			[]string(nil), profile.Defaults.StopSequences...,
+	if profile.Parameters.StopSequences != nil {
+		result.Parameters.StopSequences = append(
+			[]string(nil), profile.Parameters.StopSequences...,
 		)
 	}
 	if profile.Context.SummaryEnabled != nil {

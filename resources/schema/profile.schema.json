@@ -100,7 +100,6 @@
         "type",
         "driver",
         "model",
-        "auth",
         "timeout"
       ],
       "properties": {
@@ -111,8 +110,8 @@
         "driver": {
           "description": "Selects the Provider wire protocol adapter.",
           "enum": [
-            "openai-compatible",
-            "anthropic-compatible"
+            "openai",
+            "anthropic"
           ]
         },
         "endpoint": {
@@ -137,67 +136,22 @@
           "x-sn-max-bytes": 1024,
           "pattern": "\\S"
         },
-        "auth": {
-          "description": "Environment-backed authentication header configuration; no secret value is stored here.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "header",
-            "from_env"
-          ],
-          "properties": {
-            "header": {
-              "description": "HTTP header that carries the resolved authentication value.",
-              "type": "string",
-              "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
-            },
-            "scheme": {
-              "description": "Optional authentication prefix such as Bearer; omission sends the secret directly.",
-              "type": "string",
-              "pattern": "^(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+)?$"
-            },
-            "from_env": {
-              "description": "Environment variable containing the authentication secret.",
-              "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-            }
-          }
-        },
         "headers": {
-          "description": "Optional non-secret literal HTTP headers; authentication and sensitive headers are forbidden.",
+          "description": "HTTP headers applied to every Provider request. Values may use ${VAR} references that the runtime expands from the environment; the openai driver prefixes a bare Authorization value with the Bearer scheme.",
           "type": "object",
           "maxProperties": 128,
-          "x-sn-forbid-auth-header-match": true,
           "propertyNames": {
-            "allOf": [
-              {
-                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
-              },
-              {
-                "not": {
-                  "pattern": "^(?:[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Xx][Yy]-[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]|[Aa][Pp][Ii]-[Kk][Ee][Yy]|[Cc][Oo][Oo][Kk][Ii][Ee]|[Ss][Ee][Tt]-[Cc][Oo][Oo][Kk][Ii][Ee])$"
-                }
-              }
-            ]
+            "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
           },
           "additionalProperties": {
             "type": "string",
             "maxLength": 8192,
             "x-sn-max-bytes": 8192,
-            "allOf": [
-              {
-              "pattern": "^[^\\r\\n\\x00]*$"
-              },
-              {
-                "not": {
-                  "pattern": "\\$\\{"
-                }
-              }
-            ]
+            "pattern": "^[^\\r\\n\\x00]*$"
           }
         },
-        "defaults": {
-          "description": "Provider-neutral default generation options applied when a request does not override them.",
+        "parameters": {
+          "description": "Provider-neutral default generation parameters applied when a request does not override them.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -319,7 +273,7 @@
           "if": {
             "properties": {
               "driver": {
-                "const": "anthropic-compatible"
+                "const": "anthropic"
               }
             },
             "required": [
@@ -328,10 +282,10 @@
           },
           "then": {
             "required": [
-              "defaults"
+              "parameters"
             ],
             "properties": {
-              "defaults": {
+              "parameters": {
                 "required": [
                   "max_tokens"
                 ],

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,15 +14,14 @@ func TestValidateModelProfile(t *testing.T) {
 	oversizedDefault := int64(32_767)
 	invalidTopP := 1.1
 	profile := Profile{
-		Driver:   DriverOpenAICompatible,
+		Driver:   DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "fixture",
-		Auth: Auth{
-			Header: "Authorization", Scheme: "Bearer",
-			FromEnv: "MODEL_API_KEY",
+		Headers: map[string]string{
+			"Authorization": "${MODEL_API_KEY}",
+			"X-Client":      "runtime-test",
 		},
-		Headers: map[string]string{"X-Client": "runtime-test"},
-		Defaults: Defaults{
+		Parameters: Parameters{
 			MaxTokens: &maxTokens,
 		},
 		Timeout: "5m",
@@ -29,51 +29,41 @@ func TestValidateModelProfile(t *testing.T) {
 	if err := profile.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if profile.Driver != DriverOpenAICompatible || profile.TimeoutDuration().Minutes() != 5 {
+	if profile.Driver != DriverOpenAI || profile.TimeoutDuration().Minutes() != 5 {
 		t.Fatalf("profile=%#v", profile)
 	}
 	for name, value := range map[string]Profile{
 		"insecure_endpoint": {
-			Driver: DriverOpenAICompatible, Endpoint: "http://example.invalid/v1",
-			Model: "x", Auth: Auth{
-				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
-			}, Timeout: "1m",
+			Driver: DriverOpenAI, Endpoint: "http://example.invalid/v1",
+			Model: "x", Headers: map[string]string{"Authorization": "${KEY}"},
+			Timeout: "1m",
 		},
-		"reserved_header": {
-			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1",
-			Model: "x", Auth: Auth{
-				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
-			}, Headers: map[string]string{"Authorization": "literal"}, Timeout: "1m",
+		"invalid_header_name": {
+			Driver: DriverOpenAI, Endpoint: "https://example.invalid/v1",
+			Model: "x", Headers: map[string]string{"Bad Header": "${KEY}"}, Timeout: "1m",
 		},
-		"invalid_auth_env": {
-			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1",
-			Model: "x", Auth: Auth{
-				Header: "Authorization", Scheme: "Bearer", FromEnv: "${KEY}",
-			}, Timeout: "1m",
+		"invalid_header_value": {
+			Driver: DriverOpenAI, Endpoint: "https://example.invalid/v1",
+			Model: "x", Headers: map[string]string{"X-Client": "bad\nvalue"}, Timeout: "1m",
 		},
 		"missing_anthropic_token_limit": {
-			Driver: DriverAnthropicCompatible, Endpoint: "https://example.invalid/v1",
-			Model: "x", Auth: Auth{
-				Header: "x-api-key", FromEnv: "KEY",
-			}, Timeout: "1m",
+			Driver: DriverAnthropic, Endpoint: "https://example.invalid/v1",
+			Model: "x", Headers: map[string]string{"x-api-key": "${KEY}"}, Timeout: "1m",
 		},
 		"default_context_without_input_budget": {
-			Driver: DriverAnthropicCompatible, Endpoint: "https://example.invalid/v1/messages",
-			Model: "x", Auth: Auth{
-				Header: "x-api-key", FromEnv: "KEY",
-			}, Defaults: Defaults{MaxTokens: &oversizedDefault}, Timeout: "1m",
+			Driver: DriverAnthropic, Endpoint: "https://example.invalid/v1/messages",
+			Model: "x", Headers: map[string]string{"x-api-key": "${KEY}"},
+			Parameters: Parameters{MaxTokens: &oversizedDefault}, Timeout: "1m",
 		},
 		"invalid_top_p": {
-			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1/chat/completions",
-			Model: "x", Auth: Auth{
-				Header: "Authorization", FromEnv: "KEY",
-			}, Defaults: Defaults{TopP: &invalidTopP}, Timeout: "1m",
+			Driver: DriverOpenAI, Endpoint: "https://example.invalid/v1/chat/completions",
+			Model: "x", Headers: map[string]string{"Authorization": "${KEY}"},
+			Parameters: Parameters{TopP: &invalidTopP}, Timeout: "1m",
 		},
 		"empty_stop_sequence": {
-			Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/v1/chat/completions",
-			Model: "x", Auth: Auth{
-				Header: "Authorization", FromEnv: "KEY",
-			}, Defaults: Defaults{StopSequences: []string{""}}, Timeout: "1m",
+			Driver: DriverOpenAI, Endpoint: "https://example.invalid/v1/chat/completions",
+			Model: "x", Headers: map[string]string{"Authorization": "${KEY}"},
+			Parameters: Parameters{StopSequences: []string{""}}, Timeout: "1m",
 		},
 	} {
 		if err := value.Validate(); err == nil {
@@ -89,21 +79,21 @@ func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) 
 	}{
 		"explicit": {
 			profile: Profile{
-				Driver:   DriverOpenAICompatible,
+				Driver:   DriverOpenAI,
 				Endpoint: "https://example.invalid/custom/chat?region=cn",
 			},
 			want: "https://example.invalid/custom/chat?region=cn",
 		},
 		"openai_base": {
 			profile: Profile{
-				Driver:  DriverOpenAICompatible,
+				Driver:  DriverOpenAI,
 				BaseURL: "https://example.invalid/provider/",
 			},
 			want: "https://example.invalid/provider/v1/chat/completions",
 		},
 		"anthropic_base": {
 			profile: Profile{
-				Driver:  DriverAnthropicCompatible,
+				Driver:  DriverAnthropic,
 				BaseURL: "https://example.invalid/provider",
 			},
 			want: "https://example.invalid/provider/v1/messages",
@@ -117,14 +107,14 @@ func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) 
 		})
 	}
 	for name, profile := range map[string]Profile{
-		"missing": {Driver: DriverOpenAICompatible},
+		"missing": {Driver: DriverOpenAI},
 		"both": {
-			Driver:   DriverOpenAICompatible,
+			Driver:   DriverOpenAI,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			BaseURL:  "https://example.invalid",
 		},
 		"base_query": {
-			Driver:  DriverOpenAICompatible,
+			Driver:  DriverOpenAI,
 			BaseURL: "https://example.invalid/provider?region=cn",
 		},
 	} {
@@ -139,14 +129,11 @@ func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) 
 func TestCatalogResolveSecret(t *testing.T) {
 	catalog, err := NewCatalog(map[string]Profile{
 		"fixture": {
-			Driver:   DriverOpenAICompatible,
+			Driver:   DriverOpenAI,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			Model:    "fixture",
-			Auth: Auth{
-				Header: "Authorization", Scheme: "Bearer",
-				FromEnv: "MODEL_API_KEY",
-			},
-			Timeout: "1m",
+			Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
+			Timeout:  "1m",
 		},
 	})
 	if err != nil {
@@ -155,14 +142,15 @@ func TestCatalogResolveSecret(t *testing.T) {
 	if !reflect.DeepEqual(catalog.IDs(), []string{"fixture"}) {
 		t.Fatalf("ids=%v", catalog.IDs())
 	}
-	resolved, secret, err := catalog.resolve("fixture", func(name string) (string, bool) {
+	resolved, secrets, err := catalog.resolve("fixture", func(name string) (string, bool) {
 		return "top-secret", name == "MODEL_API_KEY"
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secret != "top-secret" || resolved.RequestHeaders()["Authorization"] != "Bearer top-secret" {
-		t.Fatalf("resolved=%s", resolved.String())
+	if !slices.Contains(secrets, "top-secret") ||
+		resolved.RequestHeaders()["Authorization"] != "Bearer top-secret" {
+		t.Fatalf("resolved=%s secrets=%v", resolved.String(), secrets)
 	}
 	data, err := json.Marshal(resolved)
 	if err != nil {
@@ -187,8 +175,8 @@ func TestCatalogResolveSecret(t *testing.T) {
 func TestEffectiveContextBudgetUsesConservativeReservation(t *testing.T) {
 	maxOutput := int64(12_000)
 	profile := Profile{
-		Driver:   DriverOpenAICompatible,
-		Defaults: Defaults{MaxTokens: &maxOutput},
+		Driver:     DriverOpenAI,
+		Parameters: Parameters{MaxTokens: &maxOutput},
 		Context: ContextPolicy{
 			WindowTokens: 32_768, ReservedOutputTokens: 4_096,
 		},
@@ -206,8 +194,8 @@ func TestEffectiveContextBudgetUsesConservativeReservation(t *testing.T) {
 func TestEffectiveContextBudgetUsesConservativeDefaultsAndRequestLimit(t *testing.T) {
 	maxOutput := int64(12_000)
 	profile := Profile{
-		Driver:   DriverOpenAICompatible,
-		Defaults: Defaults{MaxTokens: &maxOutput},
+		Driver:     DriverOpenAI,
+		Parameters: Parameters{MaxTokens: &maxOutput},
 	}
 	window, reserved, input, explicit := profile.EffectiveContextBudget()
 	if explicit || window != 32_768 || reserved != 12_000 || input != 20_768 {

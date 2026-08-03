@@ -17,7 +17,7 @@ import (
 
 func TestDriverExecutionIdentity(t *testing.T) {
 	identity := New(nil).ExecutionIdentity()
-	if identity.Driver != model.DriverOpenAICompatible ||
+	if identity.Driver != model.DriverOpenAI ||
 		identity.Implementation != executionImplementation ||
 		identity.ImplementationVersion != executionImplementationVersion {
 		t.Fatalf("identity=%#v", identity)
@@ -133,11 +133,9 @@ func newService(t *testing.T, baseURL string, client *http.Client) *model.Servic
 	topP := 0.9
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver: model.DriverOpenAICompatible, BaseURL: baseURL, Model: "fixture",
-			Auth: model.Auth{
-				Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY",
-			},
-			Defaults: model.Defaults{
+			Driver: model.DriverOpenAI, BaseURL: baseURL, Model: "fixture",
+			Headers: map[string]string{"Authorization": "${MODEL_API_KEY}"},
+			Parameters: model.Parameters{
 				MaxTokens: &maxTokens, TopP: &topP,
 				StopSequences: []string{"END"},
 			},
@@ -149,7 +147,7 @@ func newService(t *testing.T, baseURL string, client *http.Client) *model.Servic
 	}
 	service, err := model.NewService(
 		catalog,
-		map[model.DriverName]model.Driver{model.DriverOpenAICompatible: New(client)},
+		map[model.DriverName]model.Driver{model.DriverOpenAI: New(client)},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			return "secret", name == "MODEL_API_KEY"
 		}},

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"unsafe"
+
+	"github.com/yy003x/runtime/internal/envref"
 )
 
 const (
@@ -72,7 +74,7 @@ func prepareEffectiveConfig(request BuildRequest) (preparedConfig, error) {
 	}
 	args := make([]string, 0, len(request.Profile.Args))
 	for index, argument := range request.Profile.Args {
-		resolved, resolveErr := expandReferences(argument, lookup)
+		resolved, resolveErr := envref.Expand(argument, lookup)
 		if resolveErr != nil {
 			return preparedConfig{}, fmt.Errorf("args[%d]: %w", index, resolveErr)
 		}
@@ -87,7 +89,7 @@ func prepareEffectiveConfig(request BuildRequest) (preparedConfig, error) {
 			delete(effective, name)
 			continue
 		}
-		resolved, resolveErr := expandReferences(*value, lookup)
+		resolved, resolveErr := envref.Expand(*value, lookup)
 		if resolveErr != nil {
 			return preparedConfig{}, fmt.Errorf("env[%q]: %w", name, resolveErr)
 		}
@@ -95,7 +97,7 @@ func prepareEffectiveConfig(request BuildRequest) (preparedConfig, error) {
 	}
 	cwd := request.InvocationBase
 	if rawCWD != "" {
-		resolved, resolveErr := expandReferences(rawCWD, lookup)
+		resolved, resolveErr := envref.Expand(rawCWD, lookup)
 		if resolveErr != nil {
 			return preparedConfig{}, fmt.Errorf("cwd: %w", resolveErr)
 		}
@@ -150,33 +152,6 @@ func environmentMap(values []string) map[string]string {
 		}
 	}
 	return result
-}
-
-func expandReferences(value string, lookup func(string) (string, bool)) (string, error) {
-	var resolved strings.Builder
-	for {
-		start := strings.Index(value, "${")
-		if start < 0 {
-			resolved.WriteString(value)
-			return resolved.String(), nil
-		}
-		resolved.WriteString(value[:start])
-		remainder := value[start+2:]
-		end := strings.IndexByte(remainder, '}')
-		if end < 0 {
-			return "", fmt.Errorf("environment reference is missing }")
-		}
-		name := remainder[:end]
-		if !validReferenceName(name) {
-			return "", fmt.Errorf("invalid environment reference; only ${VAR_NAME} is supported")
-		}
-		replacement, exists := lookup(name)
-		if !exists {
-			return "", fmt.Errorf("environment variable is not set: %s", name)
-		}
-		resolved.WriteString(replacement)
-		value = remainder[end+1:]
-	}
 }
 
 func validateWorkingDirectory(path string) error {

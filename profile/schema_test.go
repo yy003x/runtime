@@ -80,12 +80,11 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "openai_api",
 			document: `{
 				"type":"api",
-				"driver":"openai-compatible",
+				"driver":"openai",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
-				"auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},
-				"headers":{"X-Runtime":"fixture"},
-				"defaults":{"max_tokens":1024,"temperature":0.2,"top_p":0.9,"stop_sequences":["END"]},
+				"headers":{"Authorization":"${MODEL_API_KEY}","X-Runtime":"fixture"},
+				"parameters":{"max_tokens":1024,"temperature":0.2,"top_p":0.9,"stop_sequences":["END"]},
 				"timeout":".5s",
 				"context":{"window_tokens":0,"reserved_output_tokens":0,"keep_recent_turns":0}
 			}`,
@@ -95,11 +94,11 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "anthropic_api",
 			document: `{
 				"type":"api",
-				"driver":"anthropic-compatible",
+				"driver":"anthropic",
 				"endpoint":"https://example.invalid/v1/messages",
 				"model":"fixture",
-				"auth":{"header":"x-api-key","scheme":"","from_env":"MODEL_API_KEY"},
-				"defaults":{"max_tokens":1024},
+				"headers":{"x-api-key":"${MODEL_API_KEY}"},
+				"parameters":{"max_tokens":1024},
 				"timeout":"5m"
 			}`,
 			valid: true,
@@ -108,11 +107,11 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "openai_api_base_url",
 			document: `{
 				"type":"api",
-				"driver":"openai-compatible",
+				"driver":"openai",
 				"base_url":"https://example.invalid/provider",
 				"model":"fixture",
-				"auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},
-				"defaults":{"max_tokens":1024},
+				"headers":{"Authorization":"${MODEL_API_KEY}"},
+				"parameters":{"max_tokens":1024},
 				"timeout":"1m"
 			}`,
 			valid: true,
@@ -121,10 +120,10 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "go_duration_greek_microseconds",
 			document: `{
 				"type":"api",
-				"driver":"openai-compatible",
+				"driver":"openai",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
-				"auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},
+				"headers":{"Authorization":"${MODEL_API_KEY}"},
 				"timeout":"1μs"
 			}`,
 			valid: true,
@@ -133,11 +132,11 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "nullable_api_optional_values",
 			document: `{
 				"type":"api",
-				"driver":"openai-compatible",
+				"driver":"openai",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
-				"auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},
-				"defaults":{"max_tokens":null,"temperature":null,"top_p":null},
+				"headers":{"Authorization":"${MODEL_API_KEY}"},
+				"parameters":{"max_tokens":null,"temperature":null,"top_p":null},
 				"timeout":"1m",
 				"context":{"summary_enabled":null}
 			}`,
@@ -202,127 +201,127 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "insecure_api_endpoint",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"http://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "null_api_object",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},
-				"defaults":null,"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},
+				"parameters":null,"timeout":"1m"
 			}`,
 		},
 		{
 			name: "api_endpoint_without_path",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "api_without_endpoint_or_base_url",
 			document: `{
-				"type":"api","driver":"openai-compatible","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"type":"api","driver":"openai","model":"fixture",
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "api_with_endpoint_and_base_url",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"base_url":"https://example.invalid","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "endpoint_rejected_by_net_url",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/%zz","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 			semanticRule: "endpoint syntax is validated by Go net/url",
 		},
 		{
 			name: "blank_api_model",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"   ",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
-			name: "invalid_auth_header",
+			name: "invalid_header_name",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Bad Header","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Bad Header":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
-			name: "invalid_literal_header_reference",
+			name: "header_environment_reference",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},
 				"headers":{"X-Runtime":"${SECRET}"},"timeout":"1m"
 			}`,
+			valid: true,
 		},
 		{
-			name: "literal_secret_header",
+			name: "literal_header_value",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"X-Token","from_env":"KEY"},
-				"headers":{"cOoKiE":"literal"},"timeout":"1m"
+				"headers":{"Cookie":"literal"},"timeout":"1m"
 			}`,
+			valid: true,
 		},
 		{
 			name: "invalid_timeout",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"forever"
+				"headers":{"Authorization":"${KEY}"},"timeout":"forever"
 			}`,
 		},
 		{
 			name: "invalid_default_top_p",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"base_url":"https://example.invalid","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},
-				"defaults":{"top_p":1.1},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},
+				"parameters":{"top_p":1.1},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "empty_default_stop_sequence",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"base_url":"https://example.invalid","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},
-				"defaults":{"stop_sequences":[""]},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},
+				"parameters":{"stop_sequences":[""]},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "base_url_with_query",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"base_url":"https://example.invalid?region=cn","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "timeout_above_runtime_bound",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"25h"
+				"headers":{"Authorization":"${KEY}"},"timeout":"25h"
 			}`,
 			semanticRule: "duration total is bounded by the Go loader",
 		},
@@ -337,9 +336,9 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "context_without_input_budget",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m",
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m",
 				"context":{"window_tokens":1}
 			}`,
 			semanticRule: "context input budget requires cross-field arithmetic",
@@ -347,30 +346,20 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "default_context_without_input_budget",
 			document: `{
-				"type":"api","driver":"anthropic-compatible",
+				"type":"api","driver":"anthropic",
 				"endpoint":"https://example.invalid/v1/messages","model":"fixture",
-				"auth":{"header":"x-api-key","from_env":"KEY"},
-				"defaults":{"max_tokens":32767},"timeout":"1m"
+				"headers":{"x-api-key":"${KEY}"},
+				"parameters":{"max_tokens":32767},"timeout":"1m"
 			}`,
 			semanticRule: "default context input budget requires cross-field arithmetic",
 		},
 		{
-			name: "literal_header_matches_dynamic_auth_header",
-			document: `{
-				"type":"api","driver":"openai-compatible",
-				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"X-Token","from_env":"KEY"},
-				"headers":{"x-token":"literal"},"timeout":"1m"
-			}`,
-			semanticRule: "literal header must differ from the dynamic auth header",
-		},
-		{
 			name: "api_model_exceeds_byte_limit",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":` +
 				strconv.Quote(strings.Repeat("界", 500)) + `,
-				"auth":{"header":"Authorization","from_env":"KEY"},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 			semanticRule: "model limit is measured in UTF-8 bytes",
 		},
@@ -383,29 +372,29 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "unified_openai_token_limit",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},
-				"defaults":{"max_tokens":1024},"timeout":"1m"
+				"headers":{"Authorization":"${KEY}"},
+				"parameters":{"max_tokens":1024},"timeout":"1m"
 			}`,
 			valid: true,
 		},
 		{
 			name: "openai_token_limit_over_int64",
 			document: `{
-				"type":"api","driver":"openai-compatible",
+				"type":"api","driver":"openai",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"Authorization","from_env":"KEY"},
-				"defaults":{"max_tokens":9223372036854775808},
+				"headers":{"Authorization":"${KEY}"},
+				"parameters":{"max_tokens":9223372036854775808},
 				"timeout":"1m"
 			}`,
 		},
 		{
 			name: "missing_anthropic_token_limit",
 			document: `{
-				"type":"api","driver":"anthropic-compatible",
+				"type":"api","driver":"anthropic",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
-				"auth":{"header":"x-api-key","from_env":"KEY"},"timeout":"1m"
+				"headers":{"x-api-key":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 	}

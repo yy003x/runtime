@@ -30,14 +30,10 @@ func TestRunRecoveryLoaderReconcilesAfterCompositionOnly(t *testing.T) {
 		filepath.Join(paths.ConfigDir, "api.json"),
 		[]byte(`{
 			"type":"api",
-			"driver":"openai-compatible",
+			"driver":"openai",
 			"endpoint":"https://example.invalid/v1/chat/completions",
 			"model":"fixture",
-			"auth":{
-				"header":"Authorization",
-				"scheme":"Bearer",
-				"from_env":"FIXTURE_API_KEY"
-			},
+			"headers":{"Authorization":"${FIXTURE_API_KEY}"},
 			"timeout":"1m"
 		}`),
 		0o600,
@@ -197,14 +193,10 @@ func TestRunQueryAndMaintenanceLoadersIgnoreExecutionInputsAndClose(
 		filepath.Join(paths.ConfigDir, "api.json"),
 		[]byte(`{
 			"type":"api",
-			"driver":"openai-compatible",
+			"driver":"openai",
 			"endpoint":"https://example.invalid/v1/chat/completions",
 			"model":"fixture",
-			"auth":{
-				"header":"Authorization",
-				"scheme":"Bearer",
-				"from_env":"FIXTURE_API_KEY"
-			},
+			"headers":{"Authorization":"${FIXTURE_API_KEY}"},
 			"timeout":"1m"
 		}`),
 		0o600,

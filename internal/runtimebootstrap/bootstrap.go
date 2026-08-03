@@ -41,8 +41,8 @@ func LoadProfileServices(
 	models, err := model.NewService(
 		profiles.ModelCatalog(),
 		map[model.DriverName]model.Driver{
-			model.DriverOpenAICompatible:    openai.New(nil),
-			model.DriverAnthropicCompatible: anthropic.New(nil),
+			model.DriverOpenAI:    openai.New(nil),
+			model.DriverAnthropic: anthropic.New(nil),
 		},
 		model.ServiceOptions{},
 	)

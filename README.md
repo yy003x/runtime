@@ -98,7 +98,7 @@ sn-cli profile check     # validate every profile's structure
 ### Your first calls
 
 ```bash
-# One model API call (needs the profile's auth env var set)
+# One model API call (needs the profile's referenced env var set)
 sn-cli api-cx "Reply OK"
 
 # Open the Codex/Claude interactive TUI
@@ -200,17 +200,19 @@ an API profile points at a provider:
 // configs/api-cx.json — an API profile calling a model endpoint
 {
   "type": "api",
-  "driver": "openai-compatible",
+  "driver": "openai",
   "base_url": "https://your-provider/compatible-mode",
   "model": "your-model",
-  "auth": { "header": "Authorization", "scheme": "Bearer", "from_env": "YOUR_API_KEY" },
-  "defaults": { "max_tokens": 16384 },
+  "headers": { "Authorization": "${YOUR_API_KEY}" },
+  "parameters": { "max_tokens": 16384 },
   "timeout": "5m"
 }
 ```
 
-Secrets are read only from environment variables (`auth.from_env`) — never
-written into profile files. `runtime.json` configures the agent's builtin tools,
+Secrets are referenced via `${VAR}` in `headers` and expanded from environment
+variables at call time — the profile only stores the reference name, never the
+value. The openai driver auto-prepends the `Bearer ` scheme to a bare
+`Authorization` value; the anthropic driver does not. `runtime.json` configures the agent's builtin tools,
 budgets, scheduler, and run retention. Full field reference, override order, and
 examples: [sn-cli reference](SN-CLI-USAGE.md) and
 [configuration contract](docs/configuration.md).

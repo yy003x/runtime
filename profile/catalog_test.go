@@ -26,7 +26,7 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(configDir, "api-cx.json"),
-		[]byte(`{"type":"api","driver":"openai-compatible","base_url":"https://example.invalid/provider","model":"fixture","auth":{"header":"Authorization","scheme":"Bearer","from_env":"MODEL_API_KEY"},"timeout":"1m"}`),
+		[]byte(`{"type":"api","driver":"openai","base_url":"https://example.invalid/provider","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -177,17 +177,17 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 		},
 		{
 			name: "endpoint_and_base_url", fileName: "api-cx.json",
-			content:   `{"type":"api","driver":"openai-compatible","endpoint":"https://example.invalid/v1/chat/completions","base_url":"https://example.invalid","model":"fixture","auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},"timeout":"1m"}`,
+			content:   `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","base_url":"https://example.invalid","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`,
 			errorText: "exactly one",
 		},
 		{
 			name: "missing_endpoint_and_base_url", fileName: "api-cx.json",
-			content:   `{"type":"api","driver":"openai-compatible","model":"fixture","auth":{"header":"Authorization","from_env":"MODEL_API_KEY"},"timeout":"1m"}`,
+			content:   `{"type":"api","driver":"openai","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`,
 			errorText: "exactly one",
 		},
 		{
 			name: "default_context_without_input_budget", fileName: "api-cc.json",
-			content:   `{"type":"api","driver":"anthropic-compatible","endpoint":"https://example.invalid/v1/messages","model":"fixture","auth":{"header":"x-api-key","from_env":"MODEL_API_KEY"},"defaults":{"max_tokens":32767},"timeout":"1m"}`,
+			content:   `{"type":"api","driver":"anthropic","endpoint":"https://example.invalid/v1/messages","model":"fixture","headers":{"x-api-key":"${MODEL_API_KEY}"},"parameters":{"max_tokens":32767},"timeout":"1m"}`,
 			errorText: "context window",
 		},
 	} {
@@ -266,10 +266,10 @@ func testCatalogs(t *testing.T) (*command.Catalog, *model.Catalog) {
 	}
 	models, err := model.NewCatalog(map[string]model.Profile{
 		"api-cx": {
-			Driver:   model.DriverOpenAICompatible,
+			Driver:   model.DriverOpenAI,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			Model:    "fixture",
-			Auth:     model.Auth{Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY"},
+			Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
 			Timeout:  "1m",
 		},
 	})

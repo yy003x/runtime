@@ -69,8 +69,8 @@ model snapshot 保存完整 API Profile、Profile digest 和 concrete driver sem
 identity；tool snapshot 保存 implementation/version、canonical roots/cwd
 configuration 和 definitions。绑定 Session 时另存 Session 自己的
 `session_request_digest/session_config_digest`，不把 combined Agent digest 混入
-Session facts。resolved `auth.from_env` value 不冻结；相同变量名下的 secret rotation
-允许在下一次 Provider call 生效。
+Session facts。headers 只冻结 `${VAR}` 引用名，resolved secret value 不冻结；相同引用名
+下的 secret rotation 允许在下一次 Provider call 生效。
 
 Retry 保留原 private snapshot，不按当前配置 re-freeze；只有完整 current snapshot
 仍匹配时才创建新 Run。恢复 durable completed/failed/started effect、已知 terminal

@@ -16,7 +16,7 @@ import (
 
 func TestDriverExecutionIdentity(t *testing.T) {
 	identity := New(nil).ExecutionIdentity()
-	if identity.Driver != model.DriverAnthropicCompatible ||
+	if identity.Driver != model.DriverAnthropic ||
 		identity.Implementation != executionImplementation ||
 		identity.ImplementationVersion != executionImplementationVersion {
 		t.Fatalf("identity=%#v", identity)
@@ -65,10 +65,10 @@ func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 	topP := 0.9
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver:  model.DriverAnthropicCompatible,
+			Driver:  model.DriverAnthropic,
 			BaseURL: server.URL, Model: "fixture",
-			Auth: model.Auth{Header: "x-api-key", FromEnv: "MODEL_API_KEY"},
-			Defaults: model.Defaults{
+			Headers: map[string]string{"x-api-key": "${MODEL_API_KEY}"},
+			Parameters: model.Parameters{
 				MaxTokens: &maxTokens, TopP: &topP,
 				StopSequences: []string{"END"},
 			},
@@ -80,7 +80,7 @@ func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 	}
 	service, err := model.NewService(
 		catalog,
-		map[model.DriverName]model.Driver{model.DriverAnthropicCompatible: New(server.Client())},
+		map[model.DriverName]model.Driver{model.DriverAnthropic: New(server.Client())},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			return "secret", name == "MODEL_API_KEY"
 		}},
@@ -107,9 +107,9 @@ func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 
 func TestDriverRequiresMaxTokens(t *testing.T) {
 	profile := model.Profile{
-		Driver:   model.DriverAnthropicCompatible,
+		Driver:   model.DriverAnthropic,
 		Endpoint: "https://example.invalid/v1/messages", Model: "fixture",
-		Auth:    model.Auth{Header: "x-api-key", FromEnv: "MODEL_API_KEY"},
+		Headers: map[string]string{"x-api-key": "${MODEL_API_KEY}"},
 		Timeout: "1m",
 	}
 	if err := New(nil).Validate(profile); err == nil {

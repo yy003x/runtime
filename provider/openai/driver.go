@@ -1,4 +1,4 @@
-// Package openai implements the SN Runtime OpenAI-compatible wire driver.
+// Package openai implements the SN Runtime OpenAI-protocol wire driver.
 // It performs exactly one HTTP attempt and owns no retry, Session, or tool loop.
 package openai
 
@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	providerName = "openai-compatible"
+	providerName = "openai"
 
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
-	executionImplementation        = "runtime.provider.openai-compatible"
+	executionImplementation        = "runtime.provider.openai"
 	executionImplementationVersion = 1
 )
 
@@ -40,14 +40,14 @@ func New(client *http.Client) *Driver {
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver:                model.DriverOpenAICompatible,
+		Driver:                model.DriverOpenAI,
 		Implementation:        executionImplementation,
 		ImplementationVersion: executionImplementationVersion,
 	}
 }
 
 func (*Driver) Validate(profile model.Profile) error {
-	if profile.Driver != model.DriverOpenAICompatible {
+	if profile.Driver != model.DriverOpenAI {
 		return fmt.Errorf("openai driver cannot serve %q", profile.Driver)
 	}
 	return profile.Validate()

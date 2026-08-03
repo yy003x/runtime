@@ -194,7 +194,7 @@ func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 func TestAPIProfileFixedValueDoesNotConsumeStreamFlag(t *testing.T) {
 	request, stream, err := parseDirectModelInput(
 		"api-cx",
-		vNextTestModelProfile("openai-compatible"),
+		vNextTestModelProfile("openai"),
 		[]string{"--system", "--stream", "hello"},
 	)
 	if err == nil || !strings.Contains(err.Error(), "--system requires value") {
@@ -237,7 +237,7 @@ func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
 }
 
 func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
-	openAIProfile := vNextTestModelProfile("openai-compatible")
+	openAIProfile := vNextTestModelProfile("openai")
 	if _, _, err := parseDirectModelInput(
 		"api", openAIProfile, []string{"--model", "other", "hello"},
 	); err == nil {
@@ -257,7 +257,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 		len(request.Input.Messages) != 1 {
 		t.Fatalf("request=%#v stream=%v error=%v", request, stream, err)
 	}
-	anthropicProfile := vNextTestModelProfile("anthropic-compatible")
+	anthropicProfile := vNextTestModelProfile("anthropic")
 	if _, _, err := parseDirectModelInput(
 		"api", anthropicProfile, []string{"--max-tokens", "128", "hello"},
 	); err != nil {
@@ -266,7 +266,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 }
 
 func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) {
-	profile := vNextTestModelProfile("openai-compatible")
+	profile := vNextTestModelProfile("openai")
 	request, stream, err := parseDirectModelInput(
 		"api",
 		profile,
@@ -312,7 +312,7 @@ func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) 
 }
 
 func TestParseDirectModelInputRejectsNonFiniteTemperature(t *testing.T) {
-	profile := vNextTestModelProfile("openai-compatible")
+	profile := vNextTestModelProfile("openai")
 	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
 		if _, _, err := parseDirectModelInput(
 			"api", profile,
@@ -530,7 +530,7 @@ func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 func TestDirectAPIProfileRejectsUnsupportedEffort(t *testing.T) {
 	_, _, err := parseDirectModelInput(
 		"api-cx",
-		vNextTestModelProfile("openai-compatible"),
+		vNextTestModelProfile("openai"),
 		[]string{"--effort", "high", "reply ok"},
 	)
 	if err == nil ||
@@ -573,12 +573,10 @@ func writeVNextModel(t *testing.T, dir, id, endpoint string) {
 	t.Helper()
 	value := map[string]any{
 		"type":   "api",
-		"driver": "openai-compatible", "endpoint": endpoint, "model": "fixture",
-		"auth": map[string]any{
-			"header": "Authorization", "scheme": "Bearer", "from_env": "MODEL_API_KEY",
-		},
-		"defaults": map[string]any{"max_tokens": 1024},
-		"timeout":  "1m",
+		"driver": "openai", "endpoint": endpoint, "model": "fixture",
+		"headers":    map[string]any{"Authorization": "${MODEL_API_KEY}"},
+		"parameters": map[string]any{"max_tokens": 1024},
+		"timeout":    "1m",
 	}
 	data, err := json.Marshal(value)
 	if err != nil {

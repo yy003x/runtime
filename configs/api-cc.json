@@ -1,13 +1,12 @@
 {
   "type": "api",
-  "driver": "anthropic-compatible",
+  "driver": "anthropic",
   "base_url": "https://open.bigmodel.cn/api/anthropic",
   "model": "glm-5.2",
-  "auth": {
-    "header": "x-api-key",
-    "from_env": "Z_AI_API_KEY"
+  "headers": {
+    "x-api-key": "${Z_AI_API_KEY}"
   },
-  "defaults": {
+  "parameters": {
     "max_tokens": 16384
   },
   "context": {

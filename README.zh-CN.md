@@ -89,7 +89,7 @@ sn-cli profile check     # 校验每个 profile 的结构
 ### 第一次调用
 
 ```bash
-# 一次模型 API 调用（需先设置该 profile 的 auth 环境变量）
+# 一次模型 API 调用（需先设置该 profile 引用的环境变量）
 sn-cli api-cx "回复OK"
 
 # 打开 Codex/Claude 交互 TUI
@@ -186,16 +186,17 @@ Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API 
 // configs/api-cx.json — 调用模型 endpoint 的 API profile
 {
   "type": "api",
-  "driver": "openai-compatible",
+  "driver": "openai",
   "base_url": "https://your-provider/compatible-mode",
   "model": "your-model",
-  "auth": { "header": "Authorization", "scheme": "Bearer", "from_env": "YOUR_API_KEY" },
-  "defaults": { "max_tokens": 16384 },
+  "headers": { "Authorization": "${YOUR_API_KEY}" },
+  "parameters": { "max_tokens": 16384 },
   "timeout": "5m"
 }
 ```
 
-secret 只从环境变量读取（`auth.from_env`），绝不写入 profile 文件。`runtime.json` 配置
+secret 通过 headers 中的 `${VAR}` 引用从环境变量读取，profile 只存引用名不存值；openai
+driver 对裸 `Authorization` 自动补 `Bearer` scheme，anthropic 不补。`runtime.json` 配置
 agent 的 builtin tool、预算、scheduler 与 run retention。完整字段、覆盖顺序与示例见
 [sn-cli 详细使用手册](SN-CLI-USAGE.md)与[配置契约](docs/configuration.md)。
 

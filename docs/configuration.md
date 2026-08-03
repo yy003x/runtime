@@ -131,7 +131,7 @@ scheduler 或 Run 配置错误不会阻止一次 Profile 查询或调用。
 
 ## API Profile
 
-API Profile 保持独立 schema，不增加 CLI-only 字段。OpenAI-compatible 示例：
+API Profile 保持独立 schema，不增加 CLI-only 字段。openai driver 示例：
 
 API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`、`/* */` 或
 `#` 注释，未列出的字段会被 loader 拒绝：
@@ -139,18 +139,15 @@ API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`�
 | 字段 | 必填 / 适用 driver | Runtime 语义 |
 | --- | --- | --- |
 | `type` | 必填 | 固定为 `api`，选择 API Profile 领域 |
-| `driver` | 必填 | `openai-compatible` 或 `anthropic-compatible`，选择 wire driver |
+| `driver` | 必填 | `openai` 或 `anthropic`，选择 wire driver |
 | `endpoint` | 与 `base_url` 二选一 | 完整 HTTPS endpoint，必须包含显式非根路径；Runtime 原样请求 |
 | `base_url` | 与 `endpoint` 二选一 | HTTPS 基础地址；保留已有路径前缀，并按 driver 拼接默认 API 路径 |
 | `model` | 必填 | 发送给 Provider 的模型名 |
-| `auth.header` | 必填 | 承载认证值的 HTTP header 名 |
-| `auth.scheme` | 可选 | 认证值前缀，例如 `Bearer`；空值表示直接使用 secret |
-| `auth.from_env` | 必填 | secret 所在环境变量名；配置和 snapshot 都不保存 secret 值 |
-| `headers.<name>` | 可选 | 额外的非 secret literal HTTP header；不能覆盖认证或敏感 header |
-| `defaults.max_tokens` | OpenAI 可选；Anthropic 必填 | 统一默认输出上限；adapter 分别映射为 `max_completion_tokens` 或 `max_tokens` |
-| `defaults.temperature` | 可选；两者 | 默认采样温度，范围 `0..2` |
-| `defaults.top_p` | 可选；取决于目标模型 | 默认 nucleus sampling 概率，范围 `0..1`；部分新模型不支持 |
-| `defaults.stop_sequences` | 可选；取决于目标模型 | 默认停止序列，最多 4 个非空字符串；OpenAI 映射为 `stop` |
+| `headers.<name>` | 可选 | 承载所有 HTTP header，值可用 `${VAR}` 引用环境变量（runtime 调用时展开）。openai driver 对裸 `Authorization` 值（不含空格）自动补 `Bearer ` 前缀，anthropic 不补。secret 只存 `${VAR}` 引用名，不存值 |
+| `parameters.max_tokens` | OpenAI 可选；Anthropic 必填 | 统一默认输出上限；adapter 分别映射为 `max_completion_tokens` 或 `max_tokens` |
+| `parameters.temperature` | 可选；两者 | 默认采样温度，范围 `0..2` |
+| `parameters.top_p` | 可选；取决于目标模型 | 默认 nucleus sampling 概率，范围 `0..1`；部分新模型不支持 |
+| `parameters.stop_sequences` | 可选；取决于目标模型 | 默认停止序列，最多 4 个非空字符串；OpenAI 映射为 `stop` |
 | `timeout` | 必填 | 单次 Provider attempt 超时，Go duration，范围 `(0, 24h]` |
 | `context.window_tokens` | 可选 | Session 本地总上下文容量；省略或 `0` 时为 `32768` |
 | `context.reserved_output_tokens` | 可选 | Session 本地输出预留；省略或 `0` 时基础默认值为 `8192` |
@@ -162,18 +159,15 @@ API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`�
 | 字段 | `api-cc.json` | `api-cx.json` |
 | --- | --- | --- |
 | `type` | `api` | `api` |
-| `driver` | `anthropic-compatible` | `openai-compatible` |
+| `driver` | `anthropic` | `openai` |
 | `endpoint` | 未设置；由 `base_url` 解析 | 未设置；由 `base_url` 解析 |
-| `base_url` | `https://dashscope.aliyuncs.com/apps/anthropic`，拼接 `/v1/messages` | `https://…/compatible-mode`，拼接 `/v1/chat/completions` |
+| `base_url` | `https://open.bigmodel.cn/api/anthropic`，拼接 `/v1/messages` | `https://…/compatible-mode`，拼接 `/v1/chat/completions` |
 | `model` | `glm-5.2` | `qwen3.7-max` |
-| `auth.header` | `x-api-key` | `Authorization` |
-| `auth.scheme` | 未设置；`x-api-key` 直接使用 secret | `Bearer` |
-| `auth.from_env` | `BAILIAN_API_KEY` | `ALIYUN_API_KEY` |
-| `headers.<name>` | 未使用；当前没有额外 literal header | 未使用；当前没有额外 literal header |
-| `defaults.max_tokens` | `16384` | `16384`，adapter 转为 wire `max_completion_tokens` |
-| `defaults.temperature` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
-| `defaults.top_p` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
-| `defaults.stop_sequences` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
+| `headers` | `{"x-api-key": "${Z_AI_API_KEY}"}`，anthropic 不补 scheme | `{"Authorization": "${ALIYUN_API_KEY}"}`，openai driver 自动补 `Bearer` |
+| `parameters.max_tokens` | `16384` | `16384`，adapter 转为 wire `max_completion_tokens` |
+| `parameters.temperature` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
+| `parameters.top_p` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
+| `parameters.stop_sequences` | 未设置；请求未覆盖时不发送 | 未设置；请求未覆盖时不发送 |
 | `timeout` | `50m` | `5m` |
 | `context.window_tokens` | `1048576` | 未设置；使用保守默认 `32768` |
 | `context.reserved_output_tokens` | `16384` | 未设置；受默认输出上限抬高，有效值为 `16384` |
@@ -183,15 +177,13 @@ API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`�
 ```json
 {
   "type": "api",
-  "driver": "openai-compatible",
+  "driver": "openai",
   "base_url": "https://example.invalid/provider",
   "model": "example",
-  "auth": {
-    "header": "Authorization",
-    "scheme": "Bearer",
-    "from_env": "MODEL_API_KEY"
+  "headers": {
+    "Authorization": "${MODEL_API_KEY}"
   },
-  "defaults": {
+  "parameters": {
     "max_tokens": 16384,
     "temperature": 0.2,
     "stop_sequences": ["END"]
@@ -206,19 +198,18 @@ API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`�
 }
 ```
 
-Anthropic-compatible 使用 Messages API 原生字段：
+anthropic driver 使用 Messages API 原生字段：
 
 ```json
 {
   "type": "api",
-  "driver": "anthropic-compatible",
+  "driver": "anthropic",
   "base_url": "https://example.invalid/provider",
   "model": "example",
-  "auth": {
-    "header": "x-api-key",
-    "from_env": "MODEL_API_KEY"
+  "headers": {
+    "x-api-key": "${MODEL_API_KEY}"
   },
-  "defaults": {
+  "parameters": {
     "max_tokens": 16384,
     "temperature": 0.2
   },
@@ -227,12 +218,14 @@ Anthropic-compatible 使用 Messages API 原生字段：
 ```
 
 `endpoint` 与 `base_url` 必须且只能配置一个。`base_url` 不允许 query 或 fragment；
-OpenAI-compatible 默认拼接 `/v1/chat/completions`，Anthropic-compatible 默认拼接
+openai driver 默认拼接 `/v1/chat/completions`，anthropic driver 默认拼接
 `/v1/messages`。例如 `https://example.invalid/provider` 会保留 `/provider` 前缀。
 需要非默认路径或 query 时使用显式 `endpoint`。
 
-`headers` 只允许非 secret literal；认证值只从 `auth.from_env` 获取。直接 API
-Profile 与 API Session Turn 共同支持：
+`headers` 承载所有 HTTP header，值可用 `${VAR}` 引用环境变量；runtime 调用时从执行
+环境展开。openai driver 对裸 `Authorization` 值（不含空格）自动补 `Bearer ` 前缀，
+anthropic 不补。认证 header（`Authorization`、`x-api-key` 等）现在就写在 `headers`
+里。直接 API Profile 与 API Session Turn 共同支持：
 
 ```text
 共有: --max-tokens <n> --temperature <0..2>
@@ -258,11 +251,11 @@ payload。Driver 内部使用 Provider streaming 构建 canonical event，`--str
 
 Durable Agent 创建 Run 时会把完整 API Profile、Profile digest 和 concrete
 Provider driver semantic identity 冻结进 Store-private execution snapshot。
-`auth.from_env` 只保存变量名、header 和 scheme，resolved secret value 不持久化也
-不参与 digest；相同变量名下轮换 secret 不构成 drift。`base_url`、`endpoint`、
-model、literal headers、defaults、context、timeout、driver 或 `from_env` 名称变化
-都会改变 snapshot。这里的 current config 指当前执行进程已经加载的 Profile，
-不表示每轮从磁盘重新读取文件。
+headers 只保存 `${VAR}` 引用名（header 名 + 环境变量名），不保存 secret 值；runtime
+调用时从执行环境展开，resolved secret value 不持久化也不参与 digest；相同 `${VAR}`
+引用名下轮换 secret 不构成 drift。`base_url`、`endpoint`、model、headers、parameters、
+context、timeout、driver 或 `${VAR}` 引用名变化都会改变 snapshot。这里的 current
+config 指当前执行进程已经加载的 Profile，不表示每轮从磁盘重新读取文件。
 
 ## Session 与 Tmux
 

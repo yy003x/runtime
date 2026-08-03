@@ -67,13 +67,11 @@ func TestSessionInvocationAndProfileMismatchAreCLIValidation(t *testing.T) {
 	assertMachineErrorCode(t, err, contract.ErrorInvalidRequest)
 
 	profiles := sessionTestProfiles(t, runtimemodel.Profile{
-		Driver:   runtimemodel.DriverOpenAICompatible,
+		Driver:   runtimemodel.DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "fixture",
-		Auth: runtimemodel.Auth{
-			Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY",
-		},
-		Timeout: "1m",
+		Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
+		Timeout:  "1m",
 	})
 	for _, invocation := range []sessionInvocation{
 		{profileID: "missing"},
@@ -231,11 +229,9 @@ func TestSessionTokenLimitFlagIsProviderNeutral(t *testing.T) {
 		t.Fatal(err)
 	}
 	openAIProfiles := sessionTestProfiles(t, runtimemodel.Profile{
-		Driver:   runtimemodel.DriverOpenAICompatible,
+		Driver:   runtimemodel.DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions", Model: "fixture",
-		Auth: runtimemodel.Auth{
-			Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY",
-		},
+		Headers: map[string]string{"Authorization": "${MODEL_API_KEY}"},
 		Timeout: "1m",
 	})
 	if err := validateSessionProfileOptions(
