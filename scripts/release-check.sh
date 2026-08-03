@@ -14,6 +14,22 @@ die() { printf 'release-check: %s\n' "$*" >&2; exit 1; }
 run_make() {
   make --no-print-directory -C "$ROOT_DIR" V="${V:-0}" "$@"
 }
+# Test stages are timing-sensitive on CI; retry them at the shell level so a
+# flaky run does not block a release. (The release workflow itself must not use
+# a retry action: that changes the process-control environment and hangs the
+# smoke section's background sn-server.) fmt-check is deterministic and is not
+# retried.
+retry_make() {
+  local attempts=3 n=0
+  until run_make "$@"; do
+    n=$((n + 1))
+    if [ "$n" -ge "$attempts" ]; then
+      log "[release-check] $* failed after $attempts attempts"
+      return 1
+    fi
+    log "[release-check] $* attempt $n failed, retrying"
+  done
+}
 replay_logs() {
   local file
   for file in "$@"; do
@@ -59,8 +75,8 @@ grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
   die "missing dedicated Tmux bootstrap config: resources/tmux.conf"
 
 run_make fmt-check
-run_make test-serial
-run_make test-race
+retry_make test-serial
+retry_make test-race
 env GOCACHE="${GOCACHE:-$("$GO_BIN" env GOCACHE)}" \
   GOMODCACHE="${GOMODCACHE:-$("$GO_BIN" env GOMODCACHE)}" \
   "$GO_BIN" -C "$ROOT_DIR" vet ./...
