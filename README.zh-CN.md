@@ -1,4 +1,4 @@
-# Runtime vNext
+# SN Runtime
 
 [![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
@@ -15,7 +15,7 @@ durable 会话、长期 tmux 窗口、自主 agent 循环和后台队列统一�
 
 ## 这是什么
 
-Runtime vNext 是面向 AI 编程 Agent 与模型调用的自托管执行层。与其把会话状态、重试、
+SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与其把会话状态、重试、
 取消和工具循环硬塞进临时脚本，它提供了一组边界清晰、可组合的入口：
 
 - 用 typed Profile 包裹 **Codex / Claude** CLI，或直接调用**模型 API**
@@ -227,7 +227,7 @@ composition root；provider、SQLite、CLI、HTTP 和 builtin tool 都是 adapte
 | 文档 | 范围 |
 |---|---|
 | [sn-cli 详细使用手册](SN-CLI-USAGE.md) | 完整 CLI 命令、参数、场景与示例参考 |
-| [Runtime vNext 契约](docs/runtime-vnext-contract.md) | 顶层契约与架构 |
+| [SN Runtime 契约](docs/runtime-contract.md) | 顶层契约与架构 |
 | [CLI 路由契约](docs/cli-routing-contract.md) | 命令路由与 ID 规则 |
 | [配置契约](docs/configuration.md) | profile / runtime 配置 schema |
 | [Session 与 history 契约](docs/session-history-contract.md) | session 状态机与 crash 恢复 |

@@ -1,4 +1,4 @@
-# Runtime vNext 契约
+# SN Runtime 契约
 
 本文是 Runtime 的当前总契约。代码、严格 loader、SQLite schema 和测试与本文冲突
 时，必须在同一次变更中消除差异。

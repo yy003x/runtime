@@ -1,6 +1,6 @@
 # sn-cli 详细使用手册
 
-本文是 Runtime vNext 公开 CLI 的详细用户手册，覆盖 `sn-cli` 当前实现的命令、
+本文是 SN Runtime 公开 CLI 的详细用户手册，覆盖 `sn-cli` 当前实现的命令、
 子命令、参数、输入输出、状态、典型场景和示例。
 
 每条命令的详细说明统一按「语法 / 作用 / 参数 / 示例 / 适用场景」组织；需要快速
@@ -3579,7 +3579,7 @@ sn-cli __sn_tmux_helper --manifest ABS_PATH
 
 ## 16. 相关契约文档
 
-- [Runtime vNext 总契约](docs/runtime-vnext-contract.md)
+- [SN Runtime 总契约](docs/runtime-contract.md)
 - [CLI 路由契约](docs/cli-routing-contract.md)
 - [配置契约](docs/configuration.md)
 - [Session 与 History 契约](docs/session-history-contract.md)

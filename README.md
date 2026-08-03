@@ -1,4 +1,4 @@
-# Runtime vNext
+# SN Runtime
 
 [![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
@@ -14,7 +14,7 @@
 
 ## What it is
 
-Runtime vNext is a self-hosted execution layer for AI coding agents and model
+SN Runtime is a self-hosted execution layer for AI coding agents and model
 calls. Instead of bolting session state, retry, cancellation, and tool loops
 onto ad-hoc scripts, it gives you a small set of strict, composable entry
 points:
@@ -244,7 +244,7 @@ CLI, HTTP, and builtin tools are all adapters.
 | Document | Scope |
 |---|---|
 | [sn-cli reference](SN-CLI-USAGE.md) · 中文 | Full CLI command, argument, scenario, and example reference |
-| [Runtime vNext contract](docs/runtime-vnext-contract.md) | Top-level contracts and architecture |
+| [SN Runtime contract](docs/runtime-contract.md) | Top-level contracts and architecture |
 | [CLI routing contract](docs/cli-routing-contract.md) | Command routing and ID rules |
 | [Configuration contract](docs/configuration.md) | Profile / runtime config schema |
 | [Session & history contract](docs/session-history-contract.md) | Session state machine and crash recovery |

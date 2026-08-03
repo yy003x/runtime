@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-本仓库是 Runtime vNext 公开 CLI、HTTP、canonical model contract、Session 和
+本仓库是 SN Runtime 公开 CLI、HTTP、canonical model contract、Session 和
 durable Run 的权威实现。Workbench 等调用方只能通过公开入口集成，不直接读写
 `${SN_CLI_HOME:-~/.sn}`。
 
@@ -67,7 +67,7 @@ barrier 时，同步：
 - 对应领域测试；
 - `sn-cli --help`；
 - `README.md`；
-- `docs/runtime-vnext-contract.md` 及相关专题契约；
+- `docs/runtime-contract.md` 及相关专题契约；
 - install/self-update/release payload（如影响交付物）。
 
 ## 验证

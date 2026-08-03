@@ -1,4 +1,4 @@
-# Runtime vNext 配置
+# SN Runtime 配置
 
 ## Source 与 active home
 
