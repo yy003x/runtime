@@ -544,6 +544,10 @@ func TestAttachUsesRealTTYAndDetachesCleanly(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
+	// Attach spawns a real tmux client on the PTY. tmux needs a usable terminfo
+	// entry; CI runners have no TERM by default, which makes tmux fail with
+	// "open terminal failed: terminal does not support clear".
+	t.Setenv("TERM", "xterm-256color")
 	service := newTestService(t, true)
 	targetPath := buildTestTarget(t, service.home)
 	started := startTestTarget(

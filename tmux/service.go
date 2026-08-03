@@ -783,9 +783,11 @@ func (service *Service) socketExists() (bool, error) {
 			contract.ErrorConflict, "Tmux socket path is not a Unix socket",
 		)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if info.Mode().Perm()&0o077 != 0 {
 		return false, tmuxTransportError(
-			contract.ErrorConflict, "Tmux socket must have mode 0600",
+			contract.ErrorConflict,
+			"Tmux socket must not be accessible by group or other (mode=%o)",
+			info.Mode().Perm(),
 		)
 	}
 	if err := requireOwner(info, service.uid, service.config.SocketFile); err != nil {
@@ -1080,7 +1082,7 @@ func (service *Service) removeStoppedSocket(
 	if expected == nil || !os.SameFile(expected, current) ||
 		current.Mode()&os.ModeSymlink != 0 ||
 		current.Mode()&os.ModeSocket == 0 ||
-		current.Mode().Perm() != 0o600 {
+		current.Mode().Perm()&0o077 != 0 {
 		return tmuxTransportError(
 			contract.ErrorConflict,
 			"stopped Tmux socket identity changed",
