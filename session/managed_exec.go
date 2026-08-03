@@ -182,7 +182,14 @@ func (service *Service) executeManagedCLI(
 	}
 	_ = handshakeWriter.Close()
 	waited := make(chan error, 1)
-	go func() { waited <- command.Wait() }()
+	go func() {
+		// Drain stdout/stderr before Wait: os/exec closes the pipe read ends in
+		// Wait, so calling Wait before the copy goroutines finish can truncate
+		// the captured output (a timing race that intermittently produced empty
+		// canonical stdout under -race). Wait for the copies first.
+		copyGroup.Wait()
+		waited <- command.Wait()
+	}()
 	trigger := ""
 	var waitErr error
 	select {
