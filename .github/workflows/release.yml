@@ -22,6 +22,12 @@ jobs:
       - name: 安装 tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Validate and build release assets
+        # Direct run, not a retry action: release-check's smoke section manages
+        # background sn-server processes (fork + SIGKILL + wait), and wrapping
+        # it in nick-fields/retry changed the process-control environment enough
+        # to hang those waits on Linux CI. release-check is deterministic, so a
+        # plain step timeout is the stable choice.
+        timeout-minutes: 15
         run: make release-check SN_CLI_VERSION="${GITHUB_REF_NAME}"
       - name: Publish GitHub Release
         env:

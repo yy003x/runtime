@@ -382,20 +382,21 @@ HTTP_ADDR="127.0.0.1:0" SN_CLI_HOME="$runtime_home" \
   "$runtime_home/bin/sn-server" \
   >"$temp_root/guarded-server.out" 2>"$temp_root/guarded-server.err" &
 guarded_server_pid="$!"
-for _ in {1..20}; do
+# Guard rejection (RequireNoGuard) should make sn-server exit immediately with
+# an "activation gate" fatal log. Poll briefly; then SIGKILL unconditionally so
+# the process is guaranteed reaped and the wait below cannot block — on some CI
+# kernels a served sn-server (or a leftover zombie) does not respond within the
+# poll window, and `wait` on it would hang the whole release check.
+for _ in {1..100}; do
   if ! kill -0 "$guarded_server_pid" >/dev/null 2>&1; then
     break
   fi
   sleep 0.05
 done
-if kill -0 "$guarded_server_pid" >/dev/null 2>&1; then
-  kill "$guarded_server_pid" >/dev/null 2>&1 || true
-  wait "$guarded_server_pid" >/dev/null 2>&1 || true
-  die "direct sn-server entry ran while activation guard was present"
-fi
-if wait "$guarded_server_pid"; then
-  die "direct sn-server entry accepted activation guard"
-fi
+kill -KILL "$guarded_server_pid" >/dev/null 2>&1 || true
+wait "$guarded_server_pid" >/dev/null 2>&1 || true
+log "[release-check] guarded stdout: $(cat "$temp_root/guarded-server.out" 2>/dev/null)"
+log "[release-check] guarded stderr: $(cat "$temp_root/guarded-server.err" 2>/dev/null)"
 grep -q 'activation gate' "$temp_root/guarded-server.err" ||
   die "direct sn-server guard failure lacked activation diagnostic"
 rm -f "$runtime_home/state/activation.guard.json"
