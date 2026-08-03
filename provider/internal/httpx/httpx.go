@@ -30,6 +30,14 @@ func ReadLimited(reader io.Reader, limit int64) ([]byte, error) {
 	return value, nil
 }
 
+// ProviderError maps a non-2xx HTTP response to a provider-neutral
+// contract.RuntimeError. Canonical status mapping:
+//
+//	401 → authentication_failed (not retryable)
+//	403 → permission_denied     (not retryable)
+//	429 → rate_limited           (retryable; Retry-After honored via RetryAfterMS)
+//	5xx → provider_unavailable   (retryable)
+//	any other status → protocol_error (not retryable)
 func ProviderError(provider string, status int, header http.Header, body []byte) *contract.RuntimeError {
 	code := contract.ErrorProtocol
 	retryable := false
@@ -58,6 +66,13 @@ func ProviderError(provider string, status int, header http.Header, body []byte)
 	}
 }
 
+// NetworkError maps a transport or context error to a provider-neutral
+// contract.RuntimeError. Canonical mapping:
+//
+//	context.Canceled                       → cancelled            (not retryable)
+//	context.DeadlineExceeded               → timeout               (retryable)
+//	net.Error whose Timeout() is true      → timeout               (retryable)
+//	any other network/transport error      → provider_unavailable  (retryable)
 func NetworkError(provider string, err error) *contract.RuntimeError {
 	code := contract.ErrorProviderUnavailable
 	if errors.Is(err, context.Canceled) {
@@ -77,6 +92,9 @@ func NetworkError(provider string, err error) *contract.RuntimeError {
 	}
 }
 
+// ProtocolError returns a non-retryable protocol_error for an HTTP-completed
+// but unusable provider response (for example a malformed body that cannot be
+// decoded into the canonical model contract).
 func ProtocolError(provider, message string) *contract.RuntimeError {
 	return &contract.RuntimeError{
 		Code: contract.ErrorProtocol, Phase: contract.PhaseProvider,

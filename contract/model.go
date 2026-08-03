@@ -47,6 +47,10 @@ const (
 	EventRunSettled             EventType = "run.settled"
 )
 
+// ErrorCode is the provider-neutral error classification used across the
+// Runtime contract. Provider drivers (provider/internal/httpx) map HTTP status
+// codes and transport/context errors into these codes; the canonical mapping
+// is documented on httpx.ProviderError and httpx.NetworkError.
 type ErrorCode string
 
 const (
