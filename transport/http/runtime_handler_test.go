@@ -885,11 +885,11 @@ func newRuntimeHandlerTestFixture(
 	}
 	modelCatalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver:   model.DriverOpenAICompatible,
+			Driver:   model.DriverOpenAI,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			Model:    "fixture",
-			Auth: model.Auth{
-				Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
+			Headers: map[string]string{
+				"Authorization": "${KEY}",
 			},
 			Timeout: "1m",
 		},

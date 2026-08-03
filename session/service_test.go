@@ -47,7 +47,7 @@ func TestValidateRunRequestRejectsNonFiniteTemperature(t *testing.T) {
 func TestValidateRunRequestRejectsInvalidCommonModelOptions(t *testing.T) {
 	entry := profile.Entry{
 		ID: "api", Kind: profile.KindModel,
-		Model: &model.Profile{Driver: model.DriverOpenAICompatible},
+		Model: &model.Profile{Driver: model.DriverOpenAI},
 	}
 	invalidTopP := 1.1
 	for name, options := range map[string]contract.GenerateOptions{
@@ -69,7 +69,7 @@ func TestValidateRunRequestRejectsOutputLimitWithoutInputBudget(t *testing.T) {
 	maxOutput := int64(32_767)
 	entry := profile.Entry{
 		ID: "api", Kind: profile.KindModel,
-		Model: &model.Profile{Driver: model.DriverAnthropicCompatible},
+		Model: &model.Profile{Driver: model.DriverAnthropic},
 	}
 	err := validateRunRequest(RunRequest{
 		ProfileID: "api",
@@ -89,8 +89,8 @@ func TestBuildProjectionUsesConservativeContextBudget(t *testing.T) {
 	entry := profile.Entry{
 		ID: "api", Kind: profile.KindModel,
 		Model: &model.Profile{
-			Driver: model.DriverAnthropicCompatible,
-			Defaults: model.Defaults{
+			Driver: model.DriverAnthropic,
+			Parameters: model.Parameters{
 				MaxTokens: &profileDefault,
 			},
 		},
@@ -1491,11 +1491,11 @@ func newTestService(
 		t.Fatal(err)
 	}
 	modelProfile := model.Profile{
-		Driver:   model.DriverOpenAICompatible,
+		Driver:   model.DriverOpenAI,
 		Endpoint: "https://example.test/v1/chat/completions",
 		Model:    "fixture",
-		Auth: model.Auth{
-			Header: "Authorization", Scheme: "Bearer", FromEnv: "FIXTURE_KEY",
+		Headers: map[string]string{
+			"Authorization": "${FIXTURE_KEY}",
 		},
 		Timeout: "1m",
 	}

@@ -6749,12 +6749,11 @@ func buildAgentProfiles(t *testing.T, withCommand bool) *profile.Catalog {
 
 func testAgentModelProfile() model.Profile {
 	return model.Profile{
-		Driver:   model.DriverOpenAICompatible,
+		Driver:   model.DriverOpenAI,
 		Endpoint: "https://example.test/v1/chat/completions",
 		Model:    "fixture",
-		Auth: model.Auth{
-			Header: "Authorization", Scheme: "Bearer",
-			FromEnv: "FIXTURE_KEY",
+		Headers: map[string]string{
+			"Authorization": "${FIXTURE_KEY}",
 		},
 		Timeout: "1m",
 	}
@@ -6780,7 +6779,7 @@ func testAgentModelExecutionSnapshot(
 		Profile:       profile,
 		ProfileDigest: "sha256:" + hex.EncodeToString(sum[:]),
 		DriverIdentity: model.DriverExecutionIdentity{
-			Driver:                model.DriverOpenAICompatible,
+			Driver:                model.DriverOpenAI,
 			Implementation:        "runtime.run-test.agent-model",
 			ImplementationVersion: 1,
 		},

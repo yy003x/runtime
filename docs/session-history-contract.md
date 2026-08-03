@@ -152,7 +152,7 @@ ID 不复用。每个 Turn 可选择 API 或 CLI Profile；executor/provider 只
 - API Profile 未声明 `context.window_tokens` 时使用 `32768` 保守窗口并记录
   `capacity_source=conservative_default`；显式窗口记录为 `profile`；
 - request options 使用 Provider-neutral `max_output_tokens`、`temperature`、`top_p`
-  和 `stop_sequences`；Profile 的统一 `defaults.max_tokens` 由 adapter 转为 wire 字段；
+  和 `stop_sequences`；Profile 的统一 `parameters.max_tokens` 由 adapter 转为 wire 字段；
 - 有效输出预留取 `reserved_output_tokens`、Profile 默认输出上限和请求级输出上限的
   最大值；默认预留为 `8192`，输入预算至少保留 `2` 个 Token；
 - overflow Turn 仍记录 user input、failed 状态和 typed error；
@@ -195,7 +195,7 @@ API Session 返回 canonical tool call 后：
 
 Session 不执行 canonical tool。CLI Provider 进程内部的工具行为是 opaque executor
 行为，不进入上述协议。`is_error` 同时属于 canonical tool Message，下一 Turn
-投影到 Anthropic-compatible Provider 时必须保留为 `tool_result.is_error`。
+投影到 anthropic driver 时必须保留为 `tool_result.is_error`。
 
 ## Reconciliation
 
@@ -241,8 +241,8 @@ private payload 不得出现在 Run query/result/event、Session export、human 
 
 Agent Run 复用同一 Store-private `private_request_json` 列保存自己的 versioned
 execution snapshot，但不复用 CLI Session snapshot shape。Agent payload 冻结
-non-secret model/Provider/tool identity 和可选 Session digests；resolved
-`auth.from_env` value 同样不持久化。两种 private payload 都必须 strict decode、
+non-secret model/Provider/tool identity 和可选 Session digests；headers 只保存
+`${VAR}` 引用名，resolved secret value 同样不持久化。两种 private payload 都必须 strict decode、
 canonical/digest 自校验且受大小限制，也都由 Go 字段 `json:"-"` 阻止公开序列化。
 
 同一 `session_id` 同时只允许一个 queued/running/paused/needs-reconciliation

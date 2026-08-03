@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/yy003x/runtime/contract"
@@ -90,8 +91,8 @@ func NewService(
 }
 
 // ExecutionSnapshot freezes the non-secret API Profile and the semantic
-// identity of the concrete driver selected by this Service. It deliberately
-// does not resolve auth.from_env.
+// identity of the concrete driver selected by this Service. Header ${VAR}
+// references are kept unresolved so no secret value enters the snapshot.
 func (service *Service) ExecutionSnapshot(
 	profileID string,
 ) (ExecutionSnapshot, error) {
@@ -158,7 +159,7 @@ func (service *Service) GenerateStream(
 			contract.ErrorInternal, contract.PhaseProfile, "model driver is unavailable",
 		)
 	}
-	resolved, secret, err := service.catalog.resolve(request.ModelProfile, service.getenv)
+	resolved, secrets, err := service.catalog.resolve(request.ModelProfile, service.getenv)
 	if err != nil {
 		return contract.ModelResult{}, runtimeError(
 			contract.ErrorAuthenticationFailed, contract.PhaseProfile, err.Error(),
@@ -175,25 +176,25 @@ func (service *Service) GenerateStream(
 		value := *tokenLimit
 		input.Options.MaxOutputTokens = &value
 	}
-	if input.Options.Temperature == nil && profile.Defaults.Temperature != nil {
-		value := *profile.Defaults.Temperature
+	if input.Options.Temperature == nil && profile.Parameters.Temperature != nil {
+		value := *profile.Parameters.Temperature
 		input.Options.Temperature = &value
 	}
-	if input.Options.TopP == nil && profile.Defaults.TopP != nil {
-		value := *profile.Defaults.TopP
+	if input.Options.TopP == nil && profile.Parameters.TopP != nil {
+		value := *profile.Parameters.TopP
 		input.Options.TopP = &value
 	}
 	if len(input.Options.StopSequences) == 0 &&
-		len(profile.Defaults.StopSequences) > 0 {
+		len(profile.Parameters.StopSequences) > 0 {
 		input.Options.StopSequences = append(
-			[]string(nil), profile.Defaults.StopSequences...,
+			[]string(nil), profile.Parameters.StopSequences...,
 		)
 	}
 	callContext, cancel := context.WithTimeout(ctx, time.Duration(resolved.Timeout))
 	defer cancel()
 
 	state := streamState{
-		sink: sink, secret: secret, expected: 1,
+		sink: sink, secrets: secrets, expected: 1,
 		toolCalls: make(map[string]string),
 	}
 	result, callError := driver.Stream(callContext, resolved, input, state.accept)
@@ -206,7 +207,7 @@ func (service *Service) GenerateStream(
 		)
 	}
 	if callError != nil {
-		return contract.ModelResult{}, redactRuntimeError(callError, secret)
+		return contract.ModelResult{}, redactRuntimeError(callError, secrets)
 	}
 	if callContext.Err() != nil {
 		code := contract.ErrorCancelled
@@ -215,7 +216,7 @@ func (service *Service) GenerateStream(
 		}
 		return contract.ModelResult{}, runtimeError(code, contract.PhaseProvider, callContext.Err().Error())
 	}
-	result, err = redactValue(result, secret)
+	result, err = redactValue(result, secrets)
 	if err != nil {
 		return contract.ModelResult{}, runtimeError(
 			contract.ErrorInternal, contract.PhaseProvider, "cannot sanitize model result",
@@ -241,7 +242,7 @@ func (service *Service) GenerateStream(
 
 type streamState struct {
 	sink             contract.EventSink
-	secret           string
+	secrets          []string
 	expected         uint64
 	started          bool
 	pendingCompleted *contract.Event
@@ -254,7 +255,7 @@ func (state *streamState) accept(event contract.Event) error {
 	if state.failure != nil || state.sinkFailure != nil {
 		return fmt.Errorf("model stream is already failed")
 	}
-	event, err := redactValue(event, state.secret)
+	event, err := redactValue(event, state.secrets)
 	if err != nil {
 		state.failure = runtimeError(
 			contract.ErrorInternal, contract.PhaseProvider, "cannot sanitize model event",
@@ -439,11 +440,11 @@ func runtimeError(
 	}
 }
 
-func redactRuntimeError(value *contract.RuntimeError, secret string) *contract.RuntimeError {
+func redactRuntimeError(value *contract.RuntimeError, secrets []string) *contract.RuntimeError {
 	if value == nil {
 		return nil
 	}
-	result, err := redactValue(*value, secret)
+	result, err := redactValue(*value, secrets)
 	if err != nil {
 		return runtimeError(
 			contract.ErrorInternal, contract.PhaseProvider, "cannot sanitize provider error",
@@ -459,8 +460,8 @@ func redactRuntimeError(value *contract.RuntimeError, secret string) *contract.R
 	return &result
 }
 
-func redactValue[T any](value T, secret string) (T, error) {
-	if secret == "" {
+func redactValue[T any](value T, secrets []string) (T, error) {
+	if len(secrets) == 0 {
 		return cloneValue(value)
 	}
 	data, err := json.Marshal(value)
@@ -468,15 +469,24 @@ func redactValue[T any](value T, secret string) (T, error) {
 		var zero T
 		return zero, err
 	}
-	encodedSecret, err := json.Marshal(secret)
-	if err != nil {
-		var zero T
-		return zero, err
+	ordered := append([]string(nil), secrets...)
+	sort.Slice(ordered, func(left, right int) bool {
+		return len(ordered[left]) > len(ordered[right])
+	})
+	for _, secret := range ordered {
+		if secret == "" {
+			continue
+		}
+		encodedSecret, err := json.Marshal(secret)
+		if err != nil {
+			var zero T
+			return zero, err
+		}
+		if len(encodedSecret) >= 2 {
+			data = bytes.ReplaceAll(data, encodedSecret[1:len(encodedSecret)-1], []byte("[REDACTED]"))
+		}
+		data = bytes.ReplaceAll(data, []byte(secret), []byte("[REDACTED]"))
 	}
-	if len(encodedSecret) >= 2 {
-		data = bytes.ReplaceAll(data, encodedSecret[1:len(encodedSecret)-1], []byte("[REDACTED]"))
-	}
-	data = bytes.ReplaceAll(data, []byte(secret), []byte("[REDACTED]"))
 	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
 		var zero T

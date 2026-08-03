@@ -87,13 +87,11 @@ func TestCanonicalScenarioMatchesGoAndHTTP(t *testing.T) {
 func newCanonicalService(t *testing.T, driver model.Driver) *model.Service {
 	t.Helper()
 	profile := model.Profile{
-		Driver:   model.DriverOpenAICompatible,
+		Driver:   model.DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "fixture",
-		Auth: model.Auth{
-			Header: "Authorization", Scheme: "Bearer", FromEnv: "FAUX_MODEL_KEY",
-		},
-		Timeout: "1m",
+		Headers:  map[string]string{"Authorization": "${FAUX_MODEL_KEY}"},
+		Timeout:  "1m",
 	}
 	catalog, err := model.NewCatalog(map[string]model.Profile{"fixture": profile})
 	if err != nil {
@@ -101,7 +99,7 @@ func newCanonicalService(t *testing.T, driver model.Driver) *model.Service {
 	}
 	service, err := model.NewService(
 		catalog,
-		map[model.DriverName]model.Driver{model.DriverOpenAICompatible: driver},
+		map[model.DriverName]model.Driver{model.DriverOpenAI: driver},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			return "fixture-secret", name == "FAUX_MODEL_KEY"
 		}},

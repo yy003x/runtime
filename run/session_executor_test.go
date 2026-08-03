@@ -216,13 +216,11 @@ func newSessionExecutorProfiles(
 	}
 	models, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver:   model.DriverOpenAICompatible,
+			Driver:   model.DriverOpenAI,
 			Endpoint: endpoint,
 			Model:    "fixture",
-			Auth: model.Auth{
-				Header:  "Authorization",
-				Scheme:  "Bearer",
-				FromEnv: "KEY",
+			Headers: map[string]string{
+				"Authorization": "${KEY}",
 			},
 			Timeout: "1m",
 		},

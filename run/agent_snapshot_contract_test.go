@@ -166,14 +166,13 @@ type snapshotContractFixture struct {
 func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 	t.Helper()
 	modelProfile := model.Profile{
-		Driver:   model.DriverOpenAICompatible,
+		Driver:   model.DriverOpenAI,
 		Endpoint: "https://example.test/v1/chat/completions",
 		Model:    "snapshot-fixture",
-		Auth: model.Auth{
-			Header: "Authorization", Scheme: "Bearer",
-			FromEnv: "SN_SNAPSHOT_TEST_TOKEN",
+		Headers: map[string]string{
+			"Authorization": "${SN_SNAPSHOT_TEST_TOKEN}",
+			"X-Fixture":     "snapshot",
 		},
-		Headers: map[string]string{"X-Fixture": "snapshot"},
 		Timeout: "1m",
 	}
 	modelCatalog, err := model.NewCatalog(map[string]model.Profile{
@@ -194,7 +193,7 @@ func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 	}
 	driver := &snapshotContractDriver{
 		identity: model.DriverExecutionIdentity{
-			Driver:                model.DriverOpenAICompatible,
+			Driver:                model.DriverOpenAI,
 			Implementation:        "runtime.run.snapshot-contract-test",
 			ImplementationVersion: 1,
 		},
@@ -204,7 +203,7 @@ func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 	models, err := model.NewService(
 		modelCatalog,
 		map[model.DriverName]model.Driver{
-			model.DriverOpenAICompatible: driver,
+			model.DriverOpenAI: driver,
 		},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			secretReads++

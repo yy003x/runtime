@@ -8,7 +8,7 @@ import (
 
 func TestDriverExecutionIdentity(t *testing.T) {
 	identity := (&Driver{}).ExecutionIdentity()
-	if identity.Driver != model.DriverOpenAICompatible ||
+	if identity.Driver != model.DriverOpenAI ||
 		identity.Implementation != executionImplementation ||
 		identity.ImplementationVersion != executionImplementationVersion {
 		t.Fatalf("identity=%#v", identity)

@@ -32,7 +32,7 @@ type DriverExecutionIdentity struct {
 
 func (identity DriverExecutionIdentity) Validate() error {
 	switch identity.Driver {
-	case DriverOpenAICompatible, DriverAnthropicCompatible:
+	case DriverOpenAI, DriverAnthropic:
 	default:
 		return fmt.Errorf(
 			"driver execution identity has unsupported driver %q",
@@ -57,9 +57,9 @@ func (identity DriverExecutionIdentity) Validate() error {
 }
 
 // ExecutionSnapshot is the canonical, non-secret description of the API
-// Profile and concrete provider adapter selected by a model Service. Auth
-// contains only the configured environment-variable name; its value is never
-// resolved into this snapshot.
+// Profile and concrete provider adapter selected by a model Service. Header
+// ${VAR} references are preserved verbatim; no secret value is ever resolved
+// into this snapshot.
 type ExecutionSnapshot struct {
 	SchemaVersion  int                     `json:"schema_version"`
 	ProfileID      string                  `json:"profile_id"`

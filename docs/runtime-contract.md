@@ -78,21 +78,21 @@ leading global `--json` 不包装其原生输出。
 - finish reason、usage、request ID；
 - auth、HTTP 和协议错误归一化。
 
-Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。secret 只从
-`auth.from_env` 解析，不进入 Profile output、event 或数据库。
+Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。secret 通过
+headers 的 `${VAR}` 引用从执行环境展开，不进入 Profile output、event 或数据库。
 
-Profile 默认输出上限统一配置为 `defaults.max_tokens`，CLI override 统一为
-`--max-tokens`。Canonical request 使用 `max_output_tokens`；OpenAI-compatible
-Driver 将它映射为 wire `max_completion_tokens`，Anthropic-compatible Driver 映射为
+Profile 默认输出上限统一配置为 `parameters.max_tokens`，CLI override 统一为
+`--max-tokens`。Canonical request 使用 `max_output_tokens`；openai driver
+将它映射为 wire `max_completion_tokens`，anthropic driver 映射为
 wire `max_tokens`。共有的可选 `temperature`、`top_p`、`stop_sequences` 同样先进入
 canonical request，其中 OpenAI 将停止序列映射为 `stop`；未配置时 adapter 不发送，
 目标模型不保证支持每个可选参数。Canonical tool Message 的
-`is_error` 必须保存在 canonical tool Message；Anthropic-compatible Driver 将其映射到
+`is_error` 必须保存在 canonical tool Message；anthropic driver 将其映射到
 `tool_result.is_error`，不能只保留在 lifecycle event 中。
 
 API Profile 必须在完整 `endpoint` 与 `base_url` 中二选一。`endpoint` 原样请求；
-`base_url` 保留已有路径前缀，OpenAI-compatible 追加 `/v1/chat/completions`，
-Anthropic-compatible 追加 `/v1/messages`。`base_url` 不接受 query 或 fragment；
+`base_url` 保留已有路径前缀，openai driver 追加 `/v1/chat/completions`，
+anthropic driver 追加 `/v1/messages`。`base_url` 不接受 query 或 fragment；
 非默认路径使用显式 `endpoint`。
 
 Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作为 Provider
@@ -246,10 +246,10 @@ request 和可选 Session request identity。Provider/tool implementation versio
 `execution_contract_version` 都是人工维护的执行语义版本，不是 build、release、
 Git commit、CLI `contract_version` 或 LoopState schema version。
 
-API Profile 只把 `auth.from_env` 的变量名、header 和 scheme 纳入 snapshot；
-resolved secret value 不进入 snapshot、digest、event 或 Store。每次新的 Provider
-call 仍从执行进程当前环境解析该变量，因此相同 `from_env` 名称下的 secret value
-轮换不构成 execution drift；修改变量名或其它 Profile literal 则构成 drift。
+API Profile 只把 headers 中的 `${VAR}` 引用名（header 名 + 环境变量名）纳入
+snapshot；resolved secret value 不进入 snapshot、digest、event 或 Store。每次新的
+Provider call 仍从执行进程当前环境展开该引用，因此相同 `${VAR}` 引用名下的 secret
+value 轮换不构成 execution drift；修改引用名或其它 Profile literal 则构成 drift。
 
 fresh submit 和 Retry 在创建新 Run 前比较完整 current execution snapshot。执行时
 还在首次 Session mutation、每个新 model call、fresh tool preparation 以及
@@ -336,7 +336,7 @@ queued → running ─┬→ paused → queued
 `retry` 只接受 terminal Run，创建新 Run 并以 `retry_of` 关联。Agent Retry
 byte-for-byte 保留原 `private_request_json`，不根据当前配置重新冻结；创建新 Run
 前必须先把 current execution snapshot 与原 snapshot 完整比较，发生 drift 时拒绝
-且不产生新 Run。相同 `auth.from_env` 名称下的 secret value 轮换不参与该比较。
+且不产生新 Run。相同 `${VAR}` 引用名下的 secret value 轮换不参与该比较。
 terminal publish barrier 必须在一个 SQLite transaction 内提交 result/error、
 terminal event/state、`run.settled`、settled sequence 和 queue removal。settled
 后禁止追加 event。

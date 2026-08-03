@@ -24,7 +24,7 @@ func (driver *testDriver) ExecutionIdentity() DriverExecutionIdentity {
 		return *driver.identity
 	}
 	return DriverExecutionIdentity{
-		Driver:                DriverOpenAICompatible,
+		Driver:                DriverOpenAI,
 		Implementation:        "runtime.model.test-driver",
 		ImplementationVersion: 1,
 	}
@@ -334,8 +334,8 @@ func TestServiceValidatesToolCallLifecycle(t *testing.T) {
 func newTestService(t *testing.T, driver Driver, secret string) *Service {
 	t.Helper()
 	profile := Profile{
-		Driver: DriverOpenAICompatible, Endpoint: "https://example.invalid/faux", Model: "fixture",
-		Auth:    Auth{Header: "Authorization", Scheme: "Bearer", FromEnv: "MODEL_API_KEY"},
+		Driver: DriverOpenAI, Endpoint: "https://example.invalid/faux", Model: "fixture",
+		Headers: map[string]string{"Authorization": "${MODEL_API_KEY}"},
 		Timeout: "1m",
 	}
 	catalog, err := NewCatalog(map[string]Profile{"fixture": profile})
@@ -344,7 +344,7 @@ func newTestService(t *testing.T, driver Driver, secret string) *Service {
 	}
 	service, err := NewService(
 		catalog,
-		map[DriverName]Driver{DriverOpenAICompatible: driver},
+		map[DriverName]Driver{DriverOpenAI: driver},
 		ServiceOptions{Getenv: func(name string) (string, bool) {
 			return secret, name == "MODEL_API_KEY"
 		}},

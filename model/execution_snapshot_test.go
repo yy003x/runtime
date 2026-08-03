@@ -13,17 +13,14 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	topP := 0.9
 	summaryEnabled := true
 	profile := Profile{
-		Driver:   DriverOpenAICompatible,
+		Driver:   DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "snapshot-model",
-		Auth: Auth{
-			Header: "Authorization", Scheme: "Bearer",
-			FromEnv: "SNAPSHOT_MODEL_SECRET",
-		},
 		Headers: map[string]string{
-			"X-Zeta": "z", "X-Alpha": "a",
+			"Authorization": "${SNAPSHOT_MODEL_SECRET}",
+			"X-Zeta":        "z", "X-Alpha": "a",
 		},
-		Defaults: Defaults{
+		Parameters: Parameters{
 			MaxTokens:     &maxTokens,
 			Temperature:   &temperature,
 			TopP:          &topP,
@@ -44,7 +41,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	service, err := NewService(
 		catalog,
 		map[DriverName]Driver{
-			DriverOpenAICompatible: &testDriver{},
+			DriverOpenAI: &testDriver{},
 		},
 		ServiceOptions{Getenv: func(string) (string, bool) {
 			getenvCalls++
@@ -60,7 +57,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 		t.Fatal(err)
 	}
 	if getenvCalls != 0 {
-		t.Fatalf("ExecutionSnapshot resolved auth environment %d times", getenvCalls)
+		t.Fatalf("ExecutionSnapshot resolved header environment %d times", getenvCalls)
 	}
 	if err := first.Validate(); err != nil {
 		t.Fatal(err)
@@ -77,13 +74,13 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 		t.Fatalf("snapshot exposed secret value: %s", firstJSON)
 	}
 	if !strings.Contains(string(firstJSON), "SNAPSHOT_MODEL_SECRET") {
-		t.Fatalf("snapshot omitted auth environment name: %s", firstJSON)
+		t.Fatalf("snapshot omitted header environment reference: %s", firstJSON)
 	}
 
 	first.Profile.Headers["X-Alpha"] = "mutated"
-	*first.Profile.Defaults.MaxTokens = 1
-	*first.Profile.Defaults.TopP = 0.1
-	first.Profile.Defaults.StopSequences[0] = "mutated"
+	*first.Profile.Parameters.MaxTokens = 1
+	*first.Profile.Parameters.TopP = 0.1
+	first.Profile.Parameters.StopSequences[0] = "mutated"
 	*first.Profile.Context.SummaryEnabled = false
 	second, err := service.ExecutionSnapshot("snapshot")
 	if err != nil {
@@ -98,9 +95,9 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 		t.Fatal(err)
 	}
 	if second.Profile.Headers["X-Alpha"] != "a" ||
-		*second.Profile.Defaults.MaxTokens != 2048 ||
-		*second.Profile.Defaults.TopP != 0.9 ||
-		second.Profile.Defaults.StopSequences[0] != "END" ||
+		*second.Profile.Parameters.MaxTokens != 2048 ||
+		*second.Profile.Parameters.TopP != 0.9 ||
+		second.Profile.Parameters.StopSequences[0] != "END" ||
 		!*second.Profile.Context.SummaryEnabled {
 		t.Fatalf("snapshot shares mutable Profile storage: %#v", second.Profile)
 	}
@@ -113,7 +110,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 		)
 	}
 	if getenvCalls != 0 {
-		t.Fatalf("ExecutionSnapshot resolved auth environment %d times", getenvCalls)
+		t.Fatalf("ExecutionSnapshot resolved header environment %d times", getenvCalls)
 	}
 }
 
@@ -133,7 +130,7 @@ func TestExecutionSnapshotStrictlyRejectsTampering(t *testing.T) {
 			snapshot.ProfileDigest = "sha256:forged"
 		},
 		"driver": func(snapshot *ExecutionSnapshot) {
-			snapshot.DriverIdentity.Driver = DriverAnthropicCompatible
+			snapshot.DriverIdentity.Driver = DriverAnthropic
 		},
 		"implementation": func(snapshot *ExecutionSnapshot) {
 			snapshot.DriverIdentity.Implementation = " invalid "
@@ -160,14 +157,11 @@ func TestExecutionSnapshotStrictlyRejectsTampering(t *testing.T) {
 
 func TestNewServiceRequiresMatchingDriverExecutionIdentity(t *testing.T) {
 	profile := Profile{
-		Driver:   DriverOpenAICompatible,
+		Driver:   DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "fixture",
-		Auth: Auth{
-			Header: "Authorization", Scheme: "Bearer",
-			FromEnv: "MODEL_API_KEY",
-		},
-		Timeout: "1m",
+		Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
+		Timeout:  "1m",
 	}
 	catalog, err := NewCatalog(map[string]Profile{"fixture": profile})
 	if err != nil {
@@ -175,16 +169,16 @@ func TestNewServiceRequiresMatchingDriverExecutionIdentity(t *testing.T) {
 	}
 	for name, identity := range map[string]DriverExecutionIdentity{
 		"wrong_driver": {
-			Driver:                DriverAnthropicCompatible,
+			Driver:                DriverAnthropic,
 			Implementation:        "runtime.model.test-driver",
 			ImplementationVersion: 1,
 		},
 		"missing_implementation": {
-			Driver:                DriverOpenAICompatible,
+			Driver:                DriverOpenAI,
 			ImplementationVersion: 1,
 		},
 		"invalid_version": {
-			Driver:         DriverOpenAICompatible,
+			Driver:         DriverOpenAI,
 			Implementation: "runtime.model.test-driver",
 		},
 	} {
@@ -193,7 +187,7 @@ func TestNewServiceRequiresMatchingDriverExecutionIdentity(t *testing.T) {
 			if _, err := NewService(
 				catalog,
 				map[DriverName]Driver{
-					DriverOpenAICompatible: driver,
+					DriverOpenAI: driver,
 				},
 				ServiceOptions{},
 			); err == nil {

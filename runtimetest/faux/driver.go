@@ -29,7 +29,7 @@ func NewDriver(provider *Provider) (*Driver, error) {
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver:                model.DriverOpenAICompatible,
+		Driver:                model.DriverOpenAI,
 		Implementation:        executionImplementation,
 		ImplementationVersion: executionImplementationVersion,
 	}

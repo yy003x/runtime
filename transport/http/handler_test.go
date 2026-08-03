@@ -57,11 +57,11 @@ func (stubGenerator) ExecutionSnapshot(
 		)
 	}
 	profile := model.Profile{
-		Driver:   model.DriverOpenAICompatible,
+		Driver:   model.DriverOpenAI,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "fixture",
-		Auth: model.Auth{
-			Header: "Authorization", Scheme: "Bearer", FromEnv: "KEY",
+		Headers: map[string]string{
+			"Authorization": "${KEY}",
 		},
 		Timeout: "1m",
 	}
@@ -76,7 +76,7 @@ func (stubGenerator) ExecutionSnapshot(
 		Profile:       profile,
 		ProfileDigest: "sha256:" + hex.EncodeToString(sum[:]),
 		DriverIdentity: model.DriverExecutionIdentity{
-			Driver:                model.DriverOpenAICompatible,
+			Driver:                model.DriverOpenAI,
 			Implementation:        "transport.http.stub-generator",
 			ImplementationVersion: 1,
 		},
