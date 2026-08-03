@@ -154,8 +154,8 @@ API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`�
 | `timeout` | 必填 | 单次 Provider attempt 超时，Go duration，范围 `(0, 24h]` |
 | `context.window_tokens` | 可选 | Session 本地总上下文容量；省略或 `0` 时为 `32768` |
 | `context.reserved_output_tokens` | 可选 | Session 本地输出预留；省略或 `0` 时基础默认值为 `8192` |
-| `context.keep_recent_turns` | 可选；当前未生效 | 当前只校验、冻结和参与 digest，Session 投影尚未据此裁剪历史 |
-| `context.summary_enabled` | 可选；当前未生效 | 当前只解析、冻结和参与 digest，Session 尚未执行历史摘要 |
+| `context.keep_recent_turns` | 可选 | 预留字段：仅校验、冻结并参与 digest，当前不影响 Session 历史裁剪 |
+| `context.summary_enabled` | 可选 | 预留字段：仅解析、冻结并参与 digest，当前不触发历史摘要 |
 
 当前 source API Profile 的字段使用情况：
 
@@ -177,8 +177,8 @@ API Profile 只支持下表字段；配置使用严格 JSON，不能加入 `//`�
 | `timeout` | `50m` | `5m` |
 | `context.window_tokens` | `1048576` | 未设置；使用保守默认 `32768` |
 | `context.reserved_output_tokens` | `16384` | 未设置；受默认输出上限抬高，有效值为 `16384` |
-| `context.keep_recent_turns` | 未设置，且当前投影逻辑未消费 | 未设置，且当前投影逻辑未消费 |
-| `context.summary_enabled` | 未设置，且当前摘要逻辑未实现 | 未设置，且当前摘要逻辑未实现 |
+| `context.keep_recent_turns` | 未设置（预留字段） | 未设置（预留字段） |
+| `context.summary_enabled` | 未设置（预留字段） | 未设置（预留字段） |
 
 ```json
 {
@@ -341,7 +341,7 @@ current snapshot 必须完整相等，但恢复 durable terminal/effect、取消
 
 contract v3 使用 Session fact `schema_version=2` 和 SQLite
 `PRAGMA user_version=4`。Runtime 只读取这组完整 schema，不做版本推断、字段补齐或
-自动 migration。普通 network/archive 安装前需要：
+自动 migration。安装前需要：
 
 1. 停止 `sn-server` 和所有 `sn-cli tmux` managed window；
 2. 确认 active Profile、Session fact 和 `state/runtime.db*` 都符合当前 schema；
