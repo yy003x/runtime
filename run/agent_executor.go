@@ -18,7 +18,7 @@ type AgentExecutor struct {
 	Profiles *profile.Catalog
 	Model    model.Generator
 	Tools    agent.ToolExecutor
-	Store    Store
+	Store    AgentStore
 	Sessions *session.Service
 	Now      func() time.Time
 }

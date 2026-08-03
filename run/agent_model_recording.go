@@ -18,7 +18,7 @@ import (
 type recordingModel struct {
 	runID        string
 	model        model.Generator
-	store        Store
+	store        ModelEffectStore
 	beforeEffect agent.PreEffectGate
 
 	mu       sync.Mutex

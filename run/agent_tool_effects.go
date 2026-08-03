@@ -13,7 +13,7 @@ import (
 )
 
 type durableEffects struct {
-	store Store
+	store ToolEffectStore
 }
 
 func (effects *durableEffects) Lookup(

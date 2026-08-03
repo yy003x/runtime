@@ -256,11 +256,16 @@ type ReconcileExecutor interface {
 	Reconcile(context.Context, Record) ExecutionOutcome
 }
 
-type Store interface {
-	Create(context.Context, string, Request) (Record, error)
+// RunReader exposes the read-only Run record surface.
+type RunReader interface {
 	Get(context.Context, string) (Record, error)
 	PrivateRequest(context.Context, string) (json.RawMessage, error)
 	List(context.Context, ListFilter) ([]Record, error)
+	Resumes(context.Context, string) ([]ResumeRecord, error)
+}
+
+// LeaseManager owns queue claim and cancellation reservation bookkeeping.
+type LeaseManager interface {
 	CancellationReservations(
 		context.Context,
 		string,
@@ -268,23 +273,43 @@ type Store interface {
 	) ([]Record, error)
 	Start(context.Context, string) (Record, error)
 	Claim(context.Context, string) (Record, bool, error)
+}
+
+// EventStore appends and reads the durable Run event journal.
+type EventStore interface {
 	AppendEvent(context.Context, string, contract.Event) (contract.Event, error)
 	Events(context.Context, string, uint64, int) ([]contract.Event, error)
 	LatestEventSequence(context.Context, string) (uint64, error)
+}
+
+// CheckpointStore persists executor checkpoints for crash recovery.
+type CheckpointStore interface {
 	SaveCheckpoint(context.Context, Checkpoint) error
 	Checkpoint(context.Context, string) (Checkpoint, bool, error)
 	LatestCheckpoint(context.Context, string) (Checkpoint, bool, error)
+}
+
+// ModelEffectStore tracks durable model call side effects.
+type ModelEffectStore interface {
 	StartModelCall(context.Context, ModelCall) error
 	FinishModelCall(context.Context, ModelCall) error
 	LatestModelCall(context.Context, string) (ModelCall, bool, error)
 	ModelCalls(context.Context, string) ([]ModelCall, error)
-	Resumes(context.Context, string) ([]ResumeRecord, error)
+}
+
+// ToolEffectStore tracks durable tool side effects.
+type ToolEffectStore interface {
 	PrepareToolEffect(context.Context, ToolEffect, Checkpoint) error
 	ToolEffect(context.Context, string, string) (ToolEffect, bool, error)
 	ToolEffects(context.Context, string) ([]ToolEffect, error)
 	StartToolEffect(context.Context, string, string) error
 	CompleteToolEffect(context.Context, ToolEffect) error
 	FailToolEffect(context.Context, ToolEffect) error
+}
+
+// RunController owns Run state transitions (pause/resume/cancel/settle).
+// Multi-step atomic transitions must occur within a single Store transaction.
+type RunController interface {
 	Pause(context.Context, string, json.RawMessage) (Record, error)
 	NeedsReconciliation(context.Context, string, *contract.RuntimeError) (Record, error)
 	NeedsCancellationReconciliation(
@@ -313,7 +338,39 @@ type Store interface {
 		json.RawMessage,
 		ResumeConstraint,
 	) (Record, error)
+}
+
+// StoreMaintenance runs background reconciliation, GC and teardown.
+type StoreMaintenance interface {
 	Reconcile(context.Context) error
 	GC(context.Context, GCOptions) (GCResult, error)
 	Close() error
+}
+
+// Store is the full durable Run control plane: every sub-store plus Create.
+// store/sqlite satisfies all sub-interfaces; consumers should depend on the
+// narrowest sub-interface they need (e.g. AgentExecutor depends on AgentStore).
+type Store interface {
+	RunReader
+	LeaseManager
+	EventStore
+	CheckpointStore
+	ModelEffectStore
+	ToolEffectStore
+	RunController
+	StoreMaintenance
+	Create(context.Context, string, Request) (Record, error)
+}
+
+// AgentStore is the Store surface an AgentExecutor needs: read access, the
+// event/checkpoint/effect journals it writes during execution, and the
+// RunController transitions it drives (settle). It excludes queue lease,
+// maintenance and creation.
+type AgentStore interface {
+	RunReader
+	EventStore
+	CheckpointStore
+	ModelEffectStore
+	ToolEffectStore
+	RunController
 }
