@@ -1,5 +1,5 @@
 // Package commandgolden contains test-only helpers for freezing the observable
-// command profile behavior that Runtime vNext must preserve.
+// command profile behavior that SN Runtime must preserve.
 package commandgolden
 
 import (

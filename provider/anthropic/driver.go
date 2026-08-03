@@ -1,4 +1,4 @@
-// Package anthropic implements the Runtime vNext Anthropic-compatible wire
+// Package anthropic implements the SN Runtime Anthropic-compatible wire
 // driver. It performs exactly one HTTP attempt and owns no retry or tool loop.
 package anthropic
 

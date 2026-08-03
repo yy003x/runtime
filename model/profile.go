@@ -1,4 +1,4 @@
-// Package model implements the Runtime vNext model profile, Driver SPI, and
+// Package model implements the SN Runtime model profile, Driver SPI, and
 // exactly-one-call Model Service.
 package model
 

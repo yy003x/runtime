@@ -1,4 +1,4 @@
-// Package http provides the thin JSON/SSE adapters mounted by Runtime vNext.
+// Package http provides the thin JSON/SSE adapters mounted by SN Runtime.
 package http
 
 import (

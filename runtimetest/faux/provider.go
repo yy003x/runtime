@@ -1,5 +1,5 @@
 // Package faux provides deterministic, test-only model and HTTP providers for
-// Runtime vNext contract tests. It never imports or replaces a production
+// SN Runtime contract tests. It never imports or replaces a production
 // Runtime provider.
 package faux
 

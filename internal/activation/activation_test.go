@@ -1427,7 +1427,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 		`{
 			"$schema":"https://json-schema.org/draft/2020-12/schema",
 			"$id":"https://github.com/yy003x/runtime/resources/schema/runtime.schema.json",
-			"title":"Runtime vNext Configuration",
+			"title":"SN Runtime Configuration",
 			"type":"object",
 			"additionalProperties":false,
 			"properties":{"agent":{},"scheduler":{},"run":{}}

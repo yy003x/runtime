@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-// Package ptyx provides the small PTY surface used by Runtime vNext golden
+// Package ptyx provides the small PTY surface used by SN Runtime golden
 // tests. It intentionally lives under runtimetest so production binaries do
 // not depend on the PTY implementation.
 package ptyx

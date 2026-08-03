@@ -1,5 +1,5 @@
 // Package contract defines the stable Provider-neutral Go and JSON contract
-// shared by Runtime vNext model services and transports.
+// shared by SN Runtime model services and transports.
 package contract
 
 import (

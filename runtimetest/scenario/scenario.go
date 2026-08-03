@@ -1,5 +1,5 @@
 // Package scenario defines the test-side canonical fixtures used to compare
-// future Runtime vNext model, CLI, and HTTP implementations. These types are
+// future SN Runtime model, CLI, and HTTP implementations. These types are
 // deliberately not a production contract.
 package scenario
 

@@ -710,7 +710,7 @@ func validateSchemaIdentity(name string, raw json.RawMessage) error {
 	case "runtime.schema.json":
 		const id = "https://github.com/yy003x/runtime/resources/schema/runtime.schema.json"
 		if identity.ID != id ||
-			identity.Title != "Runtime vNext Configuration" ||
+			identity.Title != "SN Runtime Configuration" ||
 			identity.Type != "object" ||
 			identity.AdditionalProperties == nil ||
 			*identity.AdditionalProperties ||

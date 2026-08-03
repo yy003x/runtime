@@ -1,6 +1,6 @@
-# Runtime vNext 测试安全网
+# SN Runtime 测试安全网
 
-`runtimetest/` 只保存 Runtime vNext 的测试资产，不是生产实现或公开契约。
+`runtimetest/` 只保存 SN Runtime 的测试资产，不是生产实现或公开契约。
 生产 `cmd/`、`internal/`、`command/`、`model/`、transport 和 Workbench 入口
 均不依赖这里的 package。
 

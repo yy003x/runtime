@@ -1,4 +1,4 @@
-// Package openai implements the Runtime vNext OpenAI-compatible wire driver.
+// Package openai implements the SN Runtime OpenAI-compatible wire driver.
 // It performs exactly one HTTP attempt and owns no retry, Session, or tool loop.
 package openai
 
