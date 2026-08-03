@@ -112,7 +112,7 @@ func printHelp(output *cliOutput) error {
 			"namespaces":       fixedNamespaces,
 		})
 	}
-	return output.text(`sn-cli - Runtime vNext
+	return output.text(`sn-cli - SN Runtime
 
 Usage:
   sn-cli <profile-id> [profile-options...] [input]

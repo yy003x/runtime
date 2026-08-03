@@ -57,7 +57,7 @@ func main() {
 		fixedNamespaces...,
 	)
 	if err != nil {
-		log.Fatalf("initialize Runtime vNext: %v", err)
+		log.Fatalf("initialize SN Runtime: %v", err)
 	}
 	defer services.Runs.Close()
 	runtimeHandler, err := transporthttp.NewRuntimeHandler(
