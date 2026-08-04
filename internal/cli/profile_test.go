@@ -552,6 +552,7 @@ func prepareVNextHome(t *testing.T) layout.Paths {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("SN_CLI_HOME", paths.Home)
 	if err := os.MkdirAll(paths.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

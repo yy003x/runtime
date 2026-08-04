@@ -20,6 +20,7 @@ type Paths struct {
 	ResourcesDir      string
 	SchemaDir         string
 	SessionsDir       string
+	LogsDir           string
 	StateDir          string
 	RunDBFile         string
 	ServerPIDFile     string
@@ -82,6 +83,7 @@ func FromHome(home string) (Paths, error) {
 		ResourcesDir:      resourcesDir,
 		SchemaDir:         filepath.Join(resourcesDir, "schema"),
 		SessionsDir:       filepath.Join(absolute, "sessions"),
+		LogsDir:           filepath.Join(absolute, "logs"),
 		StateDir:          stateDir,
 		RunDBFile:         filepath.Join(stateDir, "runtime.db"),
 		ServerPIDFile:     filepath.Join(stateDir, "sn-server.pid"),
@@ -168,7 +170,7 @@ func CanonicalHome(home string) (string, error) {
 func (p Paths) Ensure() error {
 	for _, dir := range []string{
 		p.Home, p.BinDir, p.ConfigDir, p.ResourcesDir,
-		p.SchemaDir, p.SessionsDir, p.StateDir, p.TmpDir,
+		p.SchemaDir, p.SessionsDir, p.LogsDir, p.StateDir, p.TmpDir,
 		p.TmuxManifestDir,
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {

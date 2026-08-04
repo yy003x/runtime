@@ -8,9 +8,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/clilog"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/strictjson"
@@ -171,6 +173,13 @@ func runLoadedVNextProfileID(
 		)
 		if err != nil {
 			return err
+		}
+		if logPaths, err := layout.Resolve(); err == nil {
+			_ = clilog.Append(logPaths.LogsDir, clilog.Record{
+				Time: time.Now(), Namespace: clilog.NamespaceProfile, Profile: profileID,
+				Source:  clilog.SourceFromArgs(os.Args),
+				Command: clilog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
+			})
 		}
 		stdinMode := runtimecommand.StdinTTY
 		if mode == runtimecommand.ModeExec {

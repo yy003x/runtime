@@ -81,6 +81,7 @@ func TestTmuxStartRejectsReservedProfileID(t *testing.T) {
 
 func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("SN_CLI_HOME", root)
 	commandPath := filepath.Join(root, "codex")
 	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)

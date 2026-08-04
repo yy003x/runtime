@@ -10,9 +10,11 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/clilog"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	runtimeprofile "github.com/yy003x/runtime/profile"
@@ -315,6 +317,13 @@ func resolveTmuxStartInvocation(
 	})
 	if err != nil {
 		return runtimetmux.Invocation{}, err
+	}
+	if logPaths, err := layout.Resolve(); err == nil {
+		_ = clilog.Append(logPaths.LogsDir, clilog.Record{
+			Time: time.Now(), Namespace: clilog.NamespaceTmux, Profile: options.profileID,
+			Source:  clilog.SourceFromArgs(os.Args),
+			Command: clilog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
+		})
 	}
 	digest, err := tmuxConfigDigest(options.profileID, *entry.Command, options)
 	if err != nil {
