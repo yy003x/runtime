@@ -1511,6 +1511,7 @@ func newTestService(
 		t.Fatal(err)
 	}
 	root := t.TempDir()
+	t.Setenv("SN_CLI_HOME", root)
 	store, err := NewStore(
 		filepath.Join(root, "sessions"),
 		filepath.Join(root, "state"),

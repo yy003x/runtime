@@ -12,7 +12,9 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/clilog"
 	"github.com/yy003x/runtime/internal/identity"
+	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/model"
 	"github.com/yy003x/runtime/profile"
 )
@@ -593,6 +595,13 @@ func (service *Service) runCommand(
 		)
 		runtimeErr.Phase = contract.PhaseTransport
 		return service.finishFailureResult(started.ids, runtimeErr)
+	}
+	if logPaths, err := layout.Resolve(); err == nil {
+		_ = clilog.Append(logPaths.LogsDir, clilog.Record{
+			Time: service.now(), Namespace: clilog.NamespaceSession, Profile: request.Snapshot.ProfileID,
+			Source:  clilog.SourceFromArgs(os.Args),
+			Command: clilog.FormatCommand(request.Snapshot.Profile.Env, invocation.CWD, invocation.Path, invocation.Argv),
+		})
 	}
 	var turn Turn
 	if err := service.store.withLock(started.ids.session, func() error {
