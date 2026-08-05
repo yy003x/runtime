@@ -12,8 +12,8 @@ LOCAL_CHECKSUMS=""
 LOCAL_BINARY=""
 LOCAL_SERVER=""
 LOCAL_CONFIGS=""
-LOCAL_RUNTIME_CONFIG=""
 LOCAL_RESOURCES=""
+LOCAL_RELEASE=""
 OVERWRITE_CONFIGS=0
 LOCAL_SOURCE_INSTALL=0
 DRY_RUN=0
@@ -28,8 +28,7 @@ Usage:
   bash install.sh [--version VERSION] [--dry-run]
 
 Local package options used by `make install`:
-  --binary FILE --server FILE --configs DIR --runtime-config FILE
-  --resources DIR
+  --binary FILE --server FILE --configs DIR --resources DIR --release DIR
   [--overwrite-configs | --local-source-install]
   --archive FILE [--checksums FILE]
 
@@ -37,7 +36,7 @@ Options:
   --version VERSION    Install a specific release tag; default is latest.
   --install-dir DIR    Symlink directory; default is ~/.local/bin.
   --home DIR           Runtime home; default is ~/.sn.
-  --overwrite-configs  Replace profiles and runtime.json.
+  --overwrite-configs  Replace profiles, tools, and runtime.json.
   --local-source-install
                        Destructive source mode used only by `make install`.
   --dry-run            Print the resolved install plan without writing files.
@@ -74,7 +73,7 @@ require_option_value() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --version|--install-dir|--home|--archive|--checksums|--binary|--server|--configs|--runtime-config|--resources)
+    --version|--install-dir|--home|--archive|--checksums|--binary|--server|--configs|--resources|--release)
       option="$1"
       mark_option_once "$option"
       require_option_value "$option" "$#" "${2:-}"
@@ -87,8 +86,8 @@ while [ "$#" -gt 0 ]; do
         --binary) LOCAL_BINARY="$2" ;;
         --server) LOCAL_SERVER="$2" ;;
         --configs) LOCAL_CONFIGS="$2" ;;
-        --runtime-config) LOCAL_RUNTIME_CONFIG="$2" ;;
         --resources) LOCAL_RESOURCES="$2" ;;
+        --release) LOCAL_RELEASE="$2" ;;
       esac
       shift 2
       ;;
@@ -127,17 +126,17 @@ if [ -n "$LOCAL_BINARY" ]; then
     [ "$VERSION_OPTION_SET" = "0" ] ||
     die "--binary cannot be combined with --archive, --checksums, or --version"
   [ -n "$LOCAL_SERVER" ] && [ -n "$LOCAL_CONFIGS" ] &&
-    [ -n "$LOCAL_RUNTIME_CONFIG" ] && [ -n "$LOCAL_RESOURCES" ] ||
-    die "--binary requires --server, --configs, --runtime-config, and --resources"
+    [ -n "$LOCAL_RESOURCES" ] && [ -n "$LOCAL_RELEASE" ] ||
+    die "--binary requires --server, --configs, --resources, and --release"
 elif [ -n "$LOCAL_ARCHIVE" ]; then
   [ -z "$LOCAL_SERVER" ] && [ -z "$LOCAL_CONFIGS" ] &&
-    [ -z "$LOCAL_RUNTIME_CONFIG" ] && [ -z "$LOCAL_RESOURCES" ] &&
+    [ -z "$LOCAL_RESOURCES" ] && [ -z "$LOCAL_RELEASE" ] &&
     [ "$VERSION_OPTION_SET" = "0" ] ||
     die "--archive cannot be combined with source package options or --version"
 else
   [ -z "$LOCAL_CHECKSUMS" ] && [ -z "$LOCAL_SERVER" ] &&
-    [ -z "$LOCAL_CONFIGS" ] && [ -z "$LOCAL_RUNTIME_CONFIG" ] &&
-    [ -z "$LOCAL_RESOURCES" ] ||
+    [ -z "$LOCAL_CONFIGS" ] && [ -z "$LOCAL_RESOURCES" ] &&
+    [ -z "$LOCAL_RELEASE" ] ||
     die "local package options require --binary or --archive"
 fi
 
@@ -268,17 +267,19 @@ if [ "$DRY_RUN" = "1" ]; then
   log "binary: $SN_CLI_HOME/bin/sn-cli"
   log "server: $SN_CLI_HOME/bin/sn-server"
   log "profiles: $SN_CLI_HOME/configs"
+  log "tools: $SN_CLI_HOME/tools"
   log "runtime config: $SN_CLI_HOME/runtime.json"
   log "resources: $SN_CLI_HOME/resources"
   log "local source install: $LOCAL_SOURCE_INSTALL"
   log "overwrite configs: $OVERWRITE_CONFIGS"
+  log "overwrite tools: $OVERWRITE_CONFIGS"
   log "symlink: $INSTALL_DIR/sn-cli"
   if [ -n "$LOCAL_BINARY" ]; then
     log "source binary: $LOCAL_BINARY"
     log "source server: $LOCAL_SERVER"
     log "source profiles: $LOCAL_CONFIGS/*.json"
-    log "source runtime config: $LOCAL_RUNTIME_CONFIG"
     log "source resources: $LOCAL_RESOURCES"
+    log "source release: $LOCAL_RELEASE"
   elif [ -n "$LOCAL_ARCHIVE" ]; then
     log "source archive: $LOCAL_ARCHIVE"
   else
@@ -332,9 +333,9 @@ mkdir -p "$PAYLOAD"
 if [ -n "$LOCAL_BINARY" ]; then
   [ -x "$LOCAL_BINARY" ] || die "local binary is not executable: $LOCAL_BINARY"
   [ -x "$LOCAL_SERVER" ] || die "local server is not executable: $LOCAL_SERVER"
-  [ -d "$LOCAL_CONFIGS" ] || die "local configs not found: $LOCAL_CONFIGS"
-  [ -f "$LOCAL_RUNTIME_CONFIG" ] && [ ! -L "$LOCAL_RUNTIME_CONFIG" ] || die "local runtime config not found: $LOCAL_RUNTIME_CONFIG"
-  [ -d "$LOCAL_RESOURCES" ] || die "local resources not found: $LOCAL_RESOURCES"
+  [ -d "$LOCAL_CONFIGS" ] && [ ! -L "$LOCAL_CONFIGS" ] || die "local configs not found or unsafe: $LOCAL_CONFIGS"
+  [ -d "$LOCAL_RESOURCES" ] && [ ! -L "$LOCAL_RESOURCES" ] || die "local resources not found or unsafe: $LOCAL_RESOURCES"
+  [ -d "$LOCAL_RELEASE" ] && [ ! -L "$LOCAL_RELEASE" ] || die "local release not found or unsafe: $LOCAL_RELEASE"
   cp "$LOCAL_BINARY" "$PAYLOAD/sn-cli"
   chmod 755 "$PAYLOAD/sn-cli"
   cp "$LOCAL_SERVER" "$PAYLOAD/sn-server"
@@ -349,12 +350,12 @@ if [ -n "$LOCAL_BINARY" ]; then
     profile_count=$((profile_count + 1))
   done
   [ "$profile_count" -gt 0 ] || die "local configs contain no JSON profiles"
-  cp "$LOCAL_RUNTIME_CONFIG" "$PAYLOAD/runtime.json"
   cp -R "$LOCAL_RESOURCES" "$PAYLOAD/resources"
+  cp -R "$LOCAL_RELEASE" "$PAYLOAD/release"
   PACKAGE_BINARY="$PAYLOAD/sn-cli"
   PACKAGE_SERVER="$PAYLOAD/sn-server"
-  PACKAGE_RUNTIME_CONFIG="$PAYLOAD/runtime.json"
   PACKAGE_RESOURCES="$PAYLOAD/resources"
+  PACKAGE_RELEASE="$PAYLOAD/release"
 else
   ARCHIVE_PATH="$LOCAL_ARCHIVE"
   CHECKSUMS_PATH="$LOCAL_CHECKSUMS"
@@ -378,15 +379,15 @@ else
   PACKAGE_BINARY="$PAYLOAD/sn-cli"
   PACKAGE_SERVER="$PAYLOAD/sn-server"
   PACKAGE_CONFIGS="$PAYLOAD/configs"
-  PACKAGE_RUNTIME_CONFIG="$PAYLOAD/runtime.json"
   PACKAGE_RESOURCES="$PAYLOAD/resources"
+  PACKAGE_RELEASE="$PAYLOAD/release"
 fi
 
 [ -x "$PACKAGE_BINARY" ] || die "package has no executable sn-cli"
 [ -x "$PACKAGE_SERVER" ] || die "package has no executable sn-server"
 [ -d "$PACKAGE_CONFIGS" ] || die "package has no configs directory"
-[ -f "$PACKAGE_RUNTIME_CONFIG" ] && [ ! -L "$PACKAGE_RUNTIME_CONFIG" ] || die "package has no runtime.json"
 [ -d "$PACKAGE_RESOURCES" ] || die "package has no resources directory"
+[ -d "$PACKAGE_RELEASE" ] || die "package has no release directory"
 
 if [ -e "$SN_CLI_HOME" ] || [ -L "$SN_CLI_HOME" ]; then
   [ -d "$SN_CLI_HOME" ] && [ ! -L "$SN_CLI_HOME" ] ||

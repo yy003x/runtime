@@ -32,8 +32,8 @@ checksum_stream() {
 }
 
 source_signature() {
-  find agent cmd command contract internal model profile provider run runtimetest session store tmux transport configs resources \
-    -type f \( -name '*.go' -o -name '*.json' \) -print0 |
+  find agent cmd command contract internal model profile provider run runtimetest session store tmux transport configs resources release \
+    -type f \( -name '*.go' -o -name '*.json' -o -name '*.conf' \) -print0 |
     xargs -0 stat "${stat_format[@]}" |
     LC_ALL=C sort |
     checksum_stream |

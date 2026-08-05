@@ -2,7 +2,6 @@
   "type": "cli",
   "command": "claude",
   "model": "claude-fable-5",
-  "exec": false,
   "args": [
     "--dangerously-skip-permissions"
   ],

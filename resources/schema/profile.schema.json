@@ -80,10 +80,6 @@
           "x-sn-max-bytes": 128000,
           "pattern": "^[^\\x00]*$"
         },
-        "exec": {
-          "type": "boolean",
-          "default": false
-        },
         "cwd": {
           "type": "string",
           "maxLength": 128000,

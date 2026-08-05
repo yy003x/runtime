@@ -11,9 +11,12 @@ import (
 
 	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/internal/strictjson"
+	"github.com/yy003x/runtime/internal/toolconfig"
 )
 
 const maxConfigBytes int64 = 1 << 20
+
+const maxAgentTools = 256
 
 type Config struct {
 	Agent     Agent     `json:"agent"`
@@ -42,7 +45,9 @@ type Run struct {
 func Default() Config {
 	return Config{
 		Agent: Agent{
-			Tools:          []string{"read_file", "list_directory"},
+			Tools: []string{
+				"read_file", "list_directory", "web_search", "web_fetch",
+			},
 			WorkspaceRoots: []string{},
 			MaxRounds:      16, MaxToolCalls: 64, MaxWallTime: "15m",
 		},
@@ -122,11 +127,14 @@ func (config Config) Validate() error {
 		return fmt.Errorf("agent.max_wall_time: %w", err)
 	}
 	seenTools := make(map[string]struct{}, len(config.Agent.Tools))
+	if len(config.Agent.Tools) > maxAgentTools {
+		return fmt.Errorf("agent.tools must not exceed %d items", maxAgentTools)
+	}
 	for _, name := range config.Agent.Tools {
-		switch name {
-		case "read_file", "list_directory", "write_file":
-		default:
-			return fmt.Errorf("agent.tools contains unsupported tool %q", name)
+		if err := toolconfig.ValidateName(name); err != nil {
+			return fmt.Errorf(
+				"agent.tools contains invalid tool name %q: %w", name, err,
+			)
 		}
 		if _, exists := seenTools[name]; exists {
 			return fmt.Errorf("agent.tools contains duplicate %q", name)

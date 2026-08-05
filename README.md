@@ -51,8 +51,9 @@ rejected rather than silently papered over.
   and reconcile semantics that survive process exits.
 - 🗂️ **Crash-consistent sessions** — atomic, journal-backed file store with
   identity-checked recovery (no heuristic repairs).
-- 🤖 **Autonomous agent loops** — model + configured builtin tools (`read_file`,
-  `list_directory`, opt-in `write_file`) with budget limits and streaming events.
+- 🤖 **Autonomous agent loops** — model + controlled builtin/MCP tools
+  (including `web_search` and `web_fetch`) with budgets, durable effects, and
+  streaming events.
 - 🪟 **Long-lived tmux windows** — a dedicated tmux server you can start, send,
   attach, interrupt, and stop by stable ID.
 - 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
@@ -99,39 +100,40 @@ sn-cli profile check     # validate every profile's structure
 
 ```bash
 # One model API call (needs the profile's referenced env var set)
-sn-cli api-cx "Reply OK"
+sn-cli req api-cx "Reply OK"
 
 # Open the Codex/Claude interactive TUI
 sn-cli cx
 
 # Run a CLI one-shot and wait for it to exit
-sn-cli cx --exec "Summarize this repo"
+sn-cli exec cx "Summarize this repo"
 ```
 
 ### A recorded session
 
 ```bash
-# Run one recorded turn, then reuse the same session across turns/providers
-sn-cli --json session run api-cx "First turn"     # grab session_id from JSON
-sn-cli session run --session-id <session_id> api-cc "Second turn"
+# Run one recorded request, then reuse the same session across API profiles
+sn-cli --json session req api-cx "First turn"     # grab session_id from JSON
+sn-cli session req api-cc --session-id <session_id> "Second turn"
 sn-cli session messages --session-id <session_id> # read the history
 ```
 
 ### A durable background run
 
-`session submit` / `run submit` only enqueue — a worker must be running to
-dequeue. Start the server first:
+`--queue` only enqueues — a worker must be running to dequeue. Start the server
+first:
 
 ```bash
 sn-cli --json server start
-sn-cli --json session submit --task-id analysis --cwd "$PWD" cx-deep "Run in background"
+sn-cli --json session exec cx-deep --queue --task-id analysis --cwd "$PWD" "Run in background"
 sn-cli run watch --run-id <run_id>     # stream events until it settles
 ```
 
 ### An autonomous agent loop
 
 ```bash
-sn-cli agent run --profile api-cx --max-wall-time 20m "Review this repo and report"
+sn-cli agent api-cc \
+  "Find the latest Codex CLI release, read its official release page, and summarize the main changes."
 ```
 
 The full set of commands, arguments, and end-to-end workflows is in the
@@ -143,32 +145,39 @@ One CLI, several execution boundaries. Each entry has a clearly defined scope
 and persistence target:
 
 ```text
-sn-cli <id> ──────────┐
-sn-cli profile <id> ──┴─┬─ type=cli ─> Command Bridge ─> CLI process
-                        └─ type=api ─> Model Core ─────> HTTP/SSE
+sn-cli <cli-id> ────────> Command Bridge ─> interactive CLI process
+sn-cli exec <cli-id> ───> Command Bridge ─> one-shot CLI process
+sn-cli req <api-id> ────> Model Core ─────> one HTTP/SSE request
 
-sn-cli session ... ───> Session Service ──> command or model
+sn-cli session exec|req ─> Session Service ─> command or model
 sn-cli tmux ... ───────> Tmux Service ─────> interactive command window
-sn-cli agent run ─────> Agent Kernel ─────> model + configured tools
-sn-cli run ... ───────> Run Harness ──────> SQLite WAL
+sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
+sn-cli run ... ────────> Run Harness ──────> SQLite WAL control plane
 ```
 
 | Entry | Purpose | Persisted |
 |---|---|---|
-| `sn-cli <profile-id>` | one CLI/API profile call (no record) | — |
-| `sn-cli profile <profile-id>` | identical to the implicit form | — |
-| `sn-cli session run\|submit` | Session / Turn / Message / Event / Execution | file-based session |
-| `sn-cli tmux ...` | dedicated tmux interactive window | tmux registry (no transcript) |
-| `sn-cli agent run` | API-only model/tool loop | durable run (session optional) |
-| `sn-cli run ...` | durable run queue & control plane | SQLite WAL |
+| `sn-cli <cli-profile-id>` | interactive CLI direct call | local `cli.jsonl`; no Session/Run |
+| `sn-cli exec <cli-profile-id>` | non-interactive CLI one-shot | local `cli.jsonl`; no Session/Run |
+| `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
+| `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
+| `sn-cli tmux ...` | dedicated tmux interactive window | tmux registry and local CLI log (no transcript) |
+| `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
+| `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
 
 Key boundaries worth remembering up front:
 
-- A **profile** is `cli` (wraps a CLI) or `api` (calls a model). `type` decides the adapter.
+- A **profile** is `cli` (wraps a CLI) or `api` (calls a model). The namespace
+  selects the execution contract and `type` validates that the profile belongs there.
 - **Sessions never auto-execute tool calls** — a tool call from the model pauses
-  the turn at `requires_action`. Autonomous tool loops belong to `agent run`.
+  the turn at `requires_action`. Autonomous tool loops belong to `agent`.
 - **Tmux never creates a session** — it only manages an interactive window.
 - **Submitting a run doesn't start the server** — enqueue and worker are decoupled.
+
+Best-effort execution diagnostics live under
+`${SN_CLI_HOME}/logs/YYMMDD/{cli,api}.jsonl`. They are not canonical Session/Run
+state and are never used for replay; logging failures never change execution
+results. Queries and queue submission do not log—workers log actual execution.
 
 The precise contracts (state machines, crash recovery, digest/drift gating,
 filesystem safety model) live in the [contract docs](#documentation); this README
@@ -179,10 +188,17 @@ intentionally stays at the usage level.
 Profiles are a single config layer — one JSON file per profile:
 
 ```text
-<runtime-home>/configs/<profile-id>.json   # source: configs/*.json
-<runtime-home>/runtime.json                # source: configs/runtime/runtime.json
-<runtime-home>/resources/                  # JSON schemas, tmux.conf, release.json
+source/payload configs/<profile-id>.json     → <runtime-home>/configs/<profile-id>.json
+source/payload resources/tools/<tool>.json  → <runtime-home>/tools/<tool>.json
+source/payload release/runtime.json         → <runtime-home>/runtime.json
+source/payload resources/schema/*.json      → <runtime-home>/resources/schema/*.json
+source/payload release/tmux.conf            → <runtime-home>/resources/tmux.conf
+source/payload release/release.json         → <runtime-home>/resources/release.json
 ```
+
+The repository source tree and every release archive use the same left-hand
+layout. Activation is the only owner of the mapping into the active home; the
+active home is not a source or archive template.
 
 The profile ID is the filename without `.json`. A CLI profile wraps a command;
 an API profile points at a provider:
@@ -212,8 +228,10 @@ an API profile points at a provider:
 Secrets are referenced via `${VAR}` in `headers` and expanded from environment
 variables at call time — the profile only stores the reference name, never the
 value. The openai driver auto-prepends the `Bearer ` scheme to a bare
-`Authorization` value; the anthropic driver does not. `runtime.json` configures the agent's builtin tools,
-budgets, scheduler, and run retention. Full field reference, override order, and
+`Authorization` value; the anthropic driver does not. `runtime.json` selects
+the agent tools, budgets, scheduler, and run retention; source
+`resources/tools/` ships `web_search` and `web_fetch` MCP manifests using
+`Z_AI_API_KEY`. Full field reference, override order, and
 examples: [sn-cli reference](SN-CLI-USAGE.md) and
 [configuration contract](docs/configuration.md).
 
@@ -231,15 +249,16 @@ tmux/        dedicated tmux server / window management
 provider/    openai/ + anthropic/ drivers
 store/sqlite/  run store adapter
 transport/   http/ (HTTP/SSE) adapter
-internal/    cli adapter, runtime bootstrap, config loader, builtin tools
+internal/    cli adapter, runtime bootstrap, config loader, builtin/MCP tools
 cmd/         sn-cli, sn-server entry points
-configs/     source CLI/API profiles + runtime template
-resources/   strict JSON schemas, tmux.conf, release.json
+configs/     source CLI/API profiles
+resources/   schema/ + source tools/ (future skills/ and mcp/ assets stay here)
+release/     runtime.json, tmux.conf, and release.json payload templates
 ```
 
 Domain packages don't read CLI args, don't open the config dir, and don't depend
 on HTTP. `internal/runtimebootstrap` is the composition root; providers, SQLite,
-CLI, HTTP, and builtin tools are all adapters.
+CLI, HTTP, and tool executors are all adapters.
 
 ## Documentation
 

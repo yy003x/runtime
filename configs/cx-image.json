@@ -3,7 +3,6 @@
   "command": "codex",
   "model": "gpt-5.6-sol",
   "effort": "xhigh",
-  "exec": true,
   "args": [
     "--skip-git-repo-check",
     "--ignore-user-config",

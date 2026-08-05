@@ -11,15 +11,13 @@
       "properties": {
         "tools": {
           "type": "array",
+          "maxItems": 256,
           "uniqueItems": true,
           "items": {
-            "enum": [
-              "read_file",
-              "list_directory",
-              "write_file"
-            ]
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
           },
-          "default": ["read_file", "list_directory"]
+          "default": ["read_file", "list_directory", "web_search", "web_fetch"]
         },
         "workspace_roots": {
           "type": "array",

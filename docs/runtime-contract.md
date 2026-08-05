@@ -11,6 +11,7 @@
 | Command adapter | `command/` | CLI grammar、effective argv/env/cwd | Session/Tmux 状态 |
 | Model Core | `model/`、`contract/` | 单次 canonical model call | tool loop、存储 |
 | API Driver | `provider/*` | HTTP/SSE codec、Provider error | retry、tool、Session |
+| Tool Config/MCP adapter | `internal/toolconfig`、`internal/toolmcp` | 严格 manifest、单次只读 MCP call | model loop、retry、持久化 |
 | Session Service | `session/` | Session/Turn/history/execution | 自动执行 canonical tool |
 | Tmux Service | `tmux/` | 专用 tmux server/window lifecycle | Session/history |
 | Agent Kernel | `agent/` | 唯一 model/tool loop、预算、暂停恢复 | Profile、SQLite |
@@ -27,7 +28,7 @@
 Profile 位于 `configs/<id>.json`，必须以 `type=cli|api` 分流。CLI Profile 字段：
 
 ```text
-command args env model effort prompt exec cwd
+command args env model effort prompt cwd
 ```
 
 loader 只接受上述字段。API Profile 保持自己的 Provider schema。不存在 command
@@ -37,38 +38,87 @@ ID、第二层映射或 raw/native argv passthrough。
 
 | 入口 | effective mode | 执行 owner | 记录 |
 | --- | --- | --- | --- |
-| `sn-cli <id>` 或 `sn-cli profile <id>` CLI | Profile/`--exec` | process replacement | 无 |
-| `sn-cli <id>` 或 `sn-cli profile <id>` API | API | Model Core | 无 |
-| `sn-cli session run|submit` CLI | 固定 exec | Session child | Turn/Execution |
-| `sn-cli session run|submit` API | API | Session executor | Turn/Execution |
-| `sn-cli tmux start` | 固定 interactive | Tmux window | 无 Session |
+| `sn-cli <cli-id>` | interactive direct | process replacement | `cli.jsonl`；无 Session/Run |
+| `sn-cli exec <cli-id>` | non-interactive exec | process replacement | `cli.jsonl`；无 Session/Run |
+| `sn-cli req <api-id>` | API request | Model Core | `api.jsonl`；无 Session/Run |
+| `sn-cli session exec <cli-id> [--queue]` | non-interactive managed exec | Session child | `cli.jsonl` + Turn/Execution；queue 时另有 Run |
+| `sn-cli session req <api-id> [--queue]` | API request | Session executor | `api.jsonl` + Turn/Execution；queue 时另有 Run |
+| `sn-cli tmux start <cli-id>` | interactive | Tmux window | `cli.jsonl`；无 Session |
+| `sn-cli agent <api-id> [--queue]` | API model/tool loop | Agent Kernel | 每轮 `api.jsonl` + Durable Run |
 
-Session 和 Tmux 由各自入口固定 execution mode，不读取 Profile `exec` 默认值。
+namespace 先固定 execution mode，Profile `type` 再做严格配对校验。Profile 不保存
+execution mode；Session/Tmux schema 不因 CLI ingress 改名而变化。
 
 Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Claude。adapter
 用显式 option grammar：
 
 - 区分 command/common、exec-only 和 mode selector；
-- 识别并替换 model、effort、exec 和 canonical-output selector；
+- 识别并替换 model、effort、mode selector 和 canonical-output selector；
 - 对重复、stateful、改变 final shape 或无法安全归类的配置 fail closed；Claude
   `--verbose` 会把 canonical JSON result 改成逐轮数组，必须在 Profile 检查阶段拒绝；
 - Profile/Session/Tmux 输入用 `--` 结束 options，并保证 prompt 为最终 argv token；
 - file、stdin、合并 prompt 与单个 argv/env token 上限为 128,000 bytes；
 - spawn 前校验 env expansion、cwd、PATH、单 token 与总 argv/env budget。
 
-Profile `prompt`、typed `--prompt`、piped stdin、位置 input 按顺序合并。CLI Profile
-exec prompt 必须非空；interactive 可为空。两种 mode 都 process replacement，
+Profile `prompt`、typed `--prompt`、piped stdin、位置 input 按顺序合并。`exec`
+prompt 必须非空；bare interactive direct 可为空。两种 mode 都 process replacement，
 leading global `--json` 不包装其原生输出。
 
-`sn-cli <id>` 与 `sn-cli profile <id>` 使用同一 Profile loader、typed parser、
-执行 service 和输出语义。固定根 namespace
-`profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理 action
-`list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。其余合法 ID 在
-隐式入口和 `profile` namespace 下都按 Profile 执行。
+bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`req` 只接受 API
+Profile。Profile ID 必须紧跟拥有它的 namespace/action，option 位于其后，input
+必须最后。固定根 namespace
+`exec|req|profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理
+action `list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。
 
-`profile check` 是纯静态校验，不解析真实 env/PATH/cwd，不读取 prompt file。
+`profile` 只提供 `list|show|check` 管理动作，不执行 Profile。`profile check` 是纯
+静态校验，不解析真实 env/PATH/cwd，不读取 prompt file。
 
-## 3. Canonical Model Contract
+## 3. 本地 Profile 执行日志
+
+`${SN_CLI_HOME}/logs` 是 best-effort 本地诊断面，不是 canonical Session/Run Store，
+不参与 replay、幂等、恢复、terminal barrier 或 API contract：
+
+```text
+logs/
+  YYMMDD/
+    cli.jsonl
+    api.jsonl
+```
+
+每天、每种 Profile 类型只使用一个 append-only JSONL 文件。`time` 使用本地时间的
+`YYYY-MM-DD HH:mm:ss`。当前不做 retention、总量限制或自动 GC；旧 flat log 保持
+原样，不迁移，也没有兼容 reader。
+
+记录门禁固定为：必须有 Profile ID，并且进入真实执行边界。CLI 在最终 invocation
+已构建并准备 launch 时写一条；API 只有在 driver 调用 `http.Client.Do` 时写一条。
+Profile 查询/校验、Session/Run/Tmux 查询与控制、无网络的前置校验失败、queue submit
+都不写；queued Session/Agent 由 worker 真正执行时写，Agent 每个 Provider round
+各写一条。HTTP `POST /v1/model/generate` 同样进入统一 API 日志。MCP HTTP 不属于
+Profile Provider attempt，不写 `api.jsonl`；其 call/result 由 Agent durable
+effect/event 记录。
+
+CLI 行固定字段为 `time,namespace,profile,source,command`。`command` 是 Runtime
+交给 OS 的可读 invocation；Profile env 保留 `${VAR}` 引用，不写 resolved value。
+API 行固定字段为
+`time,namespace,profile,source,call_id,request,response,error`：
+
+- `request={method,url,headers,body}` 是 driver protocol encoding 后交给
+  `http.Client` 的 application-level request；不保存 curl 字符串；
+- `response={status,headers,data}`；普通 JSON response 的 `data` 是单元素数组，
+  SSE 按顺序收集所有有效 JSON `data:` frame，OpenAI `[DONE]` 不属于 JSON；
+- network error 使用 `response:null`；`error` 是 Provider-neutral RuntimeError；
+- `${VAR}` header 按 driver 的 auth shaping 保留引用，例如
+  `Bearer ${MODEL_API_KEY}`；字面量敏感 header、cookie、URL query 和 response/error
+  中回显的 secret 必须脱敏；
+- `call_id` 每次 Provider call 唯一，不等同于 Provider request ID、Run ID 或 Tool
+  call ID。
+
+日志写入错误、锁冲突、非法路径或 observer panic 一律丢弃，不改变返回值、event、
+exit code、retry 或 durable state，也不与请求/Session/Run 建事务。写入使用 private
+directory/file mode、no-follow、single-link regular-file 校验和非阻塞文件锁，不做
+`fsync`；因此日志允许缺失，不能用来证明 effect 是否发生。
+
+## 4. Canonical Model Contract
 
 `contract.GenerateRequest` 由 `model_profile` 和 Provider-neutral `ModelRequest`
 组成。Driver 负责：
@@ -80,6 +130,8 @@ leading global `--json` 不包装其原生输出。
 
 Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。secret 通过
 headers 的 `${VAR}` 引用从执行环境展开，不进入 Profile output、event 或数据库。
+Driver 禁止 `http.Client` 自动跟随 redirect；每次 `Stream` 只调用一次 request，3xx
+作为该次 Provider response 进入 typed protocol error 和同一条 API 日志。
 
 Profile 默认输出上限统一配置为 `parameters.max_tokens`，CLI override 统一为
 `--max-tokens`。Canonical request 使用 `max_output_tokens`；openai driver
@@ -101,7 +153,7 @@ Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作
 都未声明时默认 `8192`。输入预算是窗口减去有效输出预留，必须至少为 `2`；较低的
 请求级输出上限不能扩大 Profile 输入预算，较高值必须收紧输入预算。
 
-## 4. Session
+## 5. Session
 
 Session 拥有：
 
@@ -197,12 +249,13 @@ symlink/hardlink、路径替换、确定性并发 swap 和 crash，不宣称抵�
 任意代码执行、可持续枚举 quarantine 名称或使用 ptrace/kill 的攻击者；POSIX
 不存在 compare-by-inode unlink。
 
-## 5. Tmux
+## 6. Tmux
 
 Tmux 是独立 interactive process manager：
 
-- 固定短 `-S` socket、session `sn-session` 和 source-controlled
-  `resources/tmux.conf`；
+- 固定短 `-S` socket、session `sn-session` 和 active
+  `${SN_CLI_HOME}/resources/tmux.conf`；该文件由 source/payload
+  `release/tmux.conf` 经 activation 映射；
 - 每次 `start` 建一个 window，Profile 固定 interactive mode；
 - initial prompt 是最终 argv token，后续 `send` 才使用 paste buffer；
 - server marker 绑定 full canonical-home digest、uid、config digest 和
@@ -215,7 +268,7 @@ Tmux 是独立 interactive process manager：
 
 详细协议见 [Tmux 管理契约](tmux-contract.md)。
 
-## 6. Agent Kernel
+## 7. Agent Kernel
 
 Agent 只接受 API Profile。Kernel 使用注入的 `model.Generator`、`ToolExecutor` 和
 `EffectRecorder`，按 model → tool validation → tool execution → message append
@@ -251,7 +304,7 @@ snapshot；resolved secret value 不进入 snapshot、digest、event 或 Store�
 Provider call 仍从执行进程当前环境展开该引用，因此相同 `${VAR}` 引用名下的 secret
 value 轮换不构成 execution drift；修改引用名或其它 Profile literal 则构成 drift。
 
-fresh submit 和 Retry 在创建新 Run 前比较完整 current execution snapshot。执行时
+fresh Run creation 和 Retry 在创建新 Run 前比较完整 current execution snapshot。执行时
 还在首次 Session mutation、每个新 model call、fresh tool preparation 以及
 fresh/recovered-prepared tool side effect 前复核 current model/Profile/driver、
 tool identity/config/definitions、Agent version 和可选 Session digests。Resume
@@ -304,6 +357,23 @@ crypto-random `O_EXCL` 私有临时文件执行 file fsync、`renameat` 和 dire
 read 额外拒绝 FIFO、非 regular 和 `nlink>1` hardlink。不宣称抵抗已完全控制同
 UID 进程、可 ptrace 或可直接操纵既有 fd 的攻击者。
 
+外部 tool 的唯一运行配置面是 active `${SN_CLI_HOME}/tools/<name>.json`；
+source/payload 是 `resources/tools/<name>.json`。当前 loader 只接受 `schema_version=1`、
+`effect=read_only`、`executor.type=mcp`，文件 basename 必须等于 local tool
+name，并拒绝与 builtin 同名。`runtime.json` 只保存 enabled name；bootstrap 将
+builtin 与选中的 manifest 组合为一个 Registry，任何 enabled name 无 owner 都
+fail closed。默认启用 `web_search` 和 `web_fetch`，分别绑定 BigModel MCP 的
+`web_search_prime` 与 `webReader`，认证引用均为
+`Bearer ${Z_AI_API_KEY}`。
+
+每个 MCP handler execution 建立一个有界 Streamable HTTP session，执行
+`initialize`、`notifications/initialized` 和一次 `tools/call`；不 retry、不跟随
+redirect。manifest 的 canonical definition、endpoint、remote tool、header 环境
+引用、timeout 和 response limit 冻结进 child tool snapshot，resolved secret 不
+进入 snapshot、digest、event 或错误。网络、HTTP、JSON-RPC、协议与远端 tool
+错误用有界、脱敏的 `ToolResult{IsError:true}` 闭合只读 effect，使模型可在下一轮
+解释失败；Session 和 `req` 不执行该 handler。
+
 private execution snapshot 是 Store-only 明文元数据，不是加密容器。它不会进入
 公开 DTO、event、log 或 error，但会保存 endpoint、model、按契约视为 non-secret
 的 literal header、tool schema、workspace root/cwd identity 等信息。digest 和
@@ -320,10 +390,10 @@ record。Agent 在执行 tool 前在 Turn 上原子持久化 `agent_owned=true` 
 marker；若进程在 unknown projection 前退出，Execution 可以仍是 `running`，
 `run reconcile` 仍按精确 `run_id` 收口。`paused` 不走 reconciliation，只能通过
 `run resume` 恢复。pause/resume 是 Kernel extension：底层 CLI/API/Store 和
-validator 保留，但 stock builtin tools 不产生 Pause，`server info` 因此不发布
+validator 保留，但 stock builtin/MCP tools 不产生 Pause，`server info` 因此不发布
 `resume` capability。
 
-## 7. Durable Run
+## 8. Durable Run
 
 ```text
 queued → running ─┬→ paused → queued
@@ -367,16 +437,16 @@ Agent Run 不会被误报为已 reconciliation。
 
 SQLite `PRAGMA user_version=4`。缺失、不相等或混合 schema fail closed。
 
-## 8. CLI 与 HTTP
+## 9. CLI 与 HTTP
 
 固定 CLI namespace：
 
 ```text
-profile session tmux agent run server help version
+exec req profile session tmux agent run server help version
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=3`。
-隐式或显式 CLI Profile 和 `tmux attach` 不属于 machine wrapper。
+Runtime machine contract 为 `schema_version=1`、`contract_version=4`。
+bare CLI direct、`exec` 和 `tmux attach` 不属于 machine wrapper。
 
 Run Record 可以公开 Runtime-owned `request_digest/config_digest`，但
 `private_request_json`、Agent execution snapshot 和最新 Resume input 均不属于
@@ -387,7 +457,12 @@ Run application composition 按 action 分层：query/watch 只加载 Run Store�
 cancel/reconcile 只加载 Run Store 和 Session maintenance service；GC 仅在未显式
 提供 cutoff 时读取 retention 配置。上述 maintenance 路径必须能只用 private
 snapshot 和 durable evidence 工作，不加载 current Profile、Provider 或 tool。
-submit/resume/retry 和 worker execution 才加载完整执行依赖。
+带 `--queue` 的 `session exec|req`、`agent [--queue]`、resume/retry 和 worker execution 才
+加载完整执行依赖。`run` namespace 不接受 fresh submission，只查询或控制已有
+Durable Run；`retry` 仍是基于已有终态 Run 的控制动作。
+
+本次 namespace 拆分只改变 CLI ingress。HTTP route/DTO、Session 文件 schema 与
+SQLite Run schema 保持不变；`POST /v1/runs` 继续接受 HTTP queued submission。
 
 HTTP 使用同一 application service。所有 JSON body 共同限制 request size、合法
 UTF-8、单一完整 JSON value，并拒绝重复 key 和 trailing data；固定 Runtime DTO
@@ -406,18 +481,27 @@ malformed resource ID 是 `invalid_request/400`；合法 ID 指向不存在的�
 `not_found/404`；Store 故障是 `internal/500`。不得用空 list/event 假装目标资源
 存在，也不得把 Store 故障降级成 not-found。
 
-## 9. 激活协议
+## 10. 激活协议
 
-contract-v3 archive 带当前 activation epoch、contract、Session 和 Run schema
+contract-v4 archive 带 activation epoch 4、当前 contract、Tool manifest、Session
+和 Run schema
 版本。installer/updater 只能由 staged candidate 在 maintenance/lifecycle lock、
 quiescence 和 exact-schema preflight 全部通过后激活。
 
-candidate 读取 payload 自身的 `resources/release.json`。在创建 target 目录、lock、
+source 与 archive payload 使用同一配置布局：`configs/*.json`、
+`resources/schema/*.json`、`resources/tools/*.json` 和
+`release/{runtime.json,tmux.conf,release.json}`，binary 仍为 payload 根级
+`sn-cli|sn-server`。activation 映射为 active `configs/`、`tools/`、根
+`runtime.json`、`resources/schema/` 和
+`resources/{tmux.conf,release.json}`；active home 自身不是合法 payload reader。
+candidate 读取 payload 自身的 `release/release.json`。在创建 target 目录、lock、
 stage 或停止 server 前，candidate 必须先对 payload 执行完整
-`profile check`，并以 required/no-follow/inode-pinned 方式校验 `runtime.json`、
-`tmux.conf` 和两个具有固定 `$id`/root shape 且可编译的 JSON Schema；构造 staged
-home 后再次验证同一组契约。激活事务先持久化 journal 与 state guard，再用
-no-replace regular file 暂时占用 active `bin/`、`configs/`；
+`profile check`，并以 required/no-follow/inode-pinned 方式校验
+`release/runtime.json`、`resources/tools/`、`release/tmux.conf` 和
+`resources/schema/` 下三个具有固定 `$id`/root shape 且可编译的 JSON Schema；
+构造 staged home 后再次验证同一组契约。激活事务先持久化 schema 3 journal 与
+state guard，再用 no-replace regular file 暂时占用 active `bin/`、`configs/`、
+`tools/`；
 二次进程扫描按 inode 和 PID/start-token 判定。任何无法证明 all-original 或
 all-staged 的恢复状态都保留 guard/barrier，禁止自动放行。journal 在
 `committed|rolled_back` terminal
@@ -432,7 +516,9 @@ queued/running/paused/needs-reconciliation Run、目标 home binary process 或
 任意 unsupported schema 状态都阻止激活。`--overwrite-configs` 不绕过运行态门禁。
 
 唯一例外是仓库根目录的 local-source `make install`：它不是 release/update
-语义，固定覆盖 source configs，并由 staged candidate 在 lifecycle lock 内安全
+语义，固定把 source `configs/`、`resources/tools/`、`release/runtime.json` 与
+其它 managed resource 按 source→active 映射覆盖 active home，并由 staged candidate
+在 lifecycle lock 内安全
 停止 server。该模式仍要求 Tmux 和目标 binary process quiescent，并显式授权在不
 解析现有 Session/Run state 的情况下重置本地运行态；只有 staged artifact 全部提交
 并验证后，才在 guard 下幂等删除
@@ -442,5 +528,6 @@ queued/running/paused/needs-reconciliation Run、目标 home binary process 或
 reset 授权不能由 archive installer 或 `server update` 获得。
 
 所有公开配置、Session/Run fact、SDK request 和 machine output 都必须完整符合当前
-schema。所有有效 CLI/API Profile 同时支持 `sn-cli <id>` 和
-`sn-cli profile <id>`，并由 `type=cli|api` 选择 adapter。
+schema。CLI Profile 只进入 bare direct、`exec`、`session exec` 或 `tmux start`；
+API Profile 只进入 `req`、`session req` 或 `agent`。类型不匹配 fail closed，不提供
+alias、自动迁移或 legacy ingress。

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "name": "web_search",
+  "effect": "read_only",
+  "description": "Search web information, returns results including web page title, web page URL, web page summary, website name, website icon, etc.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "search_query": {
+        "type": "string",
+        "description": "Content to be searched, it is recommended that the search query not exceed 70 characters"
+      },
+      "search_domain_filter": {
+        "type": "string",
+        "description": "Used to limit the scope of search results, only return content from specified whitelist domains, such as: www.example.com."
+      },
+      "search_recency_filter": {
+        "type": "string",
+        "description": "Search for web pages within a specified time range. Default is noLimit Available values:- oneDay, within one day- oneWeek, within one week- oneMonth, within one month- oneYear, within one year- noLimit, no limit (default)"
+      },
+      "content_size": {
+        "type": "string",
+        "description": "Control the number of words in the web page summary; default value is medium - medium: balanced mode, suitable for most queries. 400-600 words.- high: maximize context to provide more comprehensive answers, but higher cost, 2500 words."
+      },
+      "location": {
+        "type": "string",
+        "description": "Guess which region the user is from based on user input. Default is cn Available values: - cn, Chinese region- us, non-Chinese region"
+      }
+    },
+    "required": [
+      "search_query"
+    ],
+    "additionalProperties": false
+  },
+  "executor": {
+    "type": "mcp",
+    "endpoint": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+    "remote_tool": "web_search_prime",
+    "headers": {
+      "Authorization": "Bearer ${Z_AI_API_KEY}"
+    },
+    "timeout": "30s",
+    "max_response_bytes": 1048576
+  }
+}

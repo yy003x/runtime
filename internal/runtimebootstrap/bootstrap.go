@@ -4,12 +4,19 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/yy003x/runtime/agent"
+	"github.com/yy003x/runtime/internal/envref"
+	"github.com/yy003x/runtime/internal/executionlog"
+	"github.com/yy003x/runtime/internal/identity"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimeconfig"
 	"github.com/yy003x/runtime/internal/toolbuiltin"
+	"github.com/yy003x/runtime/internal/toolconfig"
+	"github.com/yy003x/runtime/internal/toolmcp"
+	"github.com/yy003x/runtime/internal/toolruntime"
 	"github.com/yy003x/runtime/model"
 	"github.com/yy003x/runtime/profile"
 	"github.com/yy003x/runtime/provider/anthropic"
@@ -44,12 +51,31 @@ func LoadProfileServices(
 			model.DriverOpenAI:    openai.New(nil),
 			model.DriverAnthropic: anthropic.New(nil),
 		},
-		model.ServiceOptions{},
+		model.ServiceOptions{AttemptObserver: executionAttemptObserver(paths.LogsDir)},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build model service: %w", err)
 	}
 	return &ProfileServices{Profiles: profiles, Models: models}, nil
+}
+
+func executionAttemptObserver(logsDir string) model.AttemptObserver {
+	return func(attempt model.Attempt) {
+		callID, err := identity.New("call")
+		if err != nil {
+			return
+		}
+		_ = executionlog.AppendAPI(logsDir, executionlog.APIRecord{
+			Time:      time.Now(),
+			Namespace: executionlog.Namespace(attempt.Origin.Namespace),
+			Profile:   attempt.ProfileID,
+			Source:    attempt.Origin.Source,
+			CallID:    callID,
+			Request:   attempt.Wire.Request,
+			Response:  attempt.Wire.Response,
+			Error:     attempt.Error,
+		})
+	}
 }
 
 func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error) {
@@ -66,9 +92,10 @@ func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error)
 
 type Services struct {
 	*VNext
-	Sessions *session.Service
-	Runs     *runtime.Service
-	Tools    agent.ToolExecutor
+	Sessions                  *session.Service
+	Runs                      *runtime.Service
+	Tools                     agent.ToolExecutor
+	ToolEnvironmentReferences []string
 }
 
 type SessionServices struct {
@@ -227,6 +254,7 @@ func loadSessionExecutionService(
 	}
 	sessions, err := session.NewService(session.ServiceOptions{
 		Store: sessionStore, Profiles: core.Profiles, Models: core.Models,
+		LogsDir: paths.LogsDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build Session service: %w", err)
@@ -264,11 +292,9 @@ func loadServices(
 	if err != nil {
 		return nil, err
 	}
-	tools, err := toolbuiltin.Build(toolbuiltin.Options{
-		Names: core.Config.Agent.Tools,
-		Roots: core.Config.Agent.WorkspaceRoots,
-		CWD:   cwd,
-	})
+	tools, toolEnvironmentReferences, err := buildAgentTools(
+		paths.ToolsDir, cwd, core.Config.Agent,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("build Agent tools: %w", err)
 	}
@@ -304,5 +330,100 @@ func loadServices(
 	}
 	return &Services{
 		VNext: core, Sessions: sessions, Runs: runs, Tools: tools,
+		ToolEnvironmentReferences: toolEnvironmentReferences,
 	}, nil
+}
+
+func buildAgentTools(
+	toolsDirectory string,
+	cwd string,
+	configuration runtimeconfig.Agent,
+) (*agent.Registry, []string, error) {
+	builtinNames := make([]string, 0, len(configuration.Tools))
+	manifestNames := make([]string, 0, len(configuration.Tools))
+	for _, name := range configuration.Tools {
+		if toolbuiltin.IsBuiltin(name) {
+			builtinNames = append(builtinNames, name)
+			continue
+		}
+		manifestNames = append(manifestNames, name)
+	}
+	components := make([]toolruntime.Component, 0, 2)
+	if len(builtinNames) > 0 {
+		bundle, err := toolbuiltin.BuildBundle(toolbuiltin.Options{
+			Names: builtinNames, Roots: configuration.WorkspaceRoots, CWD: cwd,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		components = append(components, toolruntime.Component{
+			Identity: agent.ToolExecutionIdentity{
+				Implementation:        toolbuiltin.ExecutionImplementation,
+				ImplementationVersion: toolbuiltin.ExecutionImplementationVersion,
+				Configuration:         bundle.Configuration,
+			},
+			Tools: bundle.Tools,
+		})
+	}
+	var references []string
+	catalogRequired := len(manifestNames) > 0
+	if _, err := os.Lstat(toolsDirectory); err == nil || !os.IsNotExist(err) {
+		catalogRequired = true
+	}
+	if catalogRequired {
+		catalog, err := toolconfig.LoadDirectory(toolsDirectory)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load Tool Catalog: %w", err)
+		}
+		for _, name := range catalog.Names() {
+			if toolbuiltin.IsBuiltin(name) {
+				return nil, nil, fmt.Errorf(
+					"Tool Catalog name %q conflicts with a built-in tool", name,
+				)
+			}
+		}
+		if len(manifestNames) > 0 {
+			manifests, err := catalog.Select(manifestNames)
+			if err != nil {
+				return nil, nil, fmt.Errorf("select Tool Catalog entries: %w", err)
+			}
+			bundle, err := toolmcp.Build(manifests, toolmcp.Options{})
+			if err != nil {
+				return nil, nil, fmt.Errorf("build MCP tools: %w", err)
+			}
+			components = append(components, toolruntime.Component{
+				Identity: agent.ToolExecutionIdentity{
+					Implementation:        toolmcp.ExecutionImplementation,
+					ImplementationVersion: toolmcp.ExecutionImplementationVersion,
+					Configuration:         bundle.Configuration,
+				},
+				Tools: bundle.Tools,
+			})
+			references = manifestEnvironmentReferences(manifests)
+		}
+	}
+	registry, err := toolruntime.Build(components...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return registry, references, nil
+}
+
+func manifestEnvironmentReferences(
+	manifests []toolconfig.Manifest,
+) []string {
+	seen := make(map[string]struct{})
+	for _, manifest := range manifests {
+		for _, value := range manifest.Executor.Headers {
+			for _, name := range envref.References(value) {
+				seen[name] = struct{}{}
+			}
+		}
+	}
+	values := make([]string, 0, len(seen))
+	for name := range seen {
+		values = append(values, name)
+	}
+	sort.Strings(values)
+	return values
 }

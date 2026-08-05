@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "name": "web_fetch",
+  "effect": "read_only",
+  "description": "Fetch and Convert URL to Large Model Friendly Input.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The URL of the website to fetch and read"
+      },
+      "timeout": {
+        "type": "integer",
+        "format": "int32",
+        "description": "Request timeout(unit is second), default is 20"
+      },
+      "no_cache": {
+        "type": "boolean",
+        "description": "Disable cache(true/false), default is false"
+      },
+      "return_format": {
+        "type": "string",
+        "description": "Reader response content type (markdown or text), default is markdown"
+      },
+      "retain_images": {
+        "type": "boolean",
+        "description": "Retain images (true/false), default is true"
+      },
+      "no_gfm": {
+        "type": "boolean",
+        "description": "Disable GitHub Flavored Markdown (true/false), default is false"
+      },
+      "keep_img_data_url": {
+        "type": "boolean",
+        "description": "Keep image data URL (true/false), default is false"
+      },
+      "with_images_summary": {
+        "type": "boolean",
+        "description": "Include images summary (true/false), default is false"
+      },
+      "with_links_summary": {
+        "type": "boolean",
+        "description": "Include links summary (true/false), default is false"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false
+  },
+  "executor": {
+    "type": "mcp",
+    "endpoint": "https://open.bigmodel.cn/api/mcp/web_reader/mcp",
+    "remote_tool": "webReader",
+    "headers": {
+      "Authorization": "Bearer ${Z_AI_API_KEY}"
+    },
+    "timeout": "30s",
+    "max_response_bytes": 1048576
+  }
+}

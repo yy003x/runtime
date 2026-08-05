@@ -20,6 +20,7 @@ func TestResolveUsesSNCLIHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	if paths.Home != home || paths.ConfigDir != filepath.Join(home, "configs") ||
+		paths.ToolsDir != filepath.Join(home, "tools") ||
 		paths.RuntimeConfigFile != filepath.Join(home, "runtime.json") ||
 		paths.ResourcesDir != filepath.Join(home, "resources") ||
 		paths.RunDBFile != filepath.Join(home, "state", "runtime.db") ||
@@ -54,7 +55,7 @@ func TestEnsureCreatesPrivateDirectoryTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{
-		paths.BinDir, paths.ConfigDir, paths.ResourcesDir,
+		paths.BinDir, paths.ConfigDir, paths.ToolsDir, paths.ResourcesDir,
 		paths.SchemaDir, paths.SessionsDir, paths.StateDir, paths.TmpDir,
 		paths.TmuxManifestDir,
 	} {

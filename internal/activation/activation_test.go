@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/profileid"
 	"github.com/yy003x/runtime/profile"
 	"github.com/yy003x/runtime/session"
 )
@@ -30,8 +31,7 @@ func TestMain(main *testing.M) {
 				home := os.Getenv(layout.HomeEnv)
 				if _, err := profile.Load(
 					filepath.Join(home, "configs"),
-					"profile", "session", "tmux", "agent", "run",
-					"server", "help", "version",
+					profileid.ReservedNamespaces()...,
 				); err == nil {
 					os.Exit(0)
 				}
@@ -80,8 +80,8 @@ func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
 	value := `{
 		"schema_version":1,
 		"schema_version":1,
-		"activation_epoch":2,
-		"contract_version":3,
+		"activation_epoch":4,
+		"contract_version":4,
 		"session_schema_version":2,
 		"run_schema_version":4
 	}`
@@ -94,6 +94,18 @@ func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
 	if _, _, err := LoadManifest(resources); err == nil ||
 		!strings.Contains(err.Error(), "duplicate field") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReadJournalRejectsPreviousSchema(t *testing.T) {
+	journalPath, journal, _ := preparedTransaction(t)
+	journal.SchemaVersion = 2
+	if err := writeJournal(journalPath, journal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readJournal(journalPath); err == nil ||
+		!strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("previous journal schema error=%v", err)
 	}
 }
 
@@ -154,22 +166,34 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ContractVersion != 3 ||
+	if result.ActivationEpoch != 4 || result.ContractVersion != 4 ||
 		result.SessionSchemaVersion != 2 ||
 		result.RunSchemaVersion != 4 {
 		t.Fatalf("result=%#v", result)
+	}
+	if strings.Join(result.ResourceFiles, ",") !=
+		"release.json,schema/profile.schema.json,schema/runtime.schema.json,schema/tool.schema.json,tmux.conf" {
+		t.Fatalf("resource files=%v", result.ResourceFiles)
 	}
 	for _, path := range []string{
 		filepath.Join(target, "bin", "sn-cli"),
 		filepath.Join(target, "bin", "sn-server"),
 		filepath.Join(target, "configs", "cx.json"),
+		filepath.Join(target, "tools", "web_search.json"),
 		filepath.Join(target, "runtime.json"),
 		filepath.Join(target, "resources", "release.json"),
+		filepath.Join(target, "resources", "schema", "tool.schema.json"),
+		filepath.Join(target, "resources", "tmux.conf"),
 		filepath.Join(target, "bin", "user-helper"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("missing activated path %s: %v", path, err)
 		}
+	}
+	if _, err := os.Lstat(
+		filepath.Join(target, "resources", "tools"),
+	); !os.IsNotExist(err) {
+		t.Fatalf("payload tools leaked into active resources: %v", err)
 	}
 	if _, err := os.Stat(
 		filepath.Join(target, "state", activationGuardName),
@@ -180,6 +204,29 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 		filepath.Join(target, "state", journalName),
 	); !os.IsNotExist(err) {
 		t.Fatalf("activation journal remains: %v", err)
+	}
+}
+
+func TestBuildDesiredHomePreservesToolsAndCopiesMissing(t *testing.T) {
+	payload, target, _ := upgradeFixture(t)
+	seedActiveHome(t, target)
+	desired := filepath.Join(t.TempDir(), "desired")
+	result, err := buildDesiredHome(target, payload, desired, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.CopiedTools, ",") != "web_fetch.json" {
+		t.Fatalf("copied tools=%v", result.CopiedTools)
+	}
+	for path, want := range map[string]string{
+		filepath.Join(desired, "tools", "web_search.json"): "active-web-search",
+		filepath.Join(desired, "tools", "local-only.json"): "active-local-tool",
+		filepath.Join(desired, "tools", "web_fetch.json"):  "payload-web-fetch",
+	} {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || !strings.Contains(string(data), want) {
+			t.Fatalf("%s=%q err=%v", path, data, readErr)
+		}
 	}
 }
 
@@ -214,9 +261,182 @@ func TestUpgradeActivateRejectsUnsupportedRunSchemaBeforeMutation(t *testing.T) 
 	}
 }
 
+func TestUpgradeActivateRejectsMissingPayloadToolsBeforeMutation(t *testing.T) {
+	payload, target, candidate := upgradeFixture(t)
+	if err := os.RemoveAll(
+		filepath.Join(payload, "resources", "tools"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
+		OverwriteConfig: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload resources/tools") {
+		t.Fatalf("missing tools error=%v", err)
+	}
+	assertActivationNotStarted(t, target)
+}
+
+func TestUpgradeActivateRejectsMissingPayloadManifestBeforeMutation(
+	t *testing.T,
+) {
+	payload, target, candidate := upgradeFixture(t)
+	if err := os.Remove(
+		filepath.Join(payload, "release", "release.json"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
+		OverwriteConfig: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload release manifest") {
+		t.Fatalf("legacy manifest error=%v", err)
+	}
+	assertActivationNotStarted(t, target)
+}
+
+func TestUpgradeActivateRejectsUnexpectedPayloadLayoutBeforeMutation(
+	t *testing.T,
+) {
+	for _, testCase := range []struct {
+		name string
+		path []string
+	}{
+		{name: "root_tools", path: []string{"tools", "legacy.json"}},
+		{name: "root_runtime", path: []string{"runtime.json"}},
+		{
+			name: "resources_tmux",
+			path: []string{"resources", "tmux.conf"},
+		},
+		{
+			name: "resources_manifest",
+			path: []string{"resources", "release.json"},
+		},
+		{
+			name: "release_unknown",
+			path: []string{"release", "legacy.json"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			payload, target, candidate := upgradeFixture(t)
+			legacyPath := filepath.Join(
+				append([]string{payload}, testCase.path...)...,
+			)
+			if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(
+				legacyPath, []byte("legacy\n"), 0o600,
+			); err != nil {
+				t.Fatal(err)
+			}
+			_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+				TargetHome: target, PayloadDir: payload,
+				CandidateBinary: candidate, OverwriteConfig: true,
+			})
+			if err == nil || !strings.Contains(err.Error(), "unexpected entry") {
+				t.Fatalf("unexpected payload layout error=%v", err)
+			}
+			assertActivationNotStarted(t, target)
+		})
+	}
+}
+
+func TestUpgradeActivateRejectsInvalidOrUnavailableToolsBeforeMutation(
+	t *testing.T,
+) {
+	t.Run("invalid_payload_manifest", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		if err := os.WriteFile(
+			filepath.Join(
+				payload, "resources", "tools", "web_search.json",
+			),
+			[]byte(`{"unexpected":true}`), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+			TargetHome: target, PayloadDir: payload,
+			CandidateBinary: candidate, OverwriteConfig: true,
+		})
+		if err == nil || !strings.Contains(err.Error(), "payload resources/tools") {
+			t.Fatalf("invalid payload tools error=%v", err)
+		}
+		assertActivationNotStarted(t, target)
+	})
+
+	t.Run("unavailable_configured_tool", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		if err := os.WriteFile(
+			filepath.Join(payload, "release", "runtime.json"),
+			[]byte(`{"agent":{"tools":["missing_tool"]}}`), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+			TargetHome: target, PayloadDir: payload,
+			CandidateBinary: candidate, OverwriteConfig: true,
+		})
+		if err == nil || !strings.Contains(err.Error(), "unavailable") {
+			t.Fatalf("unavailable payload tool error=%v", err)
+		}
+		assertActivationNotStarted(t, target)
+	})
+
+	t.Run("manifest_conflicts_with_builtin", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		if err := os.WriteFile(
+			filepath.Join(
+				payload, "resources", "tools", "read_file.json",
+			),
+			[]byte(toolFixture("read_file", "conflict")), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+			TargetHome: target, PayloadDir: payload,
+			CandidateBinary: candidate, OverwriteConfig: true,
+		})
+		if err == nil || !strings.Contains(err.Error(), "built-in tool") {
+			t.Fatalf("built-in manifest collision error=%v", err)
+		}
+		assertActivationNotStarted(t, target)
+	})
+
+	t.Run("invalid_preserved_tool", func(t *testing.T) {
+		payload, target, candidate := upgradeFixture(t)
+		tools := filepath.Join(target, "tools")
+		if err := os.MkdirAll(tools, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(tools, "local-only.json")
+		if err := os.WriteFile(path, []byte(`{"unexpected":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+			TargetHome: target, PayloadDir: payload,
+			CandidateBinary: candidate,
+		})
+		if err == nil || !strings.Contains(err.Error(), "active tools") {
+			t.Fatalf("invalid active tools error=%v", err)
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || string(data) != `{"unexpected":true}` {
+			t.Fatalf("active tool changed: %q %v", data, readErr)
+		}
+		for _, name := range []string{"bin", "resources", "state", "tmp"} {
+			if _, statErr := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(statErr) {
+				t.Fatalf("failed preflight created %s: %v", name, statErr)
+			}
+		}
+	})
+}
+
 func TestUpgradeActivateRejectsUnsupportedRunSchemaManifestBeforeMutation(t *testing.T) {
 	payload, target, candidate := upgradeFixture(t)
-	manifestPath := filepath.Join(payload, "resources", "release.json")
+	manifestPath := filepath.Join(payload, "release", "release.json")
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +462,7 @@ func TestUpgradeActivateRejectsInvalidRuntimeBeforeMutation(t *testing.T) {
 	t.Run("payload_runtime", func(t *testing.T) {
 		payload, target, candidate := upgradeFixture(t)
 		if err := os.WriteFile(
-			filepath.Join(payload, "runtime.json"),
+			filepath.Join(payload, "release", "runtime.json"),
 			[]byte(`{"definitely_invalid_runtime_field":true}`),
 			0o600,
 		); err != nil {
@@ -263,7 +483,7 @@ func TestUpgradeActivateRejectsInvalidRuntimeBeforeMutation(t *testing.T) {
 			},
 		)
 		if err == nil ||
-			!strings.Contains(err.Error(), "payload runtime.json") {
+			!strings.Contains(err.Error(), "payload release/runtime.json") {
 			t.Fatalf("error=%v", err)
 		}
 		if stopCalls != 0 {
@@ -332,7 +552,9 @@ func TestUpgradeActivateRejectsInvalidProfileBeforeMutation(t *testing.T) {
 func TestActivationRuntimeValidationRequiresRegularFiles(t *testing.T) {
 	t.Run("payload_missing", func(t *testing.T) {
 		payload, target, candidate := upgradeFixture(t)
-		if err := os.Remove(filepath.Join(payload, "runtime.json")); err != nil {
+		if err := os.Remove(
+			filepath.Join(payload, "release", "runtime.json"),
+		); err != nil {
 			t.Fatal(err)
 		}
 		stopCalls := 0
@@ -350,7 +572,7 @@ func TestActivationRuntimeValidationRequiresRegularFiles(t *testing.T) {
 			},
 		)
 		if err == nil ||
-			!strings.Contains(err.Error(), "payload runtime.json") {
+			!strings.Contains(err.Error(), "payload release/runtime.json") {
 			t.Fatalf("error=%v", err)
 		}
 		if stopCalls != 0 {
@@ -384,21 +606,27 @@ func TestActivationRuntimeValidationRequiresRegularFiles(t *testing.T) {
 	})
 
 	t.Run("staged_missing", func(t *testing.T) {
-		payload, _, _ := upgradeFixture(t)
+		payload, target, _ := upgradeFixture(t)
 		manifest, _, err := LoadManifest(
-			filepath.Join(payload, "resources"),
+			filepath.Join(payload, "release"),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := validateDesiredHomeContracts(payload, manifest); err != nil {
+		desired := filepath.Join(t.TempDir(), "desired")
+		if _, err := buildDesiredHome(
+			target, payload, desired, true,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateDesiredHomeContracts(desired, manifest); err != nil {
 			t.Fatalf("complete staged home was rejected: %v", err)
 		}
-		if err := os.Remove(filepath.Join(payload, "runtime.json")); err != nil {
+		if err := os.Remove(filepath.Join(desired, "runtime.json")); err != nil {
 			t.Fatal(err)
 		}
 		if err := validateDesiredHomeContracts(
-			payload, manifest,
+			desired, manifest,
 		); err == nil || !strings.Contains(err.Error(), "staged runtime.json") {
 			t.Fatalf("error=%v", err)
 		}
@@ -416,8 +644,18 @@ func TestUpgradeActivateRejectsIncompleteResourcesBeforeMutation(
 			name: "missing_tmux_config",
 			mutate: func(t *testing.T, payload string) {
 				if err := os.Remove(
-					filepath.Join(payload, "resources", "tmux.conf"),
+					filepath.Join(payload, "release", "tmux.conf"),
 				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "missing_tool_schema",
+			mutate: func(t *testing.T, payload string) {
+				if err := os.Remove(filepath.Join(
+					payload, "resources", "schema", "tool.schema.json",
+				)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -598,6 +836,7 @@ func TestLocalSourceInstallReplacesConfigsAndResetsRuntimeState(
 	}
 	for _, path := range []string{
 		filepath.Join(target, "configs", "old.json"),
+		filepath.Join(target, "tools", "local-only.json"),
 		filepath.Join(target, "sessions"),
 		filepath.Join(target, "state", "session-locks"),
 		filepath.Join(target, "state", "session-invocations"),
@@ -616,6 +855,11 @@ func TestLocalSourceInstallReplacesConfigsAndResetsRuntimeState(
 		filepath.Join(target, "configs", "cx.json"),
 	); err != nil {
 		t.Fatalf("source profile was not installed: %v", err)
+	}
+	if data, err := os.ReadFile(
+		filepath.Join(target, "tools", "web_search.json"),
+	); err != nil || !strings.Contains(string(data), "payload-web-search") {
+		t.Fatalf("source tool was not installed: %q %v", data, err)
 	}
 }
 
@@ -1026,7 +1270,7 @@ func TestActivationRecoveryRejectsMismatchedGuard(t *testing.T) {
 func TestUpgradeActivateRejectsManagedPathSymlinksBeforeMutation(
 	t *testing.T,
 ) {
-	for _, name := range []string{"configs", "tmp"} {
+	for _, name := range []string{"configs", "tools", "tmp"} {
 		t.Run(name, func(t *testing.T) {
 			payload, target, candidate := upgradeFixture(t)
 			t.Setenv("SN_ACTIVATION_TEST_CANDIDATE", "1")
@@ -1383,6 +1627,8 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	for _, directory := range []string{
 		filepath.Join(payload, "configs"),
 		filepath.Join(payload, "resources", "schema"),
+		filepath.Join(payload, "resources", "tools"),
+		filepath.Join(payload, "release"),
 		target,
 	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -1411,7 +1657,15 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 		"{\"type\":\"cli\",\"command\":\"codex\"}\n", 0o600,
 	)
 	writeFixture(
-		filepath.Join(payload, "runtime.json"), "{}\n", 0o600,
+		filepath.Join(payload, "release", "runtime.json"), "{}\n", 0o600,
+	)
+	writeFixture(
+		filepath.Join(payload, "resources", "tools", "web_fetch.json"),
+		toolFixture("web_fetch", "payload-web-fetch"), 0o600,
+	)
+	writeFixture(
+		filepath.Join(payload, "resources", "tools", "web_search.json"),
+		toolFixture("web_search", "payload-web-search"), 0o600,
 	)
 	writeFixture(
 		filepath.Join(payload, "resources", "schema", "profile.schema.json"),
@@ -1434,12 +1688,23 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 		}`+"\n", 0o600,
 	)
 	writeFixture(
-		filepath.Join(payload, "resources", "tmux.conf"),
+		filepath.Join(payload, "resources", "schema", "tool.schema.json"),
+		`{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"$id":"https://github.com/yy003x/runtime/resources/schema/tool.schema.json",
+			"title":"Runtime Tool",
+			"type":"object",
+			"additionalProperties":false,
+			"properties":{}
+		}`+"\n", 0o600,
+	)
+	writeFixture(
+		filepath.Join(payload, "release", "tmux.conf"),
 		"set-option -g status off\n", 0o600,
 	)
 	writeFixture(
-		filepath.Join(payload, "resources", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":2,\"contract_version\":3,\"session_schema_version\":2,\"run_schema_version\":4}\n",
+		filepath.Join(payload, "release", "release.json"),
+		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":4,\"session_schema_version\":2,\"run_schema_version\":4}\n",
 		0o600,
 	)
 	return payload, target, candidate
@@ -1451,7 +1716,7 @@ func inspectStoppedServer() (ManagedServerProcess, error) {
 
 func assertActivationNotStarted(t *testing.T, target string) {
 	t.Helper()
-	for _, name := range []string{"bin", "configs", "resources", "state", "tmp"} {
+	for _, name := range []string{"bin", "configs", "tools", "resources", "state", "tmp"} {
 		if _, err := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(err) {
 			t.Fatalf(
 				"failed preflight created %s: %v",
@@ -1466,6 +1731,7 @@ func seedActiveHome(t *testing.T, target string) {
 	for _, directory := range []string{
 		filepath.Join(target, "bin"),
 		filepath.Join(target, "configs"),
+		filepath.Join(target, "tools"),
 		filepath.Join(target, "resources"),
 	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -1473,12 +1739,14 @@ func seedActiveHome(t *testing.T, target string) {
 		}
 	}
 	for path, value := range map[string]string{
-		filepath.Join(target, "bin", "sn-cli"):        "active-cli",
-		filepath.Join(target, "bin", "sn-server"):     "active-server",
-		filepath.Join(target, "bin", "user-helper"):   "preserve-me",
-		filepath.Join(target, "configs", "old.json"):  "active-profile",
-		filepath.Join(target, "runtime.json"):         "active-runtime",
-		filepath.Join(target, "resources", "old.txt"): "active-resource",
+		filepath.Join(target, "bin", "sn-cli"):            "active-cli",
+		filepath.Join(target, "bin", "sn-server"):         "active-server",
+		filepath.Join(target, "bin", "user-helper"):       "preserve-me",
+		filepath.Join(target, "configs", "old.json"):      "active-profile",
+		filepath.Join(target, "tools", "web_search.json"): toolFixture("web_search", "active-web-search"),
+		filepath.Join(target, "tools", "local-only.json"): toolFixture("local-only", "active-local-tool"),
+		filepath.Join(target, "runtime.json"):             "active-runtime",
+		filepath.Join(target, "resources", "old.txt"):     "active-resource",
 	} {
 		mode := os.FileMode(0o600)
 		if strings.Contains(path, string(filepath.Separator)+"bin"+string(filepath.Separator)) {
@@ -1488,6 +1756,15 @@ func seedActiveHome(t *testing.T, target string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func toolFixture(name, description string) string {
+	return `{"schema_version":1,"name":"` + name +
+		`","effect":"read_only","description":"` + description +
+		`","input_schema":{"type":"object","properties":{},"additionalProperties":false},` +
+		`"executor":{"type":"mcp","endpoint":"https://example.invalid/mcp",` +
+		`"remote_tool":"` + name + `","headers":{},"timeout":"1s",` +
+		`"max_response_bytes":1024}}` + "\n"
 }
 
 func seedRuntimeStateForReset(t *testing.T, target string) {

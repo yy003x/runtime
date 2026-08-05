@@ -81,6 +81,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "binary: $SN_CLI_HOME/bin/sn-cli"
   log "server: $SN_CLI_HOME/bin/sn-server"
   log "profiles: $SN_CLI_HOME/configs"
+  log "tools: $SN_CLI_HOME/tools"
   log "runtime config: $SN_CLI_HOME/runtime.json"
   log "resources: $SN_CLI_HOME/resources"
   log "symlink: $INSTALL_DIR/sn-cli"
@@ -132,7 +133,7 @@ else
   TEMP_SOURCE=""
 fi
 
-for required in go.mod Makefile install.sh configs resources; do
+for required in go.mod Makefile install.sh configs resources release; do
   [ -e "$SOURCE_DIR/$required" ] || die "source checkout is missing $required"
 done
 
@@ -144,8 +145,8 @@ bash "$SOURCE_DIR/install.sh" \
   --binary "$SOURCE_DIR/bin/sn-cli" \
   --server "$SOURCE_DIR/bin/sn-server" \
   --configs "$SOURCE_DIR/configs" \
-  --runtime-config "$SOURCE_DIR/configs/runtime/runtime.json" \
   --resources "$SOURCE_DIR/resources" \
+  --release "$SOURCE_DIR/release" \
   --home "$SN_CLI_HOME" \
   --install-dir "$INSTALL_DIR"
 

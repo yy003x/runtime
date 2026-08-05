@@ -46,8 +46,8 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
   语义，能扛过进程退出。
 - 🗂️ **crash-consistent 会话**——atomic、带 journal 的文件存储，恢复时做 identity 核对
   （不做启发式修复）。
-- 🤖 **自主 agent 循环**——model + 受控 builtin tool（`read_file`、`list_directory`、
-  可选 `write_file`），带预算限制与流式事件。
+- 🤖 **自主 agent 循环**——model + 受控 builtin/MCP tool（默认包含 `web_search`、
+  `web_fetch`），带预算限制、durable effect 与流式事件。
 - 🪟 **长期 tmux 窗口**——专用 tmux server，可按稳定 ID start / send / attach /
   interrupt / stop。
 - 🧪 **严格 JSON Schema 校验**——CLI 与 HTTP 用同一套规则；未知字段与歧义状态 fail closed。
@@ -90,38 +90,39 @@ sn-cli profile check     # 校验每个 profile 的结构
 
 ```bash
 # 一次模型 API 调用（需先设置该 profile 引用的环境变量）
-sn-cli api-cx "回复OK"
+sn-cli req api-cx "回复OK"
 
 # 打开 Codex/Claude 交互 TUI
 sn-cli cx
 
 # 一次性执行 CLI 并等待退出
-sn-cli cx --exec "总结当前仓库"
+sn-cli exec cx "总结当前仓库"
 ```
 
 ### 一次有记录的会话
 
 ```bash
-# 执行一个有记录的 turn，之后跨轮次/provider 复用同一会话
-sn-cli --json session run api-cx "第一轮"      # 从 JSON 取 session_id
-sn-cli session run --session-id <session_id> api-cc "第二轮"
+# 执行一个有记录的 request，之后跨轮次/API profile 复用同一会话
+sn-cli --json session req api-cx "第一轮"      # 从 JSON 取 session_id
+sn-cli session req api-cc --session-id <session_id> "第二轮"
 sn-cli session messages --session-id <session_id> # 读取历史
 ```
 
 ### 一个 durable 后台 run
 
-`session submit` / `run submit` 只入队——必须有 worker 运行才会出队执行。先启动 server：
+`--queue` 只入队——必须有 worker 运行才会出队执行。先启动 server：
 
 ```bash
 sn-cli --json server start
-sn-cli --json session submit --task-id analysis --cwd "$PWD" cx-deep "后台执行"
+sn-cli --json session exec cx-deep --queue --task-id analysis --cwd "$PWD" "后台执行"
 sn-cli run watch --run-id <run_id>     # 流式追踪事件直到 settled
 ```
 
 ### 一次自主 agent 循环
 
 ```bash
-sn-cli agent run --profile api-cx --max-wall-time 20m "审查当前仓库并给出结论"
+sn-cli agent api-cc \
+  "查找 Codex CLI 最新版本，并阅读官方发布页面后总结主要更新。"
 ```
 
 完整命令、参数与端到端工作流见 [sn-cli 详细使用手册](SN-CLI-USAGE.md)。
@@ -131,32 +132,38 @@ sn-cli agent run --profile api-cx --max-wall-time 20m "审查当前仓库并给�
 一个 CLI，多个执行边界。每个入口都有明确的作用范围与持久化目标：
 
 ```text
-sn-cli <id> ──────────┐
-sn-cli profile <id> ──┴─┬─ type=cli ─> Command Bridge ─> CLI process
-                        └─ type=api ─> Model Core ─────> HTTP/SSE
+sn-cli <cli-id> ────────> Command Bridge ─> 交互 CLI process
+sn-cli exec <cli-id> ───> Command Bridge ─> 一次性 CLI process
+sn-cli req <api-id> ────> Model Core ─────> 一次 HTTP/SSE request
 
-sn-cli session ... ───> Session Service ──> command or model
+sn-cli session exec|req ─> Session Service ─> command or model
 sn-cli tmux ... ───────> Tmux Service ─────> interactive command window
-sn-cli agent run ─────> Agent Kernel ─────> model + configured tools
-sn-cli run ... ───────> Run Harness ──────> SQLite WAL
+sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
+sn-cli run ... ────────> Run Harness ──────> SQLite WAL 控制面
 ```
 
 | 入口 | 作用 | 持久化 |
 |---|---|---|
-| `sn-cli <profile-id>` | 一次 CLI/API profile 调用（不记录） | 无 |
-| `sn-cli profile <profile-id>` | 与隐式入口完全等价 | 无 |
-| `sn-cli session run\|submit` | Session / Turn / Message / Event / Execution | 文件型 session |
-| `sn-cli tmux ...` | 专用 tmux 交互窗口 | tmux registry（不存 transcript） |
-| `sn-cli agent run` | API-only model/tool 循环 | durable run（session 可选） |
-| `sn-cli run ...` | durable run 队列与控制面 | SQLite WAL |
+| `sn-cli <cli-profile-id>` | CLI 交互 direct 调用 | 本地 `cli.jsonl`；无 Session/Run |
+| `sn-cli exec <cli-profile-id>` | CLI 非交互一次执行 | 本地 `cli.jsonl`；无 Session/Run |
+| `sn-cli req <api-profile-id>` | 一次 API request | 本地 `api.jsonl`；无 Session/Run |
+| `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | 文件型 session；本地执行日志；可选 durable run |
+| `sn-cli tmux ...` | 专用 tmux 交互窗口 | tmux registry 与本地 CLI 日志（不存 transcript） |
+| `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool 循环 | durable run；每轮本地 API 日志（session 可选） |
+| `sn-cli run ...` | 查询和控制已有 durable run | SQLite WAL |
 
 几条最重要的边界：
 
-- 一个 **profile** 要么是 `cli`（包裹 CLI），要么是 `api`（调用模型）。`type` 决定 adapter。
+- 一个 **profile** 要么是 `cli`（包裹 CLI），要么是 `api`（调用模型）。namespace
+  选择执行契约，`type` 校验 Profile 是否属于该入口。
 - **session 永不自动执行 tool call**——模型返回 tool call 时 turn 停在 `requires_action`。
-  自主工具循环属于 `agent run`。
+  自主工具循环属于 `agent`。
 - **tmux 不创建 session**——它只管理一个交互窗口。
 - **提交 run 不会自动启动 server**——入队与执行是解耦的。
+
+本地执行日志位于 `${SN_CLI_HOME}/logs/YYMMDD/{cli,api}.jsonl`，只是
+best-effort 诊断，不是 Session/Run canonical state，也不用于 replay；日志失败不会
+改变执行结果。查询与 queue submit 不写日志，worker 真正执行后才写。
 
 精确契约（状态机、crash 恢复、digest/drift 门禁、文件系统安全模型）在
 [契约文档](#文档)里；本 README 只停留在使用层面。
@@ -166,10 +173,16 @@ sn-cli run ... ───────> Run Harness ──────> SQLite WAL
 Profile 是单层配置——每个 profile 一个 JSON 文件：
 
 ```text
-<runtime-home>/configs/<profile-id>.json   # 源：configs/*.json
-<runtime-home>/runtime.json                # 源：configs/runtime/runtime.json
-<runtime-home>/resources/                  # JSON schema、tmux.conf、release.json
+source/payload configs/<profile-id>.json     → <runtime-home>/configs/<profile-id>.json
+source/payload resources/tools/<tool>.json  → <runtime-home>/tools/<tool>.json
+source/payload release/runtime.json         → <runtime-home>/runtime.json
+source/payload resources/schema/*.json      → <runtime-home>/resources/schema/*.json
+source/payload release/tmux.conf            → <runtime-home>/resources/tmux.conf
+source/payload release/release.json         → <runtime-home>/resources/release.json
 ```
+
+仓库 source tree 与每个 release archive 使用左侧同一布局；只有 activation 负责映射到
+active home。active home 不是 source 或 archive template。
 
 Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API profile 指向一个 provider：
 
@@ -196,8 +209,9 @@ Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API 
 ```
 
 secret 通过 headers 中的 `${VAR}` 引用从环境变量读取，profile 只存引用名不存值；openai
-driver 对裸 `Authorization` 自动补 `Bearer` scheme，anthropic 不补。`runtime.json` 配置
-agent 的 builtin tool、预算、scheduler 与 run retention。完整字段、覆盖顺序与示例见
+driver 对裸 `Authorization` 自动补 `Bearer` scheme，anthropic 不补。`runtime.json`
+选择 Agent tool、预算、scheduler 与 run retention；source `resources/tools/` 默认交付
+使用 `Z_AI_API_KEY` 的 `web_search` / `web_fetch` MCP manifest。完整字段、覆盖顺序与示例见
 [sn-cli 详细使用手册](SN-CLI-USAGE.md)与[配置契约](docs/configuration.md)。
 
 ## 目录架构
@@ -214,14 +228,15 @@ tmux/        专用 tmux server / window 管理
 provider/    openai/ + anthropic/ driver
 store/sqlite/  run store adapter
 transport/   http/（HTTP/SSE）adapter
-internal/    cli adapter、runtime bootstrap、config loader、builtin tool
+internal/    cli adapter、runtime bootstrap、config loader、builtin/MCP tool
 cmd/         sn-cli、sn-server 入口
-configs/     源 CLI/API profile + runtime 模板
-resources/   严格 JSON schema、tmux.conf、release.json
+configs/     源 CLI/API profile
+resources/   schema/ + 源 tools/（未来 skills/、mcp/ 资产也留在这里）
+release/     runtime.json、tmux.conf 与 release.json payload 模板
 ```
 
 领域包不读 CLI 参数、不打开配置目录、不依赖 HTTP。`internal/runtimebootstrap` 是
-composition root；provider、SQLite、CLI、HTTP 和 builtin tool 都是 adapter。
+composition root；provider、SQLite、CLI、HTTP 和 tool executor 都是 adapter。
 
 ## 文档
 

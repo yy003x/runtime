@@ -144,8 +144,8 @@ install: build sn-cli-build
 			--binary "$${RUNTIME_ROOT}/bin/sn-cli" \
 			--server "$${RUNTIME_ROOT}/bin/sn-server" \
 			--configs "$${RUNTIME_ROOT}/configs" \
-			--runtime-config "$${RUNTIME_ROOT}/configs/runtime/runtime.json" \
 			--resources "$${RUNTIME_ROOT}/resources" \
+			--release "$${RUNTIME_ROOT}/release" \
 			--local-source-install
 
 sn-cli-install: install
@@ -168,7 +168,7 @@ sn-cli-test:
 
 sn-cli-doctor: sn-cli-build
 	@$(MAKE_STEP) --live --stage sn-cli-doctor --meta home=temporary -- \
-		bash -c 'set -euo pipefail; home="$$(mktemp -d)"; cleanup() { rm -rf -- "$$home"; }; trap cleanup EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM; mkdir -p "$$home/configs" "$$home/resources"; cp "$${RUNTIME_ROOT}"/configs/*.json "$$home/configs/"; cp "$${RUNTIME_ROOT}/configs/runtime/runtime.json" "$$home/runtime.json"; cp -R "$${RUNTIME_ROOT}/resources/." "$$home/resources/"; SN_CLI_HOME="$$home" "$${RUNTIME_ROOT}/bin/sn-cli" profile check >/dev/null; SN_CLI_HOME="$$home" "$${RUNTIME_ROOT}/bin/sn-cli" server info'
+		bash -c 'set -euo pipefail; home="$$(mktemp -d)"; cleanup() { rm -rf -- "$$home"; }; trap cleanup EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM; mkdir -p "$$home/configs" "$$home/tools" "$$home/resources/schema"; cp "$${RUNTIME_ROOT}"/configs/*.json "$$home/configs/"; cp "$${RUNTIME_ROOT}"/resources/tools/*.json "$$home/tools/"; cp "$${RUNTIME_ROOT}/release/runtime.json" "$$home/runtime.json"; cp -R "$${RUNTIME_ROOT}/resources/schema/." "$$home/resources/schema/"; cp "$${RUNTIME_ROOT}/release/release.json" "$${RUNTIME_ROOT}/release/tmux.conf" "$$home/resources/"; SN_CLI_HOME="$$home" "$${RUNTIME_ROOT}/bin/sn-cli" profile check >/dev/null; SN_CLI_HOME="$$home" "$${RUNTIME_ROOT}/bin/sn-cli" server info'
 
 run:
 	@$(MAKE_STEP) --live --stage run --meta "address=$${SERVER_ADDR}" -- \

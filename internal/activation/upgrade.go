@@ -24,6 +24,8 @@ import (
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimeconfig"
 	"github.com/yy003x/runtime/internal/strictjson"
+	"github.com/yy003x/runtime/internal/toolbuiltin"
+	"github.com/yy003x/runtime/internal/toolconfig"
 )
 
 const (
@@ -31,7 +33,7 @@ const (
 	lifecycleLockName   = "sn-server.lifecycle.lock"
 	activationGuardName = "activation.guard.json"
 	journalName         = "activation.journal.json"
-	journalSchema       = 2
+	journalSchema       = 3
 )
 
 // UpgradeRequest describes a normalized release payload. The running
@@ -60,6 +62,7 @@ type ManagedServerProcess struct {
 type UpgradeResult struct {
 	TargetHome           string   `json:"target_home"`
 	CopiedProfiles       []string `json:"copied_profiles"`
+	CopiedTools          []string `json:"copied_tools"`
 	CopiedRuntimeConfig  bool     `json:"copied_runtime_config"`
 	ReplacedResources    bool     `json:"replaced_resources"`
 	ResourceFiles        []string `json:"resource_files"`
@@ -133,11 +136,12 @@ func UpgradeActivate(
 			"server quiescence callback is only valid for local source install",
 		)
 	}
-	manifest, _, err := LoadManifest(filepath.Join(payload, "resources"))
+	payloadLayout := newReleasePayloadLayout(payload)
+	manifest, _, err := LoadManifest(payloadLayout.ReleaseDir)
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("load payload release manifest: %w", err)
 	}
-	if manifest.ActivationEpoch != 2 || manifest.ContractVersion != 3 ||
+	if manifest.ActivationEpoch != 4 || manifest.ContractVersion != 4 ||
 		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 4 {
 		return UpgradeResult{}, fmt.Errorf(
 			"payload activation contract is incompatible: epoch=%d contract=%d session_schema=%d run_schema=%d",
@@ -445,7 +449,7 @@ func managedServerExclusions(
 
 func validateActiveHomeShape(target string) error {
 	for _, name := range []string{
-		"bin", "configs", "resources",
+		"bin", "configs", "tools", "resources",
 		"sessions", "state", "tmp",
 	} {
 		path := filepath.Join(target, name)
@@ -560,6 +564,7 @@ func normalizeUpgradeRequest(
 }
 
 func validatePayload(payload, candidate string) error {
+	payloadLayout := newReleasePayloadLayout(payload)
 	for _, name := range []string{"sn-cli", "sn-server"} {
 		path := filepath.Join(payload, name)
 		info, err := os.Lstat(path)
@@ -568,7 +573,7 @@ func validatePayload(payload, candidate string) error {
 			return fmt.Errorf("payload %s must be a regular executable", name)
 		}
 	}
-	for _, name := range []string{"configs", "resources"} {
+	for _, name := range []string{"configs", "resources", "release"} {
 		path := filepath.Join(payload, name)
 		info, err := os.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
@@ -578,23 +583,114 @@ func validatePayload(payload, candidate string) error {
 			return err
 		}
 	}
-	runtimeConfig := filepath.Join(payload, "runtime.json")
-	info, err := os.Lstat(runtimeConfig)
+	if err := validatePayloadLayoutEntries(payload); err != nil {
+		return err
+	}
+	for _, required := range []struct {
+		name string
+		path string
+	}{
+		{name: "resources/schema", path: payloadLayout.SchemaDir},
+		{name: "resources/tools", path: payloadLayout.ToolsDir},
+	} {
+		info, err := os.Lstat(required.path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf(
+				"payload %s must be a directory", required.name,
+			)
+		}
+	}
+	info, err := os.Lstat(payloadLayout.RuntimeConfigFile)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 ||
 		!info.Mode().IsRegular() {
-		return fmt.Errorf("payload runtime.json must be a regular file")
+		return fmt.Errorf(
+			"payload release/runtime.json must be a regular file",
+		)
 	}
 	_ = candidate
 	return nil
+}
+
+func validatePayloadLayoutEntries(payload string) error {
+	for _, directory := range []struct {
+		label   string
+		path    string
+		allowed []string
+	}{
+		{
+			label: "root", path: payload,
+			allowed: []string{
+				"sn-cli", "sn-server", "configs", "resources", "release",
+			},
+		},
+		{
+			label: "resources", path: filepath.Join(payload, "resources"),
+			allowed: []string{"schema", "tools"},
+		},
+		{
+			label: "release", path: filepath.Join(payload, "release"),
+			allowed: []string{"release.json", "runtime.json", "tmux.conf"},
+		},
+	} {
+		allowed := make(map[string]struct{}, len(directory.allowed))
+		for _, name := range directory.allowed {
+			allowed[name] = struct{}{}
+		}
+		entries, err := os.ReadDir(directory.path)
+		if err != nil {
+			return fmt.Errorf("read payload %s directory: %w", directory.label, err)
+		}
+		for _, entry := range entries {
+			if _, exists := allowed[entry.Name()]; !exists {
+				return fmt.Errorf(
+					"payload %s contains unexpected entry %q",
+					directory.label, entry.Name(),
+				)
+			}
+		}
+	}
+	return nil
+}
+
+type releasePayloadLayout struct {
+	SchemaDir         string
+	ToolsDir          string
+	ReleaseDir        string
+	RuntimeConfigFile string
+	TmuxConfigFile    string
+}
+
+func newReleasePayloadLayout(root string) releasePayloadLayout {
+	resources := filepath.Join(root, "resources")
+	release := filepath.Join(root, "release")
+	return releasePayloadLayout{
+		SchemaDir:         filepath.Join(resources, "schema"),
+		ToolsDir:          filepath.Join(resources, "tools"),
+		ReleaseDir:        release,
+		RuntimeConfigFile: filepath.Join(release, "runtime.json"),
+		TmuxConfigFile:    filepath.Join(release, "tmux.conf"),
+	}
 }
 
 func validatePayloadContracts(
 	target, payload string,
 	overwrite bool,
 ) error {
-	payloadRuntime := filepath.Join(payload, "runtime.json")
-	if _, err := runtimeconfig.LoadRequired(payloadRuntime); err != nil {
-		return fmt.Errorf("validate payload runtime.json: %w", err)
+	payloadLayout := newReleasePayloadLayout(payload)
+	payloadConfig, err := runtimeconfig.LoadRequired(
+		payloadLayout.RuntimeConfigFile,
+	)
+	if err != nil {
+		return fmt.Errorf("validate payload release/runtime.json: %w", err)
+	}
+	payloadTools, err := toolconfig.LoadDirectory(
+		payloadLayout.ToolsDir,
+	)
+	if err != nil {
+		return fmt.Errorf("validate payload resources/tools: %w", err)
+	}
+	if err := validateToolSelection(payloadConfig, payloadTools); err != nil {
+		return fmt.Errorf("validate payload Agent tools: %w", err)
 	}
 	if !overwrite {
 		activeRuntime := filepath.Join(target, "runtime.json")
@@ -605,19 +701,37 @@ func validatePayloadContracts(
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("inspect active runtime.json: %w", err)
 		}
+		activeTools := filepath.Join(target, "tools")
+		if _, err := os.Lstat(activeTools); err == nil {
+			if _, err := toolconfig.LoadDirectory(activeTools); err != nil {
+				return fmt.Errorf("validate active tools: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect active tools: %w", err)
+		}
 	}
 
-	return validateRequiredResources(filepath.Join(payload, "resources"))
+	return validatePayloadManagedFiles(payloadLayout)
 }
 
 func validateDesiredHomeContracts(
 	desired string,
 	expectedManifest Manifest,
 ) error {
-	if _, err := runtimeconfig.LoadRequired(
+	stagedConfig, err := runtimeconfig.LoadRequired(
 		filepath.Join(desired, "runtime.json"),
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("validate staged runtime.json: %w", err)
+	}
+	stagedTools, err := toolconfig.LoadDirectory(
+		filepath.Join(desired, "tools"),
+	)
+	if err != nil {
+		return fmt.Errorf("validate staged tools: %w", err)
+	}
+	if err := validateToolSelection(stagedConfig, stagedTools); err != nil {
+		return fmt.Errorf("validate staged Agent tools: %w", err)
 	}
 	resources := filepath.Join(desired, "resources")
 	manifest, _, err := LoadManifest(resources)
@@ -633,8 +747,40 @@ func validateDesiredHomeContracts(
 	return nil
 }
 
+func validateToolSelection(
+	config runtimeconfig.Config,
+	catalog *toolconfig.Catalog,
+) error {
+	for _, name := range catalog.Names() {
+		if toolbuiltin.IsBuiltin(name) {
+			return fmt.Errorf(
+				"tool manifest %q conflicts with a built-in tool", name,
+			)
+		}
+	}
+	for _, name := range config.Agent.Tools {
+		if toolbuiltin.IsBuiltin(name) {
+			continue
+		}
+		if _, exists := catalog.Get(name); !exists {
+			return fmt.Errorf("configured tool %q is unavailable", name)
+		}
+	}
+	return nil
+}
+
 func validateRequiredResources(resources string) error {
-	tmuxConfig := filepath.Join(resources, "tmux.conf")
+	return validateManagedFiles(
+		filepath.Join(resources, "schema"),
+		filepath.Join(resources, "tmux.conf"),
+	)
+}
+
+func validatePayloadManagedFiles(layout releasePayloadLayout) error {
+	return validateManagedFiles(layout.SchemaDir, layout.TmuxConfigFile)
+}
+
+func validateManagedFiles(schemaDir, tmuxConfig string) error {
 	if _, err := readRegular(tmuxConfig, 1<<20); err != nil {
 		return fmt.Errorf(
 			"validate tmux.conf as a no-follow regular file: %w",
@@ -642,9 +788,9 @@ func validateRequiredResources(resources string) error {
 		)
 	}
 	for _, name := range []string{
-		"profile.schema.json", "runtime.schema.json",
+		"profile.schema.json", "runtime.schema.json", "tool.schema.json",
 	} {
-		path := filepath.Join(resources, "schema", name)
+		path := filepath.Join(schemaDir, name)
 		if err := validateJSONSchema(path); err != nil {
 			return fmt.Errorf(
 				"validate schema/%s: %w", name, err,
@@ -725,6 +871,15 @@ func validateSchemaIdentity(name string, raw json.RawMessage) error {
 				)
 			}
 		}
+	case "tool.schema.json":
+		const id = "https://github.com/yy003x/runtime/resources/schema/tool.schema.json"
+		if identity.ID != id ||
+			identity.Title != "Runtime Tool" ||
+			identity.Type != "object" ||
+			identity.AdditionalProperties == nil ||
+			*identity.AdditionalProperties {
+			return fmt.Errorf("tool JSON Schema identity or root shape is invalid")
+		}
 	default:
 		return fmt.Errorf("unexpected Runtime JSON Schema %q", name)
 	}
@@ -735,9 +890,11 @@ func buildDesiredHome(
 	target, payload, desired string,
 	overwrite bool,
 ) (UpgradeResult, error) {
+	payloadLayout := newReleasePayloadLayout(payload)
 	for _, directory := range []string{
 		desired,
 		filepath.Join(desired, "configs"),
+		filepath.Join(desired, "tools"),
 		filepath.Join(desired, "resources"),
 		filepath.Join(desired, "bin"),
 	} {
@@ -761,15 +918,8 @@ func buildDesiredHome(
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return UpgradeResult{}, statErr
 	}
-	resourceFiles, err := regularRelativeFiles(
-		filepath.Join(payload, "resources"),
-	)
-	if err != nil {
-		return UpgradeResult{}, err
-	}
-	result.ResourceFiles = resourceFiles
 	if !overwrite {
-		for _, name := range []string{"configs"} {
+		for _, name := range []string{"configs", "tools"} {
 			source := filepath.Join(target, name)
 			if info, err := os.Lstat(source); err == nil {
 				if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
@@ -793,6 +943,14 @@ func buildDesiredHome(
 		return UpgradeResult{}, err
 	}
 	result.CopiedProfiles = profiles
+	tools, err := copyMissingNames(
+		payloadLayout.ToolsDir,
+		filepath.Join(desired, "tools"),
+	)
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+	result.CopiedTools = tools
 	if overwrite {
 		result.CopiedProfiles, err = regularRelativeFiles(
 			filepath.Join(payload, "configs"),
@@ -800,15 +958,47 @@ func buildDesiredHome(
 		if err != nil {
 			return UpgradeResult{}, err
 		}
+		result.CopiedTools, err = regularRelativeFiles(
+			payloadLayout.ToolsDir,
+		)
+		if err != nil {
+			return UpgradeResult{}, err
+		}
 	}
 	if err := copyTree(
-		filepath.Join(payload, "resources"),
-		filepath.Join(desired, "resources"), true,
+		payloadLayout.SchemaDir,
+		filepath.Join(desired, "resources", "schema"), true,
 	); err != nil {
 		return UpgradeResult{}, err
 	}
+	for _, file := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "release.json",
+			source: filepath.Join(
+				payloadLayout.ReleaseDir, "release.json",
+			),
+		},
+		{name: "tmux.conf", source: payloadLayout.TmuxConfigFile},
+	} {
+		if err := copyRegular(
+			file.source,
+			filepath.Join(desired, "resources", file.name), 0o600,
+		); err != nil {
+			return UpgradeResult{}, err
+		}
+	}
+	resourceFiles, err := regularRelativeFiles(
+		filepath.Join(desired, "resources"),
+	)
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+	result.ResourceFiles = resourceFiles
 	activeRuntime := filepath.Join(target, "runtime.json")
-	runtimeSource := filepath.Join(payload, "runtime.json")
+	runtimeSource := payloadLayout.RuntimeConfigFile
 	if !overwrite {
 		if info, statErr := os.Lstat(activeRuntime); statErr == nil {
 			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
@@ -906,15 +1096,17 @@ func validateCandidateCommand(
 }
 
 var transactionArtifactNames = []string{
-	"resources", "runtime.json", "bin", "configs",
+	"resources", "runtime.json", "bin", "configs", "tools",
 }
+
+var transactionBarrierNames = []string{"bin", "configs", "tools"}
 
 func barrierFile(stageRoot, name string) string {
 	return filepath.Join(stageRoot, "barriers", name)
 }
 
 func prepareBarrierFiles(stageRoot string, guard []byte) error {
-	for _, name := range []string{"bin", "configs"} {
+	for _, name := range transactionBarrierNames {
 		if err := writeActivationGuard(
 			barrierFile(stageRoot, name), guard,
 		); err != nil {
@@ -973,7 +1165,7 @@ func installActivationBarriers(
 	journalPath string,
 	journal *transactionJournal,
 ) error {
-	for _, name := range []string{"bin", "configs"} {
+	for _, name := range transactionBarrierNames {
 		artifact, err := journalArtifact(journal, name)
 		if err != nil {
 			return err
@@ -1027,7 +1219,7 @@ func commitUpgradeTransaction(
 			return rollbackAfterCommitError(journalPath, *journal, err)
 		}
 		switch name {
-		case "bin", "configs":
+		case "bin", "configs", "tools":
 			exists, digest, inspectErr := pathDigest(artifact.Target)
 			if inspectErr != nil {
 				return rollbackAfterCommitError(
@@ -1135,7 +1327,7 @@ func recoverUpgradeTransaction(target, journalPath string) error {
 				activeGuard,
 			)
 		}
-		for _, name := range []string{"bin", "configs"} {
+		for _, name := range transactionBarrierNames {
 			path := filepath.Join(target, name)
 			if info, statErr := os.Lstat(path); statErr == nil &&
 				info.Mode().IsRegular() {
@@ -1228,14 +1420,14 @@ func rollbackUpgradeTransaction(
 		}
 	}
 	for _, name := range []string{
-		"configs", "runtime.json", "resources",
+		"tools", "configs", "runtime.json", "resources",
 	} {
 		artifact, err := journalArtifact(&journal, name)
 		if err != nil {
 			return err
 		}
 		if err := restoreArtifact(
-			journal, *artifact, name == "configs",
+			journal, *artifact, name == "configs" || name == "tools",
 		); err != nil {
 			return err
 		}

@@ -12,8 +12,48 @@ import (
 )
 
 func TestDefaultIsValid(t *testing.T) {
-	if err := Default().Validate(); err != nil {
+	value := Default()
+	if err := value.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	want := []string{"read_file", "list_directory", "web_search", "web_fetch"}
+	if len(value.Agent.Tools) != len(want) {
+		t.Fatalf("default tools=%#v", value.Agent.Tools)
+	}
+	for index := range want {
+		if value.Agent.Tools[index] != want[index] {
+			t.Fatalf("default tools=%#v", value.Agent.Tools)
+		}
+	}
+}
+
+func TestValidateAgentToolsUsesManifestNameContract(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "custom_tool", valid: true},
+		{name: "WebSearch2", valid: true},
+		{name: "_private"},
+		{name: "web.search"},
+		{name: strings.Repeat("a", 65)},
+	} {
+		config := Default()
+		config.Agent.Tools = []string{testCase.name}
+		err := config.Validate()
+		if (err == nil) != testCase.valid {
+			t.Fatalf("name=%q valid=%t error=%v", testCase.name, testCase.valid, err)
+		}
+	}
+	config := Default()
+	config.Agent.Tools = make([]string, maxAgentTools+1)
+	for index := range config.Agent.Tools {
+		config.Agent.Tools[index] = "tool" + strings.Repeat("a", index/10) +
+			string(rune('a'+index%10))
+	}
+	if err := config.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "must not exceed") {
+		t.Fatalf("oversized tool selection error=%v", err)
 	}
 }
 
@@ -36,7 +76,7 @@ func TestLoadOverlaysDefaultsAndRejectsUnknownConfiguration(t *testing.T) {
 	}
 	for _, document := range []string{
 		`{"unknown":true}`,
-		`{"agent":{"tools":["unknown"]}}`,
+		`{"agent":{"tools":["invalid.tool"]}}`,
 		`{"agent":{"workspace_roots":["/tmp","/tmp/"]}}`,
 	} {
 		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
@@ -122,7 +162,7 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "complete",
 			document: `{
 				"agent":{
-					"tools":["read_file","write_file"],
+					"tools":["read_file","web_search"],
 					"workspace_roots":["/tmp/work"],
 					"max_rounds":32,
 					"max_tool_calls":128,
@@ -146,10 +186,10 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name:     "null_workspace_roots",
 			document: `{"agent":{"workspace_roots":null}}`,
 		},
-		{
-			name:     "unsupported_tool",
-			document: `{"agent":{"tools":["unknown"]}}`,
-		},
+		{name: "manifest_tool", document: `{"agent":{"tools":["custom_tool"]}}`, valid: true},
+		{name: "tool_starts_with_underscore", document: `{"agent":{"tools":["_tool"]}}`},
+		{name: "tool_contains_dot", document: `{"agent":{"tools":["web.search"]}}`},
+		{name: "tool_name_too_long", document: `{"agent":{"tools":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}}`},
 		{
 			name:     "duplicate_tool",
 			document: `{"agent":{"tools":["read_file","read_file"]}}`,
@@ -259,7 +299,7 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		})
 	}
 	sourceConfig := filepath.Join(
-		filepath.Dir(source), "..", "..", "configs", "runtime",
+		filepath.Dir(source), "..", "..", "release",
 		"runtime.json",
 	)
 	data, err := os.ReadFile(sourceConfig)

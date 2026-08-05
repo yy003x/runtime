@@ -9,10 +9,11 @@ CLI/HTTP 传入 prompt、correlation ID 和有限 labels，不直接读写
 
 ```text
 Business Orchestrator
-  ├─ one shot ───────> <id> / profile <id>
-  ├─ recorded turn ──> session run|submit
+  ├─ CLI direct ─────> <cli-id>
+  ├─ one shot ───────> exec <cli-id> / req <api-id>
+  ├─ recorded turn ──> session exec|req [--queue]
   ├─ interactive TUI > tmux start|send|attach
-  └─ tool loop ──────> agent run / run submit
+  └─ tool loop ──────> agent <api-id> [--queue]
 
 Runtime
   ├─ Command Adapter
@@ -20,6 +21,7 @@ Runtime
   ├─ Session Service
   ├─ Tmux Service
   ├─ Agent Kernel
+  ├─ Tool Catalog / MCP Adapter
   └─ Run Harness
 ```
 
@@ -28,22 +30,32 @@ Runtime Tmux window 只暴露 `tmux_id`，三者不共享 identity 或 storage�
 
 ## 公开入口边界
 
-- `<api-id>` / `profile <api-id>` ↔ `POST /v1/model/generate`：等价的一次 API
-  model call；
-- `<cli-id>` / `profile <cli-id>`：等价的本机 process replacement，无 HTTP
-  等价入口；
-- `session run|submit` ↔ Session Turn/Run HTTP：记录 canonical Turn；
+- `req <api-id>` ↔ `POST /v1/model/generate`：一次 API model call；
+- `<cli-id>` / `exec <cli-id>`：分别是 interactive direct 与 non-interactive
+  本机 process replacement，无 HTTP 等价入口；
+- `session exec|req <profile> [--queue]` ↔ Session Turn/Run HTTP：记录 canonical
+  Turn；
 - `tmux ...`：本机 human/management CLI，不暴露 HTTP；
-- `agent run` ↔ `POST /v1/agent/run`：durable API-only Agent；
-- `run submit` ↔ `POST /v1/runs`：queued Run。
+- `agent <api-id> [--queue]` ↔ `POST /v1/agent/run` / `POST /v1/runs`：同步或
+  queued durable API-only Agent；
+- `run ...` 只查询或控制已经创建的 Durable Run。
 
-机器调用 CLI 管理面必须用 leading global `sn-cli --json ...`。隐式和显式 CLI
-Profile 是相同的目标进程边界，不为获取结构化结果而包装 stdout/stderr。Session
-CLI executor 则由 Runtime 自己启动 canonical managed subprocess。
+机器调用 CLI 管理面必须用 leading global `sn-cli --json ...`。bare CLI direct 与
+`exec` 都继承目标进程 stdout/stderr/exit，不为获取结构化结果而包装输出。Session
+CLI executor 则由 Runtime 自己启动 canonical managed subprocess。Profile ID 紧跟
+拥有它的执行 namespace，option 位于其后，input 必须最后。
 
 HTTP 不接受 command upload、env、任意 Provider payload 或 tool handler。Server
 只能选择启动时加载的 Profile 和注册 tool；CLI executor 的 HTTP cwd 必须来自
 absolute request/Profile 配置，不能使用 server 启动 cwd。
+
+`${SN_CLI_HOME}/logs/YYMMDD/{cli,api}.jsonl` 是 Runtime 自用的 best-effort 本地
+execution diagnostics，不是公开集成入口、canonical state 或 completion signal。
+业务调用方不得直接读取它来驱动 workflow；应继续使用 CLI/HTTP result、Session
+facts、Run records 和 event sequence。queue submit 本身不写日志，worker 的实际
+Profile execution 才写；日志丢失不改变执行状态。
+MCP HTTP 不是 Profile Provider attempt，不写 `api.jsonl`；Agent tool effect/event
+才是它的 durable evidence。
 
 ## Durable Agent execution identity
 
@@ -51,7 +63,7 @@ Agent Run 在进入 SQLite queue 前冻结 private non-secret execution snapshot
 只记录一个可重新解释的 Profile ID：
 
 ```text
-submit / retry
+agent or session --queue / retry
   → freeze or verify Agent + model/Provider + tool snapshot
   → persist combined request_digest/config_digest
   → create queued Run
@@ -66,8 +78,9 @@ terminal / cancel / reconcile
 ```
 
 model snapshot 保存完整 API Profile、Profile digest 和 concrete driver semantic
-identity；tool snapshot 保存 implementation/version、canonical roots/cwd
-configuration 和 definitions。绑定 Session 时另存 Session 自己的
+identity；tool snapshot 保存 composite/builtin/MCP implementation/version、
+canonical non-secret manifest/roots/cwd configuration 和 definitions。MCP header
+只冻结 `${VAR}` 引用，不冻结 resolved secret。绑定 Session 时另存 Session 自己的
 `session_request_digest/session_config_digest`，不把 combined Agent digest 混入
 Session facts。headers 只冻结 `${VAR}` 引用名，resolved secret value 不冻结；相同引用名
 下的 secret rotation 允许在下一次 Provider call 生效。
@@ -82,8 +95,8 @@ composition 按动作最小化：
 - `run get|list|result|events|watch` 只加载 Run Store；
 - `run gc` 只加载 Run Store；省略 `--older-than` 时额外只读取 retention 配置；
 - `run cancel|reconcile` 只加载 Run Store 与 Session maintenance service；
-- `run submit|resume|retry` 和 worker execution 才加载 current
-  Profile/Provider/tool/runtime execution dependencies。
+- `run resume|retry`、带 `--queue` 的 `session exec|req`、`agent [--queue]` 和 worker
+  execution 才加载 current Profile/Provider/tool/runtime execution dependencies。
 
 private 仅表示不经公共 DTO、event、log 或 error 输出，不表示加密。snapshot equality
 用于阻断已表示的语义漂移，不是 binary attestation、数字签名或 OS sandbox；同 UID
@@ -98,9 +111,11 @@ private 仅表示不经公共 DTO、event、log 或 error 输出，不表示加�
   `needs_reconciliation`，不自动重放；
 - consumer stream 断开：ephemeral model call 随 context 取消；
 - durable Agent SSE 断开：Run 继续，可按 event sequence 续读；
-- tool effect 已 started 且结果未知：`needs_reconciliation`，不自动重放；
+- 有副作用 tool effect 已 started 且结果未知：`needs_reconciliation`，不自动重放；
   显式 `run reconcile` 保留 effect evidence 并以 failed 收口；绑定的 Session
   在此之前保持 blocked；
+- 当前 MCP manifest 只允许 `read_only`；transport/HTTP/protocol/remote failure
+  作为 `ToolResult{is_error=true}` 确定闭合，不自动 retry；
 - worker 单 Run 失败：结案后继续领队列；Store/claim 错误才停止 worker；
 - Tmux window 的 pane transcript 不进入 Session，也不伪装 canonical result。
 
@@ -111,12 +126,22 @@ private 仅表示不经公共 DTO、event、log 或 error 输出，不表示加�
 ```text
 sn-cli
 sn-server
-configs/
-runtime.json
-resources/
+configs/*.json
+resources/schema/*.json
+resources/tools/*.json
+release/runtime.json
+release/tmux.conf
+release/release.json
 ```
 
-`resources/release.json` 声明 activation epoch、CLI contract 和 state schema。
+archive payload 与仓库 source 使用同一配置布局。activation 将 `configs/` 映射到
+active `configs/`、`resources/tools/` 映射到 active `tools/`、
+`release/runtime.json` 映射到 active 根 `runtime.json`、`resources/schema/`
+映射到 active `resources/schema/`，并将
+`release/{tmux.conf,release.json}` 映射到 active
+`resources/{tmux.conf,release.json}`。payload `release/release.json` 声明
+activation epoch 4、CLI contract 和 state schema。旧 active-shaped archive 不再
+读取，也没有 migration 或兼容 reader。
 installer/updater 必须让 staged candidate 在 active-home maintenance lock 内执行
 preflight 与激活，不能先分段替换 resources/configs/binary。
 
@@ -127,24 +152,28 @@ preflight 与激活，不能先分段替换 resources/configs/binary。
 - 无 active/unknown Session execution；
 - 无 queued/running/paused/needs-reconciliation Run；
 - 无其它进程正在执行目标 home 的 `sn-cli|sn-server`；
-- active Profile、Session fact 和 SQLite schema 与 candidate 的当前 contract 精确一致。
+- active Profile、Tool Catalog、Session fact 和 SQLite schema 与 candidate 的当前
+  contract 精确一致。
 
-默认保留合法 active configs，只补缺失模板；`--overwrite-configs` 显式替换
-Profile 和 runtime config，但不绕过运行态或 schema 门禁。unsupported state
+默认保留合法 active configs/tools，只补缺失模板；`--overwrite-configs` 显式替换
+Profile、Tool Catalog 和 runtime config，但不绕过运行态或 schema 门禁。unsupported state
 必须先停服并整体移到可恢复备份；Runtime 不做自动 migration。
 
 根目录 `make install` 是仅面向本地源码调试的例外策略：固定使用完整 source
-bundle，校验 candidate 后自动停止受管 server，全量覆盖 source configs，并在新
+bundle，校验 candidate 后自动停止受管 server，按上述映射全量覆盖 source
+`configs/`、`resources/tools/` 和 `release/runtime.json`，并在新
 artifact 已完整提交且 activation guard 仍生效时丢弃 Session/Run 状态；成功后不
 重启。该 local-source 授权不进入 archive/network installer 或 `server update`，
 也不绕过 Tmux、目标 binary process、路径和 journal 门禁。
 
-candidate preflight 只读取 payload 自身的 manifest，不接受环境 token 绕过。
+candidate preflight 只读取 payload 自身的 `release/release.json`，不接受环境 token
+绕过。
 任何 target mutation 或停服前，candidate 先对 payload 执行完整 Profile 语义检查，
-并 required/no-follow 校验 runtime、Tmux resource 和固定 identity/root shape 的
-可编译 Schema；staged home 再做二次检查。activation 先持久化
+并 required/no-follow 校验 `release/runtime.json`、`resources/tools/`、
+`release/tmux.conf` 和固定
+identity/root shape 的可编译 Schema；staged home 再做二次检查。activation 先持久化
 journal/state guard，再以 no-replace regular file
-暂时占用 active `bin/`、`configs/`；二次 quiescence 使用原 binary inode 和
+暂时占用 active `bin/`、`configs/`、`tools/`；二次 quiescence 使用原 binary inode 和
 coordinator PID/start-token。journal 自身持续作为入口 barrier；
 `committed|rolled_back` terminal phase、stage/rename/guard/journal 的目录 fsync
 和 crash recovery 均完成后才放行，歧义状态保留 barrier 等待恢复。installer 的
@@ -154,5 +183,5 @@ sidecar 与 no-clobber `symlinkat` 预留；owner `flock` 串行化协作 instal
 identity 和 target 均未变化时才复用，绝不覆盖已有入口。
 
 release gate 包括 Go format、serial/race tests、vet、跨平台 build/checksum、临时
-home install/upgrade、Profile/Session/Tmux schema preflight、隐式/显式 Profile
-等价 smoke 和 server lifecycle smoke；不得修改 active `~/.sn`。
+home install/upgrade、Profile/Session/Tmux schema preflight、各执行 namespace 与
+Profile type 配对 smoke 和 server lifecycle smoke；不得修改 active `~/.sn`。

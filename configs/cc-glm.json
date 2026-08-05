@@ -3,7 +3,6 @@
   "command": "claude",
   "model": "glm-5.2[1m]",
   "effort": "max",
-  "exec": true,
   "args": [
     "--dangerously-skip-permissions",
     "--setting-sources",

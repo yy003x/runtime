@@ -3,7 +3,6 @@
   "command": "codex",
   "model": "gpt-5.3-codex-spark",
   "effort": "xhigh",
-  "exec": true,
   "args": [
     "--sandbox",
     "read-only",

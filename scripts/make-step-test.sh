@@ -163,10 +163,26 @@ grep -Fq -- '--local-source-install' "$scratch/make-install-dry-run.stdout" ||
   fail "make install did not select local source install mode"
 grep -Fq 'local_source_install=1' "$scratch/make-install-dry-run.stdout" ||
   fail "make install did not report local source install metadata"
+grep -Fq -- '--release' "$scratch/make-install-dry-run.stdout" ||
+  fail "make install did not pass the release source directory"
 if grep -Fq 'SN_CLI_OVERWRITE_CONFIGS' "$scratch/make-install-dry-run.stdout" ||
-  grep -Fq -- '--overwrite-configs' "$scratch/make-install-dry-run.stdout"; then
-  fail "make install retained the removed overwrite-configs control"
+  grep -Fq -- '--overwrite-configs' "$scratch/make-install-dry-run.stdout" ||
+  grep -Fq -- '--tools' "$scratch/make-install-dry-run.stdout" ||
+  grep -Fq -- '--runtime-config' "$scratch/make-install-dry-run.stdout"; then
+  fail "make install retained a removed install control"
 fi
+
+for removed_option in --tools --runtime-config; do
+  set +e
+  bash "$ROOT_DIR/install.sh" "$removed_option" "$scratch/removed" --dry-run \
+    >"$scratch/removed-option.stdout" 2>"$scratch/removed-option.stderr"
+  removed_option_status=$?
+  set -e
+  [[ "$removed_option_status" -ne 0 ]] ||
+    fail "install accepted removed option $removed_option"
+  grep -Fq "unknown option: $removed_option" "$scratch/removed-option.stderr" ||
+    fail "install returned the wrong error for removed option $removed_option"
+done
 
 local_bundle="$scratch/local-bundle"
 local_install_home="$scratch/local-home"
@@ -174,7 +190,9 @@ local_install_bin="$scratch/local-bin"
 local_candidate_args="$scratch/local-candidate.args"
 mkdir -p \
   "$local_bundle/configs" \
-  "$local_bundle/resources" \
+  "$local_bundle/resources/schema" \
+  "$local_bundle/resources/tools" \
+  "$local_bundle/release" \
   "$local_install_bin"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -182,16 +200,19 @@ printf '%s\n' \
   >"$local_bundle/sn-cli"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$local_bundle/sn-server"
 chmod 755 "$local_bundle/sn-cli" "$local_bundle/sn-server"
-printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
+printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$local_bundle/configs/cx.json"
-printf '%s\n' '{}' >"$local_bundle/runtime.json"
-printf '%s\n' '{}' >"$local_bundle/resources/release.json"
+printf '%s\n' '{"schema_version":1,"name":"web_search"}' \
+  >"$local_bundle/resources/tools/web_search.json"
+printf '%s\n' '{}' >"$local_bundle/release/runtime.json"
+printf '%s\n' '{}' >"$local_bundle/release/release.json"
+printf '%s\n' 'set-option -g exit-empty on' >"$local_bundle/release/tmux.conf"
 local_source_args=(
   --binary "$local_bundle/sn-cli"
   --server "$local_bundle/sn-server"
   --configs "$local_bundle/configs"
-  --runtime-config "$local_bundle/runtime.json"
   --resources "$local_bundle/resources"
+  --release "$local_bundle/release"
   --home "$local_install_home"
   --install-dir "$local_install_bin"
 )
@@ -206,6 +227,11 @@ grep -Fq 'local source install: 1' "$scratch/local-source-dry-run.stderr" ||
   fail "local source install dry-run did not report its mode"
 grep -Fq 'overwrite configs: 1' "$scratch/local-source-dry-run.stderr" ||
   fail "local source install did not fix overwrite mode internally"
+grep -Fq 'overwrite tools: 1' "$scratch/local-source-dry-run.stderr" ||
+  fail "local source install did not fix Tool overwrite mode internally"
+grep -Fq "source release: $local_bundle/release" \
+  "$scratch/local-source-dry-run.stderr" ||
+  fail "local source install did not report the release source directory"
 
 set +e
 bash "$ROOT_DIR/install.sh" \
@@ -287,6 +313,11 @@ grep -Fq 'state=failed result=failure' "$scratch/make-build.stderr" ||
 for marker in "$make_shell_marker" "$shell_command_marker" "$semicolon_marker"; do
   [[ ! -e "$marker" ]] || fail "Make variable text executed: $marker"
 done
+
+grep -Eq 'find .* configs resources release' "$ROOT_DIR/scripts/dev.sh" ||
+  fail "dev source signature does not include the release directory"
+grep -Fq -- "-name '*.conf'" "$ROOT_DIR/scripts/dev.sh" ||
+  fail "dev source signature does not include fixed release config files"
 
 GO=/usr/bin/false \
   GOCACHE="$scratch/go cache" \

@@ -8,6 +8,8 @@ GO_BIN="${GO:-go}"
 
 # shellcheck source=scripts/release-profile-files.sh
 source "$ROOT_DIR/scripts/release-profile-files.sh"
+# shellcheck source=scripts/release-tool-files.sh
+source "$ROOT_DIR/scripts/release-tool-files.sh"
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'release-check: %s\n' "$*" >&2; exit 1; }
@@ -56,23 +58,55 @@ if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*
 fi
 
 log "[release-check] validating source"
-[ -f "$ROOT_DIR/configs/runtime/runtime.json" ] || die "missing configs/runtime/runtime.json"
+for legacy_source in \
+  "$ROOT_DIR/tools" \
+  "$ROOT_DIR/configs/runtime" \
+  "$ROOT_DIR/resources/tmux.conf" \
+  "$ROOT_DIR/resources/release.json"; do
+  [ ! -e "$legacy_source" ] && [ ! -L "$legacy_source" ] ||
+    die "legacy source layout entry remains: $legacy_source"
+done
+[ -d "$ROOT_DIR/resources/tools" ] && [ ! -L "$ROOT_DIR/resources/tools" ] ||
+  die "resources/tools must be a directory, not a symlink"
+[ -d "$ROOT_DIR/release" ] && [ ! -L "$ROOT_DIR/release" ] ||
+  die "release must be a directory, not a symlink"
+[ -f "$ROOT_DIR/release/runtime.json" ] && [ ! -L "$ROOT_DIR/release/runtime.json" ] ||
+  die "missing or unsafe release/runtime.json"
 for profile in "${SN_CLI_RELEASE_PROFILE_FILES[@]}"; do
   [ -f "$ROOT_DIR/configs/$profile" ] || die "missing profile: $profile"
 done
+for tool in "${SN_CLI_RELEASE_TOOL_FILES[@]}"; do
+  [ -f "$ROOT_DIR/resources/tools/$tool" ] && [ ! -L "$ROOT_DIR/resources/tools/$tool" ] ||
+    die "missing or unsafe tool: $tool"
+done
 unexpected_config_entries="$(find "$ROOT_DIR/configs" -mindepth 1 -maxdepth 1 \
-  ! -name runtime ! -name '*.json' -print -quit)"
+  ! -name '*.json' -print -quit)"
 [ -z "$unexpected_config_entries" ] || die "unexpected configs entry: $unexpected_config_entries"
-for schema in profile.schema.json runtime.schema.json; do
+unexpected_resource_entries="$(find "$ROOT_DIR/resources" -mindepth 1 -maxdepth 1 \
+  ! -name schema ! -name tools -print -quit)"
+[ -z "$unexpected_resource_entries" ] || die "unexpected resources entry: $unexpected_resource_entries"
+unexpected_tool_entries="$(find "$ROOT_DIR/resources/tools" -mindepth 1 -maxdepth 1 \
+  ! -name '*.json' -print -quit)"
+[ -z "$unexpected_tool_entries" ] || die "unexpected tools entry: $unexpected_tool_entries"
+unexpected_release_entries="$(find "$ROOT_DIR/release" -mindepth 1 -maxdepth 1 \
+  ! -name runtime.json ! -name tmux.conf ! -name release.json -print -quit)"
+[ -z "$unexpected_release_entries" ] || die "unexpected release entry: $unexpected_release_entries"
+for schema in profile.schema.json runtime.schema.json tool.schema.json; do
   [ -f "$ROOT_DIR/resources/schema/$schema" ] || die "missing resource schema: $schema"
 done
-[ -f "$ROOT_DIR/resources/release.json" ] ||
-  die "missing resource activation manifest: resources/release.json"
+[ -f "$ROOT_DIR/release/release.json" ] && [ ! -L "$ROOT_DIR/release/release.json" ] ||
+  die "missing or unsafe activation manifest: release/release.json"
 grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
-  "$ROOT_DIR/resources/release.json" ||
+  "$ROOT_DIR/release/release.json" ||
   die "release manifest does not declare Run SQLite schema 4"
-[ -f "$ROOT_DIR/resources/tmux.conf" ] ||
-  die "missing dedicated Tmux bootstrap config: resources/tmux.conf"
+grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+  "$ROOT_DIR/release/release.json" ||
+  die "release manifest does not declare activation epoch 4"
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+  "$ROOT_DIR/release/release.json" ||
+  die "release manifest does not declare contract version 4"
+[ -f "$ROOT_DIR/release/tmux.conf" ] && [ ! -L "$ROOT_DIR/release/tmux.conf" ] ||
+  die "missing or unsafe dedicated Tmux bootstrap config: release/tmux.conf"
 
 run_make fmt-check
 retry_make test-serial
@@ -106,6 +140,34 @@ for asset in "${expected_assets[@]:1}"; do
   )"
   [ "$actual_profile_entries" = "$expected_profile_entries" ] ||
     die "release asset Profile set does not match the formal release list: $asset"
+  expected_tool_entries="$(
+    printf 'resources/tools/%s\n' "${SN_CLI_RELEASE_TOOL_FILES[@]}" |
+      LC_ALL=C sort
+  )"
+  actual_tool_entries="$(
+    tar -tzf "$DIST_DIR/$asset" |
+      awk 'index($0, "resources/tools/") == 1 && $0 != "resources/tools/" {print}' |
+      LC_ALL=C sort
+  )"
+  [ "$actual_tool_entries" = "$expected_tool_entries" ] ||
+    die "release asset Tool set does not match the formal release list: $asset"
+  expected_release_entries="$(printf '%s\n' \
+    release/release.json release/runtime.json release/tmux.conf | LC_ALL=C sort)"
+  actual_release_entries="$(
+    tar -tzf "$DIST_DIR/$asset" |
+      awk 'index($0, "release/") == 1 && $0 != "release/" {print}' |
+      LC_ALL=C sort
+  )"
+  [ "$actual_release_entries" = "$expected_release_entries" ] ||
+    die "release asset fixed release set is invalid: $asset"
+  legacy_payload_entries="$(
+    tar -tzf "$DIST_DIR/$asset" |
+      awk '$0 == "tools/" || index($0, "tools/") == 1 ||
+        $0 == "runtime.json" || $0 == "resources/release.json" ||
+        $0 == "resources/tmux.conf" {print}'
+  )"
+  [ -z "$legacy_payload_entries" ] ||
+    die "release asset retained a legacy config path: $asset"
 done
 checksum_log="$(mktemp)"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -274,13 +336,15 @@ fi
   die "install-link conflict was detected after Runtime activation"
 
 log "[release-check] installing and exercising $archive"
-mkdir -p "$runtime_home/configs" "$runtime_home/resources"
+mkdir -p "$runtime_home/configs" "$runtime_home/tools" "$runtime_home/resources"
 chmod 700 "$runtime_home"
 printf '%s\n' '{"type":"cli","command":"codex","unexpected":true}' \
   >"$runtime_home/configs/local-only.json"
 printf '%s\n' '{"type":"cli","command":"codex","unexpected":true}' \
   >"$runtime_home/configs/cx.json"
 printf '%s\n' '{"unexpected":true}' >"$runtime_home/runtime.json"
+printf '%s\n' '{"unexpected":true}' >"$runtime_home/tools/local-only.json"
+printf '%s\n' '{"unexpected":true}' >"$runtime_home/tools/web_search.json"
 mkdir -p "$runtime_home/resources/schema"
 printf '%s\n' 'outdated schema' >"$runtime_home/resources/schema/runtime.schema.json"
 if bash "$ROOT_DIR/install.sh" \
@@ -296,6 +360,10 @@ grep -q '"unexpected"' "$runtime_home/configs/cx.json" ||
   die "failed preflight changed a same-name invalid profile"
 grep -q '"unexpected"' "$runtime_home/runtime.json" ||
   die "failed preflight changed runtime.json"
+grep -q '"unexpected"' "$runtime_home/tools/local-only.json" ||
+  die "failed preflight changed a local-only tool"
+grep -q '"unexpected"' "$runtime_home/tools/web_search.json" ||
+  die "failed preflight changed a same-name tool"
 grep -q 'outdated schema' "$runtime_home/resources/schema/runtime.schema.json" ||
   die "failed preflight changed managed resources"
 [ ! -e "$runtime_home/bin/sn-cli" ] ||
@@ -312,25 +380,37 @@ bash "$ROOT_DIR/install.sh" \
 
 [ ! -e "$runtime_home/configs/local-only.json" ] ||
   die "--overwrite-configs kept a local-only profile"
+[ ! -e "$runtime_home/tools/local-only.json" ] ||
+  die "--overwrite-configs kept a local-only tool"
 cmp "$ROOT_DIR/configs/cx.json" "$runtime_home/configs/cx.json" >/dev/null ||
   die "--overwrite-configs did not replace a same-name profile"
-cmp "$ROOT_DIR/configs/runtime/runtime.json" "$runtime_home/runtime.json" >/dev/null ||
+cmp "$ROOT_DIR/release/runtime.json" "$runtime_home/runtime.json" >/dev/null ||
   die "--overwrite-configs did not replace runtime.json"
+cmp "$ROOT_DIR/resources/tools/web_search.json" "$runtime_home/tools/web_search.json" >/dev/null ||
+  die "--overwrite-configs did not replace a same-name tool"
 cmp "$ROOT_DIR/resources/schema/runtime.schema.json" \
   "$runtime_home/resources/schema/runtime.schema.json" >/dev/null ||
   die "install did not refresh managed resources"
-cmp "$ROOT_DIR/resources/tmux.conf" \
+cmp "$ROOT_DIR/release/tmux.conf" \
   "$runtime_home/resources/tmux.conf" >/dev/null ||
   die "install did not refresh the Tmux bootstrap config"
 grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
   "$runtime_home/resources/release.json" ||
   die "installed release manifest does not declare Run SQLite schema 4"
+grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+  "$runtime_home/resources/release.json" ||
+  die "installed release manifest does not declare activation epoch 4"
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+  "$runtime_home/resources/release.json" ||
+  die "installed release manifest does not declare contract version 4"
 
-printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
+printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$runtime_home/configs/local-only.json"
-printf '%s\n' '{"type":"cli","command":"codex","exec":false,"prompt":"local-default"}' \
+printf '%s\n' '{"type":"cli","command":"codex","prompt":"local-default"}' \
   >"$runtime_home/configs/cx.json"
 printf '%s\n' '{"agent":{"max_rounds":7}}' >"$runtime_home/runtime.json"
+printf '\n' >>"$runtime_home/tools/web_search.json"
+rm "$runtime_home/tools/web_fetch.json"
 printf '%s\n' 'stale managed resource' >"$runtime_home/resources/schema/runtime.schema.json"
 bash "$ROOT_DIR/install.sh" \
   --archive "$archive" \
@@ -343,6 +423,12 @@ grep -q '"local-default"' "$runtime_home/configs/cx.json" ||
   die "default install overwrote a current same-name profile"
 grep -q '"max_rounds":7' "$runtime_home/runtime.json" ||
   die "default install overwrote a current runtime.json"
+if cmp "$ROOT_DIR/resources/tools/web_search.json" \
+  "$runtime_home/tools/web_search.json" >/dev/null; then
+  die "default install overwrote a current same-name tool"
+fi
+cmp "$ROOT_DIR/resources/tools/web_fetch.json" "$runtime_home/tools/web_fetch.json" >/dev/null ||
+  die "default install did not copy a missing packaged tool"
 cmp "$ROOT_DIR/resources/schema/runtime.schema.json" \
   "$runtime_home/resources/schema/runtime.schema.json" >/dev/null ||
   die "default install did not refresh managed resources"
@@ -431,8 +517,8 @@ SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json profile list >/dev/null
 server_info="$(
   SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json server info
 )"
-printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*3' ||
-  die "server info did not report contract_version=3"
+printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4' ||
+  die "server info did not report contract_version=4"
 printf '%s\n' "$server_info" | grep -Eq '"server"' ||
   die "server info did not report the server namespace"
 [[ "$server_info" != *$'\n'* ]] ||
@@ -448,46 +534,48 @@ if SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json unknown info \
   die "unknown namespace was accepted"
 fi
 [ ! -s "$unknown_stdout" ] || die "failed JSON command wrote to stdout"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*3' "$unknown_stderr" ||
-  die "failed JSON command did not return a contract v3 error"
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4' "$unknown_stderr" ||
+  die "failed JSON command did not return a contract v4 error"
 [ "$(awk 'NF {count++} END {print count + 0}' "$unknown_stderr")" -eq 1 ] ||
   die "failed JSON command did not return exactly one compact error document"
 
 direct_home="$temp_root/direct-home"
 direct_bin="$direct_home/fake-bin"
 mkdir -p "$direct_home/configs" "$direct_bin"
+$GO_BIN -C "$ROOT_DIR" build \
+  -o "$temp_root/ptyrun" ./runtimetest/ptyx/cmd/ptyrun
 # macOS platform binaries can be killed by AMFI after being copied to a new
 # path. Keep the signed executable at its system path while exposing the
 # adapter fixture under the expected command name.
 ln -s /bin/echo "$direct_bin/codex"
-cp "$ROOT_DIR/configs/runtime/runtime.json" "$direct_home/runtime.json"
-printf '%s\n' '{"type":"cli","command":"codex","exec":false}' \
+cp "$ROOT_DIR/release/runtime.json" "$direct_home/runtime.json"
+printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$direct_home/configs/cx.json"
-printf '%s\n' '{"type":"cli","command":"codex","args":["--search"],"exec":true}' \
+printf '%s\n' '{"type":"cli","command":"codex","args":["--search"]}' \
   >"$direct_home/configs/commit.json"
 direct_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
-  "$install_dir/sn-cli" cx --exec release-smoke)"
-explicit_direct_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
-  "$install_dir/sn-cli" profile cx --exec release-smoke)"
-[ "$direct_output" = "$explicit_direct_output" ] ||
-  die "implicit cx Profile argv differed from explicit profile cx"
-[ "$direct_output" = "exec -- release-smoke" ] ||
-  die "implicit cx Profile did not use typed prompt argv: $direct_output"
+  "$temp_root/ptyrun" "$install_dir/sn-cli" cx release-smoke | tr -d '\r')"
+[ "$direct_output" = "-- release-smoke" ] ||
+  die "bare cx Profile did not use direct argv: $direct_output"
+exec_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
+  "$install_dir/sn-cli" exec cx release-smoke)"
+[ "$exec_output" = "exec -- release-smoke" ] ||
+  die "exec cx Profile did not use noninteractive argv: $exec_output"
 commit_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
-  "$install_dir/sn-cli" commit direct-smoke)"
-explicit_commit_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
-  "$install_dir/sn-cli" profile commit direct-smoke)"
-[ "$commit_output" = "$explicit_commit_output" ] ||
-  die "implicit commit Profile argv differed from explicit profile commit"
+  "$install_dir/sn-cli" exec commit direct-smoke)"
 [ "$commit_output" = "--search exec -- direct-smoke" ] ||
-  die "implicit commit Profile did not use typed exec argv: $commit_output"
+  die "exec commit Profile did not use typed exec argv: $commit_output"
 profile_commit_output="$(
   printf '%s' 'profile-smoke' |
     PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
-      "$install_dir/sn-cli" profile commit
+      "$install_dir/sn-cli" exec commit
 )"
 [ "$profile_commit_output" = "--search exec -- profile-smoke" ] ||
-  die "profile commit one-shot command failed"
+  die "exec commit stdin task failed"
+if PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
+	"$install_dir/sn-cli" profile commit direct-smoke >/dev/null 2>&1; then
+	die "removed profile execution route was accepted"
+fi
 
 HTTP_ADDR="127.0.0.1:0" SN_CLI_HOME="$runtime_home" \
   "$install_dir/sn-cli" server start >/dev/null
@@ -594,8 +682,8 @@ local_source_args=(
   --binary "$release_payload/sn-cli"
   --server "$release_payload/sn-server"
   --configs "$release_payload/configs"
-  --runtime-config "$release_payload/runtime.json"
   --resources "$release_payload/resources"
+  --release "$release_payload/release"
   --home "$local_source_home"
   --install-dir "$local_source_bin"
   --local-source-install
@@ -621,8 +709,9 @@ printf '%s\n' "$local_status" |
   die "server status pid did not match server start"
 
 printf '%s\n' \
-  '{"type":"cli","command":"codex","exec":false,"prompt":"local-drift"}' \
+  '{"type":"cli","command":"codex","prompt":"local-drift"}' \
   >"$local_source_home/configs/cx.json"
+printf '\n' >>"$local_source_home/tools/web_search.json"
 mkdir -p \
   "$local_source_home/sessions/_system" \
   "$local_source_home/state/session-locks" \
@@ -652,6 +741,9 @@ printf '%s\n' "$local_status" |
   die "local source install kept the stopped server pid record"
 cmp "$ROOT_DIR/configs/cx.json" "$local_source_home/configs/cx.json" >/dev/null ||
   die "local source install did not replace active profiles"
+cmp "$ROOT_DIR/resources/tools/web_search.json" \
+  "$local_source_home/tools/web_search.json" >/dev/null ||
+  die "local source install did not replace active tools"
 for reset_path in \
   "$local_source_home/sessions" \
   "$local_source_home/state/session-locks" \

@@ -1,4 +1,4 @@
-// Package activation owns the contract-v3 staged-binary activation gate.
+// Package activation owns the contract-v4 staged-binary activation gate.
 package activation
 
 import (
@@ -45,8 +45,8 @@ type Manifest struct {
 	RunSchemaVersion     int `json:"run_schema_version"`
 }
 
-func LoadManifest(resourcesDir string) (Manifest, []byte, error) {
-	path := filepath.Join(resourcesDir, "release.json")
+func LoadManifest(manifestDir string) (Manifest, []byte, error) {
+	path := filepath.Join(manifestDir, "release.json")
 	data, err := readRegular(path, 64<<10)
 	if err != nil {
 		return Manifest{}, nil, fmt.Errorf(
