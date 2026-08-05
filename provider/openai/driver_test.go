@@ -63,7 +63,10 @@ func TestDriverStreamsTextAndFragmentedToolCallInOneAttempt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := newService(t, server.URL, server.Client())
+	var observed []model.Attempt
+	service := newService(t, server.URL, server.Client(), func(attempt model.Attempt) {
+		observed = append(observed, attempt)
+	})
 	var events []contract.Event
 	result, runtimeErr := service.GenerateStream(
 		context.Background(),
@@ -91,6 +94,24 @@ func TestDriverStreamsTextAndFragmentedToolCallInOneAttempt(t *testing.T) {
 		events[len(events)-1].Type != contract.EventModelCompleted {
 		t.Fatalf("events=%#v", events)
 	}
+	if len(observed) != 1 {
+		t.Fatalf("observed=%#v", observed)
+	}
+	attempt := observed[0]
+	if attempt.ProfileID != "api" || attempt.Wire.Request.Method != http.MethodPost ||
+		attempt.Wire.Request.URL != server.URL+"/v1/chat/completions" ||
+		attempt.Wire.Request.Headers["Authorization"] != "Bearer ${MODEL_API_KEY}" ||
+		attempt.Wire.Response == nil || attempt.Wire.Response.Status != http.StatusOK ||
+		len(attempt.Wire.Response.Data) != 4 || attempt.Error != nil {
+		t.Fatalf("attempt=%#v", attempt)
+	}
+	data, err := json.Marshal(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "Bearer secret") {
+		t.Fatalf("attempt leaked API key: %s", data)
+	}
 }
 
 func TestDriverMapsRateLimitWithoutRetry(t *testing.T) {
@@ -105,6 +126,26 @@ func TestDriverMapsRateLimitWithoutRetry(t *testing.T) {
 	_, runtimeErr := service.Generate(context.Background(), request())
 	if runtimeErr == nil || runtimeErr.Code != contract.ErrorRateLimited ||
 		runtimeErr.RetryAfterMS != 2000 || attempts.Load() != 1 {
+		t.Fatalf("attempts=%d error=%#v", attempts.Load(), runtimeErr)
+	}
+}
+
+func TestDriverDoesNotFollowRedirect(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		attempts.Add(1)
+		if request.URL.Path == "/v1/chat/completions" {
+			http.Redirect(writer, request, "/redirected", http.StatusTemporaryRedirect)
+			return
+		}
+		t.Errorf("driver followed redirect to %s", request.URL.Path)
+		http.Error(writer, "unexpected redirect", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	service := newService(t, server.URL, server.Client())
+	_, runtimeErr := service.Generate(context.Background(), request())
+	if runtimeErr == nil || runtimeErr.Code != contract.ErrorProtocol ||
+		attempts.Load() != 1 {
 		t.Fatalf("attempts=%d error=%#v", attempts.Load(), runtimeErr)
 	}
 }
@@ -127,7 +168,12 @@ func TestEncodeRequestOmitsUnsetCommonOptions(t *testing.T) {
 	}
 }
 
-func newService(t *testing.T, baseURL string, client *http.Client) *model.Service {
+func newService(
+	t *testing.T,
+	baseURL string,
+	client *http.Client,
+	observers ...model.AttemptObserver,
+) *model.Service {
 	t.Helper()
 	maxTokens := int64(1024)
 	topP := 0.9
@@ -145,12 +191,16 @@ func newService(t *testing.T, baseURL string, client *http.Client) *model.Servic
 	if err != nil {
 		t.Fatal(err)
 	}
+	var observer model.AttemptObserver
+	if len(observers) > 0 {
+		observer = observers[0]
+	}
 	service, err := model.NewService(
 		catalog,
 		map[model.DriverName]model.Driver{model.DriverOpenAI: New(client)},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			return "secret", name == "MODEL_API_KEY"
-		}},
+		}, AttemptObserver: observer},
 	)
 	if err != nil {
 		t.Fatal(err)

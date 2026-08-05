@@ -15,6 +15,7 @@ import (
 
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/model"
+	"github.com/yy003x/runtime/provider"
 	"github.com/yy003x/runtime/provider/internal/httpx"
 )
 
@@ -24,7 +25,7 @@ const (
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
 	executionImplementation        = "runtime.provider.openai"
-	executionImplementationVersion = 1
+	executionImplementationVersion = 2
 )
 
 type Driver struct {
@@ -32,10 +33,7 @@ type Driver struct {
 }
 
 func New(client *http.Client) *Driver {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return &Driver{client: client}
+	return &Driver{client: provider.SingleAttemptClient(client)}
 }
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
@@ -58,49 +56,73 @@ func (driver *Driver) Stream(
 	resolved model.ResolvedModel,
 	request contract.ModelRequest,
 	sink contract.EventSink,
-) (contract.ModelResult, *contract.RuntimeError) {
+) (
+	result contract.ModelResult,
+	attempt provider.Attempt,
+	runtimeErr *contract.RuntimeError,
+) {
 	payload, err := encodeRequest(resolved, request)
 	if err != nil {
-		return contract.ModelResult{}, httpx.ProtocolError(providerName, err.Error())
+		return contract.ModelResult{}, attempt, httpx.ProtocolError(providerName, err.Error())
 	}
 	httpRequest, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, resolved.Endpoint, bytes.NewReader(payload),
 	)
 	if err != nil {
-		return contract.ModelResult{}, httpx.ProtocolError(providerName, err.Error())
+		return contract.ModelResult{}, attempt, httpx.ProtocolError(providerName, err.Error())
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream, application/json")
 	for name, value := range resolved.RequestHeaders() {
 		httpRequest.Header.Set(name, value)
 	}
+	attempt = provider.Attempt{
+		Started: true,
+		Request: provider.Request{
+			Method: httpRequest.Method, URL: provider.SafeURL(httpRequest.URL.String()),
+			Headers: provider.RequestHeaders(
+				httpRequest.Header, resolved.LogRequestHeaders(),
+			),
+			Body: append(json.RawMessage(nil), payload...),
+		},
+	}
 	response, err := driver.client.Do(httpRequest)
 	if err != nil {
-		return contract.ModelResult{}, httpx.NetworkError(providerName, err)
+		return contract.ModelResult{}, attempt, httpx.NetworkError(
+			providerName, provider.SafeNetworkError(err),
+		)
 	}
 	defer response.Body.Close()
+	contentType := response.Header.Get("Content-Type")
+	attempt.Response = &provider.Response{
+		Status: response.StatusCode, Headers: provider.SafeHeaders(response.Header),
+		Data: make([]json.RawMessage, 0),
+	}
+	var captured bytes.Buffer
+	reader := io.TeeReader(response.Body, &captured)
+	defer func() {
+		attempt.Response.Data = provider.ResponseData(captured.Bytes(), contentType)
+	}()
 	if response.StatusCode >= 300 {
-		body, readErr := httpx.ReadLimited(response.Body, httpx.MaxErrorBytes)
+		body, readErr := httpx.ReadLimited(reader, httpx.MaxErrorBytes)
 		if readErr != nil {
-			return contract.ModelResult{}, httpx.ProtocolError(providerName, readErr.Error())
+			return contract.ModelResult{}, attempt, httpx.ProtocolError(providerName, readErr.Error())
 		}
-		return contract.ModelResult{}, httpx.ProviderError(providerName, response.StatusCode, response.Header, body)
+		return contract.ModelResult{}, attempt, httpx.ProviderError(providerName, response.StatusCode, response.Header, body)
 	}
 	emitter := eventEmitter{sink: sink, sequence: 1}
 	if err := emitter.emit(contract.Event{Type: contract.EventModelStarted}); err != nil {
-		return contract.ModelResult{}, consumerError(err)
+		return contract.ModelResult{}, attempt, consumerError(err)
 	}
-	contentType := strings.ToLower(response.Header.Get("Content-Type"))
-	var result contract.ModelResult
-	if strings.Contains(contentType, "text/event-stream") {
-		result, err = decodeStream(response.Body, resolved, response.Header, &emitter)
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		result, err = decodeStream(reader, resolved, response.Header, &emitter)
 	} else {
-		result, err = decodeResponse(response.Body, resolved, response.Header, &emitter)
+		result, err = decodeResponse(reader, resolved, response.Header, &emitter)
 	}
 	if err != nil {
-		return contract.ModelResult{}, httpx.ProtocolError(providerName, err.Error())
+		return contract.ModelResult{}, attempt, httpx.ProtocolError(providerName, err.Error())
 	}
-	return result, nil
+	return result, attempt, nil
 }
 
 type requestBody struct {

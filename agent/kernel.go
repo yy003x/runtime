@@ -18,6 +18,7 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/identity"
 	"github.com/yy003x/runtime/internal/strictjson"
+	"github.com/yy003x/runtime/model"
 )
 
 // LoopStateSchemaVersion identifies the durable Agent checkpoint contract.
@@ -97,8 +98,12 @@ func (kernel *Kernel) Run(
 				}},
 			},
 		}
+		modelContext := model.WithAttemptOrigin(runContext, model.AttemptOrigin{
+			Namespace: model.AttemptNamespaceAgent,
+			Source:    "agent " + state.RunID,
+		})
 		result, runtimeErr := kernel.Model.GenerateStream(
-			runContext, request, emitter.rebaseModelEvent,
+			modelContext, request, emitter.rebaseModelEvent,
 		)
 		if runtimeErr != nil {
 			if executionSnapshotChanged(runtimeErr) {

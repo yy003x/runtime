@@ -68,13 +68,16 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 					"WORKSPACE":"/tmp/work","OPTIONAL":null,
 					"LITERAL":"$${VALID}","DOLLARS":"$$"
 				},
-				"model":"",
-				"effort":"high",
-				"prompt":"base",
-				"exec":true,
-				"cwd":"${WORKSPACE}"
-			}`,
+					"model":"",
+					"effort":"high",
+					"prompt":"base",
+					"cwd":"${WORKSPACE}"
+				}`,
 			valid: true,
+		},
+		{
+			name:     "removed_cli_exec_field",
+			document: `{"type":"cli","command":"codex","exec":true}`,
 		},
 		{
 			name: "openai_api",

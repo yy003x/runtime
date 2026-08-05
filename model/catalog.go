@@ -2,12 +2,14 @@ package model
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/yy003x/runtime/internal/envref"
 	"github.com/yy003x/runtime/internal/profileid"
+	"github.com/yy003x/runtime/provider"
 )
 
 const authorizationHeader = "Authorization"
@@ -24,6 +26,7 @@ type ResolvedModel struct {
 	Parameters Parameters
 	Timeout    time.Duration
 	headers    func() map[string]string
+	logHeaders func() map[string]string
 }
 
 func NewCatalog(values map[string]Profile, reservedIDs ...string) (*Catalog, error) {
@@ -71,9 +74,9 @@ func (catalog *Catalog) IDs() []string {
 }
 
 // resolve expands ${VAR} references in every header, applies driver-specific
-// authentication shaping, and returns the resolved model plus the secret values
-// that must be redacted from streamed events and errors. Only values produced
-// by ${VAR} expansion are treated as secret; literal header values are not.
+// authentication shaping, and returns the resolved model plus the secret
+// values that must be redacted from streamed events, errors, and diagnostics.
+// Every ${VAR} replacement and every literal sensitive-header value is secret.
 func (catalog *Catalog) resolve(
 	id string,
 	getenv func(string) (string, bool),
@@ -87,9 +90,17 @@ func (catalog *Catalog) resolve(
 		return ResolvedModel{}, nil, err
 	}
 	headers := make(map[string]string, len(profile.Headers))
+	logHeaders := make(map[string]string, len(profile.Headers))
 	secrets := make([]string, 0, len(profile.Headers))
 	for name, rawValue := range profile.Headers {
-		value, expandErr := envref.Expand(rawValue, getenv)
+		var referencedSecrets []string
+		value, expandErr := envref.Expand(rawValue, func(name string) (string, bool) {
+			value, exists := getenv(name)
+			if exists {
+				referencedSecrets = append(referencedSecrets, value)
+			}
+			return value, exists
+		})
 		if expandErr != nil {
 			return ResolvedModel{}, nil, fmt.Errorf("headers[%q]: %w", name, expandErr)
 		}
@@ -102,14 +113,21 @@ func (catalog *Catalog) resolve(
 			)
 		}
 		sensitive := strings.Contains(rawValue, "${")
-		if sensitive && strings.EqualFold(name, authorizationHeader) &&
-			profile.Driver == DriverOpenAI && !hasAuthScheme(value) {
-			secrets = append(secrets, value)
-			value = bearerScheme + " " + value
-		} else if sensitive {
+		logValue := rawValue
+		secrets = append(secrets, referencedSecrets...)
+		if sensitive || provider.SensitiveHeader(name) {
 			secrets = append(secrets, value)
 		}
+		if !sensitive && provider.SensitiveHeader(name) {
+			logValue = "[REDACTED]"
+		}
+		if sensitive && strings.EqualFold(name, authorizationHeader) &&
+			profile.Driver == DriverOpenAI && !hasAuthScheme(value) {
+			value = bearerScheme + " " + value
+			logValue = bearerScheme + " " + logValue
+		}
 		headers[name] = value
+		logHeaders[http.CanonicalHeaderKey(name)] = logValue
 	}
 	headerSource := func() map[string]string {
 		values := make(map[string]string, len(headers))
@@ -118,10 +136,17 @@ func (catalog *Catalog) resolve(
 		}
 		return values
 	}
+	logHeaderSource := func() map[string]string {
+		values := make(map[string]string, len(logHeaders))
+		for name, value := range logHeaders {
+			values[name] = value
+		}
+		return values
+	}
 	return ResolvedModel{
 		ID: id, Driver: profile.Driver, Endpoint: endpoint, Model: profile.Model,
 		Parameters: profile.Parameters, Timeout: profile.TimeoutDuration(),
-		headers: headerSource,
+		headers: headerSource, logHeaders: logHeaderSource,
 	}, secrets, nil
 }
 
@@ -147,6 +172,15 @@ func (resolved ResolvedModel) RequestHeaders() map[string]string {
 		return nil
 	}
 	return resolved.headers()
+}
+
+// LogRequestHeaders returns the non-secret Profile header view that matches
+// driver authentication shaping. ${VAR} references remain unresolved.
+func (resolved ResolvedModel) LogRequestHeaders() map[string]string {
+	if resolved.logHeaders == nil {
+		return nil
+	}
+	return resolved.logHeaders()
 }
 
 func (resolved ResolvedModel) DefaultTokenLimit() *int64 {

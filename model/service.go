@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/provider"
 )
 
 type Driver interface {
@@ -22,7 +23,7 @@ type Driver interface {
 		ResolvedModel,
 		contract.ModelRequest,
 		contract.EventSink,
-	) (contract.ModelResult, *contract.RuntimeError)
+	) (contract.ModelResult, provider.Attempt, *contract.RuntimeError)
 }
 
 type Generator interface {
@@ -35,13 +36,15 @@ type Generator interface {
 }
 
 type Service struct {
-	catalog *Catalog
-	drivers map[DriverName]Driver
-	getenv  func(string) (string, bool)
+	catalog         *Catalog
+	drivers         map[DriverName]Driver
+	getenv          func(string) (string, bool)
+	attemptObserver AttemptObserver
 }
 
 type ServiceOptions struct {
-	Getenv func(string) (string, bool)
+	Getenv          func(string) (string, bool)
+	AttemptObserver AttemptObserver
 }
 
 func NewService(
@@ -87,7 +90,10 @@ func NewService(
 	if getenv == nil {
 		getenv = os.LookupEnv
 	}
-	return &Service{catalog: catalog, drivers: values, getenv: getenv}, nil
+	return &Service{
+		catalog: catalog, drivers: values, getenv: getenv,
+		attemptObserver: options.AttemptObserver,
+	}, nil
 }
 
 // ExecutionSnapshot freezes the non-secret API Profile and the semantic
@@ -139,7 +145,7 @@ func (service *Service) GenerateStream(
 	ctx context.Context,
 	request contract.GenerateRequest,
 	sink contract.EventSink,
-) (contract.ModelResult, *contract.RuntimeError) {
+) (result contract.ModelResult, resultError *contract.RuntimeError) {
 	if err := request.Validate(); err != nil {
 		return contract.ModelResult{}, runtimeError(
 			contract.ErrorInvalidRequest, contract.PhaseRequest, err.Error(),
@@ -197,7 +203,22 @@ func (service *Service) GenerateStream(
 		sink: sink, secrets: secrets, expected: 1,
 		toolCalls: make(map[string]string),
 	}
-	result, callError := driver.Stream(callContext, resolved, input, state.accept)
+	result, wireAttempt, callError := driver.Stream(
+		callContext, resolved, input, state.accept,
+	)
+	if wireAttempt.Started && service.attemptObserver != nil {
+		defer func() {
+			attempt := Attempt{
+				Origin: attemptOrigin(ctx), ProfileID: request.ModelProfile,
+				Wire: wireAttempt, Error: resultError,
+			}
+			safeAttempt, redactErr := redactValue(attempt, secrets)
+			if redactErr != nil {
+				return
+			}
+			notifyAttemptObserver(service.attemptObserver, safeAttempt)
+		}()
+	}
 	if state.failure != nil {
 		return contract.ModelResult{}, state.failure
 	}
@@ -238,6 +259,11 @@ func (service *Service) GenerateStream(
 		return contract.ModelResult{}, err
 	}
 	return result, nil
+}
+
+func notifyAttemptObserver(observer AttemptObserver, attempt Attempt) {
+	defer func() { _ = recover() }()
+	observer(attempt)
 }
 
 type streamState struct {

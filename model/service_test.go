@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/provider"
 )
 
 type testDriver struct {
@@ -17,6 +18,7 @@ type testDriver struct {
 	err         *contract.RuntimeError
 	mutateInput bool
 	identity    *DriverExecutionIdentity
+	attempt     provider.Attempt
 }
 
 func (driver *testDriver) ExecutionIdentity() DriverExecutionIdentity {
@@ -39,7 +41,7 @@ func (driver *testDriver) Stream(
 	_ ResolvedModel,
 	request contract.ModelRequest,
 	sink contract.EventSink,
-) (contract.ModelResult, *contract.RuntimeError) {
+) (contract.ModelResult, provider.Attempt, *contract.RuntimeError) {
 	driver.attempts++
 	if driver.mutateInput {
 		request.Messages[0].Content = "mutated"
@@ -47,13 +49,13 @@ func (driver *testDriver) Stream(
 	}
 	for _, event := range driver.events {
 		if err := sink(event); err != nil {
-			return contract.ModelResult{}, &contract.RuntimeError{
+			return contract.ModelResult{}, driver.attempt, &contract.RuntimeError{
 				Code: contract.ErrorCancelled, Phase: contract.PhaseConsumer,
 				Message: err.Error(),
 			}
 		}
 	}
-	return driver.result, driver.err
+	return driver.result, driver.attempt, driver.err
 }
 
 func TestServiceUsesOneAttemptAndCompletesStream(t *testing.T) {
@@ -184,6 +186,82 @@ func TestServiceStopsOnSinkFailure(t *testing.T) {
 	if runtimeErr == nil || runtimeErr.Code != contract.ErrorCancelled ||
 		runtimeErr.Phase != contract.PhaseConsumer {
 		t.Fatalf("error=%#v", runtimeErr)
+	}
+}
+
+func TestServiceObservesOnlyStartedAttemptsWithTrustedOriginAndRedaction(t *testing.T) {
+	driver := &testDriver{
+		events: []contract.Event{{Sequence: 1, Type: contract.EventModelStarted}},
+		err: &contract.RuntimeError{
+			Code: contract.ErrorProviderUnavailable, Phase: contract.PhaseProvider,
+			Message: "secret-value failed", Retryable: true,
+		},
+		attempt: provider.Attempt{
+			Started: true,
+			Request: provider.Request{
+				Method: "POST", URL: "https://example.invalid",
+				Headers: map[string]string{"Authorization": "Bearer secret-value"},
+				Body:    json.RawMessage(`{"prompt":"secret-value"}`),
+			},
+			Response: &provider.Response{
+				Status: 503,
+				Data: []json.RawMessage{
+					json.RawMessage(`{"message":"secret-value failed"}`),
+				},
+			},
+		},
+	}
+	var observed []Attempt
+	service := newTestServiceWithObserver(t, driver, "secret-value", func(attempt Attempt) {
+		observed = append(observed, attempt)
+	})
+	ctx := WithAttemptOrigin(context.Background(), AttemptOrigin{
+		Namespace: AttemptNamespaceSession, Source: "session session_fixture",
+	})
+	_, runtimeErr := service.Generate(ctx, testRequest())
+	if runtimeErr == nil || len(observed) != 1 {
+		t.Fatalf("error=%#v observed=%#v", runtimeErr, observed)
+	}
+	got := observed[0]
+	if got.Origin.Namespace != AttemptNamespaceSession ||
+		got.Origin.Source != "session session_fixture" || got.ProfileID != "fixture" {
+		t.Fatalf("attempt=%#v", got)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-value") ||
+		!strings.Contains(string(data), "[REDACTED]") {
+		t.Fatalf("attempt was not redacted: %s", data)
+	}
+
+	driver.attempt.Started = false
+	observed = nil
+	_, _ = service.Generate(context.Background(), testRequest())
+	if len(observed) != 0 {
+		t.Fatalf("pre-network failure was observed: %#v", observed)
+	}
+}
+
+func TestServiceIgnoresAttemptObserverPanic(t *testing.T) {
+	driver := &testDriver{
+		events: []contract.Event{{Sequence: 1, Type: contract.EventModelStarted}},
+		result: contract.ModelResult{
+			Message:      contract.Message{Role: contract.RoleAssistant, Content: "hello"},
+			FinishReason: contract.FinishStop,
+		},
+		attempt: provider.Attempt{
+			Started: true,
+			Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)},
+		},
+	}
+	service := newTestServiceWithObserver(t, driver, "secret", func(Attempt) {
+		panic("diagnostic writer failed")
+	})
+	result, runtimeErr := service.Generate(context.Background(), testRequest())
+	if runtimeErr != nil || result.Message.Content != "hello" {
+		t.Fatalf("result=%#v error=%#v", result, runtimeErr)
 	}
 }
 
@@ -332,6 +410,15 @@ func TestServiceValidatesToolCallLifecycle(t *testing.T) {
 }
 
 func newTestService(t *testing.T, driver Driver, secret string) *Service {
+	return newTestServiceWithObserver(t, driver, secret, nil)
+}
+
+func newTestServiceWithObserver(
+	t *testing.T,
+	driver Driver,
+	secret string,
+	observer AttemptObserver,
+) *Service {
 	t.Helper()
 	profile := Profile{
 		Driver: DriverOpenAI, Endpoint: "https://example.invalid/faux", Model: "fixture",
@@ -347,7 +434,7 @@ func newTestService(t *testing.T, driver Driver, secret string) *Service {
 		map[DriverName]Driver{DriverOpenAI: driver},
 		ServiceOptions{Getenv: func(name string) (string, bool) {
 			return secret, name == "MODEL_API_KEY"
-		}},
+		}, AttemptObserver: observer},
 	)
 	if err != nil {
 		t.Fatal(err)

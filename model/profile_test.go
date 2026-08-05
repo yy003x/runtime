@@ -132,7 +132,7 @@ func TestCatalogResolveSecret(t *testing.T) {
 			Driver:   DriverOpenAI,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			Model:    "fixture",
-			Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
+			Headers:  map[string]string{"Authorization": "Bearer ${MODEL_API_KEY}"},
 			Timeout:  "1m",
 		},
 	})
@@ -149,7 +149,8 @@ func TestCatalogResolveSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Contains(secrets, "top-secret") ||
-		resolved.RequestHeaders()["Authorization"] != "Bearer top-secret" {
+		resolved.RequestHeaders()["Authorization"] != "Bearer top-secret" ||
+		resolved.LogRequestHeaders()["Authorization"] != "Bearer ${MODEL_API_KEY}" {
 		t.Fatalf("resolved=%s secrets=%v", resolved.String(), secrets)
 	}
 	data, err := json.Marshal(resolved)
@@ -169,6 +170,36 @@ func TestCatalogResolveSecret(t *testing.T) {
 		}); err == nil {
 			t.Fatalf("secret containing control byte 0x%02x was accepted", control)
 		}
+	}
+}
+
+func TestCatalogLogHeadersRedactSensitiveLiterals(t *testing.T) {
+	maxTokens := int64(64)
+	catalog, err := NewCatalog(map[string]Profile{
+		"fixture": {
+			Driver:   DriverAnthropic,
+			Endpoint: "https://example.invalid/v1/messages", Model: "fixture",
+			Headers: map[string]string{
+				"x-api-key": "literal-secret", "x-region": "cn",
+			},
+			Parameters: Parameters{MaxTokens: &maxTokens}, Timeout: "1m",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, secrets, err := catalog.resolve("fixture", func(string) (string, bool) {
+		return "", false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.LogRequestHeaders(); got["X-Api-Key"] != "[REDACTED]" ||
+		got["X-Region"] != "cn" {
+		t.Fatalf("log headers=%#v", got)
+	}
+	if !slices.Contains(secrets, "literal-secret") {
+		t.Fatalf("secrets=%v", secrets)
 	}
 }
 

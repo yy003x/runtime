@@ -6,6 +6,16 @@ import "fmt"
 
 const maxLength = 128
 
+var reservedNamespaces = [...]string{
+	"exec", "req", "profile", "session", "tmux", "agent", "run", "server", "help", "version",
+}
+
+// ReservedNamespaces returns the canonical public namespaces that every
+// Runtime entrypoint must reject as Profile IDs.
+func ReservedNamespaces() []string {
+	return append([]string(nil), reservedNamespaces[:]...)
+}
+
 func Validate(value string) error {
 	if value == "" {
 		return fmt.Errorf("profile id is required")

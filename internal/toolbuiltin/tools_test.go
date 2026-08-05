@@ -72,8 +72,8 @@ func TestBuildSnapshotsCanonicalExecutionConfiguration(t *testing.T) {
 	}
 	snapshot := registry.ToolExecutionSnapshot()
 	if snapshot.SchemaVersion != agent.ToolExecutionSnapshotSchemaVersion ||
-		snapshot.Implementation != toolExecutionImplementation ||
-		snapshot.ImplementationVersion != toolExecutionImplementationVersion {
+		snapshot.Implementation != ExecutionImplementation ||
+		snapshot.ImplementationVersion != ExecutionImplementationVersion {
 		t.Fatalf("unexpected snapshot identity: %#v", snapshot)
 	}
 	var configuration toolExecutionConfiguration

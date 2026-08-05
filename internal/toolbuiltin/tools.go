@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	maxToolOutputBytes                 = 1 << 20
-	maxReadOnlyToolErrorBytes          = 4 << 10
-	toolExecutionImplementation        = "runtime.toolbuiltin"
-	toolExecutionImplementationVersion = 4
-	toolExecutionConfigSchemaVersion   = 2
+	maxToolOutputBytes               = 1 << 20
+	maxReadOnlyToolErrorBytes        = 4 << 10
+	ExecutionImplementation          = "runtime.toolbuiltin"
+	ExecutionImplementationVersion   = 4
+	toolExecutionConfigSchemaVersion = 2
 )
 
 var (
@@ -38,11 +38,32 @@ type Options struct {
 	CWD   string
 }
 
+// Bundle 保存选中的内置工具及其冻结后的非 secret 执行配置，composition root
+// 用它把内置工具和 manifest 工具组合为同一个 Agent registry。
+type Bundle struct {
+	Tools         []agent.RegisteredTool
+	Configuration json.RawMessage
+}
+
 func Build(options Options) (*agent.Registry, error) {
+	bundle, err := BuildBundle(options)
+	if err != nil {
+		return nil, err
+	}
+	return agent.NewRegistryWithToolExecution(agent.ToolExecutionIdentity{
+		Implementation:        ExecutionImplementation,
+		ImplementationVersion: ExecutionImplementationVersion,
+		Configuration:         bundle.Configuration,
+	}, bundle.Tools...)
+}
+
+// BuildBundle 准备选中的内置定义和 handler，但不创建独立 registry；返回的配置
+// 不包含环境变量 secret。
+func BuildBundle(options Options) (Bundle, error) {
 	if options.CWD == "" {
 		current, err := os.Getwd()
 		if err != nil {
-			return nil, err
+			return Bundle{}, err
 		}
 		options.CWD = current
 	}
@@ -51,7 +72,7 @@ func Build(options Options) (*agent.Registry, error) {
 	}
 	resolver, err := newResolver(options.Roots, options.CWD)
 	if err != nil {
-		return nil, err
+		return Bundle{}, err
 	}
 	available := map[string]agent.RegisteredTool{
 		"read_file": {
@@ -89,7 +110,7 @@ func Build(options Options) (*agent.Registry, error) {
 	for _, name := range options.Names {
 		value, exists := available[name]
 		if !exists {
-			return nil, fmt.Errorf("unknown built-in tool %q", name)
+			return Bundle{}, fmt.Errorf("unknown built-in tool %q", name)
 		}
 		values = append(values, value)
 	}
@@ -99,13 +120,20 @@ func Build(options Options) (*agent.Registry, error) {
 		CWD:            resolver.cwd,
 	})
 	if err != nil {
-		return nil, err
+		return Bundle{}, err
 	}
-	return agent.NewRegistryWithToolExecution(agent.ToolExecutionIdentity{
-		Implementation:        toolExecutionImplementation,
-		ImplementationVersion: toolExecutionImplementationVersion,
-		Configuration:         configuration,
-	}, values...)
+	return Bundle{Tools: values, Configuration: configuration}, nil
+}
+
+// IsBuiltin 判断名称是否属于 Runtime 固定内置工具集；manifest 工具名由 Tool
+// Catalog 独立解析。
+func IsBuiltin(name string) bool {
+	switch name {
+	case "read_file", "list_directory", "write_file":
+		return true
+	default:
+		return false
+	}
 }
 
 type resolver struct {
