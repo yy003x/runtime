@@ -13,44 +13,47 @@ import (
 	"github.com/yy003x/runtime/contract"
 	runtimemodel "github.com/yy003x/runtime/model"
 	runtimeprofile "github.com/yy003x/runtime/profile"
+	runtime "github.com/yy003x/runtime/run"
 	"github.com/yy003x/runtime/session"
 )
 
 func TestSessionInvocationUsesTypedCLIOverridesAndRejectsUnknownOptions(t *testing.T) {
 	value, err := parseSessionInvocation([]string{
-		"--model", "gpt-5.6-sol", "--effort", "high",
-		"--cwd", "work", "cx", "继续",
+		"cx", "--model", "gpt-5.6-sol", "--effort", "high",
+		"--cwd", "work", "--queue", "继续",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if value.model != "gpt-5.6-sol" || value.effort != "high" ||
-		value.cwd != "work" || value.profileID != "cx" ||
+		value.cwd != "work" || value.profileID != "cx" || !value.queue ||
 		value.input != "继续" {
 		t.Fatalf("value=%#v", value)
 	}
 	for _, option := range []string{"--unknown", "--unsupported"} {
 		if _, err := parseSessionInvocation(
-			[]string{option, "value", "cx", "input"},
+			[]string{"cx", option, "value", "input"},
 		); err == nil {
 			t.Fatalf("accepted unknown option %s", option)
 		}
 	}
 	if _, err := parseSessionInvocation([]string{
-		"--effort", "high", "--effort", "low", "cx", "input",
+		"cx", "--effort", "high", "--effort", "low", "input",
 	}); err == nil || !strings.Contains(err.Error(), "only be used once") {
 		t.Fatalf("duplicate option error=%v", err)
 	}
 	if _, err := parseSessionInvocation([]string{
-		"--model", "--effort", "high", "cx", "input",
+		"cx", "--model", "--effort", "high", "input",
 	}); err == nil || !strings.Contains(err.Error(), "--model requires value") {
 		t.Fatalf("missing value error=%v", err)
 	}
 	for _, args := range [][]string{
-		{"--retention", "forever", "cx", "input"},
-		{"--effort", "extreme", "cx", "input"},
-		{"--model", "", "cx", "input"},
-		{"--temperature", "NaN", "api-cx", "input"},
+		{"cx", "--retention", "forever", "input"},
+		{"cx", "--effort", "extreme", "input"},
+		{"cx", "--model", "", "input"},
+		{"api-cx", "--temperature", "NaN", "input"},
+		{"--queue", "cx", "input"},
+		{"cx", "--queue", "--queue", "input"},
 	} {
 		if _, err := parseSessionInvocation(args); err == nil {
 			t.Fatalf("accepted invalid invocation args=%#v", args)
@@ -73,14 +76,21 @@ func TestSessionInvocationAndProfileMismatchAreCLIValidation(t *testing.T) {
 		Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
 		Timeout:  "1m",
 	})
-	for _, invocation := range []sessionInvocation{
-		{profileID: "missing"},
-		{profileID: "api-cx", model: "override"},
+	for _, test := range []struct {
+		action     string
+		invocation sessionInvocation
+	}{
+		{action: "exec", invocation: sessionInvocation{profileID: "missing"}},
+		{action: "req", invocation: sessionInvocation{profileID: "api-cx", model: "override"}},
+		{action: "exec", invocation: sessionInvocation{profileID: "api-cx"}},
+		{action: "req", invocation: sessionInvocation{profileID: "cx"}},
 	} {
-		err := validateSessionProfileOptions(invocation, profiles)
+		err := validateSessionProfileOptions(
+			test.action, test.invocation, profiles,
+		)
 		validationErr = nil
 		if err == nil || !errors.As(err, &validationErr) {
-			t.Fatalf("invocation=%#v error=%v, want CLI validation", invocation, err)
+			t.Fatalf("test=%#v error=%v, want CLI validation", test, err)
 		}
 	}
 }
@@ -135,6 +145,38 @@ func TestSessionUnknownActionDoesNotCreateState(t *testing.T) {
 	}
 	if _, statErr := os.Stat(paths.SessionsDir); !os.IsNotExist(statErr) {
 		t.Fatalf("unknown action bootstrapped Session state: %v", statErr)
+	}
+}
+
+func TestSessionReqQueueSubmitsDurableSessionRun(t *testing.T) {
+	paths := prepareVNextHome(t)
+	writeVNextModel(
+		t, paths.ConfigDir, "api-cx",
+		"https://example.invalid/v1/chat/completions",
+	)
+	t.Setenv("MODEL_API_KEY", "secret")
+	var stdout bytes.Buffer
+	err := runSessionNamespaceVNext(
+		paths,
+		[]string{"req", "api-cx", "--queue", "queued turn"},
+		newCLIOutput(true, &stdout, &bytes.Buffer{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Run       runtime.Record `json:"run"`
+		SessionID string         `json:"session_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode output=%q: %v", stdout.String(), err)
+	}
+	if payload.Run.State != runtime.StateQueued ||
+		payload.Run.Request.Kind != runtime.KindSession ||
+		payload.Run.Request.ProfileID != "api-cx" ||
+		payload.Run.Request.SessionID != payload.SessionID ||
+		payload.SessionID == "" {
+		t.Fatalf("payload=%#v", payload)
 	}
 }
 
@@ -223,7 +265,7 @@ func TestRenderSessionGCResultIncludesSkippedCount(t *testing.T) {
 
 func TestSessionTokenLimitFlagIsProviderNeutral(t *testing.T) {
 	openAIInvocation, err := parseSessionInvocation([]string{
-		"--max-tokens", "128", "api-cx", "hello",
+		"api-cx", "--max-tokens", "128", "hello",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +277,7 @@ func TestSessionTokenLimitFlagIsProviderNeutral(t *testing.T) {
 		Timeout: "1m",
 	})
 	if err := validateSessionProfileOptions(
-		openAIInvocation, openAIProfiles,
+		"req", openAIInvocation, openAIProfiles,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +348,9 @@ func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
 	paths := prepareVNextHome(t)
 	for _, args := range [][]string{
 		{"unknown"},
-		{"run", "--unknown"},
+		{"run", "cx", "input"},
+		{"submit", "api-cx", "input"},
+		{"exec", "--effort", "high", "cx", "input"},
 		{"list", "--state", "unknown"},
 		{"list", "--state", ""},
 		{"list", "--state", "idle", "--state", "archived"},

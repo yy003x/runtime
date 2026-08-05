@@ -12,7 +12,7 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
-	"github.com/yy003x/runtime/internal/clilog"
+	"github.com/yy003x/runtime/internal/executionlog"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/strictjson"
@@ -26,7 +26,7 @@ func runVNextProfileNamespace(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: profile <profile-id> [input] | profile list|show|check")
+		return cliValidationf("usage: profile list|show|check")
 	}
 	runtime, err := runtimebootstrap.LoadProfileServices(
 		paths, fixedNamespaces...,
@@ -91,9 +91,8 @@ func runLoadedVNextProfile(
 				return err
 			}
 			return output.line(
-				"Model: %s, effort: %s, exec: %t, cwd: %s",
-				entry.Command.Model, entry.Command.Effort,
-				entry.Command.Exec, entry.Command.CWD,
+				"Model: %s, effort: %s, cwd: %s",
+				entry.Command.Model, entry.Command.Effort, entry.Command.CWD,
 			)
 		}
 		if err := output.line(
@@ -136,16 +135,44 @@ func runLoadedVNextProfile(
 		}
 		return output.line("Profiles OK: %s", strings.Join(checked, ", "))
 	default:
-		return runLoadedVNextProfileID(
-			runtime, args[0], args[1:], output,
+		return cliValidationf(
+			"unknown profile action %q; usage: profile list|show|check",
+			args[0],
 		)
 	}
 }
 
-func runLoadedVNextProfileID(
+func runProfileExecutionNamespace(
+	paths layout.Paths,
+	args []string,
+	expectedKind runtimeprofile.Kind,
+	commandMode runtimecommand.Mode,
+	namespace string,
+	output *cliOutput,
+) error {
+	if len(args) == 0 {
+		return cliValidationf("usage: %s <profile-id> [options] [input]", namespace)
+	}
+	runtime, err := runtimebootstrap.LoadProfileServices(
+		paths, fixedNamespaces...,
+	)
+	if err != nil {
+		return err
+	}
+	return runLoadedProfileID(
+		runtime, paths.LogsDir, args[0], args[1:], expectedKind, commandMode,
+		namespace, output,
+	)
+}
+
+func runLoadedProfileID(
 	runtime *runtimebootstrap.ProfileServices,
+	logsDir string,
 	profileID string,
 	args []string,
+	expectedKind runtimeprofile.Kind,
+	commandMode runtimecommand.Mode,
+	namespace string,
 	output *cliOutput,
 ) error {
 	if runtime == nil {
@@ -155,7 +182,19 @@ func runLoadedVNextProfileID(
 	if !exists {
 		return cliValidationf("unknown profile %q", profileID)
 	}
-	if entry.Kind == runtimeprofile.KindCommand {
+	if entry.Kind != expectedKind {
+		if expectedKind == runtimeprofile.KindCommand {
+			return cliValidationf(
+				"%s requires a CLI profile; %q is an API profile",
+				namespace, profileID,
+			)
+		}
+		return cliValidationf(
+			"%s requires an API profile; %q is a CLI profile",
+			namespace, profileID,
+		)
+	}
+	if expectedKind == runtimeprofile.KindCommand {
 		invocationBase, err := os.Getwd()
 		if err != nil {
 			return err
@@ -167,22 +206,20 @@ func runLoadedVNextProfileID(
 				return err
 			}
 		}
-		invocation, mode, err := buildCommandProfileInvocation(
+		invocation, err := buildCommandProfileInvocation(
 			*entry.Command, args, pipedInput,
-			invocationBase, os.Environ(),
+			invocationBase, os.Environ(), commandMode,
 		)
 		if err != nil {
 			return err
 		}
-		if logPaths, err := layout.Resolve(); err == nil {
-			_ = clilog.Append(logPaths.LogsDir, clilog.Record{
-				Time: time.Now(), Namespace: clilog.NamespaceProfile, Profile: profileID,
-				Source:  clilog.SourceFromArgs(os.Args),
-				Command: clilog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
-			})
-		}
+		_ = executionlog.AppendCLI(logsDir, executionlog.CLIRecord{
+			Time: time.Now(), Namespace: executionlog.Namespace(namespace), Profile: profileID,
+			Source:  executionlog.SourceFromArgs(os.Args),
+			Command: executionlog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
+		})
 		stdinMode := runtimecommand.StdinTTY
-		if mode == runtimecommand.ModeExec {
+		if commandMode == runtimecommand.ModeExec {
 			stdinMode = runtimecommand.StdinNull
 		}
 		return runtimecommand.ReplaceProcess(invocation, stdinMode)
@@ -194,9 +231,16 @@ func runLoadedVNextProfileID(
 	if err != nil {
 		return err
 	}
+	callContext := runtimemodel.WithAttemptOrigin(
+		context.Background(),
+		runtimemodel.AttemptOrigin{
+			Namespace: runtimemodel.AttemptNamespaceRequest,
+			Source:    executionlog.SourceFromArgs(os.Args),
+		},
+	)
 	if stream {
 		result, runtimeErr := runtime.Models.GenerateStream(
-			context.Background(), request,
+			callContext, request,
 			func(event contract.Event) error {
 				return output.writeEvent(event)
 			},
@@ -206,7 +250,7 @@ func runLoadedVNextProfileID(
 		}
 		return output.writeFinal(directModelResult(result))
 	}
-	result, runtimeErr := runtime.Models.Generate(context.Background(), request)
+	result, runtimeErr := runtime.Models.Generate(callContext, request)
 	if runtimeErr != nil {
 		return runtimeErr
 	}
@@ -255,7 +299,6 @@ type commandProfileOptions struct {
 	model      *string
 	effort     *runtimecommand.Effort
 	prompt     *string
-	exec       *bool
 	cwd        *string
 	positional *string
 }
@@ -266,16 +309,17 @@ func buildCommandProfileInvocation(
 	pipedInput string,
 	invocationBase string,
 	inheritedEnvironment []string,
-) (runtimecommand.Invocation, runtimecommand.Mode, error) {
+	mode runtimecommand.Mode,
+) (runtimecommand.Invocation, error) {
 	options, err := parseCommandProfileOptions(args)
 	if err != nil {
-		return runtimecommand.Invocation{}, "", commandProfileRequestError(err)
+		return runtimecommand.Invocation{}, commandProfileRequestError(err)
 	}
 	basePrompt, err := runtimecommand.ResolvePrompt(
 		profile.Prompt, invocationBase,
 	)
 	if err != nil {
-		return runtimecommand.Invocation{}, "", commandProfileError(err)
+		return runtimecommand.Invocation{}, commandProfileError(err)
 	}
 	typedPrompt := ""
 	if options.prompt != nil {
@@ -283,7 +327,7 @@ func buildCommandProfileInvocation(
 			*options.prompt, invocationBase,
 		)
 		if err != nil {
-			return runtimecommand.Invocation{}, "", commandProfileError(err)
+			return runtimecommand.Invocation{}, commandProfileError(err)
 		}
 	}
 	positional := ""
@@ -294,17 +338,16 @@ func buildCommandProfileInvocation(
 		basePrompt, typedPrompt, pipedInput, positional,
 	)
 	if err != nil {
-		return runtimecommand.Invocation{}, "", commandProfileError(err)
+		return runtimecommand.Invocation{}, commandProfileError(err)
 	}
-	effectiveExec := profile.Exec
-	if options.exec != nil {
-		effectiveExec = *options.exec
+	if mode != runtimecommand.ModeInteractive && mode != runtimecommand.ModeExec {
+		return runtimecommand.Invocation{}, commandProfileError(fmt.Errorf(
+			"command mode must be interactive or exec",
+		))
 	}
-	mode := runtimecommand.ModeInteractive
-	if effectiveExec {
-		mode = runtimecommand.ModeExec
+	if mode == runtimecommand.ModeExec {
 		if prompt == "" {
-			return runtimecommand.Invocation{}, "", commandProfileError(fmt.Errorf(
+			return runtimecommand.Invocation{}, commandProfileError(fmt.Errorf(
 				"exec Profile prompt is required",
 			))
 		}
@@ -324,9 +367,9 @@ func buildCommandProfileInvocation(
 		InvocationBase:       invocationBase,
 	})
 	if err != nil {
-		return runtimecommand.Invocation{}, "", commandProfileError(err)
+		return runtimecommand.Invocation{}, commandProfileError(err)
 	}
-	return invocation, mode, nil
+	return invocation, nil
 }
 
 func commandProfileError(err error) error {
@@ -428,26 +471,6 @@ func parseCommandProfileOptions(args []string) (commandProfileOptions, error) {
 			case "--cwd":
 				result.cwd = &value
 			}
-		case "--exec":
-			if seen[name] {
-				return commandProfileOptions{}, fmt.Errorf(
-					"--exec may only be specified once",
-				)
-			}
-			seen[name] = true
-			execValue := true
-			if attached {
-				switch value {
-				case "true":
-				case "false":
-					execValue = false
-				default:
-					return commandProfileOptions{}, fmt.Errorf(
-						"--exec must be bare, --exec=true, or --exec=false",
-					)
-				}
-			}
-			result.exec = &execValue
 		default:
 			if strings.HasPrefix(argument, "-") {
 				return commandProfileOptions{}, fmt.Errorf(
@@ -467,7 +490,7 @@ func isCommandProfileTypedOption(value string) bool {
 	}
 	name, _, _ := splitTypedOption(value)
 	switch name {
-	case "--model", "--effort", "--prompt", "--cwd", "--exec":
+	case "--model", "--effort", "--prompt", "--cwd":
 		return true
 	default:
 		return value == "--"

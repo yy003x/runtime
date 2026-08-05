@@ -252,7 +252,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 3 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 4 ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
 		payload.ConfiguredAddr != "127.0.0.1:8080" ||
@@ -530,5 +530,59 @@ func TestServerDoctorDependencyErrorNamesMissingInputs(t *testing.T) {
 		!strings.Contains(message, "cx-invalid") ||
 		!strings.Contains(message, "MODEL_API_KEY") {
 		t.Fatalf("message=%q", message)
+	}
+}
+
+func TestServerDoctorReportsSelectedToolEnvironmentWithoutRemoteCall(
+	t *testing.T,
+) {
+	paths := prepareVNextHome(t)
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	writeVNextModel(
+		t, paths.ConfigDir, "api-tool",
+		"https://example.invalid/v1/chat/completions",
+	)
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile,
+		[]byte(`{"agent":{"tools":["web_search"]}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(paths.ToolsDir, "web_search.json"),
+		[]byte(`{
+		  "schema_version":1,
+		  "name":"web_search",
+		  "effect":"read_only",
+		  "description":"fixture web search",
+		  "input_schema":{
+		    "type":"object",
+		    "properties":{"search_query":{"type":"string"}},
+		    "required":["search_query"],
+		    "additionalProperties":false
+		  },
+		  "executor":{
+		    "type":"mcp",
+		    "endpoint":"https://example.invalid/mcp",
+		    "remote_tool":"web_search_prime",
+		    "headers":{"Authorization":"Bearer ${Z_AI_API_KEY}"},
+		    "timeout":"30s",
+		    "max_response_bytes":1048576
+		  }
+		}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MODEL_API_KEY", "fixture-model-key")
+	t.Setenv("Z_AI_API_KEY", "")
+	var stdout bytes.Buffer
+	err := serverDoctor(paths, newCLIOutput(false, &stdout, &bytes.Buffer{}))
+	if err == nil || !strings.Contains(err.Error(), "Z_AI_API_KEY") ||
+		!strings.Contains(stdout.String(), "Missing auth environment: Z_AI_API_KEY") {
+		t.Fatalf("stdout=%q error=%v", stdout.String(), err)
 	}
 }

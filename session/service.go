@@ -12,9 +12,8 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
-	"github.com/yy003x/runtime/internal/clilog"
+	"github.com/yy003x/runtime/internal/executionlog"
 	"github.com/yy003x/runtime/internal/identity"
-	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/model"
 	"github.com/yy003x/runtime/profile"
 )
@@ -27,6 +26,7 @@ type Service struct {
 	models   model.Generator
 	now      func() time.Time
 	environ  []string
+	logsDir  string
 }
 
 type ServiceOptions struct {
@@ -35,6 +35,7 @@ type ServiceOptions struct {
 	Models   model.Generator
 	Now      func() time.Time
 	Environ  []string
+	LogsDir  string
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -57,6 +58,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	service := &Service{
 		store: options.Store, profiles: options.Profiles, models: options.Models,
 		now: options.Now, environ: append([]string(nil), environ...),
+		logsDir: options.LogsDir,
 	}
 	if err := service.cleanupInvocationManifests(); err != nil {
 		return nil, fmt.Errorf("clean private invocation manifests: %w", err)
@@ -521,8 +523,12 @@ func (service *Service) runModel(
 			})},
 		},
 	}
+	modelContext := model.WithAttemptOrigin(ctx, model.AttemptOrigin{
+		Namespace: model.AttemptNamespaceSession,
+		Source:    "session " + started.ids.session,
+	})
 	modelResult, runtimeErr := service.models.GenerateStream(
-		ctx, generateRequest,
+		modelContext, generateRequest,
 		func(event contract.Event) error {
 			return service.recordModelEvent(started.ids, event)
 		},
@@ -596,13 +602,6 @@ func (service *Service) runCommand(
 		runtimeErr.Phase = contract.PhaseTransport
 		return service.finishFailureResult(started.ids, runtimeErr)
 	}
-	if logPaths, err := layout.Resolve(); err == nil {
-		_ = clilog.Append(logPaths.LogsDir, clilog.Record{
-			Time: service.now(), Namespace: clilog.NamespaceSession, Profile: request.Snapshot.ProfileID,
-			Source:  clilog.SourceFromArgs(os.Args),
-			Command: clilog.FormatCommand(request.Snapshot.Profile.Env, invocation.CWD, invocation.Path, invocation.Argv),
-		})
-	}
 	var turn Turn
 	if err := service.store.withLock(started.ids.session, func() error {
 		var loadErr error
@@ -612,6 +611,11 @@ func (service *Service) runCommand(
 		runtimeErr := sessionRuntimeError(contract.ErrorInternal, err.Error())
 		return service.finishFailureResult(started.ids, runtimeErr)
 	}
+	_ = executionlog.AppendCLI(service.logsDir, executionlog.CLIRecord{
+		Time: service.now(), Namespace: executionlog.NamespaceSession, Profile: request.Snapshot.ProfileID,
+		Source:  "session " + started.ids.session,
+		Command: executionlog.FormatCommand(request.Snapshot.Profile.Env, invocation.CWD, invocation.Path, invocation.Argv),
+	})
 	executionResult := service.executeManagedCLI(
 		ctx, started.ids, turn, invocation,
 	)

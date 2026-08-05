@@ -33,7 +33,6 @@ type Profile struct {
 	Model   string             `json:"model,omitempty"`
 	Effort  Effort             `json:"effort,omitempty"`
 	Prompt  string             `json:"prompt,omitempty"`
-	Exec    bool               `json:"exec,omitempty"`
 	CWD     string             `json:"cwd,omitempty"`
 }
 

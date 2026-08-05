@@ -1,13 +1,13 @@
 # Tmux 管理契约
 
 `sn-cli tmux` 是独立的 interactive process manager，不创建或写入 Session。
-它只接受 `type=cli` Profile，忽略 Profile 的 `exec` 默认值并固定使用 adapter
-interactive mode；初始 prompt 是最终 argv token，只有后续 `send` 使用 tmux
+它只接受 `type=cli` Profile，并固定使用 adapter interactive mode；初始 prompt
+是最终 argv token，只有后续 `send` 使用 tmux
 paste。
 
 ```text
-sn-cli tmux start [--model M] [--effort E] [--prompt FILE_OR_TEXT]
-                  [--cwd DIR] <profile-id> [input]
+sn-cli tmux start <profile-id> [--model M] [--effort E]
+                  [--prompt FILE_OR_TEXT] [--cwd DIR] [input]
 sn-cli tmux list
 sn-cli tmux show --tmux-id <id>
 sn-cli tmux send --tmux-id <id> <input>
@@ -22,8 +22,9 @@ stdin/stdout 都是 TTY；位于同一专用 server 时 switch，位于其它 tm
 
 ## 所有权与隔离
 
-- tmux client 固定使用短 `-S` socket、session `sn-session` 和 source-controlled
-  `resources/tmux.conf`，不读取用户 `~/.tmux.conf`。
+- tmux client 固定使用短 `-S` socket、session `sn-session` 和 active
+  `${SN_CLI_HOME}/resources/tmux.conf`，不读取用户 `~/.tmux.conf`。该文件只由
+  source/payload `release/tmux.conf` 经 activation 映射产生。
 - server marker 绑定完整 Runtime home digest、uid、bootstrap digest、schema 和
   随机 incarnation；所有 window record 绑定同一 incarnation。
 - sentinel 仅维持 server，不是用户 window。最后一个 managed window 删除后同时
@@ -56,4 +57,6 @@ window state 为 `starting|running|exited|orphaned`。自然退出由
 `stop` 接受全部 state。`list` 在 server 不存在时返回空数组。
 
 Tmux 不保存 transcript、paste、canonical message、Session/Turn/Run ID，也不提供
-HTTP route、retention、export 或 GC。
+HTTP route、retention、export 或 GC。`tmux start` 在最终 invocation 构建后会尝试写
+best-effort `logs/YYMMDD/cli.jsonl`，但 management action 不写；该日志只是 launch
+diagnostic，不是 window registry 或 launch acknowledgement，缺失时不影响 Tmux 状态。

@@ -6,6 +6,7 @@ import (
 
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/model"
+	"github.com/yy003x/runtime/provider"
 	"github.com/yy003x/runtime/runtimetest/scenario"
 )
 
@@ -44,10 +45,10 @@ func (driver *Driver) Stream(
 	_ model.ResolvedModel,
 	request contract.ModelRequest,
 	sink contract.EventSink,
-) (contract.ModelResult, *contract.RuntimeError) {
+) (contract.ModelResult, provider.Attempt, *contract.RuntimeError) {
 	name := request.Trace.Labels[ScenarioLabel]
 	if name == "" {
-		return contract.ModelResult{}, &contract.RuntimeError{
+		return contract.ModelResult{}, provider.Attempt{}, &contract.RuntimeError{
 			Code: contract.ErrorInvalidRequest, Phase: contract.PhaseRequest,
 			Message: fmt.Sprintf("trace.labels[%q] is required", ScenarioLabel),
 		}
@@ -65,7 +66,7 @@ func (driver *Driver) Stream(
 		return sink(current)
 	})
 	if conversionError != nil {
-		return contract.ModelResult{}, &contract.RuntimeError{
+		return contract.ModelResult{}, provider.Attempt{}, &contract.RuntimeError{
 			Code: contract.ErrorInvalidProviderResponse, Phase: contract.PhaseProvider,
 			Message: conversionError.Error(),
 		}
@@ -73,19 +74,19 @@ func (driver *Driver) Stream(
 	if runtimeErr != nil {
 		current, err := scenario.ToContractError(*runtimeErr)
 		if err != nil {
-			return contract.ModelResult{}, &contract.RuntimeError{
+			return contract.ModelResult{}, provider.Attempt{}, &contract.RuntimeError{
 				Code: contract.ErrorInvalidProviderResponse, Phase: contract.PhaseProvider,
 				Message: err.Error(),
 			}
 		}
-		return contract.ModelResult{}, &current
+		return contract.ModelResult{}, provider.Attempt{}, &current
 	}
 	current, err := scenario.ToContractResult(result)
 	if err != nil {
-		return contract.ModelResult{}, &contract.RuntimeError{
+		return contract.ModelResult{}, provider.Attempt{}, &contract.RuntimeError{
 			Code: contract.ErrorInvalidProviderResponse, Phase: contract.PhaseProvider,
 			Message: err.Error(),
 		}
 	}
-	return current, nil
+	return current, provider.Attempt{}, nil
 }

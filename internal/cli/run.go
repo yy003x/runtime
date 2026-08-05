@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/agent"
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/identity"
 	"github.com/yy003x/runtime/internal/layout"
@@ -26,28 +24,20 @@ func runRunNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc")
+		return cliValidationf("usage: run get|list|result|events|watch|cancel|resume|retry|reconcile|gc")
 	}
 	if args[0] == "watch" {
 		output.beginStream()
 	}
-	var submitRequest runtime.Request
 	var resumeInput json.RawMessage
 	var err error
-	if args[0] == "submit" {
-		submitRequest, err = parseDurableSubmit(args[1:], agent.Budget{})
+	if err := validateRunManagementInvocation(args); err != nil {
+		return cliValidation(err)
+	}
+	if args[0] == "resume" {
+		resumeInput, err = readResumeInput(args[1:])
 		if err != nil {
-			return cliValidation(err)
-		}
-	} else {
-		if err := validateRunManagementInvocation(args); err != nil {
-			return cliValidation(err)
-		}
-		if args[0] == "resume" {
-			resumeInput, err = readResumeInput(args[1:])
-			if err != nil {
-				return err
-			}
+			return err
 		}
 	}
 	var (
@@ -95,7 +85,7 @@ func runRunNamespaceVNext(
 			return err
 		}
 		defer queryServices.Runs.Close()
-	case "submit", "resume", "retry":
+	case "resume", "retry":
 		cwd, err = os.Getwd()
 		if err != nil {
 			return err
@@ -111,36 +101,6 @@ func runRunNamespaceVNext(
 		return fmt.Errorf("unknown run action %q", args[0])
 	}
 	switch args[0] {
-	case "submit":
-		request := submitRequest
-		if request.Kind == runtime.KindAgent {
-			request.AgentBudget = executionServices.Config.AgentBudget()
-		}
-		if request.Kind == runtime.KindSession && request.SessionID == "" {
-			request.SessionID, err = session.NewID()
-			if err != nil {
-				return err
-			}
-		}
-		if request.Kind == runtime.KindSession {
-			request.InvocationBase = cwd
-			if request.CWD != "" && !filepath.IsAbs(request.CWD) {
-				request.CWD = filepath.Join(cwd, request.CWD)
-			}
-		}
-		record, runtimeErr := executionServices.Runs.Submit(
-			context.Background(), request,
-		)
-		if runtimeErr != nil {
-			return runtimeErr
-		}
-		if output.JSON() {
-			return output.writeJSON(map[string]any{"run": record})
-		}
-		return output.line(
-			"Submitted run %s (%s, state=%s)",
-			record.ID, record.Request.Kind, record.State,
-		)
 	case "get":
 		if err := validateManagementArgs(
 			args[1:], []string{"--run-id"}, nil,
@@ -583,168 +543,6 @@ func renderRunResult(output *cliOutput, record runtime.Record) error {
 		"Run %s: %s (settled_sequence=%d)",
 		record.ID, record.State, record.SettledSequence,
 	)
-}
-
-func parseDurableSubmit(
-	args []string,
-	defaultBudget agent.Budget,
-) (runtime.Request, error) {
-	request := runtime.Request{
-		Kind: runtime.KindAgent, Labels: make(map[string]string),
-		AgentBudget: defaultBudget,
-	}
-	seen := make(map[string]bool)
-	inputSet := false
-	for index := 0; index < len(args); index++ {
-		current := args[index]
-		if current == "--" {
-			if index+2 != len(args) {
-				return request, fmt.Errorf(
-					"run submit -- must be followed by exactly one input argument",
-				)
-			}
-			request.Input = args[index+1]
-			inputSet = true
-			break
-		}
-		if !strings.HasPrefix(current, "-") {
-			if index != len(args)-1 {
-				return request, fmt.Errorf(
-					"run submit input must be the final argument",
-				)
-			}
-			request.Input = current
-			inputSet = true
-			break
-		}
-		switch current {
-		case "--kind":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--kind requires value")
-			}
-			request.Kind = runtime.Kind(args[index])
-		case "--profile":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--profile requires value")
-			}
-			request.ProfileID = args[index]
-		case "--session-id":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--session-id requires value")
-			}
-			request.SessionID = args[index]
-		case "--task-id":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--task-id requires value")
-			}
-			request.TaskID = args[index]
-		case "--model":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--model requires value")
-			}
-			request.Model = args[index]
-		case "--effort":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--effort requires value")
-			}
-			request.Effort = args[index]
-		case "--cwd":
-			if seen[current] {
-				return request, fmt.Errorf(
-					"run submit option %s may only be used once", current,
-				)
-			}
-			seen[current] = true
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--cwd requires value")
-			}
-			request.CWD = args[index]
-		case "--label":
-			index++
-			if index >= len(args) || args[index] == "" ||
-				strings.HasPrefix(args[index], "--") {
-				return request, fmt.Errorf("--label requires key=value")
-			}
-			key, value, exists := strings.Cut(args[index], "=")
-			if !exists || key == "" {
-				return request, fmt.Errorf("--label requires key=value")
-			}
-			if _, exists := request.Labels[key]; exists {
-				return request, fmt.Errorf(
-					"--label key %q may only be used once", key,
-				)
-			}
-			request.Labels[key] = value
-		default:
-			return request, fmt.Errorf(
-				"unknown run submit option %s", current,
-			)
-		}
-	}
-	if request.ProfileID == "" || !inputSet ||
-		strings.TrimSpace(request.Input) == "" {
-		return request, fmt.Errorf("run submit requires --profile and one quoted input")
-	}
-	if request.Kind != runtime.KindAgent && request.Kind != runtime.KindSession {
-		return request, fmt.Errorf("--kind must be agent or session")
-	}
-	if request.Kind == runtime.KindAgent && request.CWD != "" {
-		return request, fmt.Errorf("--cwd is invalid for agent runs")
-	}
-	if request.Kind == runtime.KindSession {
-		request.AgentBudget = agent.Budget{}
-	}
-	return request, nil
 }
 
 func readResumeInput(args []string) (json.RawMessage, error) {

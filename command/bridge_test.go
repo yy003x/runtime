@@ -83,7 +83,7 @@ func TestBuildCodexInteractiveRemovesExecOnlyAndAppendsPrompt(t *testing.T) {
 	invocation, err := Build(BuildRequest{
 		Mode: ModeInteractive, OutputProtocol: OutputNative,
 		Profile: Profile{
-			Command: commandPath, Exec: true,
+			Command: commandPath,
 			Args: []string{
 				"--sandbox", "read-only", "exec",
 				"--skip-git-repo-check", "--ephemeral", "--json",

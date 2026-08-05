@@ -426,6 +426,12 @@ func serverDoctor(paths layout.Paths, output *cliOutput) error {
 			}
 		}
 	}
+	for _, name := range services.ToolEnvironmentReferences {
+		if value, exists := os.LookupEnv(name); exists && value != "" {
+			continue
+		}
+		missingAuth = appendUniqueString(missingAuth, name)
+	}
 	result := map[string]any{
 		"schema_version":   cliOutputSchemaVersion,
 		"contract_version": cliOutputContractVersion,

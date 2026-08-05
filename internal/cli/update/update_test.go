@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -23,11 +24,14 @@ import (
 func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	archiveName := platformArchiveName(t)
 	archive := makeArchive(t, map[string]archiveFile{
-		"sn-cli":                        {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n"},
-		"sn-server":                     {mode: 0o755, content: "#!/bin/sh\nprintf server\n"},
-		"configs/new-profile.json":      {mode: 0o644, content: `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","headers":{"Authorization":"${FIXTURE_KEY}"},"timeout":"1m"}` + "\n"},
-		"runtime.json":                  {mode: 0o644, content: "{\"agent\":{}}\n"},
-		"resources/schema/profile.json": {mode: 0o644, content: "packaged-schema\n"},
+		"sn-cli":                          {mode: 0o755, content: "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n"},
+		"sn-server":                       {mode: 0o755, content: "#!/bin/sh\nprintf server\n"},
+		"configs/new-profile.json":        {mode: 0o644, content: `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","headers":{"Authorization":"${FIXTURE_KEY}"},"timeout":"1m"}` + "\n"},
+		"resources/tools/web_search.json": {mode: 0o644, content: `{"name":"web_search"}` + "\n"},
+		"resources/schema/profile.json":   {mode: 0o644, content: "packaged-schema\n"},
+		"release/runtime.json":            {mode: 0o644, content: "{\"agent\":{}}\n"},
+		"release/tmux.conf":               {mode: 0o644, content: "set-option -g status off\n"},
+		"release/release.json":            {mode: 0o644, content: "{\"schema_version\":1}\n"},
 	})
 	hash := sha256.Sum256(archive)
 	server := releaseServer(t, "v2", archiveName, archive, fmt.Sprintf("%x  %s\n", hash, archiveName))
@@ -48,19 +52,46 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 		if err != nil {
 			return activation.UpgradeResult{}, err
 		}
+		toolFiles, err := installbundle.SyncMissing(
+			filepath.Join(payload, "resources", "tools"),
+			cfg.Paths.ToolsDir,
+		)
+		if err != nil {
+			return activation.UpgradeResult{}, err
+		}
 		copiedRuntime, err := copyMissingFile(
-			filepath.Join(payload, "runtime.json"),
+			filepath.Join(payload, "release", "runtime.json"),
 			cfg.Paths.RuntimeConfigFile,
 		)
 		if err != nil {
 			return activation.UpgradeResult{}, err
 		}
-		resources, err := installbundle.SyncMissing(
-			filepath.Join(payload, "resources"), cfg.Paths.ResourcesDir,
+		schemas, err := installbundle.SyncMissing(
+			filepath.Join(payload, "resources", "schema"),
+			filepath.Join(cfg.Paths.ResourcesDir, "schema"),
 		)
 		if err != nil {
 			return activation.UpgradeResult{}, err
 		}
+		resourceFiles := make([]string, 0, len(schemas.Copied)+2)
+		for _, name := range schemas.Copied {
+			resourceFiles = append(resourceFiles, filepath.ToSlash(
+				filepath.Join("schema", name),
+			))
+		}
+		for _, name := range []string{"release.json", "tmux.conf"} {
+			copied, copyErr := copyMissingFile(
+				filepath.Join(payload, "release", name),
+				filepath.Join(cfg.Paths.ResourcesDir, name),
+			)
+			if copyErr != nil {
+				return activation.UpgradeResult{}, copyErr
+			}
+			if copied {
+				resourceFiles = append(resourceFiles, name)
+			}
+		}
+		sort.Strings(resourceFiles)
 		if err := installBinary(
 			filepath.Join(payload, "sn-cli"), cfg.Paths.Binary,
 		); err != nil {
@@ -73,8 +104,9 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 		}
 		return activation.UpgradeResult{
 			TargetHome: targetHome, CopiedProfiles: profiles.Copied,
+			CopiedTools:         toolFiles.Copied,
 			CopiedRuntimeConfig: copiedRuntime,
-			ResourceFiles:       resources.Copied,
+			ResourceFiles:       resourceFiles,
 		}, nil
 	}
 	defer func() { runCandidateActivation = previousActivation }()
@@ -88,16 +120,21 @@ func TestApplyInstallsBinariesAndOnlyMissingConfiguration(t *testing.T) {
 	}
 	if result.Version != "v2" ||
 		strings.Join(result.CopiedProfiles, ",") != "new-profile.json" ||
+		strings.Join(result.CopiedTools, ",") != "web_search.json" ||
 		result.CopiedRuntimeConfig ||
-		strings.Join(result.CopiedResources, ",") != "schema/profile.json" {
+		strings.Join(result.CopiedResources, ",") !=
+			"release.json,schema/profile.json,tmux.conf" {
 		t.Fatalf("result=%#v", result)
 	}
 	assertUpdateContent(t, cfg.Paths.Binary, "#!/bin/sh\n[ \"$1\" = profile ] && [ \"$2\" = check ] && exit 0\nprintf new\n")
 	assertUpdateContent(t, cfg.Paths.ServerBinary, "#!/bin/sh\nprintf server\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "local.json"), `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"local","headers":{"Authorization":"${LOCAL_KEY}"},"timeout":"1m"}`+"\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ConfigDir, "new-profile.json"), `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","model":"fixture","headers":{"Authorization":"${FIXTURE_KEY}"},"timeout":"1m"}`+"\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ToolsDir, "web_search.json"), `{"name":"web_search"}`+"\n")
 	assertUpdateContent(t, cfg.Paths.RuntimeConfigFile, "{\"agent\":{}}\n")
 	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "schema", "profile.json"), "packaged-schema\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "tmux.conf"), "set-option -g status off\n")
+	assertUpdateContent(t, filepath.Join(cfg.Paths.ResourcesDir, "release.json"), "{\"schema_version\":1}\n")
 }
 
 func TestApplyChecksumFailureKeepsOldBinariesAndConfiguration(t *testing.T) {

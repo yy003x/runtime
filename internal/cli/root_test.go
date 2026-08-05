@@ -23,7 +23,7 @@ func TestMainLeadingJSONVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["contract_version"] != float64(3) {
+	if payload["contract_version"] != float64(4) {
 		t.Fatalf("payload=%#v", payload)
 	}
 }
@@ -34,13 +34,18 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 	}
 	for _, expected := range []string{
-		"sn-cli --json <profile-id> [profile-options...] [input]",
-		"sn-cli session run|submit [runtime-options] <profile-id> [input]",
+		"sn-cli <cli-profile-id> [options...] [input]",
+		"sn-cli exec <cli-profile-id> [options...] [input]",
+		"sn-cli req <api-profile-id> [options...] [input]",
+		"sn-cli session exec <cli-profile-id> [options...] [input]",
+		"sn-cli session req <api-profile-id> [options...] [input]",
 		"sn-cli session list|show|messages|events|logs|executions|execution",
 		"sn-cli session reconcile|configure|export|delete|gc",
-		"sn-cli agent run --profile <model-profile-id> [options] [input]",
-		"stable API Profile/management output; must be first",
-		"CLI Profile output remains target-native",
+		"sn-cli agent <api-profile-id> [options...] [input]",
+		"sn-cli run get|list|result|events|watch|cancel|resume|retry|reconcile|gc",
+		"stable req/management output; must be first",
+		"direct/exec CLI output remains target-native",
+		"Tools:               <runtime-home>/tools",
 	} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help missing %q:\n%s", expected, stdout)
@@ -102,32 +107,43 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 		{
 			name: "command_profile_unknown_option",
 			args: []string{
-				"--json", "profile", "cx", "--unknown",
+				"--json", "exec", "cx", "--unknown",
 			},
 		},
 		{
 			name: "api_profile_unknown_option",
 			args: []string{
-				"--json", "profile", "api", "--unknown",
+				"--json", "req", "api", "--unknown",
 			},
 		},
 		{
 			name: "profile_not_found",
 			args: []string{
-				"--json", "profile", "missing", "input",
+				"--json", "req", "missing", "input",
+			},
+		},
+		{
+			name: "removed_profile_execution",
+			args: []string{
+				"--json", "profile", "cx", "input",
 			},
 		},
 		{
 			name: "agent_parse",
 			args: []string{
-				"--json", "agent", "run", "--unknown",
+				"--json", "agent", "api", "--unknown",
 			},
 		},
 		{
 			name: "agent_profile_not_found",
 			args: []string{
-				"--json", "agent", "run",
-				"--profile", "missing", "input",
+				"--json", "agent", "missing", "input",
+			},
+		},
+		{
+			name: "removed_run_submit",
+			args: []string{
+				"--json", "run", "submit", "input",
 			},
 		},
 		{
@@ -255,7 +271,7 @@ func TestTopLevelProfileManagementNamesAreUnknownProfiles(t *testing.T) {
 	}
 }
 
-func TestMainImplicitAndExplicitAPIProfileAreEquivalent(t *testing.T) {
+func TestMainReqIsTheOnlyAPIProfileExecutionNamespace(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
 		_ *http.Request,
@@ -279,35 +295,21 @@ func TestMainImplicitAndExplicitAPIProfileAreEquivalent(t *testing.T) {
 	http.DefaultTransport = server.Client().Transport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
-	implicitOut, implicitErr, implicitExit := captureMainOutput(
-		t, []string{"api-cx", "reply OK"},
+	reqOut, reqErr, reqExit := captureMainOutput(
+		t, []string{"req", "api-cx", "reply OK"},
 	)
-	explicitOut, explicitErr, explicitExit := captureMainOutput(
-		t, []string{"profile", "api-cx", "reply OK"},
-	)
-	if implicitExit != 0 || explicitExit != 0 ||
-		implicitErr != "" || explicitErr != "" ||
-		implicitOut != explicitOut || implicitOut != "OK\n" {
+	if reqExit != 0 || reqErr != "" || reqOut != "OK\n" {
 		t.Fatalf(
-			"implicit=(%d,%q,%q) explicit=(%d,%q,%q)",
-			implicitExit, implicitOut, implicitErr,
-			explicitExit, explicitOut, explicitErr,
+			"req=(%d,%q,%q)", reqExit, reqOut, reqErr,
 		)
 	}
 
-	implicitJSON, implicitJSONErr, implicitJSONExit := captureMainOutput(
-		t, []string{"--json", "api-cx", "reply OK"},
+	reqJSON, reqJSONErr, reqJSONExit := captureMainOutput(
+		t, []string{"--json", "req", "api-cx", "reply OK"},
 	)
-	explicitJSON, explicitJSONErr, explicitJSONExit := captureMainOutput(
-		t, []string{"--json", "profile", "api-cx", "reply OK"},
-	)
-	if implicitJSONExit != 0 || explicitJSONExit != 0 ||
-		implicitJSONErr != "" || explicitJSONErr != "" ||
-		implicitJSON != explicitJSON {
+	if reqJSONExit != 0 || reqJSONErr != "" {
 		t.Fatalf(
-			"implicit JSON=(%d,%q,%q) explicit JSON=(%d,%q,%q)",
-			implicitJSONExit, implicitJSON, implicitJSONErr,
-			explicitJSONExit, explicitJSON, explicitJSONErr,
+			"req JSON=(%d,%q,%q)", reqJSONExit, reqJSON, reqJSONErr,
 		)
 	}
 	var payload struct {
@@ -321,7 +323,7 @@ func TestMainImplicitAndExplicitAPIProfileAreEquivalent(t *testing.T) {
 			FinishReason string `json:"finish_reason"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(implicitJSON), &payload); err != nil {
+	if err := json.Unmarshal([]byte(reqJSON), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload.SchemaVersion != cliOutputSchemaVersion ||
@@ -330,6 +332,18 @@ func TestMainImplicitAndExplicitAPIProfileAreEquivalent(t *testing.T) {
 		payload.Result.Message.Content != "OK" ||
 		payload.Result.FinishReason != "stop" {
 		t.Fatalf("payload=%#v", payload)
+	}
+	for _, args := range [][]string{
+		{"api-cx", "reply OK"},
+		{"profile", "api-cx", "reply OK"},
+	} {
+		stdout, stderr, exitCode := captureMainOutput(t, args)
+		if exitCode != 1 || stdout != "" || stderr == "" {
+			t.Fatalf(
+				"removed API route args=%q exit=%d stdout=%q stderr=%q",
+				args, exitCode, stdout, stderr,
+			)
+		}
 	}
 }
 

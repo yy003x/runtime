@@ -14,7 +14,7 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
-	"github.com/yy003x/runtime/internal/clilog"
+	"github.com/yy003x/runtime/internal/executionlog"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	runtimeprofile "github.com/yy003x/runtime/profile"
@@ -92,7 +92,7 @@ func runTmuxNamespaceVNext(
 		) (runtimetmux.Invocation, error) {
 			return resolveTmuxStartInvocation(
 				catalog, options, pipedInput,
-				invocationBase, inheritedEnvironment,
+				invocationBase, inheritedEnvironment, paths.LogsDir,
 			)
 		}
 	}
@@ -262,6 +262,7 @@ func resolveTmuxStartInvocation(
 	pipedInput string,
 	invocationBase string,
 	inheritedEnvironment []string,
+	logsDir string,
 ) (runtimetmux.Invocation, error) {
 	if catalog == nil {
 		return runtimetmux.Invocation{}, fmt.Errorf("Profile catalog is required")
@@ -318,13 +319,11 @@ func resolveTmuxStartInvocation(
 	if err != nil {
 		return runtimetmux.Invocation{}, err
 	}
-	if logPaths, err := layout.Resolve(); err == nil {
-		_ = clilog.Append(logPaths.LogsDir, clilog.Record{
-			Time: time.Now(), Namespace: clilog.NamespaceTmux, Profile: options.profileID,
-			Source:  clilog.SourceFromArgs(os.Args),
-			Command: clilog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
-		})
-	}
+	_ = executionlog.AppendCLI(logsDir, executionlog.CLIRecord{
+		Time: time.Now(), Namespace: executionlog.NamespaceTmux, Profile: options.profileID,
+		Source:  executionlog.SourceFromArgs(os.Args),
+		Command: executionlog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
+	})
 	digest, err := tmuxConfigDigest(options.profileID, *entry.Command, options)
 	if err != nil {
 		return runtimetmux.Invocation{}, err
@@ -363,15 +362,16 @@ func tmuxConfigDigest(
 
 func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 	var result tmuxStartOptions
+	if len(args) == 0 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+		return tmuxStartOptions{}, fmt.Errorf(
+			"tmux start requires profile ID immediately after start",
+		)
+	}
+	result.profileID = args[0]
 	seen := make(map[string]bool)
-	for index := 0; index < len(args); index++ {
+	for index := 1; index < len(args); index++ {
 		argument := args[index]
 		if argument == "--" {
-			if result.profileID == "" {
-				return tmuxStartOptions{}, fmt.Errorf(
-					"tmux start profile ID must precede `--`",
-				)
-			}
 			if result.input != nil || len(args[index+1:]) > 1 {
 				return tmuxStartOptions{}, fmt.Errorf(
 					"tmux start accepts at most one quoted input",
@@ -386,9 +386,9 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 		name, value, attached := splitTypedOption(argument)
 		switch name {
 		case "--model", "--effort", "--prompt", "--cwd":
-			if result.profileID != "" {
+			if result.input != nil {
 				return tmuxStartOptions{}, fmt.Errorf(
-					"Tmux typed options must precede profile ID",
+					"Tmux typed options cannot follow positional input",
 				)
 			}
 			if seen[name] {
@@ -428,10 +428,6 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 					"unknown Tmux start option: %s", argument,
 				)
 			}
-			if result.profileID == "" {
-				result.profileID = argument
-				continue
-			}
 			if result.input != nil {
 				return tmuxStartOptions{}, fmt.Errorf(
 					"tmux start input must be one quoted argument",
@@ -440,9 +436,6 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 			value := argument
 			result.input = &value
 		}
-	}
-	if result.profileID == "" {
-		return tmuxStartOptions{}, fmt.Errorf("tmux start requires profile ID")
 	}
 	return result, nil
 }

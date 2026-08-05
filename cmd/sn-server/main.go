@@ -19,6 +19,7 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/profileid"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
 	transporthttp "github.com/yy003x/runtime/transport/http"
 )
@@ -28,9 +29,7 @@ type serverConfig struct {
 	BearerToken string
 }
 
-var fixedNamespaces = []string{
-	"profile", "session", "tmux", "agent", "run", "server", "help", "version",
-}
+var fixedNamespaces = profileid.ReservedNamespaces()
 
 func main() {
 	if err := validateServerArgs(os.Args[1:]); err != nil {

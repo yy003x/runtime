@@ -16,7 +16,7 @@
 - [2. 完整命令树](#2-完整命令树)
 - [3. 全局调用规则](#3-全局调用规则)
 - [4. Runtime Home 与配置](#4-runtime-home-与配置)
-- [5. Profile 管理和直接调用](#5-profile-管理和直接调用)
+- [5. Profile 管理和执行入口](#5-profile-管理和执行入口)
 - [6. Session](#6-session)
 - [7. Tmux](#7-tmux)
 - [8. Agent](#8-agent)
@@ -31,16 +31,18 @@
 
 ## 命令速查表
 
-下表按 namespace 列出 `sn-cli` 的全部公开命令，每条一行，便于快速定位。「记录」列表示
-该命令是否产生执行记录：`否`＝执行但不持久化；`session`＝写入文件型 Session；
-`durable`＝创建 SQLite Durable Run；`—`＝只读 / 管理 / 控制面，不产生执行记录。
+下表按 namespace 列出 `sn-cli` 的全部公开命令，每条一行，便于快速定位。「记录」列
+同时区分 canonical state 与 best-effort local log：`cli-log/api-log` 只是可丢失诊断，
+`session` 写文件型 Session，`durable` 创建 SQLite Durable Run，`—` 表示纯查询 /
+管理 / 控制动作。queue submit 当下不写 execution log，worker 真正执行后才写。
 
-### 直接调用与 profile
+### 执行与 Profile
 
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
-| `sn-cli <id>` | 隐式 Profile 一次调用，等价于 `profile <id>` | 否 | `sn-cli cx` |
-| `sn-cli profile <id>` | 一次 CLI/API 调用，不记录 | 否 | `sn-cli profile cx --exec "回复OK"` |
+| `sn-cli <cli-profile>` | CLI interactive direct | cli-log | `sn-cli cx` |
+| `sn-cli exec <cli-profile>` | CLI non-interactive 一次执行 | cli-log | `sn-cli exec cx "回复OK"` |
+| `sn-cli req <api-profile>` | 一次 API request | api-log | `sn-cli req api-cx "回复OK"` |
 | `sn-cli profile list` | 列出所有 Profile 的 ID 与类型 | — | `sn-cli profile list` |
 | `sn-cli profile show <id>` | 查看 Profile 实际配置 | — | `sn-cli profile show cx` |
 | `sn-cli profile check [id]` | 校验 Profile 结构与分流 | — | `sn-cli profile check` |
@@ -49,8 +51,9 @@
 
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
-| `session run` | 同步执行一个有记录的 Turn | session | `sn-cli session run cx "分析当前仓库"` |
-| `session submit` | 提交 durable queued Session Turn | durable | `sn-cli session submit cx-deep "后台执行"` |
+| `session exec <cli-profile>` | 同步执行并记录 CLI Turn | session + cli-log | `sn-cli session exec cx "分析当前仓库"` |
+| `session req <api-profile>` | 同步执行并记录 API Turn | session + api-log | `sn-cli session req api-cx "分析这段内容"` |
+| `session exec\|req <profile> --queue` | 创建 queued Session Turn | durable；worker 执行时 log | `sn-cli session exec cx-deep --queue "后台执行"` |
 | `session list` | 列出或按状态过滤 Session | — | `sn-cli session list --state blocked` |
 | `session show` | 查看 Session 状态与事实 | — | `sn-cli session show --session-id <id>` |
 | `session messages` | 读取消息历史，支持增量 | — | `sn-cli session messages --session-id <id> --after-seq 10` |
@@ -68,7 +71,7 @@
 
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
-| `tmux start` | 创建一个 managed 交互窗口 | 否 | `sn-cli tmux start cx "打开长期任务"` |
+| `tmux start` | 创建一个 managed 交互窗口 | cli-log | `sn-cli tmux start cx "打开长期任务"` |
 | `tmux list` | 列出 managed 窗口 | — | `sn-cli tmux list` |
 | `tmux show` | 查看窗口身份与状态 | — | `sn-cli tmux show --tmux-id <id>` |
 | `tmux send` | 向窗口发送输入 | — | `sn-cli tmux send --tmux-id <id> "继续"` |
@@ -80,13 +83,16 @@
 
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
-| `agent run` | API-only 自主 model/tool 循环 | durable | `sn-cli agent run --profile api-cx "审查并报告"` |
+| `agent <api-profile>` | 同步运行 API-only model/tool 循环 | durable + 每轮 api-log | `sn-cli agent api-cx "审查并报告"` |
+| `agent <api-profile> --queue` | 创建 queued Agent Run | durable；worker 每轮 api-log | `sn-cli agent api-cx --queue "后台审查"` |
 
 ### run
 
+`run` 不接受 fresh submission，只查询或控制由带 `--queue` 的 Session/Agent 入口
+或同步 `agent` 创建的 Durable Run；`run retry` 是基于已有终态 Run 的控制动作。
+
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
-| `run submit` | 提交 durable Run 到队列 | durable | `sn-cli run submit --kind agent --profile api-cx "后台任务"` |
 | `run get` | 获取完整 Run Record | — | `sn-cli run get --run-id <id>` |
 | `run list` | 列出或按状态/kind 过滤 Run | — | `sn-cli run list --state failed` |
 | `run result` | 读取当前 result/error/state | — | `sn-cli run result --run-id <id>` |
@@ -122,99 +128,68 @@
 
 ## 1. 应该使用哪个入口
 
-| 目标 | 推荐入口 | 是否记录 | 说明 |
+| 目标 | 推荐入口 | canonical / diagnostic | 说明 |
 |---|---|---:|---|
-| 打开 Codex/Claude 交互 TUI | `sn-cli <cli-profile-id>` | 否 | 直接 Profile，通常使用 `exec=false` |
-| 临时覆盖模型或 effort | `sn-cli <id> --model ... --effort ...` | 否 | typed 参数优先于 Profile 配置 |
-| 一次性运行 CLI 并退出 | `sn-cli <id> --exec "prompt"` | 否 | Codex 映射为 `exec`，Claude 映射为 `-p` |
-| 调用一次模型 API | `sn-cli <api-profile-id> "prompt"` | 否 | 只执行一次 Provider call |
-| 保存一轮会话历史 | `sn-cli session run ...` | 是 | 同步执行一个 Session Turn |
-| 后台执行并保存会话 | `sn-cli session submit ...` | 是 | 提交 Durable Session Run |
-| 保留可 attach 的长期 TUI | `sn-cli tmux start ...` | 否 | 独立 Tmux window manager |
-| 自动执行 model/tool 循环 | `sn-cli agent run ...` | Durable Run | 只接受 API Profile |
-| 提交和控制后台任务 | `sn-cli run ...` | Durable Run | SQLite 队列和控制面 |
+| 打开 Codex/Claude 交互 TUI | `sn-cli <cli-profile-id>` | 无 / cli-log | bare CLI Profile 固定 direct |
+| 临时覆盖模型或 effort | `sn-cli <cli-profile> --model ... --effort ...` | 无 / cli-log | typed 参数优先于 Profile 配置 |
+| 一次性运行 CLI 并退出 | `sn-cli exec <cli-profile> ...` | 无 / cli-log | Codex 映射为 `exec`，Claude 映射为 `-p` |
+| 调用一次模型 API | `sn-cli req <api-profile> ...` | 无 / api-log | 只执行一次 Provider call |
+| 保存一轮 CLI 会话历史 | `sn-cli session exec <cli-profile> ...` | session / cli-log | managed non-interactive Turn |
+| 保存一轮 API 会话历史 | `sn-cli session req <api-profile> ...` | session / api-log | 单次 API Turn |
+| 后台执行并保存会话 | `session exec\|req <profile> --queue ...` | durable / worker log | 提交 Durable Session Run |
+| 保留可 attach 的长期 TUI | `sn-cli tmux start ...` | tmux / cli-log | 独立 Tmux window manager |
+| 自动执行 model/tool 循环 | `sn-cli agent <api-profile> ...` | Durable Run / 每轮 api-log | 默认同步；`--queue` 只入队 |
+| 查询和控制后台任务 | `sn-cli run ...` | — | 不接受 fresh submission |
 | 启动 worker 和 HTTP 服务 | `sn-cli server start` | 服务状态 | 返回可供第三方托管的 PID |
 
 几个最重要的边界：
 
-- `sn-cli <profile-id>` 与 `sn-cli profile <profile-id>` 完全等价。
-- Profile 的 `type=cli|api` 决定进入 Command Bridge 还是 Model Core。
-- 直接 Profile 调用不创建 Session，也不创建 Durable Run。
+- namespace 决定执行语义，Profile `type=cli|api` 做严格配对校验。
+- bare Profile、`exec`、`req` 都不创建 Session 或 Durable Run。
+- 所有实际 Profile execution 会尝试写本地 execution log；它不是 canonical 记录。
+- Profile ID 紧跟拥有它的 namespace/action；option 位于其后；input 必须最后。
+- `profile` 只提供 `list|show|check`，不执行 Profile。
+- 当前 contract 不提供旧入口 alias、兼容 shim 或迁移版本。
 - Session 自己管理 Turn、Message、Event 和 Execution，不自动执行 tool call。
 - Tmux 只管理交互窗口，不记录 transcript、paste、Session 或 Run。
 - Agent 只接受 API Profile，负责自动 model/tool/tool-result 循环。
-- `session submit` 和 `run submit` 只入队，不会自动启动 `sn-server`。
+- `--queue` 只入队，不会自动启动 `sn-server`。
 
 ## 2. 完整命令树
 
 ```text
 sn-cli
-├─ <profile-id> [profile-options] [input]
-│
+├─ <cli-profile> [options] [input]       # interactive direct
+├─ exec <cli-profile> [options] [input]  # non-interactive CLI
+├─ req <api-profile> [options] [input]   # one API request
 ├─ profile
 │  ├─ list
 │  ├─ show <profile-id>
-│  ├─ check [profile-id]
-│  └─ <profile-id> [profile-options] [input]
-│
+│  └─ check [profile-id]
 ├─ session
-│  ├─ run
-│  ├─ submit
-│  ├─ list
-│  ├─ show
-│  ├─ messages
-│  ├─ events
-│  ├─ logs
-│  ├─ executions
-│  ├─ execution
-│  ├─ reconcile
-│  ├─ configure
-│  ├─ export
-│  ├─ delete
-│  └─ gc
-│
+│  ├─ exec <cli-profile> [options] [input]
+│  ├─ req <api-profile> [options] [input]
+│  ├─ list | show | messages | events | logs
+│  ├─ executions | execution | reconcile
+│  └─ configure | export | delete | gc
 ├─ tmux
-│  ├─ start
-│  ├─ list
-│  ├─ show
-│  ├─ send
-│  ├─ attach
-│  ├─ interrupt
-│  └─ stop
-│
-├─ agent
-│  └─ run
-│
+│  ├─ start <cli-profile> [options] [input]
+│  └─ list | show | send | attach | interrupt | stop
+├─ agent <api-profile> [options] [input]
 ├─ run
-│  ├─ submit
-│  ├─ get
-│  ├─ list
-│  ├─ result
-│  ├─ events
-│  ├─ watch
-│  ├─ cancel
-│  ├─ resume
-│  ├─ retry
-│  ├─ reconcile
-│  └─ gc
-│
+│  ├─ get | list | result | events | watch
+│  └─ cancel | resume | retry | reconcile | gc
 ├─ server
-│  ├─ info
-│  ├─ doctor
-│  ├─ start
-│  ├─ status
-│  ├─ stop
-│  ├─ update
-│  ├─ upgrade-check
+│  ├─ info | doctor | start | status | stop | update | upgrade-check
 │  └─ upgrade-activate       # 内部 activation action
-│
 ├─ help | -h | --help
 ├─ version | --version
 └─ __sn_tmux_helper          # 内部 Tmux bootstrap
 ```
 
 CLI 没有更多固定的三级 action。`profile-id`、`session-id`、`execution-id`、
-`tmux-id` 和 `run-id` 是参数，不是 namespace。
+`tmux-id` 和 `run-id` 是参数，不是 namespace。执行入口统一把 Profile ID 放在
+namespace/action 之后，把 input 放在最后。
 
 ### ID 命名
 
@@ -224,7 +199,8 @@ Profile ID：
 - 首字符必须是 ASCII 字母或数字。
 - 后续字符可使用 ASCII 字母、数字、`-`、`_`、`.`。
 - `.` 不能是首字符。
-- 不能使用固定 namespace 或管理 action `list/show/check`。
+- 不能使用固定 namespace `exec/req/profile/session/tmux/agent/run/server/help/version`
+  或管理 action `list/show/check`。
 
 Runtime 生成的 Session 系列 ID 使用前缀加 32 位小写十六进制：
 
@@ -259,7 +235,7 @@ sn-cli --json version
 
 ```bash
 sn-cli session --help
-sn-cli run submit --help
+sn-cli run --help
 ```
 
 需要查询完整参数时使用本文；根命令的简要入口可以通过 `sn-cli --help` 查看。
@@ -290,7 +266,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 3
+  "contract_version": 4
 }
 ```
 
@@ -300,7 +276,7 @@ Machine error 写入 stderr，退出码为 `1`。Human error 为：
 error: <message>
 ```
 
-CLI Profile 成功启动目标进程后，始终保留目标程序的原生 stdout、stderr、exit code
+bare CLI direct 或 `exec` 成功启动目标进程后，始终保留目标程序的原生 stdout、stderr、exit code
 和 signal 语义。即使使用 leading `--json`，也不会把 Codex/Claude 的输出包装成
 Runtime JSON；只有启动目标进程前发生的错误会使用 machine error envelope。
 
@@ -309,12 +285,12 @@ Runtime JSON；只有启动目标进程前发生的错误会使用 machine error
 以下入口输出逐行 JSON event：
 
 ```text
-API Profile --stream
-agent run --stream
+req <api-profile> --stream
+agent <api-profile> --stream
 run watch
 ```
 
-CLI 的流式格式是 NDJSON。API Profile 和 `agent run` 成功时最后输出 final
+CLI 的流式格式是 NDJSON。`req` 和 `agent` 成功时最后输出 final
 envelope；`run watch` 在观察到 `run.settled` 后输出最终 Run envelope。
 
 HTTP 的流式格式是 SSE，和 CLI NDJSON 不同。
@@ -325,40 +301,24 @@ HTTP 的流式格式是 SSE，和 CLI NDJSON 不同。
 
 | 范围 | `--name value` | `--name=value` |
 |---|---:|---:|
-| CLI Profile typed 参数 | 支持 | 支持 |
+| bare CLI / `exec` typed 参数 | 支持 | 支持 |
 | `tmux start` typed 参数 | 支持 | 支持 |
 | `tmux show/attach/interrupt/stop --tmux-id` | 支持 | 支持 |
-| API Profile 参数 | 支持 | 通常不支持 |
+| `req` 参数 | 支持 | 通常不支持 |
 | Session 参数 | 支持 | 不支持 |
 | Agent 参数 | 支持 | 不支持 |
 | Run 参数 | 支持 | 不支持 |
 | Server 参数 | 支持 | 不支持 |
-
-例外：CLI Profile 的 `--exec` 专门支持：
-
-```text
---exec
---exec=true
---exec=false
-```
-
-不要写：
-
-```bash
-sn-cli cx --exec false
-```
-
-该写法会被解释为裸 `--exec`，并把 `"false"` 当成最终 input。
 
 ### 3.5 `--` 与最终输入
 
 当 prompt/input 以 `-` 开头时，使用 `--` 结束参数解析：
 
 ```bash
-sn-cli cx --exec -- "-这是prompt正文"
-sn-cli api-cx -- "-这是API输入"
-sn-cli agent run --profile api-cx -- "-这是Agent输入"
-sn-cli run submit --profile api-cx -- "-这是Run输入"
+sn-cli exec cx -- "-这是prompt正文"
+sn-cli req api-cx -- "-这是API输入"
+sn-cli agent api-cx -- "-这是Agent输入"
+sn-cli session req api-cx --queue -- "-这是Session输入"
 ```
 
 `--` 只影响所在 action 的 parser，不是可任意插入的全局参数。
@@ -393,11 +353,17 @@ bin/
   sn-server
 configs/
   <profile-id>.json
+tools/
+  <tool-name>.json
 resources/
   schema/
   tmux.conf
   release.json
 runtime.json
+logs/
+  YYMMDD/
+    cli.jsonl
+    api.jsonl
 sessions/
 state/
   session-locks/
@@ -414,6 +380,31 @@ state/
   update.json
 tmp/
 ```
+
+仓库 source 与 release archive payload 使用同一配置布局（archive 另有根级
+`sn-cli`、`sn-server`）：
+
+```text
+configs/*.json
+resources/schema/*.json
+resources/tools/*.json
+release/runtime.json
+release/tmux.conf
+release/release.json
+```
+
+activation 固定执行以下映射，不读取旧 payload shape：
+
+```text
+configs/                              → <runtime-home>/configs/
+resources/tools/                      → <runtime-home>/tools/
+release/runtime.json                  → <runtime-home>/runtime.json
+resources/schema/                     → <runtime-home>/resources/schema/
+release/tmux.conf                     → <runtime-home>/resources/tmux.conf
+release/release.json                  → <runtime-home>/resources/release.json
+```
+
+active home 不反向充当 source 或 archive payload。
 
 Profile 只有一层配置：
 
@@ -440,7 +431,7 @@ canonical Session `schema_version` 仍为 2。
 固定 namespace：
 
 ```text
-profile session tmux agent run server help version
+exec req profile session tmux agent run server help version
 ```
 
 Profile 管理 action：
@@ -467,7 +458,6 @@ Profile ID。
   "model": "gpt-5.6-sol",
   "effort": "xhigh",
   "prompt": "默认提示词或文件路径",
-  "exec": true,
   "cwd": "/workspace"
 }
 ```
@@ -481,8 +471,9 @@ Profile ID。
 | `model` | 否 | adapter 生成最终 model selector |
 | `effort` | 否 | `low/medium/high/xhigh/max` |
 | `prompt` | 否 | 文件存在则读取；不存在则作为文本 |
-| `exec` | 否 | 直接 Profile 调用的默认模式，默认 `false` |
 | `cwd` | 否 | 默认工作目录 |
+
+execution mode 不属于 Profile 配置；配置中的 `exec` 是未知字段，会被严格拒绝。
 
 `args`、`env` 和 `cwd` 支持 `${VAR_NAME}` 引用。被引用环境变量不存在时，执行明确
 失败。Secret 不应直接写入配置，应通过环境变量传递。
@@ -561,7 +552,9 @@ API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai driv
   "agent": {
     "tools": [
       "read_file",
-      "list_directory"
+      "list_directory",
+      "web_search",
+      "web_fetch"
     ],
     "workspace_roots": [],
     "max_rounds": 16,
@@ -587,10 +580,125 @@ list_directory
 write_file
 ```
 
-默认只启用前两个只读工具。`write_file` 必须显式配置；其它名称不属于 builtin
-registry，配置时会被严格拒绝。
+默认启用两个只读 builtin 与两个只读 MCP tool。`write_file` 必须显式配置；其它
+名称必须在 active `tools/<name>.json` 中存在，否则 Agent bootstrap fail closed。
 
-## 5. Profile 管理和直接调用
+### 4.4 Tool Catalog
+
+当前 release 内置交付：
+
+| local tool | remote MCP tool | endpoint | auth env |
+|---|---|---|---|
+| `web_search` | `web_search_prime` | `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp` | `Z_AI_API_KEY` |
+| `web_fetch` | `webReader` | `https://open.bigmodel.cn/api/mcp/web_reader/mcp` | `Z_AI_API_KEY` |
+
+两份完整 schema 位于 source/payload `resources/tools/web_search.json`、
+`resources/tools/web_fetch.json`，安装后位于 `${SN_CLI_HOME}/tools/`。manifest 中只保存
+`Authorization: Bearer ${Z_AI_API_KEY}` 引用，调用时才从环境展开，不保存明文。
+文件名必须与 `name` 相同；当前只支持 `schema_version=1`、`effect=read_only`、
+`executor.type=mcp`。`runtime.json` 决定启用哪些 builtin/manifest tool。
+
+调用示例：
+
+```bash
+export Z_AI_API_KEY='...'
+sn-cli agent api-cc \
+  "查找 Codex CLI 最新版本，并阅读官方发布页面后总结主要更新。"
+```
+
+`agent` 会把启用的 definitions 注入每一轮 model request，并自动执行 model 返回的
+tool call。`req` 仍只有一次 Provider call；`session req` 仍不自动执行 tool。
+每次 MCP 执行不 retry、不跟随 redirect；失败作为 `is_error=true` 的 tool result
+返回下一轮模型。`server doctor` 会检查已启用 tool 的环境变量，但不访问远端。
+
+### 4.5 本地 execution log
+
+只有携带 Profile ID 并进入真实执行边界的调用才写日志：CLI 在最终 invocation
+准备 launch 时写 `cli.jsonl`；API 在 Provider driver 调用 `http.Client.Do` 后写
+`api.jsonl`。`profile list/show/check`、Session/Run/Tmux 查询和控制、前置校验失败、
+queue submit 都不写。queued Session/Agent 由 worker 真正执行时写；Agent 每个 model
+round 各写一条。MCP HTTP 不写 `api.jsonl`；tool call/result 由 Durable Run 的
+effect/event evidence 记录。`session logs` 是 canonical Session activity，和这里的
+execution log 不是同一个概念。
+
+目录按本地日期 `YYMMDD` 划分，一天只有两个文件：
+
+```text
+${SN_CLI_HOME}/logs/260804/cli.jsonl
+${SN_CLI_HOME}/logs/260804/api.jsonl
+```
+
+CLI 行保持紧凑结构：
+
+```json
+{"time":"2026-08-04 10:40:23","namespace":"exec","profile":"cx","source":"sn-cli exec cx 简单介绍下自己","command":"CODEX_HOME=${HOME}/.codex-aip && cd /workspace && /opt/homebrew/bin/codex exec --ephemeral --json -- 简单介绍下自己"}
+```
+
+下面是 `sn-cli req api-cc "简单介绍下自己"` 对应的 API 日志示例。文件中仍是单行
+JSONL，这里只为阅读展开；`response.data` 中的每个元素都是按到达顺序保存的原始
+JSON response/frame（经过 secret 脱敏），不是 Runtime event：
+
+```json
+{
+  "time": "2026-08-04 10:40:23",
+  "namespace": "req",
+  "profile": "api-cc",
+  "source": "sn-cli req api-cc 简单介绍下自己",
+  "call_id": "call_0123456789abcdef0123456789abcdef",
+  "request": {
+    "method": "POST",
+    "url": "https://open.bigmodel.cn/api/anthropic/v1/messages",
+    "headers": {
+      "Accept": "text/event-stream, application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Content-Type": "application/json",
+      "X-Api-Key": "${Z_AI_API_KEY}"
+    },
+    "body": {
+      "model": "glm-5.2",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {"type": "text", "text": "简单介绍下自己"}
+          ]
+        }
+      ],
+      "max_tokens": 16384,
+      "stream": true
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream"
+    },
+    "data": [
+      {"type": "message_start", "message": {"id": "msg_example", "model": "glm-5.2", "usage": {"input_tokens": 12}}},
+      {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+      {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "我是一个AI助手。"}},
+      {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 9}},
+      {"type": "message_stop"}
+    ]
+  },
+  "error": null
+}
+```
+
+API `request` 固定为 `method/url/headers/body`，不保存 curl 字符串；普通 JSON
+response 作为 `data` 的单元素，SSE 收集全部有效 JSON `data:` frame，OpenAI
+`[DONE]` 不保存。网络错误时 `response` 为 `null`，`error` 保存脱敏后的 typed
+RuntimeError。API key 等 header 使用 Profile 的 `${VAR}` 引用（OpenAI 裸 key 会记成
+`Bearer ${VAR}`），字面量敏感 header、cookie、URL query 及 response/error 中回显的
+secret 记为 `[REDACTED]`。Driver 不自动跟随 redirect，3xx 作为这一次 Provider
+response/error 记录，避免一次调用产生未分账的多个 HTTP request。
+
+execution log 是 best-effort 诊断：写入错误、锁冲突、非法路径或 observer 异常都
+直接丢弃，不改变请求结果、stream、exit code、retry、Session 或 Run。写入不与执行
+建事务，也不做 `fsync`。当前没有 retention、总量限制或自动 GC；旧 flat `.jsonl`
+保持原样，不迁移、不读取。
+
+## 5. Profile 管理和执行入口
 
 ### 5.1 `profile list`
 
@@ -637,7 +745,7 @@ sn-cli --json profile show api-cx
 
 适用场景：
 
-- 查看实际 command、model、effort、exec 和 cwd。
+- 查看实际 command、model、effort、prompt 和 cwd。
 - 查看 API driver、endpoint、model、parameters 和 timeout。
 - 调用前确认当前 active 配置，而不是只看源码 `configs/`。
 
@@ -679,35 +787,33 @@ sn-cli profile check cx
 
 需要本机依赖检查时使用 `sn-cli server doctor`。
 
-### 5.4 隐式和显式 Profile
+### 5.4 执行 namespace 与 Profile 类型
 
-下面两条命令完全等价：
-
-```bash
-sn-cli cx --effort high "回复OK"
-sn-cli profile cx --effort high "回复OK"
-```
-
-下面两条 API 调用也完全等价：
-
-```bash
-sn-cli api-cx "回复OK"
-sn-cli profile api-cx "回复OK"
-```
-
-未知一级命令会按 Profile ID 解析。例如：
-
-```bash
-sn-cli api-unknown "回复OK"
-```
-
-如果 `configs/api-unknown.json` 不存在，会返回：
+执行语义由入口固定，Profile `type` 做严格配对校验：
 
 ```text
-error: unknown profile "api-unknown"
+sn-cli <cli-profile>       → interactive direct
+sn-cli exec <cli-profile>  → non-interactive CLI exec
+sn-cli req <api-profile>   → one API request
 ```
 
-### 5.5 CLI Profile 参数
+`profile` namespace 只保留 `list|show|check`，不能执行 Profile。bare 入口命中 API
+Profile、`exec` 命中 API Profile、或 `req` 命中 CLI Profile，都会在启动进程或发出
+网络请求前失败。
+
+未知一级命令只按 CLI Profile ID 解析。例如：
+
+```bash
+sn-cli unknown-profile "回复OK"
+```
+
+如果 `configs/unknown-profile.json` 不存在，会返回：
+
+```text
+error: unknown profile "unknown-profile"
+```
+
+### 5.5 CLI direct 与 exec 参数
 
 完整语法：
 
@@ -716,16 +822,17 @@ sn-cli [--json] <cli-profile-id>
   [--model M|--model=M]
   [--effort E|--effort=E]
   [--prompt FILE_OR_TEXT|--prompt=FILE_OR_TEXT]
-  [--exec|--exec=true|--exec=false]
   [--cwd DIR|--cwd=DIR]
   [--]
   [INPUT]
-```
 
-显式形式只是在 Profile ID 前增加 `profile`：
-
-```text
-sn-cli profile <cli-profile-id> ...
+sn-cli [--json] exec <cli-profile-id>
+  [--model M|--model=M]
+  [--effort E|--effort=E]
+  [--prompt FILE_OR_TEXT|--prompt=FILE_OR_TEXT]
+  [--cwd DIR|--cwd=DIR]
+  [--]
+  [INPUT]
 ```
 
 | 参数 | 默认值 | 作用与限制 |
@@ -733,7 +840,6 @@ sn-cli profile <cli-profile-id> ...
 | `--model` | Profile `model` | 覆盖最终模型；最多一次 |
 | `--effort` | Profile `effort` | 仅支持 `low/medium/high/xhigh/max`；最多一次 |
 | `--prompt` | Profile `prompt` | 文件存在则读取，否则按文本；最多一次 |
-| `--exec` | Profile `exec` | 裸参数和 `=true` 为 true，`=false` 为 false |
 | `--cwd` | Profile `cwd` 或调用 cwd | 覆盖工作目录；最多一次 |
 | `INPUT` | 空 | 最多一个最终 quoted 参数 |
 | stdin | 空 | stdin 非 TTY 时自动读取 |
@@ -755,7 +861,7 @@ Profile prompt
 示例：
 
 ```bash
-sn-cli cx --exec \
+sn-cli exec cx \
   --prompt ./system-context.md \
   "补充要求"
 ```
@@ -770,12 +876,12 @@ B
 路径不存在时，`--prompt` 被当作文本：
 
 ```bash
-sn-cli cx --exec --prompt "先只分析" "再给结论"
+sn-cli exec cx --prompt "先只分析" "再给结论"
 ```
 
 文件存在时必须是普通文件，不能是 symlink。
 
-#### `exec=false`
+#### bare CLI direct
 
 用途：打开原生交互 TUI。
 
@@ -783,7 +889,6 @@ sn-cli cx --exec --prompt "先只分析" "再给结论"
 sn-cli cx
 sn-cli cx --effort high
 sn-cli cx --model gpt-5.6-sol --effort=max
-sn-cli cx --exec=false
 ```
 
 特点：
@@ -793,14 +898,14 @@ sn-cli cx --exec=false
 - 没有 controlling TTY 时失败。
 - 最终通过 process replacement 进入 Codex/Claude。
 
-#### `exec=true`
+#### `exec` namespace
 
 用途：执行一次任务并等待 CLI 退出。
 
 ```bash
-sn-cli cx --exec "回复OK"
-sn-cli commit "为当前改动生成提交计划"
-sn-cli cx-deep --effort high "分析当前仓库"
+sn-cli exec cx "回复OK"
+sn-cli exec commit "为当前改动生成提交计划"
+sn-cli exec cx-deep --effort high "分析当前仓库"
 ```
 
 特点：
@@ -811,9 +916,9 @@ sn-cli cx-deep --effort high "分析当前仓库"
 - Claude adapter 自动插入 `-p`。
 - 保留目标进程的 stdout、stderr、exit code 和 signal。
 
-`exec` 只表示目标 CLI 的 non-interactive 执行模式，不表示后台运行，也不决定使用
-当前终端还是 Tmux。直接 Profile 的 `exec=true` 仍由当前调用等待；需要后台队列时
-使用 `session submit` 或 `run submit`，需要长期交互窗口时使用 `tmux start`。
+`exec` namespace 只表示目标 CLI 的 non-interactive 执行模式，不表示后台运行，
+也不决定使用当前终端还是 Tmux。当前调用会等待目标 CLI 退出；需要后台队列时使用
+`session exec <profile> --queue`，需要长期交互窗口时使用 `tmux start`。
 
 #### 动态 effort
 
@@ -848,7 +953,7 @@ sn-cli cx --cwd=../other-project
 
 ```bash
 printf '%s' 'stdin内容' |
-  sn-cli cx --exec "位置参数内容"
+  sn-cli exec cx "位置参数内容"
 ```
 
 最终 prompt：
@@ -858,12 +963,12 @@ stdin内容
 位置参数内容
 ```
 
-### 5.6 API Profile 参数
+### 5.6 `req` API 参数
 
 完整语法：
 
 ```text
-sn-cli [--json] <api-profile-id>
+sn-cli [--json] req <api-profile-id>
   [--stream]
   [--request-file PATH|-]
   [--system TEXT]
@@ -883,26 +988,26 @@ sn-cli [--json] <api-profile-id>
 | `--temperature T` | 有限值 `[0,2]` |
 | `PROMPT` | 最终且最多一个位置参数；省略时从 stdin 读取 |
 
-API Profile 参数使用分离形式：
+`req` 参数使用分离形式：
 
 ```bash
-sn-cli api-cx --temperature 0.2 "回复OK"
+sn-cli req api-cx --temperature 0.2 "回复OK"
 ```
 
 不要依赖：
 
 ```bash
-sn-cli api-cx --temperature=0.2 "回复OK"
+sn-cli req api-cx --temperature=0.2 "回复OK"
 ```
 
 两个 driver 使用同一个 token 参数：
 
 ```bash
 # openai driver
-sn-cli api-cx --max-tokens 2048 "回复OK"
+sn-cli req api-cx --max-tokens 2048 "回复OK"
 
 # anthropic driver
-sn-cli api-cc --max-tokens 2048 "回复OK"
+sn-cli req api-cc --max-tokens 2048 "回复OK"
 ```
 
 `--request-file` 可以与 `--stream` 组合，但不能同时使用：
@@ -919,6 +1024,10 @@ token limit
 未知字段、重复 object key、trailing JSON/data 和超限输入都会被拒绝；canonical
 text field 中的 NUL 由 `ModelRequest` validator 拒绝。
 `-` 表示请求体完全来自 stdin，并使用相同校验。
+
+`req` 只把已经读取的内容发送给 Provider。本地路径写在 prompt 中只是普通文本，
+Provider 不能据此读取或写入本机文件；`--request-file` 也由 Runtime 先读取内容，
+不会把路径交给模型。结果同步返回 stdout，不承诺产生本地文件副作用。
 
 请求文件示例：
 
@@ -942,18 +1051,18 @@ text field 中的 NUL 由 `ModelRequest` validator 拒绝。
 调用：
 
 ```bash
-sn-cli api-cx --request-file ./request.json
-sn-cli api-cx --stream --request-file ./request.json
-cat request.json | sn-cli api-cx --request-file -
+sn-cli req api-cx --request-file ./request.json
+sn-cli req api-cx --stream --request-file ./request.json
+cat request.json | sn-cli req api-cx --request-file -
 ```
 
 普通 prompt 示例：
 
 ```bash
-sn-cli api-cc "回复OK"
-sn-cli --json api-cx "回复OK"
-printf '%s' '回复OK' | sn-cli api-cx
-sn-cli api-cx --system "只回答结论" "当前状态是什么"
+sn-cli req api-cc "回复OK"
+sn-cli --json req api-cx "回复OK"
+printf '%s' '回复OK' | sn-cli req api-cx
+sn-cli req api-cx --system "只回答结论" "当前状态是什么"
 ```
 
 当前 API Profile 不支持动态 `--model`。`--effort` 会先校验枚举，再明确返回：
@@ -962,7 +1071,7 @@ sn-cli api-cx --system "只回答结论" "当前状态是什么"
 --effort is not supported for API profile "<id>"
 ```
 
-一次 API Profile 调用只执行一次 Provider call，不创建 Session 或 Run。模型返回
+一次 `req` 调用只执行一次 Provider call，不创建 Session 或 Run。模型返回
 tool call 时输出 `requires_action`，但不会执行工具。
 
 输出模式：
@@ -982,19 +1091,19 @@ tool call 时输出 `requires_action`，但不会执行工具。
 `configs/*.json`，因此可以保留不属于正式 release 的本地 Profile。安装后的实际
 Profile 应使用 `profile list/show` 查询。
 
-| ID | Adapter | Model | 默认 | 主要用途 |
+| ID | Adapter | Model | 配置重点 | 推荐入口 |
 |---|---|---|---|---|
-| `api-cc` | anthropic | `glm-5.2` | `max_tokens=16384`、timeout 50m | 单次 Claude-compatible API 调用 |
-| `api-cx` | openai | `qwen3.7-max` | `max_tokens=16384`、timeout 5m | 单次 OpenAI-compatible API 调用 |
-| `cc` | Claude CLI | `glm-5.2` | max、interactive | 默认 Claude-compatible TUI |
-| `cc-glm` | Claude CLI | `glm-5.2` | exec、permission bypass | 百炼/GLM 一次执行 |
-| `cc-kmm` | Claude CLI | `claude-fable-5` | interactive、permission bypass | KMM Claude-compatible TUI |
-| `cx` | Codex CLI | `gpt-5.6-sol` | xhigh、interactive | 默认 Codex TUI |
-| `commit` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、exec、read-only | 一次性只读分析或提交计划 |
-| `cx-adv` | Codex CLI | `gpt-5.6-terra` | max、exec、danger-full-access | 高权限一次性任务 |
-| `cx-deep` | Codex CLI | `gpt-5.6-sol` | max、exec、search、danger-full-access | search + 深度执行 |
-| `cx-image` | Codex CLI | `gpt-5.6-sol` | xhigh、exec | 使用 `WB_RUNTIME_IMAGE_PATH` 的图片任务 |
-| `cx-spark` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、exec、read-only | 快速只读任务 |
+| `api-cc` | anthropic | `glm-5.2` | `max_tokens=16384`、timeout 50m | `req api-cc` |
+| `api-cx` | openai | `qwen3.7-max` | `max_tokens=16384`、timeout 5m | `req api-cx` |
+| `cc` | Claude CLI | `glm-5.2` | max | `cc` 或 `exec cc` |
+| `cc-glm` | Claude CLI | `glm-5.2` | permission bypass | `exec cc-glm` |
+| `cc-kmm` | Claude CLI | `claude-fable-5` | permission bypass | `cc-kmm` 或 `exec cc-kmm` |
+| `cx` | Codex CLI | `gpt-5.6-sol` | xhigh | `cx` 或 `exec cx` |
+| `commit` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、read-only | `exec commit` |
+| `cx-adv` | Codex CLI | `gpt-5.6-terra` | max、danger-full-access | `exec cx-adv` |
+| `cx-deep` | Codex CLI | `gpt-5.6-sol` | max、search、danger-full-access | `exec cx-deep` |
+| `cx-image` | Codex CLI | `gpt-5.6-sol` | xhigh | `exec cx-image` |
+| `cx-spark` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、read-only | `exec cx-spark` |
 
 `cc-glm` 和 `cc-kmm` 的源码配置包含 permission bypass 选项；
 `cx-adv`、`cx-deep` 允许 danger-full-access。使用这些 Profile 等于接受对应目标
@@ -1022,42 +1131,50 @@ Session 的主要用途：
 
 Session 不自动执行 tool call。
 
-### 6.1 `session run`
+### 6.1 `session exec` 与 `session req`
 
 语法：
 
 ```text
-sn-cli session run
+sn-cli session exec <cli-profile-id>
+  [--queue]
   [--session-id ID]
   [--task-id ID]
   [--retention ephemeral|standard|pinned]
   [--model M]
   [--effort E]
   [--cwd DIR]
+  [INPUT]
+
+sn-cli session req <api-profile-id>
+  [--queue]
+  [--session-id ID]
+  [--task-id ID]
+  [--retention ephemeral|standard|pinned]
   [--max-tokens N]
   [--temperature T]
-  <profile-id>
   [INPUT]
 ```
 
-用途：在当前进程中同步执行一个有记录的 Session Turn。
+用途：默认在当前进程中同步执行一个有记录的 Session Turn。`session exec` 只接受
+CLI Profile；`session req` 只接受 API Profile。两条命令进入同一个
+Provider-neutral Session service，底层 Session/Turn/Message/Execution schema 不变。
 
-返回结果中的 `run_id` 是该 Session Turn 的执行关联 ID。`session run` 不创建
+同步结果中的 `run_id` 是该 Session Turn 的执行关联 ID。同步执行不创建
 SQLite Durable Run，因此不能默认用这个 ID 调用 `sn-cli run get`；应通过
-`session show|messages|events|executions` 查询会话事实。只有已经写入 Durable
-Run Store 的 ID（例如由 `session submit`、`run submit`、`agent run` 或
-`run retry` 创建）才进入 `sn-cli run ...` 控制面。
+`session show|messages|events|executions` 查询会话事实。只有带 `--queue` 的 Session
+入口、`agent` 或 `run retry` 创建的 Durable Run ID 才进入 `sn-cli run ...` 控制面。
 
-所有 option 必须位于 `<profile-id>` 前：
+Profile ID 必须紧跟 `exec|req`，所有 option 位于 Profile ID 之后，input 最后：
 
 ```bash
-sn-cli session run --effort high cx "继续处理"
+sn-cli session exec cx --effort high "继续处理"
 ```
 
 下面顺序不合法：
 
 ```bash
-sn-cli session run cx --effort high "继续处理"
+sn-cli session exec --effort high cx "继续处理"
 ```
 
 公共参数：
@@ -1067,6 +1184,7 @@ sn-cli session run cx --effort high "继续处理"
 | `--session-id` | 自动生成 | 复用指定 Session |
 | `--task-id` | 空 | 关联外部任务 |
 | `--retention` | `standard` | `ephemeral/standard/pinned` |
+| `--queue` | false | 创建 Durable Run 并只入队 |
 | `INPUT` | 无 | 最终输入，必须非空 |
 | stdin | 空 | 非 TTY stdin 与 positional input 合并 |
 
@@ -1087,7 +1205,7 @@ API Profile 专用参数：
 
 Session API 的公开 options 仅限本节语法和表格列出的参数，不暴露 system prompt。
 
-CLI Session 固定使用 managed `exec=true`，忽略 CLI Profile 中的 `exec`：
+`session exec` 固定使用 managed non-interactive mode：
 
 - 创建受 Session 管理的 child process。
 - 捕获 stdout、stderr 和 exit。
@@ -1096,50 +1214,53 @@ CLI Session 固定使用 managed `exec=true`，忽略 CLI Profile 中的 `exec`�
 - 将 assistant text 投影为 Session Message。
 - 记录 Execution identity 和终态。
 
+`session req` 每个 Turn 仍然只做一次 Provider request；Session 负责保存历史和结果，
+不会因此获得本地文件读写能力。需要 CLI Agent 按任务描述处理路径与产物时使用
+`session exec`。
+
 示例：
 
 ```bash
 # 创建新 Session
-sn-cli session run cx "分析当前仓库"
+sn-cli session exec cx "分析当前仓库"
 
 # 复用 Session
-sn-cli session run \
+sn-cli session exec cx \
   --session-id <session_id> \
   --effort high \
-  cx \
   "继续上一轮"
 
 # API Session Turn
-sn-cli session run \
+sn-cli session req api-cx \
   --max-tokens 4096 \
   --temperature 0.2 \
-  api-cx \
   "回复OK"
 
 # stdin 和 positional input 合并
 printf '%s' '补充上下文' |
-  sn-cli session run cx "执行任务"
+  sn-cli session exec cx "执行任务"
 ```
 
-### 6.2 `session submit`
+### 6.2 `--queue`
 
-语法和参数与 `session run` 相同：
+`--queue` 位于 Profile ID 之后，其余参数与同步调用相同：
 
 ```text
-sn-cli session submit [options] <profile-id> [INPUT]
+sn-cli session exec <cli-profile-id> --queue [options] [INPUT]
+sn-cli session req <api-profile-id> --queue [options] [INPUT]
 ```
 
 区别：
 
-- `run` 立即同步执行。
-- `submit` 创建 Durable Session Run，初始状态为 `queued`。
-- 提交本身不要求 server 已运行；从队列取出并执行需要 `sn-server` worker。
-- `submit` 不会自动启动 server。
+- 不带 `--queue` 时立即同步执行。
+- `--queue` 创建 Durable Session Run，初始状态为 `queued`。
+- 入队本身不要求 server 已运行；从队列取出并执行需要 `sn-server` worker。
+- `--queue` 不会自动启动 server。
 - 相对 `--cwd` 在提交时按调用方 cwd 解析并固化。
 
 两者的执行与 ID 边界：
 
-| 对比项 | `session run` | `session submit` |
+| 对比项 | 默认同步 | `--queue` |
 |---|---|---|
 | 执行位置 | 当前 CLI 进程 | `sn-server` worker |
 | 返回时机 | 当前 Turn 收口后 | Durable Run 进入 `queued` 后 |
@@ -1147,25 +1268,24 @@ sn-cli session submit [options] <profile-id> [INPUT]
 | `run_id` | Session Turn 执行关联 ID | Durable Run ID，同时关联 Session Turn |
 | `sn-cli run get|watch|result` | 不适用 | 支持 |
 
-`session submit` 是面向 Session 的专用 durable 提交入口，可视为比
-`run submit --kind session` 更贴近 Session 语义的调用面，但不是参数完全相同的 alias：
-它支持 `--retention`、API `--max-tokens/--temperature`，并沿用 Session 的 stdin
-与 positional input 合并规则；`run submit` 是统一的底层队列入口，不读取 stdin。
+创建 Durable Session Run 只由带 `--queue` 的 `session exec|req` 承担；`run` namespace
+不提供创建入口。它支持 `--retention`、API `--max-tokens/--temperature`，并沿用
+Session 的 stdin 与 positional input 合并规则。
 
 示例：
 
 ```bash
 sn-cli server start
 
-sn-cli session submit \
+sn-cli session exec cx-deep \
+  --queue \
   --retention pinned \
-  cx-deep \
   "后台执行并记录"
 
-sn-cli session submit \
+sn-cli session exec cx-deep \
+  --queue \
   --task-id background-analysis \
   --cwd "$PWD" \
-  cx-deep \
   "执行后台任务"
 ```
 
@@ -1181,7 +1301,7 @@ sn-cli run result --run-id <run_id>
 
 ### 6.3 Session input 合并
 
-`session run|submit` 的 input 合并顺序：
+`session exec|req` 的 input 合并顺序：
 
 ```text
 非 TTY stdin
@@ -1386,7 +1506,8 @@ PID reuse 导致终止错误进程。
 Session 内部仍保留 `requires_action` 与 tool-result 投影，供领域测试和未来显式
 extension 使用；stock `sn-cli` 和 HTTP API 不发布 tool-result 写入口。当前公开
 Session request 也不声明 tools，因此不能把 Session 当成手工 tool loop。需要自动
-执行 model/tool/tool-result 时使用 `agent run` 或 `run submit --kind agent`。
+执行 model/tool/tool-result 时使用 `agent <api-profile>`；需要后台执行时在 Profile
+ID 后加入 `--queue`。
 
 ### 6.12 `session configure`
 
@@ -1646,7 +1767,7 @@ quarantine 名称或使用 ptrace/kill 的攻击者。完整边界见
 `sn-cli tmux` 是独立的 interactive process manager：
 
 - 只接受 `type=cli` Profile。
-- 固定使用 interactive adapter，忽略 Profile `exec`。
+- 固定使用 interactive adapter。
 - 使用专用 `sn-session` Tmux server。
 - 每次 `start` 创建一个 managed window。
 - 不创建 Runtime Session、Turn 或 Run。
@@ -1659,20 +1780,19 @@ quarantine 名称或使用 ptrace/kill 的攻击者。完整边界见
 
 ```text
 sn-cli tmux start
+  <cli-profile-id>
   [--model M|--model=M]
   [--effort E|--effort=E]
   [--prompt FILE_OR_TEXT|--prompt=FILE_OR_TEXT]
   [--cwd DIR|--cwd=DIR]
-  <cli-profile-id>
   [INPUT]
 ```
 
 四个 typed option：
 
 - 每个最多一次。
-- 必须位于 Profile ID 前。
+- 必须位于 Profile ID 后、INPUT 前。
 - 支持分离和 `=` 形式。
-- 不支持 `--exec`。
 
 Prompt 合并：
 
@@ -1689,9 +1809,9 @@ Profile prompt
 
 ```bash
 sn-cli tmux start cx
-sn-cli tmux start --effort high cx "继续处理"
-sn-cli tmux start --model gpt-5.6-sol --cwd "$PWD" cx
-sn-cli tmux start --prompt ./context.md cx "补充任务"
+sn-cli tmux start cx --effort high "继续处理"
+sn-cli tmux start cx --model gpt-5.6-sol --cwd "$PWD"
+sn-cli tmux start cx --prompt ./context.md "补充任务"
 sn-cli tmux start cx -- "-开头的初始输入"
 ```
 
@@ -1835,10 +1955,10 @@ starting | running | exited | orphaned
 
 ## 8. Agent
 
-Agent Kernel 的公开入口只有：
+Agent Kernel 的公开入口为：
 
 ```text
-sn-cli agent run
+sn-cli agent <api-profile-id> [--queue] [options] [input]
 ```
 
 它只接受 API Profile，负责自动执行：
@@ -1852,9 +1972,9 @@ model
 → ...
 ```
 
-与直接 API Profile 的区别：
+与 `req` 的区别：
 
-| 能力 | API Profile | Agent |
+| 能力 | `req` | Agent |
 |---|---:|---:|
 | 调用模型 | 一次 | 多轮 |
 | 自动执行工具 | 否 | 是 |
@@ -1863,13 +1983,13 @@ model
 | budget | 无 Agent budget | 支持 |
 | checkpoint/event | 否 | 是 |
 
-### 8.1 `agent run`
+### 8.1 `agent`
 
 完整语法：
 
 ```text
-sn-cli [--json] agent run
-  --profile <api-profile-id>
+sn-cli [--json] agent <api-profile-id>
+  [--queue]
   [--session-id <session-id>]
   [--task-id <task-id>]
   [--stream]
@@ -1886,7 +2006,8 @@ sn-cli [--json] agent run
 
 | 参数 | 默认 | 作用与限制 |
 |---|---|---|
-| `--profile` | 无 | 必填，必须是 API Profile |
+| `<api-profile-id>` | 无 | 必填，且必须紧跟 `agent` |
+| `--queue` | false | 只创建 queued Run，由 worker 执行 |
 | `--session-id` | 空 | 可选；把 Agent 消息投影到 Session |
 | `--task-id` | 空 | 关联外部任务 |
 | `--stream` | false | 输出 NDJSON events |
@@ -1898,7 +2019,8 @@ sn-cli [--json] agent run
 | `INPUT` | stdin | 最终 Agent 输入 |
 
 除 `--label` 外，每个 option 最多一次。Agent 参数只支持分离形式，不支持
-`--name=value`。
+`--name=value`。`--queue` 与 `--stream` 互斥：queued 调用只返回提交 receipt，后续
+通过 `run watch` 观察事件。
 
 Label 限制：
 
@@ -1914,6 +2036,10 @@ Label 限制：
 - 没有 positional input 时读取非 TTY stdin。
 - positional input 与 stdin 不合并。
 - 输入必须非空，最大 1 MiB。
+
+不带 `--queue` 时，Agent 仍先创建 Durable Run，但由当前调用同步执行到 terminal；
+带 `--queue` 时只创建 `queued` Run，由 `sn-server` worker 执行。两种模式都可通过
+`sn-cli run ...` 查询和控制。
 
 Agent 不支持：
 
@@ -1931,16 +2057,14 @@ Agent 不支持：
 普通执行：
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   "审查当前仓库并给出结论"
 ```
 
 覆盖 budget：
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   --max-rounds 32 \
   --max-tool-calls 128 \
   --max-wall-time 20m \
@@ -1950,8 +2074,7 @@ sn-cli agent run \
 增加 label：
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   --label task=review \
   --label source=cli \
   "审查改动"
@@ -1960,8 +2083,7 @@ sn-cli agent run \
 投影到 Session：
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   --session-id <session_id> \
   "继续这个会话"
 ```
@@ -1969,8 +2091,7 @@ sn-cli agent run \
 流式事件：
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   --stream \
   "执行并持续输出事件"
 ```
@@ -1978,8 +2099,7 @@ sn-cli agent run \
 Machine 输出：
 
 ```bash
-sn-cli --json agent run \
-  --profile api-cx \
+sn-cli --json agent api-cx \
   "回复OK"
 ```
 
@@ -1987,7 +2107,7 @@ stdin：
 
 ```bash
 printf '%s' '回复OK' |
-  sn-cli agent run --profile api-cx
+  sn-cli agent api-cx
 ```
 
 ### 8.3 Agent 工具
@@ -2029,7 +2149,7 @@ sn-cli run events --run-id <run_id>
 
 ### 8.4 Agent 执行快照与配置漂移
 
-`agent run` 和 `run submit --kind agent` 在创建 Run 前冻结 Store-private、
+`agent`（默认同步或 `--queue`）在创建 Run 前冻结 Store-private、
 versioned、non-secret execution snapshot。它包含：
 
 ```text
@@ -2061,7 +2181,7 @@ value。相同引用名下轮换 secret 不改变 snapshot；下一次 Provider 
 获得新值。
 
 current snapshot 指执行进程已经加载的 Profile/Provider/tool，不表示每轮重新读取
-磁盘文件。Runtime 在 fresh submit、Agent Retry 创建前，以及每个新的
+磁盘文件。Runtime 在 fresh Run creation、Agent Retry 创建前，以及每个新的
 Session/model/tool side effect 前比较完整 snapshot。Profile、endpoint、model、
 driver semantic version、enabled tool、tool schema、workspace roots/cwd 或 tool
 implementation version 变化都会 fail closed；Resume 已接受但尚未推进时发生 drift，
@@ -2101,7 +2221,7 @@ Run 不是 Session 或 Agent 的第二套执行引擎，而是两者共用的持
 取消、恢复和重试：
 
 ```text
-submitter ──submit──> SQLite Durable Run ──dequeue──> sn-server worker
+execution owner ──--queue──> SQLite Durable Run ──dequeue──> sn-server worker
                               │                         ├─ kind=session → Session executor
                               │                         └─ kind=agent   → Agent Kernel
                               └─ get/list/events/watch/cancel/retry <── observer
@@ -2135,86 +2255,28 @@ cancelled
 Terminal transition 会把 result/error、terminal event、`run.settled` 和
 `settled_sequence` 在同一 SQLite transaction 中提交。
 
-### 9.2 `run submit`
+### 9.2 创建入口
 
-语法：
-
-```text
-sn-cli run submit
-  [--kind agent|session]
-  --profile <profile-id>
-  [--session-id <session-id>]
-  [--task-id <task-id>]
-  [--model M]
-  [--effort E]
-  [--cwd DIR]                 # 仅 kind=session
-  [--label key=value]...
-  [--]
-  INPUT
-```
-
-公共规则：
-
-- `--kind` 默认 `agent`。
-- `--profile` 必填。
-- `INPUT` 必须是唯一的最终位置参数。
-- 不从 stdin 读取。
-- 只创建 `queued` Run。
-- 不自动启动 `sn-server`。
-
-提交 Session 任务时，`session submit` 与
-`run submit --kind session` 都会创建 `kind=session` Durable Run。前者面向 Session
-使用者并保留完整 Session 参数；后者面向调度器和统一控制面。需要
-`--retention`、API token limit、temperature 或 stdin input 时使用
-`session submit`。
-
-#### `--kind agent`
-
-约束：
-
-- Profile 必须是 API Profile。
-- `--session-id` 可选。
-- `--model`、`--effort` 被拒绝。
-- `--cwd` 被拒绝；Agent 工作空间只来自 server/CLI 启动时加载的
-  `runtime.json.agent.workspace_roots`，不是每个 Run 的动态字段。
-- Agent budget 只能来自提交时的 `runtime.json`。
-- `--label` 可重复但 key 必须唯一。
-
-示例：
+`run` namespace 不接受 fresh submission。新的执行意图必须由拥有执行语义的入口创建：
 
 ```bash
-sn-cli run submit \
-  --kind agent \
-  --profile api-cx \
-  --label task=analysis \
-  "分析当前问题"
+# queued CLI Session Turn
+sn-cli session exec cx --queue --cwd "$PWD" "后台执行并记录Session"
+
+# queued API Session Turn
+sn-cli session req api-cx --queue --max-tokens 4096 "后台请求"
+
+# Agent：默认同步执行 Durable Run
+sn-cli agent api-cx "分析当前问题"
+
+# queued Agent Run
+sn-cli agent api-cx --queue --label task=analysis "分析当前问题"
 ```
 
-#### `--kind session`
-
-约束：
-
-- CLI/API Profile 都可以。
-- `--session-id` 省略时自动生成。
-- 同一个 Session 同时只允许一个非终态 Durable Run。
-- CLI Profile 支持 `--model`、`--effort`、`--cwd`。
-- API Profile 拒绝 `--model`、`--effort`、`--cwd`。
-- 默认 Session retention 为 `standard`。
-- `run submit` 不提供 `--retention`。
-- `run submit` 不提供 API token limit 和 temperature 参数；需要时使用
-  `session submit`。
-
-示例：
-
-```bash
-sn-cli run submit \
-  --kind session \
-  --profile cx \
-  --model gpt-5.6-sol \
-  --effort high \
-  --cwd "$PWD" \
-  "后台执行并记录Session"
-```
+三条创建路径都要求 Profile ID 紧跟 execution namespace/action，option 位于其后，
+input 最后。`--queue` 只入队且不自动启动 `sn-server`；`run` 只接收创建后返回的
+`run_id` 做查询、观察、取消、恢复、重试、reconciliation 和 GC；其中 `retry` 会从
+已有终态 Run 创建一个关联的新 Run，但不接受新的 Profile/input。
 
 ### 9.3 `run get`
 
@@ -2522,7 +2584,7 @@ sn-cli --json server info
 
 `configured_address` 只是配置值，不证明 server 正在监听。
 stock `run` capability 不包含 `resume`；这不表示底层 `run resume` CLI/API 被删除，
-而是表示默认 builtin tool 集没有可公开到达的 Pause producer。
+而是表示默认启用的 builtin/MCP tool 都没有可公开到达的 Pause producer。
 
 ```bash
 sn-cli --json server info
@@ -2543,12 +2605,13 @@ sn-cli --json server doctor
 
 - 完整 Runtime services 是否能加载。
 - Run SQLite store。
-- builtin tools。
+- builtin 与已启用的 Tool Catalog definitions。
 - 每个 CLI Profile command 是否能按该 Profile 的 `cwd`、`env`、`${VAR}`
   展开和最终 `PATH` 规则解析。
 - 每个 API Profile 的 headers `${VAR}` 引用的环境变量是否非空。
+- 每个已启用 MCP tool 的 headers `${VAR}` 引用的环境变量是否非空。
 
-它不会向 Provider 发起真实请求。
+它不会向 Provider 或 MCP endpoint 发起真实请求。
 
 ```bash
 sn-cli server doctor
@@ -2734,6 +2797,10 @@ sn-cli server upgrade-check --resources DIR
 <runtime-home>/resources
 ```
 
+这里的 `DIR` 是 active/staged-home shape（同时含 `schema/`、`tmux.conf`、
+`release.json`），不是新 archive payload 的 `resources/` 子目录；payload 需先按
+source→active 映射构造 staged home。
+
 用途：在 activation 前检查：
 
 - release manifest。
@@ -2747,7 +2814,7 @@ sn-cli server upgrade-check --resources DIR
 
 ```bash
 sn-cli server upgrade-check
-sn-cli server upgrade-check --resources /tmp/payload/resources
+sn-cli server upgrade-check --resources /tmp/staged-home/resources
 ```
 
 ### 10.8 `server upgrade-activate`（内部）
@@ -2780,9 +2847,10 @@ sn-cli server upgrade-activate
 - `--local-source-install` 不能与显式 `--overwrite-configs` 同时使用。
 - 成功后不自动重启 server。
 - 在创建 target state/lock/stage 或停止 server 前，candidate 先验证 payload 的完整
-  Profile 语义、required `runtime.json`、`tmux.conf` 和两个具有固定 identity/root
-  shape 的可编译 Schema；merged staged home 随后二次验证。required 文件缺失、
-  symlink 或检查期间被替换都会失败。
+  Profile 语义、required `release/runtime.json`、`resources/tools/`、
+  `release/tmux.conf`、`release/release.json` 和 `resources/schema/` 下三个具有固定
+  identity/root shape 的可编译 Schema；merged staged home 随后二次验证。required
+  文件缺失、symlink 或检查期间被替换都会失败。
 
 日常用户不应手工调用该 action。
 
@@ -2807,9 +2875,10 @@ make install
 该入口用于本地源码调试：
 
 - 构建完整 candidate。
-- 校验 binary、profiles、runtime config 和 resources。
+- 校验 binary、profiles、tools、runtime config 和 resources。
 - 自动停止受管 `sn-server`。
-- 用源码 `configs/`、runtime config 和 resources 覆盖 active home。
+- 按 source→active 映射，用源码 `configs/`、`resources/{schema,tools}/` 和
+  `release/` 覆盖 active home。
 - 丢弃现有 `sessions/`、`state/session-locks/`、
   `state/session-invocations/`、`state/session-mutations/`、
   `state/session-trash-moves/` 和 `state/runtime.db*`。
@@ -2842,8 +2911,8 @@ bash install.sh \
   --binary ./bin/sn-cli \
   --server ./bin/sn-server \
   --configs ./configs \
-  --runtime-config ./configs/runtime/runtime.json \
   --resources ./resources \
+  --release ./release \
   --home "$runtime_home" \
   --install-dir "$install_dir"
 ```
@@ -3209,9 +3278,9 @@ POST /v1/runs
 }
 ```
 
-`kind`、`profile_id` 和非空 `input` 必填。`kind=agent|session` 的字段约束与
-[`run submit`](#92-run-submit) 相同；缺少 Session kind 的 `session_id` 时由 server
-生成。Agent `budget` 使用与 `/v1/agent/run` 相同的默认值和纳秒表示。成功返回
+`kind`、`profile_id` 和非空 `input` 必填。`kind=agent|session` 的字段约束与 CLI
+对应带 `--queue` 的 `agent` 或 `session exec|req` 相同；缺少 Session kind 的
+`session_id` 时由 server 生成。Agent `budget` 使用与 `/v1/agent/run` 相同的默认值和纳秒表示。成功返回
 `202 Run Record`，只表示入队，不表示已经执行。
 
 `cwd` 只允许 `kind=session`；`kind=agent` 携带 `cwd` 返回
@@ -3289,7 +3358,7 @@ sn-cli cx --effort high
 或者 one-shot：
 
 ```bash
-sn-cli cx --exec --effort max "深度分析当前问题"
+sn-cli exec cx --effort max "深度分析当前问题"
 ```
 
 不需要修改 `configs/cx.json`。
@@ -3297,8 +3366,7 @@ sn-cli cx --exec --effort max "深度分析当前问题"
 ### 13.2 Prompt 文件加临时补充
 
 ```bash
-sn-cli cx \
-  --exec \
+sn-cli exec cx \
   --prompt ./base-prompt.md \
   "只输出最终结论"
 ```
@@ -3308,15 +3376,14 @@ sn-cli cx \
 ### 13.3 创建并复用 Session
 
 ```bash
-sn-cli --json session run api-cx "第一轮"
+sn-cli --json session req api-cx "第一轮"
 ```
 
 从返回结果取得 `session_id`：
 
 ```bash
-sn-cli session run \
+sn-cli session req api-cc \
   --session-id <session_id> \
-  api-cc \
   "第二轮，切换Provider"
 ```
 
@@ -3331,9 +3398,9 @@ sn-cli session messages --session-id <session_id>
 ```bash
 sn-cli server start
 
-sn-cli --json session submit \
+sn-cli --json session exec cx-deep \
+  --queue \
   --retention pinned \
-  cx-deep \
   "后台执行"
 ```
 
@@ -3364,8 +3431,7 @@ sn-cli tmux stop --tmux-id <tmux_id>
 ### 13.6 Agent 自动工具循环
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   --max-wall-time 20m \
   --label task=repository-review \
   "检查仓库并输出结论"
@@ -3374,8 +3440,7 @@ sn-cli agent run \
 需要把结果投影到 Session：
 
 ```bash
-sn-cli agent run \
-  --profile api-cx \
+sn-cli agent api-cx \
   --session-id <session_id> \
   "继续检查"
 ```
@@ -3385,9 +3450,8 @@ sn-cli agent run \
 ```bash
 sn-cli server start
 
-sn-cli --json run submit \
-  --kind agent \
-  --profile api-cx \
+sn-cli --json agent api-cx \
+  --queue \
   --label task=analysis \
   "分析当前问题"
 ```
@@ -3424,10 +3488,15 @@ sn-cli run watch --run-id <run_id> |
 
 ## 14. 常见错误与排查
 
-### `error: unknown command "api-cc"`
+### `error: direct requires a CLI profile; "api-cc" is an API profile`
 
-当前实现中未知一级 token 会按 Profile ID 解析。若仍出现 `unknown command`，通常
-说明 binary 与受管 resources 不属于同一份当前构建。
+bare Profile 只接受 CLI Profile；API Profile 必须通过 `req` namespace 调用：
+
+```bash
+sn-cli req api-cc "回复OK"
+```
+
+如果已经使用 `req` 仍失败，再检查 binary、active Profile 与受管 resources：
 
 检查：
 
@@ -3479,9 +3548,9 @@ sn-cli profile check cx
 
 检查 adapter plan。
 
-### `exec Profile prompt is required`
+### `exec prompt is required`
 
-`exec=true` 必须有最终 prompt。可以通过：
+`sn-cli exec` 必须有最终 prompt。可以通过：
 
 ```text
 Profile prompt
@@ -3494,19 +3563,19 @@ positional INPUT
 
 ### Session 参数被报告 unknown
 
-Session option 必须放在 Profile ID 前：
+Session Profile ID 必须紧跟 `exec|req`，option 放在 Profile ID 后：
 
 ```bash
-sn-cli session run --effort high cx "执行"
+sn-cli session exec cx --effort high "执行"
 ```
 
 不能写：
 
 ```bash
-sn-cli session run cx --effort high "执行"
+sn-cli session exec --effort high cx "执行"
 ```
 
-### `session submit` 或 `run submit` 一直 queued
+### `--queue` 创建的 Run 一直 queued
 
 检查 server：
 
@@ -3516,7 +3585,7 @@ sn-cli server start
 sn-cli server doctor
 ```
 
-提交命令不会自动启动 worker。
+入队不会自动启动 worker。
 
 ### Tmux 启动失败
 
@@ -3532,7 +3601,6 @@ sn-cli profile check <profile-id>
 
 - 需要 `tmux >= 3.2`。
 - 只接受 CLI Profile。
-- 不支持 `--exec`。
 
 ### API Profile 认证失败
 
@@ -3567,12 +3635,13 @@ sn-cli __sn_tmux_helper --manifest ABS_PATH
 ### 入口职责
 
 ```text
-直接交互 TUI  → CLI Profile 的 `exec=false`
-直接一次执行  → CLI Profile 的 `exec=true`
-有记录的执行  → session run|submit
+直接交互 TUI  → <cli-profile>
+直接一次执行  → exec <cli-profile>
+一次 API 请求 → req <api-profile>
+有记录的执行  → session exec|req <profile> [--queue]
 长期交互窗口  → tmux start
-自动工具循环  → agent run
-后台控制面    → run submit + sn-server
+自动工具循环  → agent <api-profile> [--queue]
+已有 Run 控制 → run ...
 ```
 
 ## 16. 相关契约文档

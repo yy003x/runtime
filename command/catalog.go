@@ -62,7 +62,6 @@ func cloneProfile(profile Profile) Profile {
 		Model:   profile.Model,
 		Effort:  profile.Effort,
 		Prompt:  profile.Prompt,
-		Exec:    profile.Exec,
 		CWD:     profile.CWD,
 	}
 	if profile.Env != nil {

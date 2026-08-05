@@ -128,136 +128,23 @@ func TestRunWatchFailureAfterEventHasNoFinal(t *testing.T) {
 			inspection, stdout.buffer.String(),
 		)
 	}
-	assertSingleV3StreamError(
+	assertSingleV4StreamError(
 		t, stdout.buffer.String(), stderr.String(),
 	)
 }
 
-func TestDurableSessionSubmitDoesNotCarryAgentBudget(t *testing.T) {
-	request, err := parseDurableSubmit(
-		[]string{
-			"--kind", "session", "--profile", "api", "hello",
-		},
-		agent.DefaultBudget(),
+func TestRunSubmitIsRemovedBeforeStatefulBootstrap(t *testing.T) {
+	paths := prepareVNextHome(t)
+	err := runRunNamespaceVNext(
+		paths,
+		[]string{"submit", "--profile", "api", "hello"},
+		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
 	)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), `unknown run action "submit"`) {
+		t.Fatalf("error=%v", err)
 	}
-	if request.Kind != runtime.KindSession ||
-		request.AgentBudget.MaxRounds != 0 ||
-		request.AgentBudget.MaxToolCalls != 0 ||
-		request.AgentBudget.MaxTotalTokens != 0 ||
-		request.AgentBudget.MaxWallTime != 0 {
-		t.Fatalf("request=%#v", request)
-	}
-}
-
-func TestDurableSubmitRejectsAgentCWDAndKeepsSessionCWD(t *testing.T) {
-	if _, err := parseDurableSubmit(
-		[]string{"--profile", "api", "--cwd", "work", "hello"},
-		agent.DefaultBudget(),
-	); err == nil || !strings.Contains(err.Error(), "invalid for agent runs") {
-		t.Fatalf("Agent cwd error=%v", err)
-	}
-	request, err := parseDurableSubmit(
-		[]string{
-			"--kind", "session", "--profile", "cx",
-			"--cwd", "work", "hello",
-		},
-		agent.DefaultBudget(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Kind != runtime.KindSession || request.CWD != "work" {
-		t.Fatalf("request=%#v", request)
-	}
-}
-
-func TestDurableSubmitRejectsDuplicateScalarOptions(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		value string
-	}{
-		{"--kind", "agent"},
-		{"--profile", "cx"},
-		{"--session-id", "session_1"},
-		{"--task-id", "task_1"},
-		{"--model", "model_1"},
-		{"--effort", "high"},
-		{"--cwd", "work"},
-	} {
-		args := []string{
-			test.name, test.value, test.name, test.value,
-		}
-		if test.name != "--profile" {
-			args = append(args, "--profile", "cx")
-		}
-		args = append(args, "hello")
-		if _, err := parseDurableSubmit(
-			args, agent.DefaultBudget(),
-		); err == nil || !strings.Contains(err.Error(), "only be used once") {
-			t.Fatalf("option=%s error=%v", test.name, err)
-		}
-	}
-}
-
-func TestDurableSubmitRequiresFinalInputAndSupportsTerminator(t *testing.T) {
-	if _, err := parseDurableSubmit(
-		[]string{
-			"--profile", "cx", "hello", "--kind", "session",
-		},
-		agent.DefaultBudget(),
-	); err == nil || !strings.Contains(err.Error(), "final argument") {
-		t.Fatalf("option after input error=%v", err)
-	}
-	request, err := parseDurableSubmit(
-		[]string{"--profile", "cx", "--", "--leading-dash prompt"},
-		agent.DefaultBudget(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Input != "--leading-dash prompt" {
-		t.Fatalf("request=%#v", request)
-	}
-	for _, args := range [][]string{
-		{"--profile", "cx", "--"},
-		{"--profile", "cx", "--", "one", "two"},
-	} {
-		if _, err := parseDurableSubmit(
-			args, agent.DefaultBudget(),
-		); err == nil {
-			t.Fatalf("accepted terminator args=%#v", args)
-		}
-	}
-}
-
-func TestDurableSubmitLabelsAreRepeatableButKeysAreUnique(t *testing.T) {
-	request, err := parseDurableSubmit(
-		[]string{
-			"--profile", "cx",
-			"--label", "team=runtime", "--label", "priority=p1",
-			"hello",
-		},
-		agent.DefaultBudget(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Labels["team"] != "runtime" ||
-		request.Labels["priority"] != "p1" {
-		t.Fatalf("labels=%#v", request.Labels)
-	}
-	if _, err := parseDurableSubmit(
-		[]string{
-			"--profile", "cx",
-			"--label", "team=runtime", "--label", "team=platform",
-			"hello",
-		},
-		agent.DefaultBudget(),
-	); err == nil || !strings.Contains(err.Error(), "label key") {
-		t.Fatalf("duplicate label error=%v", err)
+	if _, statErr := os.Stat(paths.RunDBFile); !os.IsNotExist(statErr) {
+		t.Fatalf("removed run submit created Run database: %v", statErr)
 	}
 }
 
@@ -478,7 +365,9 @@ func TestRunCompositionIgnoresUnrelatedExecutionInputs(t *testing.T) {
 		"https://example.invalid/v1/chat/completions",
 	)
 	if err := os.WriteFile(
-		paths.RuntimeConfigFile, []byte(`{}`), 0o600,
+		paths.RuntimeConfigFile,
+		[]byte(`{"agent":{"tools":["read_file","list_directory"]}}`),
+		0o600,
 	); err != nil {
 		t.Fatal(err)
 	}

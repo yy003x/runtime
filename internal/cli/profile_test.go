@@ -15,6 +15,7 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/model"
+	runtimeprofile "github.com/yy003x/runtime/profile"
 )
 
 func TestProfileUsageDocumentsSingleOptionalInput(t *testing.T) {
@@ -22,7 +23,7 @@ func TestProfileUsageDocumentsSingleOptionalInput(t *testing.T) {
 		layout.Paths{}, nil, newCLIOutput(false, &strings.Builder{}, &strings.Builder{}),
 	)
 	if err == nil || err.Error() !=
-		"usage: profile <profile-id> [input] | profile list|show|check" {
+		"usage: profile list|show|check" {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -89,7 +90,7 @@ func TestVNextDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
 	output := captureStdout(t, func() {
-		if err := runVNextProfileNamespace(
+		if err := runTestReq(
 			paths,
 			[]string{"api-cx", "hello"},
 			newCLIOutput(true, os.Stdout, os.Stderr),
@@ -130,7 +131,7 @@ func TestVNextDirectModelHumanOutputPrintsAssistantText(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
 	output := captureStdout(t, func() {
-		if err := runVNextProfileNamespace(
+		if err := runTestReq(
 			paths,
 			[]string{"api-cx", "hello"},
 			newCLIOutput(false, os.Stdout, os.Stderr),
@@ -161,7 +162,7 @@ func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
 	output := captureStdout(t, func() {
-		if err := runVNextProfileNamespace(
+		if err := runTestReq(
 			paths,
 			[]string{"api-cx", "--stream", "hello"},
 			newCLIOutput(false, os.Stdout, os.Stderr),
@@ -222,7 +223,7 @@ func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
 
 	var stdout strings.Builder
 	output := newCLIOutput(false, &stdout, os.Stderr)
-	err := runVNextProfileNamespace(
+	err := runTestReq(
 		paths, []string{"api-cx", "--stream", "hello"}, output,
 	)
 	if err == nil {
@@ -431,25 +432,25 @@ func TestBuildCommandProfileInvocationMergesPromptAndOverridesTypedFields(t *tes
 	if err := os.Mkdir(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	invocation, mode, err := buildCommandProfileInvocation(
+	invocation, err := buildCommandProfileInvocation(
 		runtimecommand.Profile{
 			Command: commandPath,
 			Args:    []string{"--sandbox", "read-only"},
 			Model:   "old", Effort: runtimecommand.EffortLow,
-			Prompt: "base.txt", Exec: false,
+			Prompt: "base.txt",
 		},
 		[]string{
 			"--model", "new", "--effort=high",
-			"--prompt", "typed.txt", "--exec",
+			"--prompt", "typed.txt",
 			"--cwd", "work", "position",
 		},
-		"stdin", root, []string{"PATH=" + root},
+		"stdin", root, []string{"PATH=" + root}, runtimecommand.ModeExec,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != runtimecommand.ModeExec || invocation.CWD != work {
-		t.Fatalf("mode=%s cwd=%q", mode, invocation.CWD)
+	if invocation.CWD != work {
+		t.Fatalf("cwd=%q", invocation.CWD)
 	}
 	wantPrompt := "base\ntyped\nstdin\nposition"
 	if got := invocation.Argv[len(invocation.Argv)-1]; got != wantPrompt {
@@ -467,24 +468,17 @@ func TestBuildCommandProfileInvocationMergesPromptAndOverridesTypedFields(t *tes
 	}
 }
 
-func TestParseCommandProfileOptionsExecGrammarAndTerminator(t *testing.T) {
+func TestParseCommandProfileOptionsRejectsExecAndSupportsTerminator(t *testing.T) {
 	options, err := parseCommandProfileOptions(
-		[]string{"--exec", "false"},
+		[]string{"--", "-leading"},
 	)
-	if err != nil || options.exec == nil || !*options.exec ||
-		options.positional == nil || *options.positional != "false" {
-		t.Fatalf("options=%#v error=%v", options, err)
-	}
-	options, err = parseCommandProfileOptions(
-		[]string{"--exec=false", "--", "-leading"},
-	)
-	if err != nil || options.exec == nil || *options.exec ||
-		options.positional == nil || *options.positional != "-leading" {
+	if err != nil || options.positional == nil || *options.positional != "-leading" {
 		t.Fatalf("options=%#v error=%v", options, err)
 	}
 	for _, args := range [][]string{
 		{"--unknown"},
-		{"--exec=maybe"},
+		{"--exec"},
+		{"--exec=false"},
 		{"--effort", "extreme"},
 		{"--effort", "high", "--effort", "max"},
 		{"--prompt", "--exec"},
@@ -508,9 +502,9 @@ func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := buildCommandProfileInvocation(
+	_, err := buildCommandProfileInvocation(
 		runtimecommand.Profile{Command: commandPath},
-		[]string{"--exec"}, "", root, []string{"PATH=" + root},
+		nil, "", root, []string{"PATH=" + root}, runtimecommand.ModeExec,
 	)
 	var runtimeErr *contract.RuntimeError
 	if err == nil || !strings.Contains(err.Error(), "prompt is required") ||
@@ -519,11 +513,11 @@ func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 		runtimeErr.Phase != contract.PhaseProfile {
 		t.Fatalf("error=%v", err)
 	}
-	if _, mode, err := buildCommandProfileInvocation(
+	if _, err := buildCommandProfileInvocation(
 		runtimecommand.Profile{Command: commandPath},
-		nil, "", root, []string{"PATH=" + root},
-	); err != nil || mode != runtimecommand.ModeInteractive {
-		t.Fatalf("mode=%s error=%v", mode, err)
+		nil, "", root, []string{"PATH=" + root}, runtimecommand.ModeInteractive,
+	); err != nil {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -546,6 +540,16 @@ func vNextTestModelProfile(driver string) model.Profile {
 	return model.Profile{Driver: model.DriverName(driver)}
 }
 
+func runTestReq(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
+	return runProfileExecutionNamespace(
+		paths, args, runtimeprofile.KindModel, "", "req", output,
+	)
+}
+
 func prepareVNextHome(t *testing.T) layout.Paths {
 	t.Helper()
 	paths, err := layout.FromHome(t.TempDir())
@@ -556,6 +560,15 @@ func prepareVNextHome(t *testing.T) layout.Paths {
 	if err := os.MkdirAll(paths.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// CLI 单元 fixture 不验证配置型网络工具；这里使用内置工具保持执行组合隔离，
+	// source Runtime 默认值仍启用已安装的 web_search 和 web_fetch manifest。
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile,
+		[]byte(`{"agent":{"tools":["read_file","list_directory"]}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	return paths
 }
 
@@ -563,7 +576,7 @@ func writeVNextCommand(t *testing.T, dir, id string) {
 	t.Helper()
 	if err := os.WriteFile(
 		filepath.Join(dir, id+".json"),
-		[]byte(`{"type":"cli","command":"codex","model":"fixture","exec":false}`),
+		[]byte(`{"type":"cli","command":"codex","model":"fixture"}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)

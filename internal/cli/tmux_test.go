@@ -18,10 +18,10 @@ import (
 	runtimetmux "github.com/yy003x/runtime/tmux"
 )
 
-func TestParseTmuxStartOptionsRejectsExecAndOrdersTypedOptions(t *testing.T) {
+func TestParseTmuxStartOptionsRequiresProfileBeforeTypedOptions(t *testing.T) {
 	options, err := parseTmuxStartOptions([]string{
-		"--model", "gpt-5.6-sol", "--effort=high",
-		"--prompt", "prompt.txt", "--cwd", "work", "cx", "reply ok",
+		"cx", "--model", "gpt-5.6-sol", "--effort=high",
+		"--prompt", "prompt.txt", "--cwd", "work", "reply ok",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,12 +37,13 @@ func TestParseTmuxStartOptionsRejectsExecAndOrdersTypedOptions(t *testing.T) {
 	for _, args := range [][]string{
 		{"--exec", "cx"},
 		{"cx", "--exec"},
-		{"cx", "--model", "late"},
-		{"--model", "one", "--model", "two", "cx"},
-		{"--prompt", "--model", "one", "cx"},
-		{"--prompt", "--exec", "cx"},
+		{"--model", "late", "cx"},
+		{"cx", "--model", "one", "--model", "two"},
+		{"cx", "--prompt", "--model", "one"},
+		{"cx", "--prompt", "--exec"},
 		{"--cwd="},
 		{"cx", "one", "two"},
+		{"cx", "one", "--model", "late"},
 	} {
 		if _, err := parseTmuxStartOptions(args); err == nil {
 			t.Fatalf("accepted invalid args: %#v", args)
@@ -107,7 +108,6 @@ func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testi
 	config := map[string]any{
 		"type": "cli", "command": commandPath,
 		"model": "old", "effort": "low", "prompt": "base.txt",
-		"exec": true,
 	}
 	data, err := json.Marshal(config)
 	if err != nil {
@@ -123,16 +123,16 @@ func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testi
 		t.Fatal(err)
 	}
 	options, err := parseTmuxStartOptions([]string{
-		"--model", "new", "--effort", "high",
+		"cx", "--model", "new", "--effort", "high",
 		"--prompt", "typed.txt", "--cwd", "work",
-		"cx", "positional",
+		"positional",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	invocation, err := resolveTmuxStartInvocation(
 		catalog, options, "stdin", root,
-		[]string{"PATH=" + root, "KEEP=value"},
+		[]string{"PATH=" + root, "KEEP=value"}, filepath.Join(root, "logs"),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestRunTmuxNamespaceMachineListEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload["schema_version"] != float64(1) ||
-		payload["contract_version"] != float64(3) {
+		payload["contract_version"] != float64(4) {
 		t.Fatalf("envelope = %#v", payload)
 	}
 	values, ok := payload["tmux_windows"].([]any)

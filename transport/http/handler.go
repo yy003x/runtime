@@ -72,7 +72,11 @@ func (handler *Handler) ServeHTTP(writer nethttp.ResponseWriter, request *nethtt
 		handler.stream(writer, request, input)
 		return
 	}
-	result, runtimeErr := handler.generator.Generate(request.Context(), input)
+	modelContext := model.WithAttemptOrigin(request.Context(), model.AttemptOrigin{
+		Namespace: model.AttemptNamespaceRequest,
+		Source:    "POST /v1/model/generate",
+	})
+	result, runtimeErr := handler.generator.Generate(modelContext, input)
 	if runtimeErr != nil {
 		writeError(writer, statusForError(runtimeErr), runtimeErr)
 		return
@@ -96,8 +100,12 @@ func (handler *Handler) stream(
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	modelContext := model.WithAttemptOrigin(request.Context(), model.AttemptOrigin{
+		Namespace: model.AttemptNamespaceRequest,
+		Source:    "POST /v1/model/generate",
+	})
 	_, runtimeErr := handler.generator.GenerateStream(
-		request.Context(),
+		modelContext,
 		input,
 		func(event contract.Event) error {
 			data, err := json.Marshal(event)

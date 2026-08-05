@@ -27,13 +27,13 @@ set-window-option -g allow-rename off
 `
 
 func TestSourceTmuxConfigMatchesValidatedFixture(t *testing.T) {
-	value, err := os.ReadFile(filepath.Join("..", "resources", "tmux.conf"))
+	value, err := os.ReadFile(filepath.Join("..", "release", "tmux.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(value) != "# Runtime owns this dedicated tmux server. User configuration is never loaded.\n"+
 		testTmuxConfig {
-		t.Fatalf("resources/tmux.conf drifted:\n%s", value)
+		t.Fatalf("release/tmux.conf drifted:\n%s", value)
 	}
 }
 

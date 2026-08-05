@@ -21,10 +21,10 @@ func runAgentNamespace(
 	args []string,
 	output *cliOutput,
 ) error {
-	if len(args) == 0 || args[0] != "run" {
-		return cliValidationf("usage: agent run --profile <model-profile-id> [options] [input]")
+	if len(args) == 0 {
+		return cliValidationf("usage: agent <api-profile-id> [options] [input]")
 	}
-	options, err := parseAgentRun(args[1:])
+	options, err := parseAgentRun(args)
 	if options.stream {
 		output.beginStream()
 	}
@@ -75,16 +75,23 @@ func runAgentNamespace(
 			return output.writeEvent(event)
 		}
 	}
-	record, runtimeErr := services.Runs.RunNow(
-		context.Background(),
-		runtime.Request{
-			Kind: runtime.KindAgent, ProfileID: options.profileID,
-			Input: options.input, SessionID: options.sessionID,
-			TaskID: options.taskID, AgentBudget: budget,
-			Labels: options.labels,
-		},
-		sink,
-	)
+	request := runtime.Request{
+		Kind: runtime.KindAgent, ProfileID: options.profileID,
+		Input: options.input, SessionID: options.sessionID,
+		TaskID: options.taskID, AgentBudget: budget,
+		Labels: options.labels,
+	}
+	var record runtime.Record
+	var runtimeErr *contract.RuntimeError
+	if options.queue {
+		record, runtimeErr = services.Runs.Submit(
+			context.Background(), request,
+		)
+	} else {
+		record, runtimeErr = services.Runs.RunNow(
+			context.Background(), request, sink,
+		)
+	}
 	if runtimeErr != nil {
 		return runtimeErr
 	}
@@ -122,6 +129,7 @@ type agentRunOptions struct {
 	taskID         string
 	input          string
 	stream         bool
+	queue          bool
 	maxRounds      int
 	maxToolCalls   int
 	maxTotalTokens int64
@@ -131,9 +139,15 @@ type agentRunOptions struct {
 
 func parseAgentRun(args []string) (agentRunOptions, error) {
 	value := agentRunOptions{labels: make(map[string]string)}
+	if len(args) == 0 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+		return value, cliValidationf(
+			"agent requires API profile ID immediately after agent",
+		)
+	}
+	value.profileID = args[0]
 	seen := make(map[string]bool)
 	inputSet := false
-	for index := 0; index < len(args); index++ {
+	for index := 1; index < len(args); index++ {
 		current := args[index]
 		if current == "--" {
 			if inputSet {
@@ -170,15 +184,6 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			seen[current] = true
 		}
 		switch current {
-		case "--profile":
-			optionValue, next, err := agentOptionValue(
-				args, index, "--profile",
-			)
-			if err != nil {
-				return value, err
-			}
-			value.profileID = optionValue
-			index = next
 		case "--session-id":
 			optionValue, next, err := agentOptionValue(
 				args, index, "--session-id",
@@ -199,6 +204,8 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			index = next
 		case "--stream":
 			value.stream = true
+		case "--queue":
+			value.queue = true
 		case "--max-rounds":
 			optionValue, next, err := agentOptionValue(
 				args, index, "--max-rounds",
@@ -273,8 +280,8 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			return value, cliValidationf("unknown agent option %s", current)
 		}
 	}
-	if value.profileID == "" {
-		return value, cliValidationf("--profile is required")
+	if value.queue && value.stream {
+		return value, cliValidationf("--queue and --stream are mutually exclusive")
 	}
 	if err := validateAgentBudgetOverrides(value); err != nil {
 		return value, err

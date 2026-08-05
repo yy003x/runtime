@@ -30,10 +30,10 @@ func runSessionNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: session run|submit|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
+		return cliValidationf("usage: session exec|req|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
 	}
 	switch args[0] {
-	case "run", "submit":
+	case "exec", "req":
 		return runSessionExecution(paths, args[0], args[1:], output)
 	}
 	if err := validateSessionManagementInvocation(args); err != nil {
@@ -570,6 +570,7 @@ type sessionInvocation struct {
 	model        string
 	effort       string
 	cwd          string
+	queue        bool
 	modelOptions contract.GenerateOptions
 }
 
@@ -583,21 +584,27 @@ func runSessionExecution(
 	if err != nil {
 		return err
 	}
-	if action == "run" {
-		callerCWD, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		if invocation.cwd != "" && !filepath.IsAbs(invocation.cwd) {
-			invocation.cwd = filepath.Join(callerCWD, invocation.cwd)
-		}
+	profiles, err := runtimebootstrap.LoadProfileServices(
+		paths, fixedNamespaces...,
+	)
+	if err != nil {
+		return err
+	}
+	if err := validateSessionProfileOptions(
+		action, invocation, profiles.Profiles,
+	); err != nil {
+		return err
+	}
+	callerCWD, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if invocation.cwd != "" && !filepath.IsAbs(invocation.cwd) {
+		invocation.cwd = filepath.Join(callerCWD, invocation.cwd)
+	}
+	if !invocation.queue {
 		services, err := runtimebootstrap.LoadSessionServices(paths, fixedNamespaces...)
 		if err != nil {
-			return err
-		}
-		if err := validateSessionProfileOptions(
-			invocation, services.Profiles,
-		); err != nil {
 			return err
 		}
 		runContext, stop := signal.NotifyContext(
@@ -629,23 +636,11 @@ func runSessionExecution(
 			return err
 		}
 	}
-	callerCWD, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	if invocation.cwd != "" && !filepath.IsAbs(invocation.cwd) {
-		invocation.cwd = filepath.Join(callerCWD, invocation.cwd)
-	}
 	services, err := runtimebootstrap.LoadServices(paths, callerCWD, fixedNamespaces...)
 	if err != nil {
 		return err
 	}
 	defer services.Runs.Close()
-	if err := validateSessionProfileOptions(
-		invocation, services.Profiles,
-	); err != nil {
-		return err
-	}
 	record, runtimeErr := services.Runs.Submit(
 		context.Background(),
 		runtime.Request{
@@ -674,14 +669,41 @@ func runSessionExecution(
 
 func parseSessionInvocation(args []string) (sessionInvocation, error) {
 	value := sessionInvocation{retention: session.RetentionStandard}
+	if len(args) == 0 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+		return value, cliValidationf(
+			"session execution requires profile ID immediately after exec or req",
+		)
+	}
+	value.profileID = args[0]
 	seen := make(map[string]bool)
-	index := 0
+	index := 1
+	inputSet := false
 	for index < len(args) {
 		current := args[index]
-		if !strings.HasPrefix(current, "-") {
-			value.profileID = current
-			index++
+		if current == "--" {
+			if inputSet {
+				return value, cliValidationf(
+					"session input terminator cannot follow positional input",
+				)
+			}
+			remaining := args[index+1:]
+			if len(remaining) != 1 {
+				return value, cliValidationf(
+					"session input terminator must be followed by exactly one input",
+				)
+			}
+			value.input = remaining[0]
+			inputSet = true
 			break
+		}
+		if inputSet {
+			return value, cliValidationf("session input must be the final argument")
+		}
+		if !strings.HasPrefix(current, "-") {
+			value.input = current
+			inputSet = true
+			index++
+			continue
 		}
 		if seen[current] {
 			return value, cliValidationf(
@@ -738,6 +760,8 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 				return value, cliValidationf("--cwd requires value")
 			}
 			value.cwd = args[index]
+		case "--queue":
+			value.queue = true
 		case "--max-tokens":
 			index++
 			if index >= len(args) || args[index] == "" ||
@@ -768,21 +792,11 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 		}
 		index++
 	}
-	if value.profileID == "" {
-		return value, cliValidationf("session execution requires profile ID")
-	}
-	if len(args[index:]) > 1 {
-		return value, cliValidationf("session input must be one quoted argument")
-	}
 	stdinInput, err := readDirectStdin()
 	if err != nil {
 		return value, err
 	}
-	var positionalInput string
-	if len(args[index:]) == 1 {
-		positionalInput = args[index]
-	}
-	value.input = joinNonEmptyInput(stdinInput, positionalInput)
+	value.input = joinNonEmptyInput(stdinInput, value.input)
 	if strings.TrimSpace(value.input) == "" {
 		return value, cliValidationf("session input is required")
 	}
@@ -800,12 +814,31 @@ func joinNonEmptyInput(values ...string) string {
 }
 
 func validateSessionProfileOptions(
+	action string,
 	invocation sessionInvocation,
 	profiles *runtimeprofile.Catalog,
 ) error {
 	entry, exists := profiles.Resolve(invocation.profileID)
 	if !exists {
 		return cliValidationf("unknown profile %q", invocation.profileID)
+	}
+	expectedKind := runtimeprofile.KindCommand
+	if action == "req" {
+		expectedKind = runtimeprofile.KindModel
+	} else if action != "exec" {
+		return cliValidationf("unknown session execution mode %q", action)
+	}
+	if entry.Kind != expectedKind {
+		if expectedKind == runtimeprofile.KindCommand {
+			return cliValidationf(
+				"session exec requires a CLI profile; %q is an API profile",
+				invocation.profileID,
+			)
+		}
+		return cliValidationf(
+			"session req requires an API profile; %q is a CLI profile",
+			invocation.profileID,
+		)
 	}
 	hasModelOptions := invocation.modelOptions.MaxOutputTokens != nil ||
 		invocation.modelOptions.Temperature != nil ||

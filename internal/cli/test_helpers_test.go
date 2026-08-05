@@ -99,7 +99,7 @@ func executeAgentStreamFixture(
 	err := runAgentNamespace(
 		paths,
 		[]string{
-			"run", "--profile", "api-agent", "--stream", "hello",
+			"api-agent", "--stream", "hello",
 		},
 		output,
 	)
@@ -147,7 +147,7 @@ func inspectRunStream(t *testing.T, value string) runStreamInspection {
 	return result
 }
 
-func assertSingleV3StreamError(
+func assertSingleV4StreamError(
 	t *testing.T,
 	stdout string,
 	stderr string,
@@ -169,7 +169,7 @@ func assertSingleV3StreamError(
 	if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.ContractVersion != 3 || payload.Error.Message == "" {
+	if payload.ContractVersion != 4 || payload.Error.Message == "" {
 		t.Fatalf("payload=%#v", payload)
 	}
 }

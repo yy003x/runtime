@@ -18,7 +18,7 @@ func TestAgentUsageDocumentsOptionalStdinBackedInput(t *testing.T) {
 		newCLIOutput(false, &strings.Builder{}, &strings.Builder{}),
 	)
 	if err == nil || err.Error() !=
-		"usage: agent run --profile <model-profile-id> [options] [input]" {
+		"usage: agent <api-profile-id> [options] [input]" {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -57,10 +57,10 @@ func TestAgentStreamOptionValueDoesNotSelectStreamMode(t *testing.T) {
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	err := runAgentNamespace(
 		paths,
-		[]string{"run", "--profile", "--stream", "input"},
+		[]string{"api-agent", "--session-id", "--stream", "input"},
 		output,
 	)
-	if err == nil || !strings.Contains(err.Error(), "--profile requires value") {
+	if err == nil || !strings.Contains(err.Error(), "--session-id requires value") {
 		t.Fatalf("error=%v", err)
 	}
 	if output.streamMode || output.streamStarted {
@@ -77,7 +77,7 @@ func TestAgentRejectsCommandProfileBeforeStatefulBootstrap(t *testing.T) {
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	err := runAgentNamespace(
 		paths,
-		[]string{"run", "--profile", "cx", "input"},
+		[]string{"cx", "input"},
 		output,
 	)
 	if err == nil ||
@@ -93,9 +93,57 @@ func TestAgentRejectsCommandProfileBeforeStatefulBootstrap(t *testing.T) {
 	}
 }
 
+func TestAgentRejectsRemovedRunProfileSyntax(t *testing.T) {
+	paths := prepareVNextHome(t)
+	writeVNextModel(
+		t, paths.ConfigDir, "api-agent",
+		"https://example.invalid/v1/chat/completions",
+	)
+	err := runAgentNamespace(
+		paths,
+		[]string{"run", "--profile", "api-agent", "input"},
+		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "unknown agent option --profile") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, statErr := os.Stat(paths.RunDBFile); !os.IsNotExist(statErr) {
+		t.Fatalf("removed Agent route created Run database: %v", statErr)
+	}
+}
+
+func TestAgentQueueSubmitsWithoutCallingProvider(t *testing.T) {
+	paths := prepareVNextHome(t)
+	writeVNextModel(
+		t, paths.ConfigDir, "api-agent",
+		"https://example.invalid/v1/chat/completions",
+	)
+	t.Setenv("MODEL_API_KEY", "secret")
+	var stdout bytes.Buffer
+	err := runAgentNamespace(
+		paths,
+		[]string{"api-agent", "--queue", "queued task"},
+		newCLIOutput(true, &stdout, &bytes.Buffer{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Run runtime.Record `json:"run"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode output=%q: %v", stdout.String(), err)
+	}
+	if payload.Run.State != runtime.StateQueued ||
+		payload.Run.Request.Kind != runtime.KindAgent ||
+		payload.Run.Request.ProfileID != "api-agent" {
+		t.Fatalf("run=%#v", payload.Run)
+	}
+}
+
 func TestParseAgentRunEnforcesStrictOptionAndInputGrammar(t *testing.T) {
 	options, err := parseAgentRun([]string{
-		"--profile", "api-agent",
+		"api-agent",
 		"--stream",
 		"--label", "team=runtime",
 		"--label", "task=review",
@@ -112,15 +160,15 @@ func TestParseAgentRunEnforcesStrictOptionAndInputGrammar(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"--profile", "one", "--profile", "two", "input"},
-		{"--profile", "api", "--stream", "--stream", "input"},
-		{"--profile", "api", "--label", "task=one", "--label", "task=two", "input"},
-		{"--profile", "--stream", "input"},
-		{"--profile", "api", "--label", "--stream", "input"},
-		{"--profile", "api", "input", "--stream"},
-		{"--profile", "api", "input", "extra"},
-		{"--profile", "api", "input", "--", "extra"},
-		{"--profile", "api", "--", "one", "two"},
+		{"--stream", "api", "input"},
+		{"api", "--stream", "--stream", "input"},
+		{"api", "--queue", "--stream", "input"},
+		{"api", "--label", "task=one", "--label", "task=two", "input"},
+		{"api", "--label", "--stream", "input"},
+		{"api", "input", "--stream"},
+		{"api", "input", "extra"},
+		{"api", "input", "--", "extra"},
+		{"api", "--", "one", "two"},
 	} {
 		if _, err := parseAgentRun(args); err == nil {
 			t.Fatalf("args=%q returned nil error", args)
@@ -130,7 +178,7 @@ func TestParseAgentRunEnforcesStrictOptionAndInputGrammar(t *testing.T) {
 
 func TestParseAgentRunUsesRuntimeConfigBudgetLimits(t *testing.T) {
 	options, err := parseAgentRun([]string{
-		"--profile", "api-agent",
+		"api-agent",
 		"--max-rounds", "128",
 		"--max-tool-calls", "1024",
 		"--max-total-tokens", "9223372036854775807",
@@ -147,12 +195,12 @@ func TestParseAgentRunUsesRuntimeConfigBudgetLimits(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"--profile", "api", "--max-rounds", "129", "input"},
-		{"--profile", "api", "--max-tool-calls", "1025", "input"},
-		{"--profile", "api", "--max-wall-time", "24h1ns", "input"},
-		{"--profile", "api", "--max-wall-time", "500ms", "input"},
-		{"--profile", "api", "--max-rounds", "--stream", "input"},
-		{"--profile", "api", "--max-rounds", "1", "--max-rounds", "2", "input"},
+		{"api", "--max-rounds", "129", "input"},
+		{"api", "--max-tool-calls", "1025", "input"},
+		{"api", "--max-wall-time", "24h1ns", "input"},
+		{"api", "--max-wall-time", "500ms", "input"},
+		{"api", "--max-rounds", "--stream", "input"},
+		{"api", "--max-rounds", "1", "--max-rounds", "2", "input"},
 	} {
 		if _, err := parseAgentRun(args); err == nil {
 			t.Fatalf("args=%q returned nil error", args)
@@ -221,7 +269,7 @@ func TestAgentStreamFailureAfterEventsHasNoFinal(t *testing.T) {
 			inspection, fixture.Stdout.String(),
 		)
 	}
-	assertSingleV3StreamError(
+	assertSingleV4StreamError(
 		t, fixture.Stdout.String(), fixture.Stderr.String(),
 	)
 }

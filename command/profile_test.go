@@ -27,14 +27,14 @@ func TestProfileUsesTypedCommandProtocol(t *testing.T) {
 			"REMOVE_ME":  nil,
 		},
 		Model: "gpt-5.6-sol", Effort: EffortHigh,
-		Prompt: "base", Exec: true, CWD: "${HOME}/work",
+		Prompt: "base", CWD: "${HOME}/work",
 	}
 	err := CheckProfile(profile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if profile.Command != "codex" || profile.Model != "gpt-5.6-sol" ||
-		profile.Effort != EffortHigh || !profile.Exec ||
+		profile.Effort != EffortHigh ||
 		profile.Env["REMOVE_ME"] != nil {
 		t.Fatalf("profile=%#v", profile)
 	}
@@ -74,7 +74,6 @@ func TestCatalogReturnsDefensiveTypedProfileCopies(t *testing.T) {
 			Args:    []string{"--sandbox", "read-only"},
 			Model:   "gpt-5.6-sol",
 			Effort:  EffortHigh,
-			Exec:    true,
 			Env:     map[string]*string{"SET": stringPointer("value")},
 		},
 	})
@@ -89,7 +88,7 @@ func TestCatalogReturnsDefensiveTypedProfileCopies(t *testing.T) {
 	*first.Env["SET"] = "changed"
 	second, _ := catalog.Get("cx")
 	if !reflect.DeepEqual(second.Args, []string{"--sandbox", "read-only"}) ||
-		*second.Env["SET"] != "value" || !second.Exec {
+		*second.Env["SET"] != "value" {
 		t.Fatalf("profile=%#v", second)
 	}
 }

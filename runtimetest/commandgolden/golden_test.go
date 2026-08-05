@@ -45,7 +45,11 @@ func TestCommandProfileGolden(t *testing.T) {
 			t.Run(golden.ID, func(t *testing.T) {
 				userArgs := []string{"user value"}
 				capturePath := filepath.Join(t.TempDir(), "capture.json")
-				command := exec.Command(harness.snCLI, append([]string{golden.ID}, userArgs...)...)
+				args := []string{golden.ID}
+				if isExecProfile(golden.ID) {
+					args = []string{"exec", golden.ID}
+				}
+				command := exec.Command(harness.snCLI, append(args, userArgs...)...)
 				environment := map[string]string{
 					"RUNTIME_GOLDEN_CAPTURE":  capturePath,
 					"RUNTIME_GOLDEN_ENV_KEYS": capturedEnvKeys,
@@ -113,11 +117,11 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("implicit_and_explicit_profile_execute_identically", func(t *testing.T) {
+	t.Run("direct_and_exec_namespaces_select_distinct_modes", func(t *testing.T) {
 		captures := make([]Capture, 0, 2)
 		for _, prefix := range [][]string{
 			{"commit"},
-			{"profile", "commit"},
+			{"exec", "commit"},
 		} {
 			capturePath := filepath.Join(t.TempDir(), "capture.json")
 			args := append(
@@ -130,12 +134,20 @@ func TestCommandProfileGolden(t *testing.T) {
 				"RUNTIME_GOLDEN_CAPTURE": capturePath,
 			})
 			command.Dir = harness.repoRoot
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-			command.Stdout = &stdout
-			command.Stderr = &stderr
-			if err := command.Run(); err != nil {
-				t.Fatalf("run %q: %v stderr=%s", prefix, err, stderr.String())
+			process, err := ptyx.Start(command)
+			if err != nil {
+				t.Fatalf("start %q: %v", prefix, err)
+			}
+			output := readPTY(process)
+			if err := process.Cmd.Wait(); err != nil {
+				result := <-output
+				t.Fatalf(
+					"run %q: %v output=%q read_err=%v",
+					prefix, err, result.value, result.err,
+				)
+			}
+			if result := <-output; result.err != nil {
+				t.Fatal(result.err)
 			}
 			capture, err := ReadCapture(capturePath)
 			if err != nil {
@@ -147,14 +159,15 @@ func TestCommandProfileGolden(t *testing.T) {
 			}
 			captures = append(captures, capture)
 		}
-		if !reflect.DeepEqual(captures[0], captures[1]) {
-			t.Fatalf("implicit=%#v explicit=%#v", captures[0], captures[1])
+		if contains(captures[0].Argv, "exec") ||
+			!contains(captures[1].Argv, "exec") {
+			t.Fatalf("direct=%#v exec=%#v", captures[0], captures[1])
 		}
 	})
 
 	t.Run("piped_stdin_is_appended_as_typed_prompt", func(t *testing.T) {
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "cx-deep")
+		command := exec.Command(harness.snCLI, "exec", "cx-deep")
 		command.Env = harness.environment(map[string]string{
 			"RUNTIME_GOLDEN_CAPTURE":    capturePath,
 			"RUNTIME_GOLDEN_ENV_KEYS":   capturedEnvKeys,
@@ -181,12 +194,12 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("implicit_and_explicit_profiles_reject_native_argv", func(t *testing.T) {
+	t.Run("direct_and_exec_profiles_reject_native_argv", func(t *testing.T) {
 		for _, prefix := range [][]string{
 			{"cx-deep"},
-			{"profile", "cx-deep"},
+			{"exec", "cx-deep"},
 			{"--json", "cx-deep"},
-			{"--json", "profile", "cx-deep"},
+			{"--json", "exec", "cx-deep"},
 		} {
 			capturePath := filepath.Join(t.TempDir(), "capture.json")
 			args := append(
@@ -294,7 +307,7 @@ func TestCommandProfileGolden(t *testing.T) {
 
 	t.Run("cx_image_missing_environment_fails_before_exec", func(t *testing.T) {
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "cx-image", "describe image")
+		command := exec.Command(harness.snCLI, "exec", "cx-image", "describe image")
 		command.Env = removeEnvironment(
 			harness.environment(map[string]string{
 				"RUNTIME_GOLDEN_CAPTURE":  capturePath,
@@ -337,7 +350,7 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
 		command := exec.Command(
-			harness.snCLI, "env-unset", "--exec", "check environment",
+			harness.snCLI, "exec", "env-unset", "check environment",
 		)
 		command.Env = harness.environment(map[string]string{
 			"RUNTIME_GOLDEN_CAPTURE":   capturePath,
@@ -358,9 +371,42 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("command_invocation_creates_no_runtime_state", func(t *testing.T) {
+	t.Run("diagnostic_log_failure_does_not_block_cli_execution", func(t *testing.T) {
+		brokenHome := filepath.Join(t.TempDir(), "runtime-home")
+		configDir := filepath.Join(brokenHome, "configs")
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := CopyFile(
+			filepath.Join(harness.repoRoot, "configs", "cx-deep.json"),
+			filepath.Join(configDir, "cx-deep.json"), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(brokenHome, "logs"), []byte("not a directory"), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
 		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "cx-deep", "no state")
+		command := exec.Command(harness.snCLI, "exec", "cx-deep", "log failure")
+		command.Env = harness.environment(map[string]string{
+			"SN_CLI_HOME":             brokenHome,
+			"RUNTIME_GOLDEN_CAPTURE":  capturePath,
+			"RUNTIME_GOLDEN_ENV_KEYS": capturedEnvKeys,
+		})
+		command.Dir = harness.repoRoot
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("run: %v output=%q", err, output)
+		}
+		if _, err := ReadCapture(capturePath); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("command_invocation_creates_only_diagnostic_log", func(t *testing.T) {
+		capturePath := filepath.Join(t.TempDir(), "capture.json")
+		command := exec.Command(harness.snCLI, "exec", "cx-deep", "no state")
 		command.Env = harness.environment(map[string]string{
 			"RUNTIME_GOLDEN_CAPTURE":  capturePath,
 			"RUNTIME_GOLDEN_ENV_KEYS": capturedEnvKeys,
@@ -371,11 +417,23 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 		for _, directory := range []string{
 			"bin", "runs", "sessions", "history", "daemon",
-			"state", "memory", "logs", "cache", "tmp",
+			"state", "memory", "cache", "tmp",
 		} {
 			if _, err := os.Stat(filepath.Join(harness.home, directory)); !os.IsNotExist(err) {
 				t.Fatalf("command invocation created %s: %v", directory, err)
 			}
+		}
+		logFiles, err := filepath.Glob(filepath.Join(harness.home, "logs", "*", "cli.jsonl"))
+		if err != nil || len(logFiles) != 1 {
+			t.Fatalf("CLI log files=%v error=%v", logFiles, err)
+		}
+		data, err := os.ReadFile(logFiles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(data, []byte(`"namespace":"exec"`)) ||
+			!bytes.Contains(data, []byte(`"profile":"cx-deep"`)) {
+			t.Fatalf("CLI log does not contain execution: %s", data)
 		}
 	})
 }

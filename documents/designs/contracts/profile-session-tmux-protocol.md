@@ -16,9 +16,10 @@ last_updated: 2026-07-31
 
 ## 结论
 
-CLI Profile 只配置 command、typed selector、args、env、cwd 和 execution mode，
-由公开入口固定承载语义。`sn-cli profile` 是一次无记录调用，
-`sn-cli session` 是 Provider-neutral 的 canonical Session 服务，
+CLI Profile 只配置 command、typed selector、args、env、prompt 和 cwd，execution
+mode 由公开入口固定。bare CLI Profile 是 interactive direct，`sn-cli exec` 是
+non-interactive CLI 调用，`sn-cli req` 是一次 API request；`sn-cli profile` 只管理
+配置。`sn-cli session` 是 Provider-neutral 的 canonical Session 服务，
 `sn-cli tmux` 是长期交互进程管理器；三者使用独立解析和状态机，只共享纯 command
 adapter。
 
@@ -28,14 +29,14 @@ adapter。
 
 - 把 CLI Profile 收敛为 typed 配置和 override 协议，由 adapter 生成顺序确定的
   argv、env 和 cwd。
-- 支持 Codex、Claude 的 `model`、`effort`、`exec` 和 prompt 映射，解决 Profile
+- 支持 Codex、Claude 的 `model`、`effort`、mode 和 prompt 映射，解决 Profile
   固定参数与动态 override 重复、顺序错误的问题。
 - 保留 `sn-cli session` 的 Session、Turn、Message、Execution、history 和
   context owner 身份，并允许每个 Turn 选择 API 或 CLI executor。
 - 新增独立的 `sn-cli tmux`，在固定 tmux session `sn-session` 中管理多个
   interactive window。
-- 让 `sn-cli <profile-id>` 成为 `sn-cli profile <profile-id>` 的完全等价简写，
-  CLI/API Profile 都由 `type` 选择 adapter。
+- 让 namespace 固定执行语义：bare Profile/`exec` 只接受 CLI Profile，`req` 只接受
+  API Profile；Profile `type` 做严格配对校验。
 
 ### 非目标
 
@@ -49,44 +50,55 @@ adapter。
 
 - CLI Profile 使用 `type=cli`、`command` 和 typed 字段；loader 与 schema 对未知
   字段 fail closed。
-- `sn-cli profile` 使用独立 typed parser；`model`、`effort`、`exec`、`cwd`
+- bare CLI direct 与 `sn-cli exec` 使用独立 typed parser；`model`、`effort`、`cwd`
   按请求优先，prompt 按 Profile、`--prompt`、stdin、位置参数的顺序合并。
 - `command/` 已实现 Codex、Claude adapter registry，负责 selector 去重、mode
   转换、canonical output、argv 顺序、PATH/cwd/env 解析和 invocation budget。
-- Session 已使用 schema=2 的 Provider-neutral Session/Turn/Execution，并由自有
-  managed subprocess 固定以 CLI `exec=true` 执行；invocation 由 Session 自行构建，
+- Session 已使用 schema=2 的 Provider-neutral Session/Turn/Execution；`session
+  exec` 由自有 managed subprocess 固定以 non-interactive mode 执行，`session req`
+  执行一次 API request。invocation 由 Session 自行构建，
   不复用 Tmux 状态。
 - `tmux/` 与 `sn-cli tmux` 已作为独立领域实现，固定使用专用 socket 和
   `sn-session`，以 live window registry 管理 interactive command。
-- machine envelope 使用 `schema_version=1`、`contract_version=3`；Session fact
+- machine envelope 使用 `schema_version=1`、`contract_version=4`；Session fact
   与 Agent LoopState 使用 schema=2，SQLite 使用 schema=4，所有版本都必须显式匹配。
-- `configs/*.json` 是唯一 Profile 配置层；隐式与显式 Profile 入口使用同一个
-  loader、typed parser 和执行 service，Profile ID 直接对应同名配置文件。
+- `configs/*.json` 是唯一 Profile 配置层；各执行 namespace 使用同一个 loader 和
+  typed adapter，Profile ID 直接对应同名配置文件。
 
 ## 设计
 
 ### 1. 公开入口与固定语义
 
-| 入口 | Profile 类型 | effective `exec` | 承载与记录 |
+| 入口 | Profile 类型 | effective mode | 承载与记录 |
 | --- | --- | --- | --- |
-| `sn-cli <id> ...` 或 `sn-cli profile <id> ...` | `cli` | Profile 默认值，可被 `--exec` 覆盖 | 相同 typed 参数校验后 process replacement；一次调用，不记录 |
-| `sn-cli <id> ...` 或 `sn-cli profile <id> ...` | `api` | 不适用 | 相同 typed 参数校验后一次 HTTP model call，不记录 |
-| `sn-cli session run\|submit ...` | `cli` | 固定 `true` | Session 自有 managed subprocess；记录 canonical Turn |
-| `sn-cli session run\|submit ...` | `api` | 不适用 | Session 自有 API executor；记录 canonical Turn |
-| `sn-cli tmux start ...` | `cli` | 固定 `false` | 固定 `sn-session` 中的新 window；不创建 Runtime Session |
+| `sn-cli <cli-id> ...` | `cli` | interactive direct | typed 参数校验后 process replacement；本地 CLI 日志；无 Session/Run |
+| `sn-cli exec <cli-id> ...` | `cli` | non-interactive exec | typed 参数校验后 process replacement；本地 CLI 日志；无 Session/Run |
+| `sn-cli req <api-id> ...` | `api` | one request | 一次 HTTP model call；本地 API 日志；无 Session/Run |
+| `sn-cli session exec <cli-id> ... [--queue]` | `cli` | managed non-interactive | Session managed subprocess；canonical Turn + CLI 日志；可选 durable queue |
+| `sn-cli session req <api-id> ... [--queue]` | `api` | one request | Session API executor；canonical Turn + API 日志；可选 durable queue |
+| `sn-cli tmux start <cli-id> ...` | `cli` | interactive | 固定 `sn-session` 新 window；本地 CLI 日志；无 Runtime Session |
+| `sn-cli agent <api-id> ... [--queue]` | `api` | model/tool loop | Agent Kernel；durable Run；每轮本地 API 日志 |
 
-`session` 和 `tmux` 不校验、不读取 Profile 的 `exec` 默认值，而是由入口固定
-effective mode。这样同一 CLI
-Profile 可以分别用于一次 TTY 调用、canonical Session Turn 和长期 Tmux TUI。
-隐式 `sn-cli <id>` 与显式 `sn-cli profile <id>` 加载同一份配置、解析同一组 typed
-参数，并产生相同 stdout/stderr/exit。`type=cli|api` 是唯一 adapter 分流依据。
-固定根 namespace `profile|session|tmux|agent|run|server|help|version` 和 Profile
+执行入口固定 effective mode，Profile 不保存 mode 字段。这样同一 CLI Profile
+可以分别用于一次 TTY 调用、一次 non-interactive 调用、canonical Session Turn 和
+长期 Tmux TUI。namespace 决定执行领域，`type=cli|api` 做严格配对校验。
+固定根 namespace `exec|req|profile|session|tmux|agent|run|server|help|version` 和 Profile
 管理 action `list|show|check` 都是保留 Profile ID，loader 遇到同名配置即失败。
+`profile` 不再执行 Profile；`run` 不接受 fresh submission，只查询或控制已有
+Durable Run，`retry` 仍是基于已有终态 Run 的控制动作。
+所有拥有 Profile 的入口都要求 Profile ID 紧跟 namespace/action，option 位于其后，
+input 必须最后。
+
+这里的本地日志是 `${SN_CLI_HOME}/logs/YYMMDD/{cli,api}.jsonl` 下的 best-effort
+execution diagnostics，不是新增的 Session/Run 状态层。查询、校验和 queue submit
+不写；worker 真正执行才写。API 日志保存 protocol-encoded HTTP
+`request/response/error`，secret 只保留 `${VAR}` 引用或 `[REDACTED]`；任何日志
+失败都不得改变执行结果，当前也没有自动 GC 或旧日志迁移。
 
 Runtime machine mode 继续只认 argv 第一项的 leading global `--json`，即
 `sn-cli --json session list`；namespace 后的同名参数绝不被 root 截获。管理命令的
 machine success 与 error 都携带 `schema_version=1`、
-`contract_version=3`。隐式和显式 CLI Profile 即使带 leading global `--json` 也
+`contract_version=4`。bare CLI direct 与 `exec` 即使带 leading global `--json` 也
 仍 process replacement，不把目标 CLI 输出伪装成 Runtime JSON；Profile ID 后的
 `--json` 由 Profile typed parser 拒绝，不透传给目标命令。
 
@@ -103,16 +115,14 @@ CLI Profile 使用以下字段：
   "model": "gpt-5.6-sol",
   "effort": "high",
   "prompt": "",
-  "exec": false,
   "cwd": ""
 }
 ```
 
 - `command` 替代 `binary`，是单个可执行文件名或路径，不经过 shell。
 - `args` 一字符串一 argv token；不得包含 prompt。adapter 负责识别 command
-  options、exec selector 和 subcommand options，并重建正确顺序。
-- `model`、`effort`、`prompt`、`exec`、`cwd` 均可省略；`exec` 缺省为
-  `false`。
+  options、mode selector 和 subcommand options，并重建正确顺序。
+- `model`、`effort`、`prompt`、`cwd` 均可省略；execution mode 由入口固定。
 - Profile `prompt` 与 typed `--prompt` 使用同一 file-or-text 规则：相对路径基于
   入口的 invocation base；CLI 入口的 base 是调用方 cwd，HTTP 的 CLI executor
   必须从请求得到 absolute `cwd` 或使用 Profile 中的 absolute `cwd`。现有 regular
@@ -130,22 +140,17 @@ CLI Profile 使用以下字段：
 - CLI Profile 只接受本节定义的字段；严格 loader 不接受未知字段。
 - API Profile schema 和 Provider driver 保持独立，不增加 CLI-only 字段。
 
-隐式或显式 CLI Profile 的 typed 参数为：
+bare CLI direct 与 `exec` 的 typed 参数为：
 
 ```text
 --model <model>
 --effort <low|medium|high|xhigh|max>
 --prompt <file-or-text>
---exec
---exec=true
---exec=false
 --cwd <dir>
 [input]
 ```
 
-`model`、`effort`、`exec`、`cwd` 是 scalar override，typed 参数优先于 Profile
-配置。bare `--exec` 等价于 `--exec=true`；只接受 bare flag 或
-`--exec=true|false`，不接受会歧义消费位置 prompt 的 `--exec true|false`。
+`model`、`effort`、`cwd` 是 scalar override，typed 参数优先于 Profile 配置。
 
 `prompt` 不是 scalar override，而是追加输入源。Profile prompt、`--prompt`、piped
 stdin 和最后一个位置参数按此顺序合并，非空片段用换行连接，最终形成一个 prompt。
@@ -153,8 +158,6 @@ stdin 和最后一个位置参数按此顺序合并，非空片段用换行连�
 
 - 每个 typed option 最多出现一次；未知 option、超过一个 positional、positional
   后继续出现 option 都 fail closed。`--` 后只能有零或一个 input。
-- bare `--exec` 永不消费下一 token，因此 `--exec false` 表示
-  `exec=true`、input=`false`；false 只能写成 `--exec=false`。
 - file、stdin 和 string fragment 都必须是 UTF-8、无 NUL；读取上限与最终 prompt
   token 上限均为 128,000 bytes。该值低于 Linux 常见的 128 KiB 单 argv string
   边界（含结尾 NUL）。file 使用 no-follow open 后 `fstat`，拒绝 symlink、
@@ -166,19 +169,17 @@ stdin 和最后一个位置参数按此顺序合并，非空片段用换行连�
   128 KiB 保守总预算。总量计算包含每个 token 的 NUL、argv/env pointer table 和
   executable path；预算为负或不足时直接失败。超限必须在 spawn 前返回 typed
   error。
-- Profile interactive 只要继承的 stdin 不是真 TTY，就必须把 `/dev/tty` 重新绑定
-  为 stdin；没有 controlling TTY 时 fail closed。`exec=true` Profile 与 Session canonical child
-  固定从 `/dev/null` 读取 stdin，防止目标 CLI 再次消费或拼接调用方 stdin。
+- bare Profile interactive 只要继承的 stdin 不是真 TTY，就必须把 `/dev/tty`
+  重新绑定为 stdin；没有 controlling TTY 时 fail closed。`exec` 与 Session
+  canonical child 固定从 `/dev/null` 读取 stdin，防止目标 CLI 再次消费或拼接
+  调用方 stdin。
 
-- 隐式或显式 Profile 的 effective `exec=true` 时 prompt 必须非空；Session 输入
-  也始终非空。
-- effective `exec=false` 时 prompt 可以为空；非空 prompt 仍作为最终 argv token
+- `exec` 的 prompt 必须非空；Session 输入也始终非空。
+- bare interactive direct 的 prompt 可以为空；非空 prompt 仍作为最终 argv token
   交给当前 TTY 中的 TUI。
-- CLI Profile 无论 `exec` 值都不提供 Runtime `--json` 包装；两种 mode 均在校验后
+- bare direct 与 `exec` 都不提供 Runtime `--json` 包装；两种 mode 均在校验后
   process replacement，继承目标进程的 stdout、stderr、signal 和 exit code。
-  `exec` 只决定 adapter 生成 interactive 还是非交互 target argv。API Profile
-  继续支持 Runtime human/JSON contract。
-- 隐式和显式入口都读取 Profile `prompt`，并按相同优先级应用 typed 参数。
+- 两条 CLI 入口都读取 Profile `prompt`，并按相同优先级应用 typed 参数。
 
 保留 `profile list|show|check`。`show` 只展示未展开配置，禁止显示 resolved env；
 `check` 是纯静态、符号化校验：只验证 schema、引用语法、adapter、option grammar
@@ -200,7 +201,7 @@ Adapter.Decode(result) -> canonical assistant output
 ```
 
 `mode` 取 `interactive|exec`；`outputProtocol` 取 `native|canonical`。
-interactive 只允许 `native`。隐式和显式 Profile 使用 `native`，Session managed
+interactive 只允许 `native`。bare direct 与 `exec` 使用 `native`，Session managed
 exec 固定使用 `canonical`，只有 canonical invocation 的结果才可交给
 `Adapter.Decode`。Profile、Session 和带初始输入的 Tmux start 都只提供可空的
 `argvPrompt`。
@@ -326,8 +327,9 @@ Session
 - CLI history 继续生成有界、转义后的 history/current-input prompt，并在前面合并
   Profile base prompt；base prompt 是 invocation 前缀，不另存为本轮 user
   Message。最终合并值同时受 128,000-byte argv-token 门禁。
-- `session run` 等待 executor terminal result；`session submit` 由 durable Run
-  worker 执行同一 Session service，不能在仅启动进程后把 Turn 标为 settled。
+- `session exec|req <profile>` 默认等待 executor terminal result；Profile ID 后的
+  `--queue` 由 durable Run worker 执行同一 Session service，不能在仅启动进程后把
+  Turn 标为 settled。
 
 managed subprocess 使用独立 process group。direct CLI 用 signal-aware context；
 SIGINT、SIGTERM、Run cancel、timeout 或 output-limit 都按
@@ -369,7 +371,8 @@ blocked，不发送信号。操作者在外部确认无存活副作用进程后�
 conflict。HTTP 同时提供对应 Run reconcile action。
 
 每个 Turn 持久化完整 request digest、未展开且不含 resolved secret 的 Profile
-config digest、已解析 base-prompt digest 和 absolute cwd。`session submit` 在
+config digest、已解析 base-prompt digest 和 absolute cwd。带 `--queue` 的
+`session exec|req <profile>` 在
 ingress 解析并冻结 caller-relative prompt file 内容、typed model/effort/cwd 和
 non-secret Profile snapshot/config digest；snapshot 保存 `command/args/env` 引用和
 typed 字段，不保存 resolved env secret。durable Run 的公开 `Request` 只携带
@@ -390,7 +393,7 @@ digest 一致才幂等返回；任一漂移都 conflict 或进入 reconciliation
 `completed` 并写入该 Session result；后续 Turn 仍由 Session blocked 门禁控制。
 
 Session 使用独立 parser。CLI executor 的 Turn override 只支持 `--model`、
-`--effort` 和 `--cwd`；不暴露 `--exec`、`--prompt` 或其它 CLI Profile 参数。
+`--effort` 和 `--cwd`；不暴露 `--prompt` 或其它 CLI Profile 参数。
 API executor 继续使用 Provider-neutral model request options。两种 executor 的
 本轮用户输入都只来自位置参数或 piped stdin。
 
@@ -398,7 +401,7 @@ API executor 继续使用 Provider-neutral model request options。两种 execut
 明确拒绝。相同 DTO 贯通 CLI、HTTP Session turn、HTTP durable Run、SQLite
 `request_json` 和 Session service。
 
-CLI 发起的 direct/submit 把相对 `cwd` 在 ingress 解析为 absolute path。HTTP
+CLI 发起的同步/queued Turn 把相对 `cwd` 在 ingress 解析为 absolute path。HTTP
 Session turn/durable Run 使用 CLI Profile 时，`cwd` 必须已经是 absolute，或该
 Profile 自身提供 absolute `cwd`；否则返回 `invalid_request`。HTTP 永不把 server
 进程 cwd 当成调用方 cwd。
@@ -423,7 +426,8 @@ binary 前同时验证 configs、每个 Session fact 和 SQLite schema，不能�
 “binary 已换但状态不可读”的半激活。
 
 仓库根目录 `make install` 是本地源码调试的显式 destructive 例外：它固定覆盖
-source configs，校验 candidate 后自动停止受管 server，并显式授权不解析现有
+source `configs/`、`resources/tools/` 与 `release/runtime.json` 到对应 active
+配置，校验 candidate 后自动停止受管 server，并显式授权不解析现有
 Session/Run state。运行态只在 staged artifact 全部提交并验证、activation guard
 仍生效时删除；成功后不重启。普通 archive/network install 与 `server update`
 继续遵守 exact-schema preflight。
@@ -444,7 +448,7 @@ error enum。
 新增 `tmux/` 领域与 `sn-cli tmux` namespace：
 
 ```text
-sn-cli tmux start [typed-options] <profile-id> [input]
+sn-cli tmux start <profile-id> [typed-options] [input]
 sn-cli tmux list
 sn-cli tmux show --tmux-id <id>
 sn-cli tmux send --tmux-id <id> <input>
@@ -455,8 +459,8 @@ sn-cli tmux stop --tmux-id <id>
 
 - 创建窗口的公开 action 固定为 `start`。
 - `start` 只接受 CLI Profile，固定使用 adapter interactive mode。
-- `start` typed 参数为 `--model`、`--effort`、`--prompt`、`--cwd`；不接受
-  `--exec`。`model`、`effort`、`cwd` 是 scalar override，`--prompt` 是追加输入源
+- `start` typed 参数为 `--model`、`--effort`、`--prompt`、`--cwd`；
+  `model`、`effort`、`cwd` 是 scalar override，`--prompt` 是追加输入源
   而不是 override。
 - `start` 可无输入；有输入时按 Profile prompt、typed `--prompt`、piped stdin、
   位置参数的顺序合并，并作为 adapter interactive invocation 的最终 argv token。
@@ -477,7 +481,8 @@ Tmux 显式使用 `-S` socket，socket 内 session 名固定为 `sn-session`。�
 uid 拥有，启动前计算完整 canonical-home digest，并用 server marker 校验完整值。
 prefix 碰撞、目录/socket owner/mode 异常、symlink 或 marker 不匹配都 fail closed，
 不能复用或覆盖。active home 只保存 lock/manifest，不保存 socket。
-所有 tmux client 显式使用 source-controlled bootstrap config，禁用用户
+所有 tmux client 显式使用 active `${SN_CLI_HOME}/resources/tmux.conf`；该文件只由
+source/payload `release/tmux.conf` 经 activation 映射。client 禁用用户
 `~/.tmux.conf`，清空 `update-environment`，固定 `automatic-rename off`、
 `allow-rename off`，并保证目标 command 启动前 `remain-on-exit on` 已生效。首次启动
 不用会立即退出的 `start-server`：先生成 `server_incarnation`，用 fixed config
@@ -609,18 +614,22 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
 
 - `internal/cli` 只负责各 namespace 的 decode/call/encode。
 - `internal/runtimebootstrap` 分别组装 Profile、Session 和 Tmux service。
-- `fixedNamespaces` 包含 `profile|session|tmux|agent|run|server|help|version`；
+- `fixedNamespaces` 包含 `exec|req|profile|session|tmux|agent|run|server|help|version`；
   与 `list|show|check` 一起成为保留 Profile ID，不提供 alias 或 shim。
 - `runtime.json` 只保存 Agent、scheduler 和 Run 的当前配置。
-- `resources/tmux.conf` 与 `resources/release.json` 分别保存无 secret 的固定
-  bootstrap config 和当前 activation/contract/schema identity；active home 只新增
+- source/payload `release/tmux.conf` 与 `release/release.json` 分别保存无 secret
+  的固定 bootstrap config 和当前 activation/contract/schema identity，并映射到
+  active `resources/{tmux.conf,release.json}`；active home 只新增
   `state/tmux.lock`、短生命周期的 0700/0600 manifest/gate 和升级 journal/guard，
   socket 位于受控 `/tmp` 根；不新增 Tmux history。
-- source `configs/*.json` 只使用 `command` 和 typed 字段；任意合法 CLI Profile 都可
-  由 `tmux start` 强制 interactive mode。
-- `cx/cc/cc-kmm exec=false`；`cc-glm/cx-deep/cx-adv/cx-image/cx-spark/commit exec=true`。
-  各 Profile 的 model/effort selector 使用同名 typed 字段，args 保持
-  one-token-per-argv。
+- source/payload 配置布局固定为 `configs/*.json`、`resources/schema/*.json`、
+  `resources/tools/*.json` 和 `release/{runtime.json,tmux.conf,release.json}`；
+  activation 分别映射到 active `configs/`、`resources/schema/`、`tools/`、根
+  `runtime.json` 与 `resources/{tmux.conf,release.json}`，不读取旧 payload shape。
+- source `configs/*.json` 只使用 `command` 和 typed 字段，不保存 execution mode；
+  任意合法 CLI Profile 都可由 bare direct 或 `tmux start` 以 interactive mode
+  运行，也可由 `exec` 或 `session exec` 以 non-interactive mode 运行。各 Profile
+  的 model/effort selector 使用同名 typed 字段，args 保持 one-token-per-argv。
 - 普通 archive/network installer 默认保护符合当前 schema 的 active configs；
   `--overwrite-configs` 显式授权全量替换。根目录 `make install` 固定使用完整 source
   bundle 覆盖配置并清理 Session/Run 状态，不暴露额外 Make 参数。
@@ -628,31 +637,32 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
   layout-only upgrade preflight 检查目标 home；只要专用 server/socket 仍存在、
   marker 无法验证或有 managed window 就 fail-before-mutation，并提示先执行
   `tmux stop`。`--overwrite-configs`
-  不绕过 live Tmux 门禁。这样更新后的 `resources/tmux.conf` digest 不会与仍在运行
+  不绕过 live Tmux 门禁。这样更新后的 active
+  `${SN_CLI_HOME}/resources/tmux.conf` digest 不会与仍在运行
   的 server 混用；release smoke 覆盖 live server 阻断和 stop 后成功激活。
-- CLI 当前 `contract_version=3`；error envelope、`server info/doctor` capabilities、
+- CLI 当前 `contract_version=4`；error envelope、`server info/doctor` capabilities、
   release assertions 和 HTTP/CLI 文档必须同步。
 
 #### 安装激活门禁
 
-- archive manifest 必须完整匹配当前 activation epoch、CLI contract、Session schema
-  和 Run schema；未知、缺失或不相等的字段直接拒绝。
+- payload `release/release.json` 必须完整匹配 activation epoch 4、CLI contract、
+  Session schema 和 Run schema；未知、缺失或不相等的字段直接拒绝。
 - `install.sh` 与 updater 不分段替换 active artifact，而是把已校验 payload 交给
   staged candidate 的 `server upgrade-activate`。该 action 从 preflight 到最后
   rename 全程持有 active-home maintenance lock 和 server lifecycle/Tmux lock。
   事务先 durable 写入包含 nonce、owner PID/start-token、original/staged/guard
   digest 和 exact current artifact set 的 journal，再写 state guard；随后依次把
-  active `bin/`、`configs/` 原子移到 transaction backup，并以 no-replace
+  active `bin/`、`configs/`、`tools/` 原子移到 transaction backup，并以 no-replace
   regular-file barrier 占位，阻断并发入口和路径重建，再二次确认 quiescence。
-  其他 artifact 提交后，`bin/` 倒数第二、`configs/` 最后切换；原 `bin/` 中非
-  Runtime regular files 保留。
+  其他 artifact 提交后，再按固定顺序切换 `bin/`、`configs/`、`tools/`；原
+  `bin/` 中非 Runtime regular files 保留。
 - quiescence 同时要求：`sn-server` 未运行；专用 Tmux server 不存在；无
   active/unknown Session execution；无 queued/running/paused/
   `needs_reconciliation` Run；系统进程表中不存在除 activation helper 外、executable
   inode identity 等于切换前目标 home `sn-cli|sn-server` 的进程。coordinator 排除
   同时绑定 PID/start-token；未知 Run/Session state、SQLite quick-check、sidecar、
   process identity、guard 或 lock 任一歧义都 fail closed。rollback 先恢复
-  configs/其他 artifact、最后恢复并校验 bin；只有能证明 all-original 或
+  tools/configs/其他 artifact、最后恢复并校验 bin；只有能证明 all-original 或
   all-staged 时才删除 guard 和 journal。journal 在 `committed|rolled_back`
   terminal phase 仍是入口 barrier；
   stage tree、跨目录 rename、guard/journal 更新与删除均按依赖顺序 fsync，恢复
@@ -670,9 +680,9 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
 
 ### 7. 关键取舍
 
-- 由入口固定 execution owner：隐式/显式 Profile process replacement，Session
-  managed child，Tmux managed window；只让 Profile `exec` 表达 target CLI mode，
-  不引入第二个 execution-mode 字段。
+- 由入口固定 execution owner 与 target mode：bare direct/`exec` process
+  replacement，Session managed child，Tmux managed window；Profile 不保存
+  execution-mode 字段。
 - Tmux 以 tmux server/window options 作为 live source of truth，排除独立 durable
   Tmux history；这避免双写、GC、隐私和 transcript 边界。
 - Session 只接受有 terminal result 的 executor，排除 `transcript_only` 伪完成。

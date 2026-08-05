@@ -4,16 +4,17 @@ import (
 	"fmt"
 	"os"
 
+	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/internal/activation"
 	"github.com/yy003x/runtime/internal/cli/version"
 	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/profileid"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
+	runtimeprofile "github.com/yy003x/runtime/profile"
 	runtimetmux "github.com/yy003x/runtime/tmux"
 )
 
-var fixedNamespaces = []string{
-	"profile", "session", "tmux", "agent", "run", "server", "help", "version",
-}
+var fixedNamespaces = profileid.ReservedNamespaces()
 
 func Main(args []string) int {
 	if len(args) > 0 && args[0] == runtimetmux.HelperCommandName {
@@ -76,6 +77,16 @@ func Main(args []string) int {
 		}
 	}
 	switch args[0] {
+	case "exec":
+		err = runProfileExecutionNamespace(
+			paths, args[1:], runtimeprofile.KindCommand,
+			runtimecommand.ModeExec, "exec", output,
+		)
+	case "req":
+		err = runProfileExecutionNamespace(
+			paths, args[1:], runtimeprofile.KindModel,
+			"", "req", output,
+		)
 	case "profile":
 		err = runVNextProfileNamespace(paths, args[1:], output)
 	case "session":
@@ -95,8 +106,9 @@ func Main(args []string) int {
 		if loadErr != nil {
 			return output.fail(loadErr)
 		}
-		err = runLoadedVNextProfileID(
-			runtime, args[0], args[1:], output,
+		err = runLoadedProfileID(
+			runtime, paths.LogsDir, args[0], args[1:], runtimeprofile.KindCommand,
+			runtimecommand.ModeInteractive, "direct", output,
 		)
 	}
 	return output.fail(err)
@@ -115,37 +127,40 @@ func printHelp(output *cliOutput) error {
 	return output.text(`sn-cli - SN Runtime
 
 Usage:
-  sn-cli <profile-id> [profile-options...] [input]
-  sn-cli --json <profile-id> [profile-options...] [input]
+  sn-cli <cli-profile-id> [options...] [input]
+  sn-cli exec <cli-profile-id> [options...] [input]
+  sn-cli req <api-profile-id> [options...] [input]
+  sn-cli --json req <api-profile-id> [options...] [input]
   sn-cli --json <management-command> [args...]
-  sn-cli profile <profile-id> [--model M] [--effort E] [--prompt FILE_OR_TEXT]
-                               [--exec|--exec=true|--exec=false] [--cwd DIR] [input]
   sn-cli profile list|show|check
-  sn-cli session run|submit [runtime-options] <profile-id> [input]
+  sn-cli session exec <cli-profile-id> [options...] [input]
+  sn-cli session req <api-profile-id> [options...] [input]
   sn-cli session list|show|messages|events|logs|executions|execution
   sn-cli session reconcile|configure|export|delete|gc
-  sn-cli tmux start|list|show|send|attach|interrupt|stop
-  sn-cli agent run --profile <model-profile-id> [options] [input]
-  sn-cli run submit|get|list|result|events|watch|cancel|resume|retry|reconcile|gc
+  sn-cli tmux start <cli-profile-id> [options...] [input]
+  sn-cli tmux list|show|send|attach|interrupt|stop
+  sn-cli agent <api-profile-id> [options...] [input]
+  sn-cli run get|list|result|events|watch|cancel|resume|retry|reconcile|gc
   sn-cli server info|doctor|start|status|stop|update|upgrade-check
 
 Execution semantics:
-  <profile-id>       implicit profile invocation; identical to profile <id>
-  profile <id>       exactly one command or API model call; no Runtime record
-  session run        one recorded Session turn; Session never executes tools
-  session submit     durable queued Session turn
+  <cli-profile-id>   direct CLI; no Session/Run; best-effort local CLI log
+  exec               noninteractive CLI; no Session/Run; best-effort CLI log
+  req                one API request; no Session/Run; best-effort API log
+  session exec|req   one recorded Session turn; --queue submits a durable Run
   tmux start         one managed interactive command window; no Runtime Session
-  agent run          durable API-only model/tool loop; Session is opt-in
-  run ...            durable Run query and control plane
+  agent              durable API-only model/tool loop; --queue submits only
+  run ...            durable Run query and control plane; never submits new work
 
 Global:
   -h, --help         show this help
   --version          show build version
-  --json             stable API Profile/management output; must be first
-                     CLI Profile output remains target-native
+  --json             stable req/management output; must be first
+                     direct/exec CLI output remains target-native
 
 Runtime home:        ${SN_CLI_HOME:-~/.sn}
 Profiles:            <runtime-home>/configs
+Tools:               <runtime-home>/tools
 Sessions:            <runtime-home>/sessions
 Run database:        <runtime-home>/state/runtime.db`)
 }

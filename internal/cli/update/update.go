@@ -38,6 +38,7 @@ type ApplyResult struct {
 	Binary              string   `json:"binary"`
 	ServerBinary        string   `json:"server_binary"`
 	CopiedProfiles      []string `json:"copied_profiles"`
+	CopiedTools         []string `json:"copied_tools"`
 	CopiedRuntimeConfig bool     `json:"copied_runtime_config"`
 	CopiedResources     []string `json:"copied_resources"`
 }
@@ -135,11 +136,11 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 	binary := filepath.Join(payload, "sn-cli")
 	serverBinary := filepath.Join(payload, "sn-server")
 	packagedProfiles := filepath.Join(payload, "configs")
-	packagedRuntimeConfig := filepath.Join(payload, "runtime.json")
 	packagedResources := filepath.Join(payload, "resources")
+	packagedRelease := filepath.Join(payload, "release")
 	if err := validatePayload(
-		binary, serverBinary, packagedProfiles, packagedRuntimeConfig,
-		packagedResources,
+		binary, serverBinary, packagedProfiles, packagedResources,
+		packagedRelease,
 	); err != nil {
 		return ApplyResult{}, err
 	}
@@ -162,6 +163,7 @@ func Apply(ctx context.Context, cfg *config.Config, version string) (ApplyResult
 		Version: version, Archive: archiveName, Binary: cfg.Paths.Binary,
 		ServerBinary:        cfg.Paths.ServerBinary,
 		CopiedProfiles:      activated.CopiedProfiles,
+		CopiedTools:         activated.CopiedTools,
 		CopiedRuntimeConfig: activated.CopiedRuntimeConfig,
 		CopiedResources:     activated.ResourceFiles,
 	}
@@ -219,7 +221,7 @@ var runCandidateActivation = func(
 			"candidate activation result has trailing JSON",
 		)
 	}
-	if response.SchemaVersion != 1 || response.ContractVersion != 3 ||
+	if response.SchemaVersion != 1 || response.ContractVersion != 4 ||
 		!response.Activated ||
 		filepath.Clean(response.Activation.TargetHome) !=
 			filepath.Clean(targetHome) {
@@ -291,7 +293,7 @@ func download(ctx context.Context, client *http.Client, source, target string) e
 }
 
 func validatePayload(
-	binary, serverBinary, profiles, runtimeConfig, resources string,
+	binary, serverBinary, profiles, resources, release string,
 ) error {
 	for name, path := range map[string]string{
 		"sn-cli": binary, "sn-server": serverBinary,
@@ -304,11 +306,36 @@ func validatePayload(
 	if info, err := os.Stat(profiles); err != nil || !info.IsDir() {
 		return fmt.Errorf("release archive has no configs directory")
 	}
-	if info, err := os.Stat(runtimeConfig); err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("release archive has no runtime.json")
-	}
 	if info, err := os.Stat(resources); err != nil || !info.IsDir() {
 		return fmt.Errorf("release archive has no resources directory")
+	}
+	if info, err := os.Stat(release); err != nil || !info.IsDir() {
+		return fmt.Errorf("release archive has no release directory")
+	}
+	for _, required := range []struct {
+		name string
+		path string
+	}{
+		{name: "resources/schema", path: filepath.Join(resources, "schema")},
+		{name: "resources/tools", path: filepath.Join(resources, "tools")},
+	} {
+		if info, err := os.Stat(required.path); err != nil || !info.IsDir() {
+			return fmt.Errorf(
+				"release archive has no %s directory", required.name,
+			)
+		}
+	}
+	for _, required := range []struct {
+		name string
+		path string
+	}{
+		{name: "release/release.json", path: filepath.Join(release, "release.json")},
+		{name: "release/runtime.json", path: filepath.Join(release, "runtime.json")},
+		{name: "release/tmux.conf", path: filepath.Join(release, "tmux.conf")},
+	} {
+		if info, err := os.Stat(required.path); err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("release archive has no %s", required.name)
+		}
 	}
 	return nil
 }

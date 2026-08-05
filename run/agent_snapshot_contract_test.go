@@ -15,6 +15,7 @@ import (
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/model"
 	"github.com/yy003x/runtime/profile"
+	"github.com/yy003x/runtime/provider"
 )
 
 type snapshotContractDriver struct {
@@ -37,8 +38,8 @@ func (*snapshotContractDriver) Stream(
 	model.ResolvedModel,
 	contract.ModelRequest,
 	contract.EventSink,
-) (contract.ModelResult, *contract.RuntimeError) {
-	return contract.ModelResult{}, &contract.RuntimeError{
+) (contract.ModelResult, provider.Attempt, *contract.RuntimeError) {
+	return contract.ModelResult{}, provider.Attempt{}, &contract.RuntimeError{
 		Code: contract.ErrorInternal, Phase: contract.PhaseProvider,
 		Message: "snapshot contract fixture must not execute the Provider",
 	}

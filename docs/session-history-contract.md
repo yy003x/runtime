@@ -26,6 +26,10 @@ state/
 Session fact 固定 `schema_version=2`，SQLite 固定 `PRAGMA user_version=4`。缺失、
 不相等或混合状态 fail closed，不提供版本推断、字段补齐或自动 migration。
 
+`logs/YYMMDD/{cli,api}.jsonl` 不属于本布局或 Session fact。`session logs` 读取的是
+canonical Session activity；本地 execution log 只是可丢失诊断，Session CLI/API
+真正执行时会另写一条，但恢复、replay、完成判定和 GC 都不依赖它。
+
 写入使用 Session-scoped `flock`、大小限制和 directory-FD relative filesystem
 操作。已有路径逐组件以 `O_NOFOLLOW` 打开；`sessions/`、`state/`、Session root
 及其私有子目录的 device/inode 在 Store 生命周期内固定，directory replacement
@@ -92,7 +96,9 @@ Session `schema_version` 仍为 2。启动校验必须逐 Session 持同一把�
 CLI Session 不把 resolved argv/env 直接放入进程参数。Runtime 在
 `state/session-invocations/` 创建随机命名、mode `0600`、single-link 的 strict
 JSON manifest；payload 只包含 resolved `path/argv/environment/cwd`，可能含当前
-环境解析出的 secret，因此是不可导出、不可记录日志的短生命周期 private state。
+环境解析出的 secret，因此是不可导出、不可完整记录日志的短生命周期 private state。
+CLI execution log 只保存可读 command，Profile env 保留 `${VAR}` 引用，不保存该
+manifest 中的 resolved argv/environment。
 写入并同步后，Runtime 把 manifest absolute path、directory identity 和 file
 identity 传给 private helper。
 
@@ -163,9 +169,10 @@ prompt 仍受 128,000-byte argv-token 门禁。
 
 ## CLI Execution
 
-Session 对 CLI Profile 固定 `exec=true`，不读取 Profile `exec`，也不使用 Tmux。
+`session exec` 对 CLI Profile 固定 non-interactive managed mode，也不使用 Tmux。
 command adapter 构建 canonical invocation，managed helper 在 marker-before-exec
-handshake 后启动 Provider。
+handshake 后启动 Provider。`session req` 则对 API Profile 执行一次 Provider
+request；两者共用本节的 Session/Turn/Execution schema。
 
 Execution 保存：
 
@@ -229,8 +236,8 @@ transaction；任一步写入失败后重复同一命令会收敛到相同终态
 
 ## Private durable payload
 
-`session submit` 在 ingress 冻结 caller-relative prompt file、typed override、
-non-secret Profile snapshot 和 digest。公开 Run request 只保留 digest/ref；
+`session exec|req <profile> --queue` 在 ingress 冻结 caller-relative prompt file、
+typed override、non-secret Profile snapshot 和 digest。公开 Run request 只保留 digest/ref；
 snapshot 与解析后的 base prompt 存入 SQLite `private_request_json`，对应 Go 字段
 强制 `json:"-"`。
 

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	runtimecommand "github.com/yy003x/runtime/command"
 	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/layout"
+	runtimeprofile "github.com/yy003x/runtime/profile"
 )
 
 func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
@@ -44,7 +46,7 @@ func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr is not one JSON document: %v: %q", err, stderr.String())
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 3 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 4 ||
 		payload.Error.Code != string(contract.ErrorRateLimited) ||
 		payload.Error.Phase != string(contract.PhaseTransport) ||
 		!payload.Error.Retryable || payload.Error.RetryAfterMS != 250 ||
@@ -159,7 +161,7 @@ func TestCLIOutputStreamFailureBeforeFirstEventIsJSON(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr=%q error=%v", stderr.String(), err)
 	}
-	if payload.ContractVersion != 3 ||
+	if payload.ContractVersion != 4 ||
 		payload.Error.Message != "failed before first event" {
 		t.Fatalf("payload=%#v", payload)
 	}
@@ -184,7 +186,7 @@ func TestAgentStreamBeginsAfterSuccessfulParseBeforeServiceFailure(t *testing.T)
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := runAgentNamespace(
 		layout.Paths{},
-		[]string{"run", "--profile", "api", "--stream", "hello"},
+		[]string{"api", "--stream", "hello"},
 		output,
 	); err == nil {
 		t.Fatal("expected service initialization failure")
@@ -211,13 +213,13 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 		{
 			name: "profile",
 			args: []string{
-				"profile", "api", "--stream", "--unknown-option",
+				"req", "api", "--stream", "--unknown-option",
 			},
 		},
 		{
 			name: "agent",
 			args: []string{
-				"agent", "run", "--profile", "api", "--stream", "--unknown-option",
+				"agent", "api", "--stream", "--unknown-option",
 			},
 		},
 	} {
@@ -242,7 +244,7 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 			if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.ContractVersion != 3 ||
+			if payload.ContractVersion != 4 ||
 				!strings.Contains(payload.Error.Message, "unknown") ||
 				strings.Contains(stderr, `"final"`) {
 				t.Fatalf("payload=%#v stderr=%q", payload, stderr)
@@ -266,8 +268,10 @@ func TestCLIProfileNativeStreamArgumentDoesNotSelectRuntimeStreamErrors(
 		t.Fatal(err)
 	}
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-	err := runVNextProfileNamespace(
-		paths, []string{"cx", "--stream", "extra"}, output,
+	err := runProfileExecutionNamespace(
+		paths, []string{"cx", "--stream", "extra"},
+		runtimeprofile.KindCommand, runtimecommand.ModeInteractive,
+		"direct", output,
 	)
 	if err == nil {
 		t.Fatal("expected CLI prompt validation failure")
