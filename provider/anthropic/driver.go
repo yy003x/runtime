@@ -222,7 +222,9 @@ type streamEnvelope struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage struct {
-			InputTokens int64 `json:"input_tokens"`
+			InputTokens         int64 `json:"input_tokens"`
+			CacheCreationTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadTokens     int64 `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 	ContentBlock contentPart `json:"content_block"`
@@ -243,8 +245,10 @@ type responseEnvelope struct {
 	Content    []contentPart `json:"content"`
 	StopReason string        `json:"stop_reason"`
 	Usage      struct {
-		InputTokens  int64 `json:"input_tokens"`
-		OutputTokens int64 `json:"output_tokens"`
+		InputTokens         int64 `json:"input_tokens"`
+		OutputTokens        int64 `json:"output_tokens"`
+		CacheCreationTokens int64 `json:"cache_creation_input_tokens"`
+		CacheReadTokens     int64 `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -268,7 +272,7 @@ func decodeStream(
 	finishReason := ""
 	requestID := headers.Get("request-id")
 	modelName := resolved.Model
-	var inputTokens, outputTokens int64
+	var inputTokens, outputTokens, cacheWrite, cacheRead int64
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
@@ -293,6 +297,8 @@ func decodeStream(
 				modelName = event.Message.Model
 			}
 			inputTokens = event.Message.Usage.InputTokens
+			cacheWrite = event.Message.Usage.CacheCreationTokens
+			cacheRead = event.Message.Usage.CacheReadTokens
 		case "content_block_start":
 			switch event.ContentBlock.Type {
 			case "text":
@@ -359,7 +365,7 @@ func decodeStream(
 	}
 	return buildResult(
 		text.String(), toolCalls, finishReason, inputTokens, outputTokens,
-		modelName, requestID,
+		cacheWrite, cacheRead, modelName, requestID,
 	), nil
 }
 
@@ -414,7 +420,9 @@ func decodeResponse(
 	}
 	return buildResult(
 		text.String(), toolCalls, response.StopReason,
-		response.Usage.InputTokens, response.Usage.OutputTokens, modelName, requestID,
+		response.Usage.InputTokens, response.Usage.OutputTokens,
+		response.Usage.CacheCreationTokens, response.Usage.CacheReadTokens,
+		modelName, requestID,
 	), nil
 }
 
@@ -458,7 +466,7 @@ func buildResult(
 	text string,
 	toolCalls []contract.ToolCall,
 	finish string,
-	inputTokens, outputTokens int64,
+	inputTokens, outputTokens, cacheWrite, cacheRead int64,
 	modelName, requestID string,
 ) contract.ModelResult {
 	reason := mapFinishReason(finish)
@@ -473,6 +481,14 @@ func buildResult(
 	if outputTokens > 0 {
 		value := outputTokens
 		usage.OutputTokens = &value
+	}
+	if cacheWrite > 0 {
+		value := cacheWrite
+		usage.CacheWriteTokens = &value
+	}
+	if cacheRead > 0 {
+		value := cacheRead
+		usage.CacheReadTokens = &value
 	}
 	if usage.InputTokens != nil && usage.OutputTokens != nil {
 		total := inputTokens + outputTokens

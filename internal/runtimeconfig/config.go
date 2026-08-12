@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yy003x/runtime/agent"
@@ -20,8 +21,17 @@ const maxAgentTools = 256
 
 type Config struct {
 	Agent     Agent     `json:"agent"`
+	MCP       MCP       `json:"mcp"`
 	Scheduler Scheduler `json:"scheduler"`
 	Run       Run       `json:"run"`
+}
+
+// MCP 配置外部 MCP tool 的 Streamable HTTP 协议协商。零值表示采用 toolmcp 的
+// 内置默认（requested=2025-06-18，allowed={2025-06-18, 2024-11-05}），保持
+// 既有 runtime.json 不显式配置时的行为不变。
+type MCP struct {
+	RequestedProtocolVersion string   `json:"requested_protocol_version"`
+	AllowedProtocolVersions  []string `json:"allowed_protocol_versions"`
 }
 
 type Agent struct {
@@ -40,6 +50,16 @@ type Scheduler struct {
 
 type Run struct {
 	SettledRetention string `json:"settled_retention"`
+	Reaper           Reaper `json:"reaper"`
+}
+
+// Reaper configures the background sweep that settles paused and
+// needs_reconciliation Runs whose updated_at is older than the configured TTL.
+// A zero duration disables that field's sweep.
+type Reaper struct {
+	Interval               string `json:"interval"`
+	PausedTTL              string `json:"paused_ttl"`
+	NeedsReconciliationTTL string `json:"needs_reconciliation_ttl"`
 }
 
 func Default() Config {
@@ -52,7 +72,13 @@ func Default() Config {
 			MaxRounds:      16, MaxToolCalls: 64, MaxWallTime: "15m",
 		},
 		Scheduler: Scheduler{Workers: 1, PollInterval: "250ms"},
-		Run:       Run{SettledRetention: "168h"},
+		Run: Run{
+			SettledRetention: "168h",
+			Reaper: Reaper{
+				Interval: "5m", PausedTTL: "30m",
+				NeedsReconciliationTTL: "24h",
+			},
+		},
 	}
 }
 
@@ -154,6 +180,9 @@ func (config Config) Validate() error {
 		}
 		seenRoots[clean] = struct{}{}
 	}
+	if err := config.validateMCP(); err != nil {
+		return err
+	}
 	if config.Scheduler.Workers <= 0 || config.Scheduler.Workers > 32 {
 		return fmt.Errorf("scheduler.workers must be between 1 and 32")
 	}
@@ -166,6 +195,21 @@ func (config Config) Validate() error {
 		config.Run.SettledRetention, time.Hour, 365*24*time.Hour,
 	); err != nil {
 		return fmt.Errorf("run.settled_retention: %w", err)
+	}
+	if _, err := parseBoundedDuration(
+		config.Run.Reaper.Interval, 0, time.Hour,
+	); err != nil {
+		return fmt.Errorf("run.reaper.interval: %w", err)
+	}
+	if _, err := parseBoundedDuration(
+		config.Run.Reaper.PausedTTL, 0, 720*time.Hour,
+	); err != nil {
+		return fmt.Errorf("run.reaper.paused_ttl: %w", err)
+	}
+	if _, err := parseBoundedDuration(
+		config.Run.Reaper.NeedsReconciliationTTL, 0, 720*time.Hour,
+	); err != nil {
+		return fmt.Errorf("run.reaper.needs_reconciliation_ttl: %w", err)
 	}
 	return nil
 }
@@ -188,6 +232,56 @@ func (config Config) PollInterval() time.Duration {
 func (config Config) SettledRetention() time.Duration {
 	value, _ := time.ParseDuration(config.Run.SettledRetention)
 	return value
+}
+
+func (config Config) ReaperInterval() time.Duration {
+	value, _ := time.ParseDuration(config.Run.Reaper.Interval)
+	return value
+}
+
+func (config Config) ReaperPausedTTL() time.Duration {
+	value, _ := time.ParseDuration(config.Run.Reaper.PausedTTL)
+	return value
+}
+
+func (config Config) ReaperNeedsReconciliationTTL() time.Duration {
+	value, _ := time.ParseDuration(config.Run.Reaper.NeedsReconciliationTTL)
+	return value
+}
+
+// validateMCP 仅校验配置形态（非空、无重复、requested ∈ allowed）；零值配置
+// 放行，由 toolmcp 在 Build 时填充默认值。
+func (config Config) validateMCP() error {
+	if config.MCP.RequestedProtocolVersion == "" &&
+		len(config.MCP.AllowedProtocolVersions) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(config.MCP.RequestedProtocolVersion) == "" {
+		return fmt.Errorf(
+			"mcp.requested_protocol_version must not be blank when mcp is configured",
+		)
+	}
+	seen := make(map[string]struct{}, len(config.MCP.AllowedProtocolVersions))
+	for _, version := range config.MCP.AllowedProtocolVersions {
+		if strings.TrimSpace(version) == "" {
+			return fmt.Errorf(
+				"mcp.allowed_protocol_versions must not contain blank strings",
+			)
+		}
+		if _, exists := seen[version]; exists {
+			return fmt.Errorf(
+				"mcp.allowed_protocol_versions contain duplicate %q", version,
+			)
+		}
+		seen[version] = struct{}{}
+	}
+	if _, accepts := seen[config.MCP.RequestedProtocolVersion]; !accepts {
+		return fmt.Errorf(
+			"mcp.requested_protocol_version %q must be in allowed_protocol_versions",
+			config.MCP.RequestedProtocolVersion,
+		)
+	}
+	return nil
 }
 
 func parseBoundedDuration(

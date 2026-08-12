@@ -21,6 +21,7 @@ import (
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/internal/profileid"
 	"github.com/yy003x/runtime/internal/runtimebootstrap"
+	runtime "github.com/yy003x/runtime/run"
 	transporthttp "github.com/yy003x/runtime/transport/http"
 )
 
@@ -97,6 +98,22 @@ func main() {
 				log.Printf("worker %s stopped: %v", workerID, err)
 			}
 		}(index + 1)
+	}
+	reaperOptions := runtime.ReaperOptions{
+		Interval:               services.Config.ReaperInterval(),
+		PausedTTL:              services.Config.ReaperPausedTTL(),
+		NeedsReconciliationTTL: services.Config.ReaperNeedsReconciliationTTL(),
+	}
+	if reaperOptions.Interval > 0 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			if err := services.Runs.RunReaper(
+				workerContext, reaperOptions,
+			); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("reaper stopped: %v", err)
+			}
+		}()
 	}
 	serveDone := make(chan error, 1)
 	go func() {

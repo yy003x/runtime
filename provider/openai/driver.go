@@ -219,9 +219,19 @@ type responseEnvelope struct {
 }
 
 type usagePayload struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
+	PromptTokens            int64         `json:"prompt_tokens"`
+	CompletionTokens        int64         `json:"completion_tokens"`
+	TotalTokens             int64         `json:"total_tokens"`
+	PromptTokensDetails     *tokenDetails `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *tokenDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// tokenDetails carries OpenAI's per-quota token breakdowns:
+// completion_tokens_details.reasoning_tokens (o-series reasoning) and
+// prompt_tokens_details.cached_tokens (prompt cache hits).
+type tokenDetails struct {
+	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
+	CachedTokens    int64 `json:"cached_tokens,omitempty"`
 }
 
 type partialCall struct {
@@ -470,6 +480,16 @@ func buildUsage(value usagePayload) contract.Usage {
 	if value.TotalTokens > 0 {
 		current := value.TotalTokens
 		result.TotalTokens = &current
+	}
+	if value.CompletionTokensDetails != nil &&
+		value.CompletionTokensDetails.ReasoningTokens > 0 {
+		current := value.CompletionTokensDetails.ReasoningTokens
+		result.ReasoningTokens = &current
+	}
+	if value.PromptTokensDetails != nil &&
+		value.PromptTokensDetails.CachedTokens > 0 {
+		current := value.PromptTokensDetails.CachedTokens
+		result.CacheReadTokens = &current
 	}
 	if result.InputTokens != nil && result.OutputTokens != nil {
 		result.Completeness = contract.UsageComplete

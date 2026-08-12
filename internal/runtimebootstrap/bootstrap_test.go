@@ -93,6 +93,7 @@ func TestBuildAgentToolsCombinesBuiltinAndConfiguredMCPTools(t *testing.T) {
 		toolsDirectory,
 		root,
 		runtimeconfig.Default().Agent,
+		runtimeconfig.MCP{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +131,7 @@ func TestBuildAgentToolsLoadsSourceDefaultCatalog(t *testing.T) {
 		filepath.Join(repositoryRoot, "resources", "tools"),
 		repositoryRoot,
 		runtimeconfig.Default().Agent,
+		runtimeconfig.MCP{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +151,7 @@ func TestBuildAgentToolsCatalogSelectionIsFailClosed(t *testing.T) {
 	missing := filepath.Join(root, "missing-tools")
 	registry, references, err := buildAgentTools(
 		missing, root, runtimeconfig.Agent{Tools: []string{"read_file"}},
+		runtimeconfig.MCP{},
 	)
 	if err != nil || len(registry.Definitions()) != 1 || len(references) != 0 {
 		t.Fatalf(
@@ -158,6 +161,7 @@ func TestBuildAgentToolsCatalogSelectionIsFailClosed(t *testing.T) {
 	}
 	if _, _, err := buildAgentTools(
 		missing, root, runtimeconfig.Agent{Tools: []string{"web_search"}},
+		runtimeconfig.MCP{},
 	); err == nil || !strings.Contains(err.Error(), "load Tool Catalog") {
 		t.Fatalf("missing configured catalog error=%v", err)
 	}
@@ -170,6 +174,7 @@ func TestBuildAgentToolsCatalogSelectionIsFailClosed(t *testing.T) {
 	if _, _, err := buildAgentTools(
 		toolsDirectory, root,
 		runtimeconfig.Agent{Tools: []string{"read_file"}},
+		runtimeconfig.MCP{},
 	); err == nil || !strings.Contains(err.Error(), "conflicts with a built-in tool") {
 		t.Fatalf("built-in manifest collision error=%v", err)
 	}

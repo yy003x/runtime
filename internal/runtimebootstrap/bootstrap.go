@@ -29,7 +29,7 @@ import (
 
 type ProfileServices struct {
 	Profiles *profile.Catalog
-	Models   *model.Service
+	Models   model.Generator
 }
 
 type VNext struct {
@@ -56,7 +56,8 @@ func LoadProfileServices(
 	if err != nil {
 		return nil, fmt.Errorf("build model service: %w", err)
 	}
-	return &ProfileServices{Profiles: profiles, Models: models}, nil
+	resilient := model.NewResilientModel(models, model.DefaultRetryPolicy())
+	return &ProfileServices{Profiles: profiles, Models: resilient}, nil
 }
 
 func executionAttemptObserver(logsDir string) model.AttemptObserver {
@@ -101,6 +102,11 @@ type Services struct {
 type SessionServices struct {
 	*ProfileServices
 	Sessions *session.Service
+}
+
+type SessionRunServices struct {
+	Sessions *session.Service
+	Runs     *runtime.Service
 }
 
 type SessionMaintenanceServices struct {
@@ -151,6 +157,43 @@ func LoadSessionServices(
 		return nil, err
 	}
 	return &SessionServices{ProfileServices: core, Sessions: sessions}, nil
+}
+
+// LoadSessionRunServices composes the narrow durable Session execution path.
+// It deliberately excludes Agent tools and Agent executors while retaining the
+// same SQLite Run and file-backed Session facts used by the full Runtime.
+func LoadSessionRunServices(
+	paths layout.Paths,
+	reservedProfileIDs ...string,
+) (*SessionRunServices, error) {
+	core, err := LoadProfileServices(paths, reservedProfileIDs...)
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := loadSessionExecutionService(paths, core)
+	if err != nil {
+		return nil, err
+	}
+	runStore, err := sqlitestore.Open(
+		paths.RunDBFile,
+		sqlitestore.Options{SkipReconcile: true},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open Run store: %w", err)
+	}
+	runs, err := runtime.NewService(runtime.ServiceOptions{
+		Store: runStore,
+		Executors: map[runtime.Kind]runtime.Executor{
+			runtime.KindSession: &runtime.SessionExecutor{
+				Profiles: core.Profiles, Sessions: sessions,
+			},
+		},
+	})
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build Session Run service: %w", err)
+	}
+	return &SessionRunServices{Sessions: sessions, Runs: runs}, nil
 }
 
 func LoadSessionMaintenanceServices(
@@ -293,7 +336,7 @@ func loadServices(
 		return nil, err
 	}
 	tools, toolEnvironmentReferences, err := buildAgentTools(
-		paths.ToolsDir, cwd, core.Config.Agent,
+		paths.ToolsDir, cwd, core.Config.Agent, core.Config.MCP,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build Agent tools: %w", err)
@@ -338,6 +381,7 @@ func buildAgentTools(
 	toolsDirectory string,
 	cwd string,
 	configuration runtimeconfig.Agent,
+	mcp runtimeconfig.MCP,
 ) (*agent.Registry, []string, error) {
 	builtinNames := make([]string, 0, len(configuration.Tools))
 	manifestNames := make([]string, 0, len(configuration.Tools))
@@ -387,7 +431,10 @@ func buildAgentTools(
 			if err != nil {
 				return nil, nil, fmt.Errorf("select Tool Catalog entries: %w", err)
 			}
-			bundle, err := toolmcp.Build(manifests, toolmcp.Options{})
+			bundle, err := toolmcp.Build(manifests, toolmcp.Options{
+				RequestedProtocolVersion: mcp.RequestedProtocolVersion,
+				AllowedProtocolVersions:  mcp.AllowedProtocolVersions,
+			})
 			if err != nil {
 				return nil, nil, fmt.Errorf("build MCP tools: %w", err)
 			}
