@@ -38,6 +38,10 @@ type BuildRequest struct {
 	InheritedEnvironment []string
 	InvocationBase       string
 	Symbolic             bool
+	// Resume 续接底层 CLI 的既有会话。nil 不续接；&"" 恢复最近会话；
+	// &"<id>" 续接指定 session。由各 adapter 翻译为底层 CLI 的 resume 形式
+	// （claude→--resume、codex→resume 子命令）。仅 interactive 模式支持。
+	Resume *string
 }
 
 type Invocation struct {

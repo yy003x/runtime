@@ -301,6 +301,7 @@ type commandProfileOptions struct {
 	prompt     *string
 	cwd        *string
 	positional *string
+	resume     *string
 }
 
 func buildCommandProfileInvocation(
@@ -351,6 +352,11 @@ func buildCommandProfileInvocation(
 				"exec Profile prompt is required",
 			))
 		}
+		if options.resume != nil {
+			return runtimecommand.Invocation{}, commandProfileError(fmt.Errorf(
+				"resume is only supported in interactive mode",
+			))
+		}
 	}
 	var argvPrompt *string
 	if prompt != "" {
@@ -365,6 +371,7 @@ func buildCommandProfileInvocation(
 		ArgvPrompt:           argvPrompt,
 		InheritedEnvironment: inheritedEnvironment,
 		InvocationBase:       invocationBase,
+		Resume:               options.resume,
 	})
 	if err != nil {
 		return runtimecommand.Invocation{}, commandProfileError(err)
@@ -433,6 +440,24 @@ func parseCommandProfileOptions(args []string) (commandProfileOptions, error) {
 				"Profile input must be one quoted argument",
 			)
 		}
+		if argument == "resume" {
+			if result.resume != nil {
+				return commandProfileOptions{}, fmt.Errorf(
+					"resume is configured multiple times",
+				)
+			}
+			id := ""
+			// resume 后下一个非 typed option、非 `--` 的 bare token 当作底层
+			// CLI 的原生 session id 透传；缺省为 bare resume（恢复最近/picker）。
+			if index+1 < len(args) &&
+				!isCommandProfileTypedOption(args[index+1]) &&
+				args[index+1] != "--" {
+				index++
+				id = args[index]
+			}
+			result.resume = &id
+			continue
+		}
 		name, value, attached := splitTypedOption(argument)
 		switch name {
 		case "--model", "--effort", "--prompt", "--cwd":
@@ -475,6 +500,11 @@ func parseCommandProfileOptions(args []string) (commandProfileOptions, error) {
 			if strings.HasPrefix(argument, "-") {
 				return commandProfileOptions{}, fmt.Errorf(
 					"unknown command Profile option: %s", argument,
+				)
+			}
+			if result.resume != nil {
+				return commandProfileOptions{}, fmt.Errorf(
+					"resume does not accept positional input; use --prompt",
 				)
 			}
 			value := argument

@@ -61,6 +61,15 @@ func (codexAdapter) Build(request BuildRequest) (Invocation, error) {
 	} else if effortOption != nil {
 		argv = append(argv, effortOption.tokens...)
 	}
+	if request.Resume != nil {
+		if request.Mode != ModeInteractive {
+			return Invocation{}, fmt.Errorf("resume is only supported in interactive mode")
+		}
+		argv = append(argv, "resume")
+		if *request.Resume != "" {
+			argv = append(argv, *request.Resume)
+		}
+	}
 	if request.Mode == ModeExec {
 		argv = append(argv, "exec")
 		argv = append(argv, plan.exec...)

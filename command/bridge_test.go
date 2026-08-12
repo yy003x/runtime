@@ -105,6 +105,107 @@ func TestBuildCodexInteractiveRemovesExecOnlyAndAppendsPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildResumeTranslatesPerAdapter(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		command string
+		resume  *string
+		exec    bool
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "claude resume with id", command: "claude",
+			resume: stringPointer("claude-session-1"),
+			want:   []string{"--resume", "claude-session-1"},
+		},
+		{
+			name: "claude bare resume", command: "claude",
+			resume: stringPointer(""),
+			want:   []string{"--resume"},
+		},
+		{
+			name: "codex resume with id", command: "codex",
+			resume: stringPointer("codex-session-1"),
+			want:   []string{"resume", "codex-session-1"},
+		},
+		{
+			name: "codex bare resume", command: "codex",
+			resume: stringPointer(""),
+			want:   []string{"resume"},
+		},
+		{
+			name: "claude resume rejected in exec", command: "claude",
+			resume: stringPointer("id"), exec: true, wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			commandPath := writeCommandFixture(t, root, test.command)
+			mode := ModeInteractive
+			if test.exec {
+				mode = ModeExec
+			}
+			_, err := Build(BuildRequest{
+				Mode: mode, OutputProtocol: OutputNative,
+				Profile:              Profile{Command: commandPath},
+				Resume:               test.resume,
+				InheritedEnvironment: []string{"PATH=" + root},
+				InvocationBase:       root,
+			})
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildClaudeResumeArgvShape(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "claude")
+	resumeID := "claude-session-1"
+	invocation, err := Build(BuildRequest{
+		Mode: ModeInteractive, OutputProtocol: OutputNative,
+		Profile:              Profile{Command: commandPath},
+		Resume:               &resumeID,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{commandPath, "--resume", resumeID}
+	if !reflect.DeepEqual(invocation.Argv, want) {
+		t.Fatalf("argv=%q want=%q", invocation.Argv, want)
+	}
+}
+
+func TestBuildCodexResumeArgvShape(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "codex")
+	resumeID := "codex-session-1"
+	invocation, err := Build(BuildRequest{
+		Mode: ModeInteractive, OutputProtocol: OutputNative,
+		Profile:              Profile{Command: commandPath},
+		Resume:               &resumeID,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{commandPath, "resume", resumeID}
+	if !reflect.DeepEqual(invocation.Argv, want) {
+		t.Fatalf("argv=%q want=%q", invocation.Argv, want)
+	}
+}
+
 func TestBuildClaudeCanonicalIsStateless(t *testing.T) {
 	root := t.TempDir()
 	commandPath := writeCommandFixture(t, root, "claude")

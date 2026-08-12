@@ -494,6 +494,90 @@ func TestParseCommandProfileOptionsRejectsExecAndSupportsTerminator(t *testing.T
 	}
 }
 
+func TestParseCommandProfileOptionsRecognizesResume(t *testing.T) {
+	withID, err := parseCommandProfileOptions([]string{"resume", "session-1"})
+	if err != nil || withID.resume == nil || *withID.resume != "session-1" {
+		t.Fatalf("resume <id>: options=%#v err=%v", withID, err)
+	}
+	bare, err := parseCommandProfileOptions([]string{"resume"})
+	if err != nil || bare.resume == nil || *bare.resume != "" {
+		t.Fatalf("bare resume: options=%#v err=%v", bare, err)
+	}
+	// resume 之后允许 typed option（--model 等）。
+	withModel, err := parseCommandProfileOptions(
+		[]string{"resume", "session-1", "--model", "gpt-5"},
+	)
+	if err != nil || withModel.resume == nil || *withModel.resume != "session-1" ||
+		withModel.model == nil || *withModel.model != "gpt-5" {
+		t.Fatalf("resume + --model: options=%#v err=%v", withModel, err)
+	}
+	// resume 后紧跟 typed option（--model）→ 不当作 id 消费，resume 为 bare。
+	bareThenModel, err := parseCommandProfileOptions(
+		[]string{"resume", "--model", "x"},
+	)
+	if err != nil || bareThenModel.resume == nil || *bareThenModel.resume != "" ||
+		bareThenModel.model == nil {
+		t.Fatalf("bare resume + --model: options=%#v err=%v", bareThenModel, err)
+	}
+	for _, args := range [][]string{
+		{"resume", "a", "positional"}, // resume + id + bare positional
+		{"input", "resume"},           // positional 后再 resume
+	} {
+		if _, err := parseCommandProfileOptions(args); err == nil {
+			t.Fatalf("args=%q returned nil error", args)
+		}
+	}
+}
+
+func TestBuildCommandProfileInvocationResumeTranslates(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name     string
+		command  string
+		argv     []string
+		fragment string
+	}{
+		{name: "claude", command: "claude", argv: []string{"resume", "s-1"}, fragment: "--resume\x00s-1"},
+		{name: "codex", command: "codex", argv: []string{"resume", "s-1"}, fragment: "resume\x00s-1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commandPath := filepath.Join(root, test.command)
+			if err := os.WriteFile(
+				commandPath, []byte("#!/bin/sh\nexit 0\n"), 0o700,
+			); err != nil {
+				t.Fatal(err)
+			}
+			invocation, err := buildCommandProfileInvocation(
+				runtimecommand.Profile{Command: commandPath},
+				test.argv, "", root, []string{"PATH=" + root},
+				runtimecommand.ModeInteractive,
+			)
+			if err != nil {
+				t.Fatalf("error=%v", err)
+			}
+			joined := strings.Join(invocation.Argv, "\x00")
+			if !strings.Contains(joined, test.fragment) {
+				t.Fatalf("argv=%q missing fragment=%q", invocation.Argv, test.fragment)
+			}
+		})
+	}
+	// resume 在 exec 模式下被拒。
+	commandPath := filepath.Join(root, "claude")
+	if err := os.WriteFile(
+		commandPath, []byte("#!/bin/sh\nexit 0\n"), 0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err := buildCommandProfileInvocation(
+		runtimecommand.Profile{Command: commandPath},
+		[]string{"resume", "s-1", "--prompt", "x"}, "", root,
+		[]string{"PATH=" + root}, runtimecommand.ModeExec,
+	)
+	if err == nil || !strings.Contains(err.Error(), "interactive") {
+		t.Fatalf("expected interactive-only error, got %v", err)
+	}
+}
+
 func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 	root := t.TempDir()
 	commandPath := filepath.Join(root, "codex")
