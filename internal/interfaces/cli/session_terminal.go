@@ -77,6 +77,13 @@ type sessionTerminalActionResult struct {
 	Accepted  bool   `json:"accepted"`
 }
 
+type sessionTerminalCloseAllResult struct {
+	Action      string                        `json:"action"`
+	Accepted    bool                          `json:"accepted"`
+	ClosedCount int                           `json:"closed_count"`
+	Closed      []sessionTerminalActionResult `json:"closed"`
+}
+
 func runSessionTerminalAction(
 	paths layout.Paths,
 	action string,
@@ -191,52 +198,119 @@ func runSessionTerminalAction(
 		if err != nil {
 			return sessionTerminalRequestError(err)
 		}
-		window, err := findSessionTerminal(ctx, manager, sessionID)
+		result, err := closeSessionTerminal(ctx, paths, manager, sessionID)
 		if err != nil {
 			return err
-		}
-		if window.State == runtimetmux.StateRunning {
-			if _, err := manager.SendFramed(
-				ctx, window.TmuxID, sessionTerminalCloseFrame,
-			); err != nil {
-				return err
-			}
-		}
-		record, found, err := cancelActiveSessionTerminalRun(ctx, paths, sessionID)
-		if err != nil {
-			return err
-		}
-		if found {
-			if err := waitSessionTerminalRunSettled(
-				ctx, paths, sessionID, record.ID, sessionTerminalCloseTimeout,
-			); err != nil {
-				return err
-			}
-		}
-		if window.State != runtimetmux.StateExited {
-			if err := waitSessionTerminalWindowExited(
-				ctx, manager, window.TmuxID, sessionTerminalCloseTimeout,
-			); err != nil {
-				return err
-			}
-		}
-		accepted, err := manager.Stop(ctx, window.TmuxID)
-		if err != nil {
-			return err
-		}
-		result := sessionTerminalActionResult{
-			SessionID: sessionID, TmuxID: window.TmuxID,
-			Action: "close", Accepted: accepted.Accepted,
-		}
-		if found {
-			result.RunID = record.ID
 		}
 		return renderSessionTerminalAction(output, result)
+	case "close-all":
+		if len(args) != 0 {
+			return sessionTerminalRequestError(fmt.Errorf(
+				"session close-all does not accept arguments",
+			))
+		}
+		result, err := closeAllSessionTerminals(ctx, paths, manager)
+		if err != nil {
+			return err
+		}
+		if output.JSON() {
+			return output.writeJSON(result)
+		}
+		return output.line(
+			"Session terminals closed: %d", result.ClosedCount,
+		)
 	default:
 		return sessionTerminalRequestError(fmt.Errorf(
 			"unknown Session terminal action %q", action,
 		))
 	}
+}
+
+func closeSessionTerminal(
+	ctx context.Context,
+	paths layout.Paths,
+	manager sessionTerminalTmuxManager,
+	sessionID string,
+) (sessionTerminalActionResult, error) {
+	window, err := findSessionTerminal(ctx, manager, sessionID)
+	if err != nil {
+		return sessionTerminalActionResult{}, err
+	}
+	if window.State == runtimetmux.StateRunning {
+		if _, err := manager.SendFramed(
+			ctx, window.TmuxID, sessionTerminalCloseFrame,
+		); err != nil {
+			return sessionTerminalActionResult{}, err
+		}
+	}
+	record, found, err := cancelActiveSessionTerminalRun(ctx, paths, sessionID)
+	if err != nil {
+		return sessionTerminalActionResult{}, err
+	}
+	if found {
+		if err := waitSessionTerminalRunSettled(
+			ctx, paths, sessionID, record.ID, sessionTerminalCloseTimeout,
+		); err != nil {
+			return sessionTerminalActionResult{}, err
+		}
+	}
+	if window.State != runtimetmux.StateExited {
+		if err := waitSessionTerminalWindowExited(
+			ctx, manager, window.TmuxID, sessionTerminalCloseTimeout,
+		); err != nil {
+			return sessionTerminalActionResult{}, err
+		}
+	}
+	accepted, err := manager.Stop(ctx, window.TmuxID)
+	if err != nil {
+		return sessionTerminalActionResult{}, err
+	}
+	result := sessionTerminalActionResult{
+		SessionID: sessionID, TmuxID: window.TmuxID,
+		Action: "close", Accepted: accepted.Accepted,
+	}
+	if found {
+		result.RunID = record.ID
+	}
+	return result, nil
+}
+
+func closeAllSessionTerminals(
+	ctx context.Context,
+	paths layout.Paths,
+	manager sessionTerminalTmuxManager,
+) (sessionTerminalCloseAllResult, error) {
+	result := sessionTerminalCloseAllResult{
+		Action: "close-all", Accepted: true,
+		Closed: []sessionTerminalActionResult{},
+	}
+	windows, err := manager.List(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, window := range windows {
+		if window.Binding == nil || window.Binding.Kind != "session" {
+			continue
+		}
+		closed, closeErr := closeSessionTerminal(
+			ctx, paths, manager, window.Binding.ID,
+		)
+		if closeErr != nil {
+			return result, fmt.Errorf(
+				"close Session terminal %s after %d successful close(s): %w",
+				window.Binding.ID, result.ClosedCount, closeErr,
+			)
+		}
+		if !closed.Accepted {
+			return result, sessionTerminalConflict(
+				"Session %s terminal close was not accepted after %d successful close(s)",
+				window.Binding.ID, result.ClosedCount,
+			)
+		}
+		result.Closed = append(result.Closed, closed)
+		result.ClosedCount++
+	}
+	return result, nil
 }
 
 func openSessionTerminal(

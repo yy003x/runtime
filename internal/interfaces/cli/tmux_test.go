@@ -18,8 +18,8 @@ import (
 	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
-func TestParseTmuxStartOptionsRequiresProfileBeforeTypedOptions(t *testing.T) {
-	options, err := parseTmuxStartOptions([]string{
+func TestParseTmuxOpenOptionsRequiresProfileBeforeTypedOptions(t *testing.T) {
+	options, err := parseTmuxOpenOptions([]string{
 		"cx", "--model", "gpt-5.6-sol", "--effort=high",
 		"--prompt", "prompt.txt", "--cwd", "work", "reply ok",
 	})
@@ -45,20 +45,20 @@ func TestParseTmuxStartOptionsRequiresProfileBeforeTypedOptions(t *testing.T) {
 		{"cx", "one", "two"},
 		{"cx", "one", "--model", "late"},
 	} {
-		if _, err := parseTmuxStartOptions(args); err == nil {
+		if _, err := parseTmuxOpenOptions(args); err == nil {
 			t.Fatalf("accepted invalid args: %#v", args)
 		}
 	}
 }
 
-func TestTmuxStartRejectsInvalidOptionsBeforeProfileLoad(t *testing.T) {
+func TestTmuxOpenRejectsInvalidOptionsBeforeProfileLoad(t *testing.T) {
 	paths, err := layout.FromHome(filepath.Join(t.TempDir(), "missing-home"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	err = runTmuxNamespaceVNext(
-		paths, []string{"start", "--exec", "cx"}, output,
+		paths, []string{"open", "--exec", "cx"}, output,
 	)
 	var runtimeErr *contract.RuntimeError
 	if !errors.As(err, &runtimeErr) ||
@@ -68,19 +68,19 @@ func TestTmuxStartRejectsInvalidOptionsBeforeProfileLoad(t *testing.T) {
 	}
 }
 
-func TestTmuxStartRejectsReservedProfileID(t *testing.T) {
+func TestTmuxOpenRejectsReservedProfileID(t *testing.T) {
 	paths := prepareVNextHome(t)
 	writeVNextCommand(t, paths.ConfigDir, "profile")
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	err := runTmuxNamespaceVNext(
-		paths, []string{"start", "profile"}, output,
+		paths, []string{"open", "profile"}, output,
 	)
 	if err == nil || !strings.Contains(err.Error(), "reserved profile ID") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testing.T) {
+func TestResolveTmuxOpenInvocationUsesInteractiveAdapterAndPromptOrder(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SN_CLI_HOME", root)
 	commandPath := filepath.Join(root, "codex")
@@ -122,7 +122,7 @@ func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	options, err := parseTmuxStartOptions([]string{
+	options, err := parseTmuxOpenOptions([]string{
 		"cx", "--model", "new", "--effort", "high",
 		"--prompt", "typed.txt", "--cwd", "work",
 		"positional",
@@ -130,7 +130,7 @@ func TestResolveTmuxStartInvocationUsesInteractiveAdapterAndPromptOrder(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	invocation, err := resolveTmuxStartInvocation(
+	invocation, err := resolveTmuxOpenInvocation(
 		catalog, options, "stdin", root,
 		[]string{"PATH=" + root, "KEEP=value"}, filepath.Join(root, "logs"),
 	)
@@ -172,7 +172,7 @@ func TestRunTmuxNamespaceMachineListEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload["schema_version"] != float64(1) ||
-		payload["contract_version"] != float64(4) {
+		payload["contract_version"] != float64(5) {
 		t.Fatalf("envelope = %#v", payload)
 	}
 	values, ok := payload["tmux_windows"].([]any)
@@ -213,10 +213,65 @@ func TestRunTmuxNamespaceAttachIsHumanOnly(t *testing.T) {
 	}
 }
 
+func TestRunTmuxNamespaceStopAllStopsOnlyUnboundSnapshot(t *testing.T) {
+	manager := &fakeTmuxManager{windows: []runtimetmux.Window{
+		{TmuxID: "first"}, {TmuxID: "second"},
+	}}
+	var stdout bytes.Buffer
+	if err := runTmuxNamespaceWith(
+		context.Background(), manager, nil, []string{"stop-all"},
+		newCLIOutput(true, &stdout, &bytes.Buffer{}), nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(manager.stoppedIDs, []string{"first", "second"}) {
+		t.Fatalf("stopped=%v", manager.stoppedIDs)
+	}
+	var payload struct {
+		Action       string   `json:"action"`
+		Accepted     bool     `json:"accepted"`
+		StoppedCount int      `json:"stopped_count"`
+		TmuxIDs      []string `json:"tmux_ids"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Action != "stop-all" || !payload.Accepted ||
+		payload.StoppedCount != 2 ||
+		!reflect.DeepEqual(payload.TmuxIDs, []string{"first", "second"}) {
+		t.Fatalf("payload=%#v", payload)
+	}
+}
+
+func TestRunTmuxNamespaceStopAllRejectsSessionBindingsBeforeMutation(t *testing.T) {
+	manager := &fakeTmuxManager{windows: []runtimetmux.Window{
+		{TmuxID: "raw"},
+		{
+			TmuxID: "bound",
+			Binding: &runtimetmux.Binding{
+				Kind: "session", ID: "session_11111111111111111111111111111111",
+			},
+		},
+	}}
+	err := runTmuxNamespaceWith(
+		context.Background(), manager, nil, []string{"stop-all"},
+		newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}), nil, nil, nil,
+	)
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != contract.ErrorConflict ||
+		!strings.Contains(runtimeErr.Message, "session close-all") {
+		t.Fatalf("error=%#v", err)
+	}
+	if len(manager.stoppedIDs) != 0 {
+		t.Fatalf("stop-all mutated before binding rejection: %v", manager.stoppedIDs)
+	}
+}
+
 type fakeTmuxManager struct {
-	windows   []runtimetmux.Window
-	sentID    string
-	sentInput string
+	windows    []runtimetmux.Window
+	sentID     string
+	sentInput  string
+	stoppedIDs []string
 }
 
 func (manager *fakeTmuxManager) Start(
@@ -280,6 +335,7 @@ func (manager *fakeTmuxManager) Stop(
 	_ context.Context,
 	tmuxID string,
 ) (runtimetmux.ActionResult, error) {
+	manager.stoppedIDs = append(manager.stoppedIDs, tmuxID)
 	return runtimetmux.ActionResult{
 		TmuxID: tmuxID, Action: "stop", Accepted: true,
 	}, nil

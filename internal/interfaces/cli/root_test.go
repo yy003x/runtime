@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/pkg/contract"
@@ -23,7 +25,7 @@ func TestMainLeadingJSONVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["contract_version"] != float64(4) {
+	if payload["contract_version"] != float64(5) {
 		t.Fatalf("payload=%#v", payload)
 	}
 }
@@ -38,17 +40,22 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		"sn-cli <cli-profile-id> resume [session-id]",
 		"sn-cli exec <cli-profile-id> [options...] [input]",
 		"sn-cli req <api-profile-id> [options...] [input]",
+		"sn-cli doctor",
 		"sn-cli session exec <cli-profile-id> [options...] [input]",
 		"sn-cli session req <api-profile-id> [options...] [input]",
 		"sn-cli session open <cli-profile-id> [options...] [input]",
 		"sn-cli session send|attach|interrupt|close --session-id <id>",
+		"sn-cli session close-all",
 		"sn-cli session list|show|messages|events|logs|executions|execution",
 		"sn-cli session reconcile|configure|export|delete|gc",
+		"sn-cli tmux open <cli-profile-id> [options...] [input]",
+		"sn-cli tmux list|show|send|attach|interrupt|stop|stop-all",
 		"sn-cli agent <api-profile-id> [options...] [input]",
 		"sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc",
 		"stable req/management output; must be first",
 		"direct/exec CLI output remains target-native",
 		"Tools:               <runtime-home>/tools",
+		"Logs:                <runtime-home>/logs",
 	} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help missing %q:\n%s", expected, stdout)
@@ -70,6 +77,44 @@ func TestMainHelpAndVersionRejectTrailingArguments(t *testing.T) {
 				args, exitCode, stdout, stderr,
 			)
 		}
+	}
+}
+
+func TestMainDoctorIsTopLevelAndWritesAudit(t *testing.T) {
+	paths := prepareVNextHome(t)
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := captureMainOutput(
+		t, []string{"--json", "doctor"},
+	)
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != true || payload["contract_version"] == nil ||
+		payload["runtime_home"] != paths.Home ||
+		payload["log_root"] != paths.LogsDir ||
+		payload["tmux_window_count"] == nil {
+		t.Fatalf("payload=%#v", payload)
+	}
+	day := time.Now().Format("060102")
+	audit, err := os.ReadFile(filepath.Join(paths.LogsDir, day, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(audit), `"namespace":"doctor"`) ||
+		!strings.Contains(string(audit), `"outcome":"succeeded"`) {
+		t.Fatalf("audit=%s", audit)
+	}
+	_, _, serverDoctorExit := captureMainOutput(
+		t, []string{"--json", "server", "doctor"},
+	)
+	if serverDoctorExit == 0 {
+		t.Fatal("removed server doctor route was accepted")
 	}
 }
 
@@ -158,7 +203,7 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 		{
 			name: "tmux_profile_not_found",
 			args: []string{
-				"--json", "tmux", "start", "missing",
+				"--json", "tmux", "open", "missing",
 			},
 		},
 		{

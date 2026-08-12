@@ -38,19 +38,26 @@ type sessionTerminalTmuxManager interface {
 	SendFramed(context.Context, string, string) (runtimetmux.ActionResult, error)
 }
 
-type tmuxStartResolver func(
+type tmuxOpenResolver func(
 	context.Context,
-	tmuxStartOptions,
+	tmuxOpenOptions,
 	string,
 ) (runtimetmux.Invocation, error)
 
-type tmuxStartOptions struct {
+type tmuxOpenOptions struct {
 	profileID string
 	model     *string
 	effort    *runtimecommand.Effort
 	prompt    *string
 	cwd       *string
 	input     *string
+}
+
+type tmuxStopAllResult struct {
+	Action       string   `json:"action"`
+	Accepted     bool     `json:"accepted"`
+	StoppedCount int      `json:"stopped_count"`
+	TmuxIDs      []string `json:"tmux_ids"`
 }
 
 // runTmuxHelperVNext is intentionally separate from namespace dispatch. root
@@ -67,16 +74,16 @@ func runTmuxNamespaceVNext(
 ) error {
 	if len(args) == 0 {
 		return tmuxRequestError(fmt.Errorf(
-			"usage: tmux start|list|show|send|attach|interrupt|stop",
+			"usage: tmux open|list|show|send|attach|interrupt|stop|stop-all",
 		))
 	}
 	manager, err := runtimebootstrap.LoadTmuxService(paths)
 	if err != nil {
 		return err
 	}
-	var resolver tmuxStartResolver
-	if args[0] == "start" {
-		if _, err := parseTmuxStartOptions(args[1:]); err != nil {
+	var resolver tmuxOpenResolver
+	if args[0] == "open" {
+		if _, err := parseTmuxOpenOptions(args[1:]); err != nil {
 			return tmuxRequestError(err)
 		}
 		invocationBase, err := os.Getwd()
@@ -92,10 +99,10 @@ func runTmuxNamespaceVNext(
 		inheritedEnvironment := os.Environ()
 		resolver = func(
 			_ context.Context,
-			options tmuxStartOptions,
+			options tmuxOpenOptions,
 			pipedInput string,
 		) (runtimetmux.Invocation, error) {
-			return resolveTmuxStartInvocation(
+			return resolveTmuxOpenInvocation(
 				catalog, options, pipedInput,
 				invocationBase, inheritedEnvironment, paths.LogsDir,
 			)
@@ -110,7 +117,7 @@ func runTmuxNamespaceVNext(
 func runTmuxNamespaceWith(
 	ctx context.Context,
 	manager tmuxManager,
-	resolver tmuxStartResolver,
+	resolver tmuxOpenResolver,
 	args []string,
 	output *cliOutput,
 	stdin *os.File,
@@ -121,13 +128,13 @@ func runTmuxNamespaceWith(
 		return fmt.Errorf("Tmux manager is required")
 	}
 	switch args[0] {
-	case "start":
-		options, err := parseTmuxStartOptions(args[1:])
+	case "open":
+		options, err := parseTmuxOpenOptions(args[1:])
 		if err != nil {
 			return tmuxRequestError(err)
 		}
 		if resolver == nil {
-			return fmt.Errorf("Tmux start resolver is required")
+			return fmt.Errorf("Tmux open resolver is required")
 		}
 		pipedInput, err := readOptionalPromptInput(stdin)
 		if err != nil {
@@ -240,11 +247,72 @@ func runTmuxNamespaceWith(
 			return err
 		}
 		return renderTmuxAction(output, result)
+	case "stop-all":
+		if len(args) != 1 {
+			return tmuxRequestError(fmt.Errorf(
+				"tmux stop-all does not accept arguments",
+			))
+		}
+		result, err := stopAllTmuxWindows(ctx, manager)
+		if err != nil {
+			return err
+		}
+		if output.JSON() {
+			return output.writeJSON(result)
+		}
+		return output.line(
+			"Tmux windows stopped: %d", result.StoppedCount,
+		)
 	default:
 		return tmuxRequestError(fmt.Errorf(
 			"unknown tmux command %q", args[0],
 		))
 	}
+}
+
+func stopAllTmuxWindows(
+	ctx context.Context,
+	manager tmuxManager,
+) (tmuxStopAllResult, error) {
+	result := tmuxStopAllResult{
+		Action: "stop-all", Accepted: true, TmuxIDs: []string{},
+	}
+	windows, err := manager.List(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, window := range windows {
+		if window.Binding != nil {
+			return result, &contract.RuntimeError{
+				Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
+				Message: fmt.Sprintf(
+					"Tmux window %s is bound to %s=%s; run session close-all before tmux stop-all",
+					window.TmuxID, window.Binding.Kind, window.Binding.ID,
+				),
+			}
+		}
+	}
+	for _, window := range windows {
+		stopped, stopErr := manager.Stop(ctx, window.TmuxID)
+		if stopErr != nil {
+			return result, fmt.Errorf(
+				"stop Tmux window %s after %d successful stop(s): %w",
+				window.TmuxID, result.StoppedCount, stopErr,
+			)
+		}
+		if !stopped.Accepted {
+			return result, &contract.RuntimeError{
+				Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
+				Message: fmt.Sprintf(
+					"Tmux window %s stop was not accepted after %d successful stop(s)",
+					window.TmuxID, result.StoppedCount,
+				),
+			}
+		}
+		result.TmuxIDs = append(result.TmuxIDs, window.TmuxID)
+		result.StoppedCount++
+	}
+	return result, nil
 }
 
 func tmuxRequestError(err error) error {
@@ -261,9 +329,9 @@ func tmuxRequestError(err error) error {
 	}
 }
 
-func resolveTmuxStartInvocation(
+func resolveTmuxOpenInvocation(
 	catalog *runtimeprofile.Catalog,
-	options tmuxStartOptions,
+	options tmuxOpenOptions,
 	pipedInput string,
 	invocationBase string,
 	inheritedEnvironment []string,
@@ -280,7 +348,7 @@ func resolveTmuxStartInvocation(
 	}
 	if entry.Kind != runtimeprofile.KindCommand || entry.Command == nil {
 		return runtimetmux.Invocation{}, cliValidationf(
-			"tmux start profile %q must be type=cli", options.profileID,
+			"tmux open profile %q must be type=cli", options.profileID,
 		)
 	}
 	basePrompt, err := runtimecommand.ResolvePrompt(
@@ -343,7 +411,7 @@ func resolveTmuxStartInvocation(
 func tmuxConfigDigest(
 	profileID string,
 	profile runtimecommand.Profile,
-	options tmuxStartOptions,
+	options tmuxOpenOptions,
 ) (string, error) {
 	value := struct {
 		ProfileID string                   `json:"profile_id"`
@@ -365,11 +433,11 @@ func tmuxConfigDigest(
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
-	var result tmuxStartOptions
+func parseTmuxOpenOptions(args []string) (tmuxOpenOptions, error) {
+	var result tmuxOpenOptions
 	if len(args) == 0 || args[0] == "" || strings.HasPrefix(args[0], "-") {
-		return tmuxStartOptions{}, fmt.Errorf(
-			"tmux start requires profile ID immediately after start",
+		return tmuxOpenOptions{}, fmt.Errorf(
+			"tmux open requires profile ID immediately after open",
 		)
 	}
 	result.profileID = args[0]
@@ -378,8 +446,8 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 		argument := args[index]
 		if argument == "--" {
 			if result.input != nil || len(args[index+1:]) > 1 {
-				return tmuxStartOptions{}, fmt.Errorf(
-					"tmux start accepts at most one quoted input",
+				return tmuxOpenOptions{}, fmt.Errorf(
+					"tmux open accepts at most one quoted input",
 				)
 			}
 			if len(args[index+1:]) == 1 {
@@ -392,12 +460,12 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 		switch name {
 		case "--model", "--effort", "--prompt", "--cwd":
 			if result.input != nil {
-				return tmuxStartOptions{}, fmt.Errorf(
+				return tmuxOpenOptions{}, fmt.Errorf(
 					"Tmux typed options cannot follow positional input",
 				)
 			}
 			if seen[name] {
-				return tmuxStartOptions{}, fmt.Errorf(
+				return tmuxOpenOptions{}, fmt.Errorf(
 					"%s may only be specified once", name,
 				)
 			}
@@ -405,13 +473,13 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 			if !attached {
 				index++
 				if index >= len(args) ||
-					isTmuxStartTypedOption(args[index]) {
-					return tmuxStartOptions{}, fmt.Errorf("%s requires value", name)
+					isTmuxOpenTypedOption(args[index]) {
+					return tmuxOpenOptions{}, fmt.Errorf("%s requires value", name)
 				}
 				value = args[index]
 			}
 			if value == "" {
-				return tmuxStartOptions{}, fmt.Errorf("%s requires value", name)
+				return tmuxOpenOptions{}, fmt.Errorf("%s requires value", name)
 			}
 			switch name {
 			case "--model":
@@ -419,7 +487,7 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 			case "--effort":
 				effort, err := runtimecommand.ParseEffort(value)
 				if err != nil {
-					return tmuxStartOptions{}, err
+					return tmuxOpenOptions{}, err
 				}
 				result.effort = &effort
 			case "--prompt":
@@ -429,13 +497,13 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 			}
 		default:
 			if strings.HasPrefix(argument, "-") {
-				return tmuxStartOptions{}, fmt.Errorf(
-					"unknown Tmux start option: %s", argument,
+				return tmuxOpenOptions{}, fmt.Errorf(
+					"unknown Tmux open option: %s", argument,
 				)
 			}
 			if result.input != nil {
-				return tmuxStartOptions{}, fmt.Errorf(
-					"tmux start input must be one quoted argument",
+				return tmuxOpenOptions{}, fmt.Errorf(
+					"tmux open input must be one quoted argument",
 				)
 			}
 			value := argument
@@ -445,7 +513,7 @@ func parseTmuxStartOptions(args []string) (tmuxStartOptions, error) {
 	return result, nil
 }
 
-func isTmuxStartTypedOption(value string) bool {
+func isTmuxOpenTypedOption(value string) bool {
 	if strings.HasPrefix(value, "--") {
 		return true
 	}

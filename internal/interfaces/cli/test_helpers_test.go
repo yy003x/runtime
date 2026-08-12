@@ -147,7 +147,7 @@ func inspectRunStream(t *testing.T, value string) runStreamInspection {
 	return result
 }
 
-func assertSingleV4StreamError(
+func assertSingleV5StreamError(
 	t *testing.T,
 	stdout string,
 	stderr string,
@@ -169,7 +169,7 @@ func assertSingleV4StreamError(
 	if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.ContractVersion != 4 || payload.Error.Message == "" {
+	if payload.ContractVersion != 5 || payload.Error.Message == "" {
 		t.Fatalf("payload=%#v", payload)
 	}
 }

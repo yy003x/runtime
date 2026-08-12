@@ -18,12 +18,11 @@ import (
 
 	"github.com/yy003x/runtime/internal/application/activation"
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
+	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/internal/interfaces/cli/config"
 	snupdate "github.com/yy003x/runtime/internal/interfaces/cli/update"
 	"github.com/yy003x/runtime/internal/interfaces/cli/version"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
 )
 
 const serverPIDSchemaVersion = 1
@@ -53,11 +52,11 @@ func runServerNamespaceVNext(
 ) error {
 	if len(args) == 0 {
 		return cliValidationf(
-			"usage: server info|doctor|start|status|stop|update|upgrade-check",
+			"usage: server info|start|status|stop|update|upgrade-check",
 		)
 	}
 	switch args[0] {
-	case "info", "doctor", "start", "status", "stop":
+	case "info", "start", "status", "stop":
 		if len(args) != 1 {
 			return cliValidationf("server %s does not accept arguments", args[0])
 		}
@@ -100,8 +99,6 @@ func runServerNamespaceVNext(
 			return err
 		}
 		return output.line("Run database: %s", paths.RunDBFile)
-	case "doctor":
-		return serverDoctor(paths, output)
 	case "start":
 		return startServer(paths, output)
 	case "status":
@@ -388,101 +385,6 @@ func serverOptionValue(
 	return args[next], next, nil
 }
 
-func serverDoctor(paths layout.Paths, output *cliOutput) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	services, err := runtimebootstrap.LoadServices(paths, cwd, fixedNamespaces...)
-	if err != nil {
-		return err
-	}
-	defer services.Runs.Close()
-	var missingBinaries []string
-	var invalidCommands []string
-	commandErrors := make(map[string]string)
-	var missingAuth []string
-	for _, entry := range services.Profiles.Entries() {
-		if entry.Command != nil {
-			if _, resolveErr := runtimecommand.ResolveExecutable(
-				*entry.Command, cwd, os.Environ(),
-			); resolveErr != nil {
-				commandErrors[entry.ID] = resolveErr.Error()
-				if errors.Is(resolveErr, exec.ErrNotFound) {
-					missingBinaries = append(missingBinaries, entry.ID)
-				} else {
-					invalidCommands = append(invalidCommands, entry.ID)
-				}
-			}
-		}
-		if entry.Model != nil {
-			for _, rawValue := range entry.Model.Headers {
-				for _, name := range envref.References(rawValue) {
-					if value, exists := os.LookupEnv(name); exists && value != "" {
-						continue
-					}
-					missingAuth = appendUniqueString(missingAuth, name)
-				}
-			}
-		}
-	}
-	for _, name := range services.ToolEnvironmentReferences {
-		if value, exists := os.LookupEnv(name); exists && value != "" {
-			continue
-		}
-		missingAuth = appendUniqueString(missingAuth, name)
-	}
-	result := map[string]any{
-		"schema_version":   cliOutputSchemaVersion,
-		"contract_version": cliOutputContractVersion,
-		"ok": len(missingBinaries) == 0 &&
-			len(invalidCommands) == 0 && len(missingAuth) == 0,
-		"version":                  version.String(),
-		"namespaces":               serverNamespaces(),
-		"capabilities":             serverCapabilities(),
-		"profile_count":            len(services.Profiles.Entries()),
-		"tools":                    services.Tools.Definitions(),
-		"run_store":                "sqlite_wal",
-		"missing_command_binaries": missingBinaries,
-		"invalid_command_profiles": invalidCommands,
-		"command_profile_errors":   commandErrors,
-		"missing_auth_environment": missingAuth,
-	}
-	if result["ok"] != true {
-		if !output.JSON() {
-			if err := renderServerDoctor(
-				output, false, len(services.Profiles.Entries()),
-				len(services.Tools.Definitions()), missingBinaries,
-				invalidCommands, missingAuth,
-			); err != nil {
-				return err
-			}
-		}
-		return serverDoctorDependencyError(
-			missingBinaries, invalidCommands, missingAuth,
-		)
-	}
-	if output.JSON() {
-		return output.writeJSON(result)
-	}
-	return renderServerDoctor(
-		output, true, len(services.Profiles.Entries()),
-		len(services.Tools.Definitions()), missingBinaries,
-		invalidCommands, missingAuth,
-	)
-}
-
-// appendUniqueString appends value to values only when it is not already
-// present, keeping the slice duplicate-free.
-func appendUniqueString(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
-
 func startServer(paths layout.Paths, output *cliOutput) error {
 	return withServerLifecycleLock(paths, func() error {
 		return startServerLocked(paths, output)
@@ -530,9 +432,12 @@ func startServerLocked(paths layout.Paths, output *cliOutput) error {
 			"sn-server lease is held without a valid process identity; retry after the previous process exits",
 		)
 	}
-	logFile, err := os.OpenFile(
-		paths.ServerLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600,
-	)
+	if filepath.Clean(paths.ServerLogFile) !=
+		filepath.Join(paths.LogsDir, "sn-server.log") {
+		releaseFileLock(lease)
+		return fmt.Errorf("sn-server log path does not match Runtime log root")
+	}
+	logFile, err := executionlog.OpenProcessLog(paths.LogsDir, "sn-server.log")
 	if err != nil {
 		releaseFileLock(lease)
 		return err
@@ -920,12 +825,13 @@ func serverNamespaces() []string {
 
 func serverCapabilities() map[string][]string {
 	return map[string][]string{
+		"doctor":  {"runtime", "profiles", "tools", "run_store", "logs", "tmux"},
 		"profile": {"single_call", "cli", "api", "typed_override", "stream"},
 		"session": {
 			"history", "run", "submit", "managed_cli", "execution_query",
-			"reconcile",
+			"reconcile", "terminal_close_all",
 		},
-		"tmux":  {"interactive_windows", "paste", "attach"},
+		"tmux":  {"interactive_windows", "paste", "attach", "stop_all"},
 		"agent": {"api_harness", "tool_loop", "stream"},
 		"run": {
 			"durable_queue", "events", "watch", "cancel",
@@ -943,82 +849,6 @@ func serverAddress() string {
 		return value
 	}
 	return "127.0.0.1:8080"
-}
-
-func renderServerDoctor(
-	output *cliOutput,
-	ok bool,
-	profileCount int,
-	toolCount int,
-	missingBinaries []string,
-	invalidCommands []string,
-	missingAuth []string,
-) error {
-	state := "FAILED"
-	if ok {
-		state = "OK"
-	}
-	if err := output.line("Runtime doctor: %s", state); err != nil {
-		return err
-	}
-	if err := output.line(
-		"Profiles: %d, tools: %d, run store: sqlite_wal",
-		profileCount, toolCount,
-	); err != nil {
-		return err
-	}
-	if len(missingBinaries) > 0 {
-		if err := output.line(
-			"Missing command profiles: %s", strings.Join(missingBinaries, ", "),
-		); err != nil {
-			return err
-		}
-	}
-	if len(invalidCommands) > 0 {
-		if err := output.line(
-			"Invalid command profiles: %s", strings.Join(invalidCommands, ", "),
-		); err != nil {
-			return err
-		}
-	}
-	if len(missingAuth) > 0 {
-		if err := output.line(
-			"Missing auth environment: %s", strings.Join(missingAuth, ", "),
-		); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func serverDoctorDependencyError(
-	missingBinaries []string,
-	invalidCommands []string,
-	missingAuth []string,
-) error {
-	details := make([]string, 0, 3)
-	if len(missingBinaries) > 0 {
-		details = append(
-			details,
-			"missing command profiles: "+strings.Join(missingBinaries, ", "),
-		)
-	}
-	if len(invalidCommands) > 0 {
-		details = append(
-			details,
-			"invalid command profiles: "+strings.Join(invalidCommands, ", "),
-		)
-	}
-	if len(missingAuth) > 0 {
-		details = append(
-			details,
-			"missing auth environment: "+strings.Join(missingAuth, ", "),
-		)
-	}
-	return fmt.Errorf(
-		"Runtime doctor found unavailable dependencies: %s",
-		strings.Join(details, "; "),
-	)
 }
 
 type updateOptions struct {

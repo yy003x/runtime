@@ -128,7 +128,7 @@ func TestRunWatchFailureAfterEventHasNoFinal(t *testing.T) {
 			inspection, stdout.buffer.String(),
 		)
 	}
-	assertSingleV4StreamError(
+	assertSingleV5StreamError(
 		t, stdout.buffer.String(), stderr.String(),
 	)
 }

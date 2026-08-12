@@ -269,7 +269,7 @@ func TestAgentStreamFailureAfterEventsHasNoFinal(t *testing.T) {
 			inspection, fixture.Stdout.String(),
 		)
 	}
-	assertSingleV4StreamError(
+	assertSingleV5StreamError(
 		t, fixture.Stdout.String(), fixture.Stderr.String(),
 	)
 }

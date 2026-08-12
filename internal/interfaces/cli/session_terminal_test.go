@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,52 @@ func TestFindSessionTerminalUsesOpaqueTmuxBinding(t *testing.T) {
 	}
 	if value.TmuxID != "bound" {
 		t.Fatalf("window = %#v", value)
+	}
+}
+
+func TestCloseAllSessionTerminalsClosesOnlySessionBindings(t *testing.T) {
+	home := t.TempDir()
+	paths, err := layout.FromHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := runtimebootstrap.LoadSessionMaintenanceServices(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := "session_11111111111111111111111111111111"
+	second := "session_22222222222222222222222222222222"
+	for _, sessionID := range []string{first, second} {
+		if _, err := maintenance.Sessions.CreateWithID(
+			sessionID, session.RetentionStandard,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := &fakeTmuxManager{windows: []runtimetmux.Window{
+		{
+			TmuxID: "first", State: runtimetmux.StateExited,
+			Binding: &runtimetmux.Binding{Kind: "session", ID: first},
+		},
+		{TmuxID: "raw", State: runtimetmux.StateExited},
+		{
+			TmuxID: "second", State: runtimetmux.StateExited,
+			Binding: &runtimetmux.Binding{Kind: "session", ID: second},
+		},
+	}}
+	result, err := closeAllSessionTerminals(
+		context.Background(), paths, manager,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.ClosedCount != 2 ||
+		len(result.Closed) != 2 ||
+		!reflect.DeepEqual(manager.stoppedIDs, []string{"first", "second"}) {
+		t.Fatalf("result=%#v stopped=%v", result, manager.stoppedIDs)
 	}
 }
 

@@ -269,7 +269,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 4 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 5 ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
 		payload.ConfiguredAddr != "127.0.0.1:8080" ||
@@ -377,7 +377,7 @@ func TestServerUpdateRejectsActionLocalJSON(t *testing.T) {
 func TestServerStatefulActionsRejectTrailingArgumentsBeforeBootstrap(
 	t *testing.T,
 ) {
-	for _, action := range []string{"info", "doctor", "start", "status", "stop"} {
+	for _, action := range []string{"info", "start", "status", "stop"} {
 		t.Run(action, func(t *testing.T) {
 			home := filepath.Join(t.TempDir(), "not-created")
 			paths, err := layout.FromHome(home)
@@ -537,20 +537,25 @@ func TestUpgradeActivationKeepsDurableCommandLinkReservationOnFailure(
 	}
 }
 
-func TestServerDoctorDependencyErrorNamesMissingInputs(t *testing.T) {
-	err := serverDoctorDependencyError(
-		[]string{"cx-deep"}, []string{"cx-invalid"},
-		[]string{"MODEL_API_KEY"},
-	)
+func TestRuntimeDoctorDependencyErrorNamesMissingInputs(t *testing.T) {
+	err := runtimeDoctorDependencyError(runtimeDoctorFailures{
+		missingBinaries: []string{"cx-deep"},
+		invalidCommands: []string{"cx-invalid"},
+		missingAuth:     []string{"MODEL_API_KEY"},
+		tmuxError:       "tmux unavailable",
+		auditLogError:   "audit path unavailable",
+	})
 	message := err.Error()
 	if !strings.Contains(message, "cx-deep") ||
 		!strings.Contains(message, "cx-invalid") ||
-		!strings.Contains(message, "MODEL_API_KEY") {
+		!strings.Contains(message, "MODEL_API_KEY") ||
+		!strings.Contains(message, "tmux unavailable") ||
+		!strings.Contains(message, "audit path unavailable") {
 		t.Fatalf("message=%q", message)
 	}
 }
 
-func TestServerDoctorReportsSelectedToolEnvironmentWithoutRemoteCall(
+func TestRuntimeDoctorReportsSelectedToolEnvironmentWithoutRemoteCall(
 	t *testing.T,
 ) {
 	paths := prepareVNextHome(t)
@@ -597,7 +602,7 @@ func TestServerDoctorReportsSelectedToolEnvironmentWithoutRemoteCall(
 	t.Setenv("MODEL_API_KEY", "fixture-model-key")
 	t.Setenv("Z_AI_API_KEY", "")
 	var stdout bytes.Buffer
-	err := serverDoctor(paths, newCLIOutput(false, &stdout, &bytes.Buffer{}))
+	err := runtimeDoctor(paths, newCLIOutput(false, &stdout, &bytes.Buffer{}))
 	if err == nil || !strings.Contains(err.Error(), "Z_AI_API_KEY") ||
 		!strings.Contains(stdout.String(), "Missing auth environment: Z_AI_API_KEY") {
 		t.Fatalf("stdout=%q error=%v", stdout.String(), err)

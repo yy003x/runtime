@@ -102,9 +102,9 @@ grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
 grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
   "$ROOT_DIR/release/release.json" ||
   die "release manifest does not declare activation epoch 4"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5([,}[:space:]]|$)' \
   "$ROOT_DIR/release/release.json" ||
-  die "release manifest does not declare contract version 4"
+  die "release manifest does not declare contract version 5"
 [ -f "$ROOT_DIR/release/tmux.conf" ] && [ ! -L "$ROOT_DIR/release/tmux.conf" ] ||
   die "missing or unsafe dedicated Tmux bootstrap config: release/tmux.conf"
 
@@ -214,10 +214,12 @@ cleanup() {
   if [ -x "$install_dir/sn-cli" ]; then
     SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" server stop >/dev/null 2>&1 || true
   fi
-  if [ -n "$release_tmux_tmp" ] && [ -n "$tmux_id" ] &&
-    [ -x "$install_dir/sn-cli" ]; then
+  if [ -n "$release_tmux_tmp" ] && [ -x "$install_dir/sn-cli" ]; then
     SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
-      "$install_dir/sn-cli" tmux stop --tmux-id "$tmux_id" \
+      "$install_dir/sn-cli" session close-all \
+      >/dev/null 2>&1 || true
+    SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
+      "$install_dir/sn-cli" tmux stop-all \
       >/dev/null 2>&1 || true
   fi
   if [ -n "$local_source_home" ] && [ -x "$local_source_bin/sn-cli" ]; then
@@ -408,9 +410,9 @@ grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
 grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
   "$runtime_home/resources/release.json" ||
   die "installed release manifest does not declare activation epoch 4"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5([,}[:space:]]|$)' \
   "$runtime_home/resources/release.json" ||
-  die "installed release manifest does not declare contract version 4"
+  die "installed release manifest does not declare contract version 5"
 
 printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$runtime_home/configs/local-only.json"
@@ -525,8 +527,8 @@ SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json profile list >/dev/null
 server_info="$(
   SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json server info
 )"
-printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4' ||
-  die "server info did not report contract_version=4"
+printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5' ||
+  die "server info did not report contract_version=5"
 printf '%s\n' "$server_info" | grep -Eq '"server"' ||
   die "server info did not report the server namespace"
 [[ "$server_info" != *$'\n'* ]] ||
@@ -542,8 +544,8 @@ if SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json unknown info \
   die "unknown namespace was accepted"
 fi
 [ ! -s "$unknown_stdout" ] || die "failed JSON command wrote to stdout"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*4' "$unknown_stderr" ||
-  die "failed JSON command did not return a contract v4 error"
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5' "$unknown_stderr" ||
+  die "failed JSON command did not return a contract v5 error"
 [ "$(awk 'NF {count++} END {print count + 0}' "$unknown_stderr")" -eq 1 ] ||
   die "failed JSON command did not return exactly one compact error document"
 
@@ -556,11 +558,32 @@ $GO_BIN -C "$ROOT_DIR" build \
 # path. Keep the signed executable at its system path while exposing the
 # adapter fixture under the expected command name.
 ln -s /bin/echo "$direct_bin/codex"
+ln -s /bin/echo "$direct_bin/claude"
 cp "$ROOT_DIR/release/runtime.json" "$direct_home/runtime.json"
 printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$direct_home/configs/cx.json"
 printf '%s\n' '{"type":"cli","command":"codex","args":["--search"]}' \
   >"$direct_home/configs/commit.json"
+require_command tmux
+release_tmux_tmp="$temp_root/tmux-tmp"
+mkdir -m 0700 "$release_tmux_tmp"
+doctor_output="$(
+  PATH="$direct_bin:$PATH" \
+    Z_AI_API_KEY=doctor-smoke \
+    ALIYUN_API_KEY=doctor-smoke \
+    KMM_API_KEY=doctor-smoke \
+    BAILIAN_API_KEY=doctor-smoke \
+    WB_RUNTIME_IMAGE_PATH="$temp_root/doctor-image" \
+    SN_CLI_HOME="$runtime_home" \
+    TMUX_TMPDIR="$release_tmux_tmp" \
+    "$install_dir/sn-cli" --json doctor
+)"
+printf '%s\n' "$doctor_output" |
+  grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' ||
+  die "doctor did not report an OK installed Runtime: $doctor_output"
+printf '%s\n' "$doctor_output" |
+  grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5' ||
+  die "doctor did not report contract_version=5"
 direct_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
   "$temp_root/ptyrun" "$install_dir/sn-cli" cx release-smoke | tr -d '\r')"
 [ "$direct_output" = "-- release-smoke" ] ||
@@ -608,20 +631,26 @@ fi
 [ "$(sha256_file "$runtime_home/bin/sn-cli")" = "$running_digest_before" ] ||
   die "blocked server-live upgrade changed the active binary"
 SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" server stop >/dev/null
+[ -f "$runtime_home/logs/sn-server.log" ] ||
+  die "sn-server did not write its process log below the Runtime log root"
+[ ! -e "$runtime_home/state/sn-server.log" ] ||
+  die "sn-server retained the legacy state/sn-server.log path"
 
-require_command tmux
-release_tmux_tmp="$temp_root/tmux-tmp"
-mkdir -m 0700 "$release_tmux_tmp"
-tmux_start="$(
+if PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+  TMUX_TMPDIR="$release_tmux_tmp" \
+  "$install_dir/sn-cli" tmux start cx >/dev/null 2>&1; then
+  die "removed tmux start action was accepted"
+fi
+tmux_open="$(
   PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
     TMUX_TMPDIR="$release_tmux_tmp" \
-    "$install_dir/sn-cli" --json tmux start cx "tmux-smoke"
+    "$install_dir/sn-cli" --json tmux open cx "tmux-smoke"
 )"
 tmux_id="$(
-  printf '%s\n' "$tmux_start" |
+  printf '%s\n' "$tmux_open" |
     sed -n 's/.*"tmux_id":"\([^"]*\)".*/\1/p'
 )"
-[ -n "$tmux_id" ] || die "tmux start did not return tmux_id: $tmux_start"
+[ -n "$tmux_id" ] || die "tmux open did not return tmux_id: $tmux_open"
 TMUX_TMPDIR="$release_tmux_tmp" \
   tmux -L default list-sessions -F '#{session_name}' |
   grep -Fxq 'sn-session' ||
@@ -637,9 +666,12 @@ if TMUX_TMPDIR="$release_tmux_tmp" bash "$ROOT_DIR/install.sh" \
 fi
 [ "$(sha256_file "$runtime_home/bin/sn-cli")" = "$tmux_digest_before" ] ||
   die "blocked Tmux-live upgrade changed the active binary"
-PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+tmux_stop_all="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
   TMUX_TMPDIR="$release_tmux_tmp" \
-  "$install_dir/sn-cli" tmux stop --tmux-id "$tmux_id" >/dev/null
+  "$install_dir/sn-cli" --json tmux stop-all)"
+printf '%s\n' "$tmux_stop_all" |
+  grep -Eq '"stopped_count"[[:space:]]*:[[:space:]]*1' ||
+  die "tmux stop-all did not stop the raw window: $tmux_stop_all"
 tmux_id=""
 if TMUX_TMPDIR="$release_tmux_tmp" \
   tmux -L default list-sessions -F '#{session_name}' 2>/dev/null |
@@ -652,6 +684,45 @@ TMUX_TMPDIR="$release_tmux_tmp" bash "$ROOT_DIR/install.sh" \
   --home "$runtime_home" \
   --install-dir "$install_dir" \
   --overwrite-configs
+
+session_open="$(
+  PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+    TMUX_TMPDIR="$release_tmux_tmp" \
+    "$install_dir/sn-cli" --json session open cx
+)"
+session_id="$(
+  printf '%s\n' "$session_open" |
+    sed -n 's/.*"id":"\(session_[^"]*\)".*/\1/p'
+)"
+[ -n "$session_id" ] ||
+  die "session open did not return session_id: $session_open"
+if PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+  TMUX_TMPDIR="$release_tmux_tmp" \
+  "$install_dir/sn-cli" tmux stop-all >/dev/null 2>&1; then
+  die "tmux stop-all accepted a Session-bound window"
+fi
+session_close_all="$(
+  PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+    TMUX_TMPDIR="$release_tmux_tmp" \
+    "$install_dir/sn-cli" --json session close-all
+)"
+printf '%s\n' "$session_close_all" |
+  grep -Eq '"closed_count"[[:space:]]*:[[:space:]]*1' ||
+  die "session close-all did not close the Session terminal: $session_close_all"
+session_show="$(
+  SN_CLI_HOME="$runtime_home" \
+    "$install_dir/sn-cli" --json session show --session-id "$session_id"
+)"
+printf '%s\n' "$session_show" | grep -Fq "$session_id" ||
+  die "session close-all removed the canonical Session"
+audit_file="$runtime_home/logs/$(date +%y%m%d)/audit.jsonl"
+[ -f "$audit_file" ] || die "control audit log was not created"
+grep -Fq '"namespace":"doctor"' "$audit_file" ||
+  die "doctor audit record is missing"
+grep -Fq '"action":"stop-all"' "$audit_file" ||
+  die "tmux stop-all audit record is missing"
+grep -Fq '"action":"close-all"' "$audit_file" ||
+  die "session close-all audit record is missing"
 
 log "[release-check] exercising concurrent server lifecycle operations"
 start_pids=()

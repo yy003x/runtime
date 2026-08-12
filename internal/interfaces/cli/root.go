@@ -79,45 +79,53 @@ func Main(args []string) int {
 	activationCommand := len(args) > 1 &&
 		args[0] == "server" && args[1] == "upgrade-activate"
 	if !activationCommand {
-		if err := activationgate.RequireOpen(paths.StateDir); err != nil {
-			return output.fail(err)
+		err = activationgate.RequireOpen(paths.StateDir)
+	}
+	if err == nil {
+		switch args[0] {
+		case "doctor":
+			if len(args) != 1 {
+				err = cliValidationf("doctor does not accept arguments")
+			} else {
+				err = runtimeDoctor(paths, output)
+			}
+		case "exec":
+			err = runProfileExecutionNamespace(
+				paths, args[1:], runtimeprofile.KindCommand,
+				runtimecommand.ModeExec, "exec", output,
+			)
+		case "req":
+			err = runProfileExecutionNamespace(
+				paths, args[1:], runtimeprofile.KindModel,
+				"", "req", output,
+			)
+		case "profile":
+			err = runVNextProfileNamespace(paths, args[1:], output)
+		case "session":
+			err = runSessionNamespaceVNext(paths, args[1:], output)
+		case "tmux":
+			err = runTmuxNamespaceVNext(paths, args[1:], output)
+		case "agent":
+			err = runAgentNamespace(paths, args[1:], output)
+		case "run":
+			err = runRunNamespaceVNext(paths, args[1:], output)
+		case "server":
+			err = runServerNamespaceVNext(paths, args[1:], output)
+		default:
+			runtime, loadErr := runtimebootstrap.LoadProfileServices(
+				paths, fixedNamespaces...,
+			)
+			if loadErr != nil {
+				err = loadErr
+				break
+			}
+			err = runLoadedProfileID(
+				runtime, paths.LogsDir, args[0], args[1:], runtimeprofile.KindCommand,
+				runtimecommand.ModeInteractive, "direct", output,
+			)
 		}
 	}
-	switch args[0] {
-	case "exec":
-		err = runProfileExecutionNamespace(
-			paths, args[1:], runtimeprofile.KindCommand,
-			runtimecommand.ModeExec, "exec", output,
-		)
-	case "req":
-		err = runProfileExecutionNamespace(
-			paths, args[1:], runtimeprofile.KindModel,
-			"", "req", output,
-		)
-	case "profile":
-		err = runVNextProfileNamespace(paths, args[1:], output)
-	case "session":
-		err = runSessionNamespaceVNext(paths, args[1:], output)
-	case "tmux":
-		err = runTmuxNamespaceVNext(paths, args[1:], output)
-	case "agent":
-		err = runAgentNamespace(paths, args[1:], output)
-	case "run":
-		err = runRunNamespaceVNext(paths, args[1:], output)
-	case "server":
-		err = runServerNamespaceVNext(paths, args[1:], output)
-	default:
-		runtime, loadErr := runtimebootstrap.LoadProfileServices(
-			paths, fixedNamespaces...,
-		)
-		if loadErr != nil {
-			return output.fail(loadErr)
-		}
-		err = runLoadedProfileID(
-			runtime, paths.LogsDir, args[0], args[1:], runtimeprofile.KindCommand,
-			runtimecommand.ModeInteractive, "direct", output,
-		)
-	}
+	appendControlAudit(paths.LogsDir, args, err)
 	return output.fail(err)
 }
 
@@ -140,18 +148,20 @@ Usage:
   sn-cli req <api-profile-id> [options...] [input]
   sn-cli --json req <api-profile-id> [options...] [input]
   sn-cli --json <management-command> [args...]
+  sn-cli doctor
   sn-cli profile list|show|check
   sn-cli session exec <cli-profile-id> [options...] [input]
   sn-cli session req <api-profile-id> [options...] [input]
   sn-cli session open <cli-profile-id> [options...] [input]
   sn-cli session send|attach|interrupt|close --session-id <id>
+  sn-cli session close-all
   sn-cli session list|show|messages|events|logs|executions|execution
   sn-cli session reconcile|configure|export|delete|gc
-  sn-cli tmux start <cli-profile-id> [options...] [input]
-  sn-cli tmux list|show|send|attach|interrupt|stop
+  sn-cli tmux open <cli-profile-id> [options...] [input]
+  sn-cli tmux list|show|send|attach|interrupt|stop|stop-all
   sn-cli agent <api-profile-id> [options...] [input]
   sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
-  sn-cli server info|doctor|start|status|stop|update|upgrade-check
+  sn-cli server info|start|status|stop|update|upgrade-check
 
 Execution semantics:
   <cli-profile-id>   direct CLI; no Session/Run; best-effort local CLI log
@@ -159,7 +169,7 @@ Execution semantics:
   req                one API request; no Session/Run; best-effort API log
   session exec|req   one recorded Session turn; --queue submits a durable Run
   session open       tmux console; every input creates a durable Session Run
-  tmux start         one managed window in configured sn-session; no Runtime Session
+  tmux open          one managed window in configured sn-session; no Runtime Session
   agent              durable API-only model/tool loop; --queue submits only
   run ...            durable Run query and control plane; never submits new work
 
@@ -173,5 +183,6 @@ Runtime home:        ${SN_CLI_HOME:-~/.sn}
 Profiles:            <runtime-home>/configs
 Tools:               <runtime-home>/tools
 Sessions:            <runtime-home>/sessions
+Logs:                <runtime-home>/logs
 Run database:        <runtime-home>/state/runtime.db`)
 }
