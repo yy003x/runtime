@@ -100,26 +100,6 @@
       }
     },
     {
-      "id": "cx-image",
-      "argv": [
-        "--image",
-        "${IMAGE_PATH}",
-        "--model",
-        "gpt-5.6-sol",
-        "-c",
-        "model_reasoning_effort=xhigh",
-        "exec",
-        "--skip-git-repo-check",
-        "--ignore-user-config",
-        "--color",
-        "never",
-        "--ephemeral"
-      ],
-      "env": {
-        "CODEX_HOME": "${HOME}/.codex-aip"
-      }
-    },
-    {
       "id": "cx-spark",
       "argv": [
         "--sandbox",

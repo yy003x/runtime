@@ -36,7 +36,7 @@ func runSessionNamespaceVNext(
 	case "exec", "req":
 		return runSessionExecution(paths, args[0], args[1:], output)
 	case "open", "send", "attach", "interrupt", "close", "close-all":
-		return runSessionTerminalAction(paths, args[0], args[1:], output)
+		return runSessionNativeAction(paths, args[0], args[1:], output)
 	}
 	if err := validateSessionManagementInvocation(args); err != nil {
 		return cliValidation(err)
@@ -63,8 +63,8 @@ func runSessionNamespaceVNext(
 		}
 		for _, value := range values {
 			if err := output.line(
-				"  %s  %s  messages=%d",
-				value.ID, value.State, value.MessageCount,
+				"  %s  %s  interface=%s messages=%d",
+				value.ID, value.State, value.Interface, value.MessageCount,
 			); err != nil {
 				return err
 			}
@@ -937,7 +937,8 @@ func renderSessionSummary(output *cliOutput, value session.Session) error {
 		return err
 	}
 	if err := output.line(
-		"State: %s, retention: %s", value.State, value.Retention,
+		"State: %s, interface: %s, retention: %s",
+		value.State, value.Interface, value.Retention,
 	); err != nil {
 		return err
 	}

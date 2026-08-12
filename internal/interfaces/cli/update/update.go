@@ -221,7 +221,7 @@ var runCandidateActivation = func(
 			"candidate activation result has trailing JSON",
 		)
 	}
-	if response.SchemaVersion != 1 || response.ContractVersion != 5 ||
+	if response.SchemaVersion != 1 || response.ContractVersion != 6 ||
 		!response.Activated ||
 		filepath.Clean(response.Activation.TargetHome) !=
 			filepath.Clean(targetHome) {

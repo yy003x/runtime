@@ -27,12 +27,6 @@ func TestMain(main *testing.M) {
 				os.Exit(1)
 			}
 			os.Exit(0)
-		case sessionTerminalHelperCommandName:
-			if err := runSessionTerminalHelperVNext(os.Args[2:]); err != nil {
-				_, _ = os.Stderr.WriteString(err.Error() + "\n")
-				os.Exit(1)
-			}
-			os.Exit(0)
 		}
 	}
 	if os.Getenv("SN_CLI_TEST_SERVER_HOLD") == "1" {
@@ -269,7 +263,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 5 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 6 ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
 		payload.ConfiguredAddr != "127.0.0.1:8080" ||

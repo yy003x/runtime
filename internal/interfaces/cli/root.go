@@ -24,32 +24,39 @@ func Main(args []string) int {
 		}
 		return 0
 	}
-	if len(args) > 0 && args[0] == sessionTerminalHelperCommandName {
-		if err := runSessionTerminalHelperVNext(args[1:]); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		return 0
-	}
 	jsonOutput := len(args) > 0 && args[0] == "--json"
 	if jsonOutput {
 		args = args[1:]
 	}
 	output := newCLIOutput(jsonOutput, os.Stdout, os.Stderr)
 	if len(args) == 0 {
-		if err := printHelp(output); err != nil {
+		if err := printHelp(output, ""); err != nil {
 			return output.fail(err)
 		}
 		return 0
 	}
 	switch args[0] {
-	case "-h", "--help", "help":
+	case "-h", "--help":
 		if len(args) != 1 {
 			return output.fail(cliValidationf(
 				"%s does not accept arguments", args[0],
 			))
 		}
-		if err := printHelp(output); err != nil {
+		if err := printHelp(output, ""); err != nil {
+			return output.fail(err)
+		}
+		return 0
+	case "help":
+		if len(args) > 2 {
+			return output.fail(cliValidationf(
+				"usage: sn-cli help [topic]",
+			))
+		}
+		topic := ""
+		if len(args) == 2 {
+			topic = args[1]
+		}
+		if err := printHelp(output, topic); err != nil {
 			return output.fail(err)
 		}
 		return 0
@@ -127,62 +134,4 @@ func Main(args []string) int {
 	}
 	appendControlAudit(paths.LogsDir, args, err)
 	return output.fail(err)
-}
-
-func printHelp(output *cliOutput) error {
-	if output.JSON() {
-		return output.writeJSON(map[string]any{
-			"schema_version":   cliOutputSchemaVersion,
-			"contract_version": cliOutputContractVersion,
-			"name":             "sn-cli",
-			"version":          version.String(),
-			"namespaces":       fixedNamespaces,
-		})
-	}
-	return output.text(`sn-cli - SN Runtime
-
-Usage:
-  sn-cli <cli-profile-id> [options...] [input]
-  sn-cli <cli-profile-id> resume [session-id]
-  sn-cli exec <cli-profile-id> [options...] [input]
-  sn-cli req <api-profile-id> [options...] [input]
-  sn-cli --json req <api-profile-id> [options...] [input]
-  sn-cli --json <management-command> [args...]
-  sn-cli doctor
-  sn-cli profile list|show|check
-  sn-cli session exec <cli-profile-id> [options...] [input]
-  sn-cli session req <api-profile-id> [options...] [input]
-  sn-cli session open <cli-profile-id> [options...] [input]
-  sn-cli session send|attach|interrupt|close --session-id <id>
-  sn-cli session close-all
-  sn-cli session list|show|messages|events|logs|executions|execution
-  sn-cli session reconcile|configure|export|delete|gc
-  sn-cli tmux open <cli-profile-id> [options...] [input]
-  sn-cli tmux list|show|send|attach|interrupt|stop|stop-all
-  sn-cli agent <api-profile-id> [options...] [input]
-  sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
-  sn-cli server info|start|status|stop|update|upgrade-check
-
-Execution semantics:
-  <cli-profile-id>   direct CLI; no Session/Run; best-effort local CLI log
-  exec               noninteractive CLI; no Session/Run; best-effort CLI log
-  req                one API request; no Session/Run; best-effort API log
-  session exec|req   one recorded Session turn; --queue submits a durable Run
-  session open       tmux console; every input creates a durable Session Run
-  tmux open          one managed window in configured sn-session; no Runtime Session
-  agent              durable API-only model/tool loop; --queue submits only
-  run ...            durable Run query and control plane; never submits new work
-
-Global:
-  -h, --help         show this help
-  --version          show build version
-  --json             stable req/management output; must be first
-                     direct/exec CLI output remains target-native
-
-Runtime home:        ${SN_CLI_HOME:-~/.sn}
-Profiles:            <runtime-home>/configs
-Tools:               <runtime-home>/tools
-Sessions:            <runtime-home>/sessions
-Logs:                <runtime-home>/logs
-Run database:        <runtime-home>/state/runtime.db`)
 }

@@ -27,7 +27,6 @@ type testHarness struct {
 	home     string
 	userHome string
 	fakeBin  string
-	image    string
 	baseEnv  []string
 }
 
@@ -83,7 +82,7 @@ func TestCommandProfileGolden(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				replacements := map[string]string{"HOME": harness.userHome, "IMAGE_PATH": harness.image}
+				replacements := map[string]string{"HOME": harness.userHome}
 				expectedArgv := make([]string, 0, len(golden.Argv)+len(userArgs))
 				for _, argument := range golden.Argv {
 					expectedArgv = append(expectedArgv, Expand(argument, replacements))
@@ -305,33 +304,6 @@ func TestCommandProfileGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("cx_image_missing_environment_fails_before_exec", func(t *testing.T) {
-		capturePath := filepath.Join(t.TempDir(), "capture.json")
-		command := exec.Command(harness.snCLI, "exec", "cx-image", "describe image")
-		command.Env = removeEnvironment(
-			harness.environment(map[string]string{
-				"RUNTIME_GOLDEN_CAPTURE":  capturePath,
-				"RUNTIME_GOLDEN_ENV_KEYS": capturedEnvKeys,
-			}),
-			"WB_RUNTIME_IMAGE_PATH",
-		)
-		command.Dir = harness.repoRoot
-		var output bytes.Buffer
-		command.Stdout = &output
-		command.Stderr = &output
-		err := command.Run()
-		var exitError *exec.ExitError
-		if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
-			t.Fatalf("err=%v output=%q", err, output.String())
-		}
-		if !strings.Contains(output.String(), "WB_RUNTIME_IMAGE_PATH") {
-			t.Fatalf("output=%q", output.String())
-		}
-		if _, err := os.Stat(capturePath); !os.IsNotExist(err) {
-			t.Fatalf("fake target executed: %v", err)
-		}
-	})
-
 	t.Run("profile_env_can_unset_inherited_value", func(t *testing.T) {
 		configPath := filepath.Join(harness.home, "configs", "env-unset.json")
 		config := map[string]any{
@@ -482,13 +454,9 @@ func newHarness(t *testing.T) testHarness {
 	if err := os.MkdirAll(userHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	image := filepath.Join(root, "image.png")
-	if err := os.WriteFile(image, []byte("fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	baseEnv := removeEnvironment(
 		os.Environ(),
-		"SN_CLI_HOME", "HOME", "PATH", "KMM_API_KEY", "Z_AI_API_KEY", "WB_RUNTIME_IMAGE_PATH",
+		"SN_CLI_HOME", "HOME", "PATH", "KMM_API_KEY", "Z_AI_API_KEY",
 		"CODEX_HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "RUNTIME_GOLDEN_CAPTURE",
 		"RUNTIME_GOLDEN_ENV_KEYS", "RUNTIME_GOLDEN_READ_STDIN", "RUNTIME_GOLDEN_EXIT_CODE",
@@ -500,7 +468,6 @@ func newHarness(t *testing.T) testHarness {
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KMM_API_KEY=fixture-key",
 		"Z_AI_API_KEY=fixture-key",
-		"WB_RUNTIME_IMAGE_PATH="+image,
 	)
 	return testHarness{
 		repoRoot: repoRoot,
@@ -508,7 +475,6 @@ func newHarness(t *testing.T) testHarness {
 		home:     home,
 		userHome: userHome,
 		fakeBin:  fakeBin,
-		image:    image,
 		baseEnv:  baseEnv,
 	}
 }
@@ -571,7 +537,7 @@ func containsAdjacent(values []string, first, second string) bool {
 
 func isExecProfile(id string) bool {
 	switch id {
-	case "commit", "cx-adv", "cx-deep", "cx-image", "cx-spark":
+	case "commit", "cx-adv", "cx-deep", "cx-spark":
 		return true
 	default:
 		return false

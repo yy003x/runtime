@@ -46,7 +46,7 @@ func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr is not one JSON document: %v: %q", err, stderr.String())
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 5 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 6 ||
 		payload.Error.Code != string(contract.ErrorRateLimited) ||
 		payload.Error.Phase != string(contract.PhaseTransport) ||
 		!payload.Error.Retryable || payload.Error.RetryAfterMS != 250 ||
@@ -107,7 +107,7 @@ func TestMachineEnvelopeOverridesDomainSchemaOnlyAtOuterLayer(t *testing.T) {
 		"schema_version":   2,
 		"contract_version": 99,
 		"session": map[string]any{
-			"schema_version": 2,
+			"schema_version": 3,
 			"session_id":     "session_1",
 		},
 	}).(map[string]any)
@@ -116,7 +116,7 @@ func TestMachineEnvelopeOverridesDomainSchemaOnlyAtOuterLayer(t *testing.T) {
 		t.Fatalf("outer payload=%#v", payload)
 	}
 	sessionValue := payload["session"].(map[string]any)
-	if sessionValue["schema_version"] != 2 {
+	if sessionValue["schema_version"] != 3 {
 		t.Fatalf("nested session=%#v", sessionValue)
 	}
 }
@@ -161,7 +161,7 @@ func TestCLIOutputStreamFailureBeforeFirstEventIsJSON(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr=%q error=%v", stderr.String(), err)
 	}
-	if payload.ContractVersion != 5 ||
+	if payload.ContractVersion != 6 ||
 		payload.Error.Message != "failed before first event" {
 		t.Fatalf("payload=%#v", payload)
 	}
@@ -244,7 +244,7 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 			if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.ContractVersion != 5 ||
+			if payload.ContractVersion != 6 ||
 				!strings.Contains(payload.Error.Message, "unknown") ||
 				strings.Contains(stderr, `"final"`) {
 				t.Fatalf("payload=%#v stderr=%q", payload, stderr)

@@ -33,11 +33,6 @@ type tmuxManager interface {
 	Stop(context.Context, string) (runtimetmux.ActionResult, error)
 }
 
-type sessionTerminalTmuxManager interface {
-	tmuxManager
-	SendFramed(context.Context, string, string) (runtimetmux.ActionResult, error)
-}
-
 type tmuxOpenResolver func(
 	context.Context,
 	tmuxOpenOptions,
@@ -102,9 +97,10 @@ func runTmuxNamespaceVNext(
 			options tmuxOpenOptions,
 			pipedInput string,
 		) (runtimetmux.Invocation, error) {
-			return resolveTmuxOpenInvocation(
+			return resolveTmuxOpenInvocationWithNamespace(
 				catalog, options, pipedInput,
 				invocationBase, inheritedEnvironment, paths.LogsDir,
+				executionlog.NamespaceTmux,
 			)
 		}
 	}
@@ -337,6 +333,21 @@ func resolveTmuxOpenInvocation(
 	inheritedEnvironment []string,
 	logsDir string,
 ) (runtimetmux.Invocation, error) {
+	return resolveTmuxOpenInvocationWithNamespace(
+		catalog, options, pipedInput, invocationBase,
+		inheritedEnvironment, logsDir, executionlog.NamespaceTmux,
+	)
+}
+
+func resolveTmuxOpenInvocationWithNamespace(
+	catalog *runtimeprofile.Catalog,
+	options tmuxOpenOptions,
+	pipedInput string,
+	invocationBase string,
+	inheritedEnvironment []string,
+	logsDir string,
+	namespace executionlog.Namespace,
+) (runtimetmux.Invocation, error) {
 	if catalog == nil {
 		return runtimetmux.Invocation{}, fmt.Errorf("Profile catalog is required")
 	}
@@ -393,7 +404,7 @@ func resolveTmuxOpenInvocation(
 		return runtimetmux.Invocation{}, err
 	}
 	_ = executionlog.AppendCLI(logsDir, executionlog.CLIRecord{
-		Time: time.Now(), Namespace: executionlog.NamespaceTmux, Profile: options.profileID,
+		Time: time.Now(), Namespace: namespace, Profile: options.profileID,
 		Source:  executionlog.SourceFromArgs(os.Args),
 		Command: executionlog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
 	})

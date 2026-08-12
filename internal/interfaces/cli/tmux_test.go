@@ -172,7 +172,7 @@ func TestRunTmuxNamespaceMachineListEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload["schema_version"] != float64(1) ||
-		payload["contract_version"] != float64(5) {
+		payload["contract_version"] != float64(6) {
 		t.Fatalf("envelope = %#v", payload)
 	}
 	values, ok := payload["tmux_windows"].([]any)
@@ -268,17 +268,28 @@ func TestRunTmuxNamespaceStopAllRejectsSessionBindingsBeforeMutation(t *testing.
 }
 
 type fakeTmuxManager struct {
-	windows    []runtimetmux.Window
-	sentID     string
-	sentInput  string
-	stoppedIDs []string
+	windows       []runtimetmux.Window
+	startRequest  *runtimetmux.StartRequest
+	startResult   runtimetmux.StartResult
+	startErr      error
+	sentID        string
+	sentInput     string
+	attachedID    string
+	interruptedID string
+	stoppedIDs    []string
 }
 
 func (manager *fakeTmuxManager) Start(
-	context.Context,
-	runtimetmux.StartRequest,
+	_ context.Context,
+	request runtimetmux.StartRequest,
 ) (runtimetmux.StartResult, error) {
-	return runtimetmux.StartResult{}, nil
+	manager.startRequest = &request
+	result := manager.startResult
+	if result.Window.Binding == nil && request.Invocation.Binding != nil {
+		binding := *request.Invocation.Binding
+		result.Window.Binding = &binding
+	}
+	return result, manager.startErr
 }
 
 func (manager *fakeTmuxManager) List(
@@ -306,19 +317,12 @@ func (manager *fakeTmuxManager) Send(
 	}, nil
 }
 
-func (manager *fakeTmuxManager) SendFramed(
-	ctx context.Context,
-	tmuxID string,
-	input string,
-) (runtimetmux.ActionResult, error) {
-	return manager.Send(ctx, tmuxID, input)
-}
-
 func (manager *fakeTmuxManager) Attach(
-	context.Context,
-	string,
-	runtimetmux.TTYFiles,
+	_ context.Context,
+	tmuxID string,
+	_ runtimetmux.TTYFiles,
 ) error {
+	manager.attachedID = tmuxID
 	return nil
 }
 
@@ -326,6 +330,7 @@ func (manager *fakeTmuxManager) Interrupt(
 	_ context.Context,
 	tmuxID string,
 ) (runtimetmux.ActionResult, error) {
+	manager.interruptedID = tmuxID
 	return runtimetmux.ActionResult{
 		TmuxID: tmuxID, Action: "interrupt", Accepted: true,
 	}, nil
