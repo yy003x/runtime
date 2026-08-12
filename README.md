@@ -55,7 +55,7 @@ rejected rather than silently papered over.
   (including `web_search` and `web_fetch`) with budgets, durable effects, and
   streaming events.
 - 🪟 **Long-lived tmux windows** — native/default or isolated tmux transport you
-  can start, send, attach, interrupt, and stop by stable ID.
+  can open, send, attach, interrupt, and stop by stable ID.
 - 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
   unknown fields and ambiguous states fail closed.
 - 🌐 **HTTP / SSE control plane** — a loopback `sn-server` exposes the full
@@ -84,6 +84,7 @@ Verify the install and the active profiles:
 
 ```bash
 sn-cli --version
+sn-cli doctor            # check profiles, tools, run store, logs, and tmux
 sn-cli profile list      # list active profiles and their types
 sn-cli profile check     # validate every profile's structure
 ```
@@ -136,6 +137,8 @@ sn-cli --json session open cx --cwd "$PWD" "Inspect this repository"
 sn-cli session send --session-id <session_id> "Continue with the next step"
 sn-cli session attach --session-id <session_id>
 sn-cli session close --session-id <session_id>
+# Or close every open Session console while retaining all Session facts:
+sn-cli session close-all
 ```
 
 The window is only the terminal carrier. Every prompt consumed by the console
@@ -143,6 +146,19 @@ is executed as a durable Session Run and produces canonical Turn, Execution,
 Message, and Event facts. `send` acceptance is not consumption or completion;
 inspect `session events`,
 `session messages`, or the resulting Run facts.
+
+For a raw provider TUI without canonical Session/Run facts, use the same
+`open` verb under the `tmux` namespace:
+
+```bash
+sn-cli --json tmux open cx --cwd "$PWD" "Inspect this repository"
+sn-cli tmux stop --tmux-id <tmux_id>
+sn-cli tmux stop-all
+```
+
+`tmux stop-all` is intentionally limited to raw windows. If any window is
+bound to a Session, it fails without stopping anything; run
+`session close-all` first.
 
 ### An autonomous agent loop
 
@@ -177,8 +193,8 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli exec <cli-profile-id>` | non-interactive CLI one-shot | local `cli.jsonl`; no Session/Run |
 | `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
-| `sn-cli session open\|send\|attach\|interrupt\|close` | durable multi-turn Session console | Session facts + one durable Run per consumed prompt; opaque tmux binding |
-| `sn-cli tmux ...` | managed tmux interactive window | tmux registry and local CLI log (no transcript) |
+| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | durable multi-turn Session console | Session facts + one durable Run per consumed prompt; opaque tmux binding |
+| `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | managed raw tmux interactive window | tmux registry and local CLI log (no transcript) |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
 | `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
 
@@ -192,10 +208,12 @@ Key boundaries worth remembering up front:
   composition layer: tmux carries the console while Session/Run remain canonical.
 - **Submitting a run doesn't start the server** — enqueue and worker are decoupled.
 
-Best-effort execution diagnostics live under
-`${SN_CLI_HOME}/logs/YYMMDD/{cli,api}.jsonl`. They are not canonical Session/Run
-state and are never used for replay; logging failures never change execution
-results. Queries and queue submission do not log—workers log actual execution.
+All diagnostics stay below `${SN_CLI_HOME:-~/.sn}/logs`: Profile execution
+records use `YYMMDD/{cli,api}.jsonl`, redacted CLI/HTTP control-plane audit uses
+`YYMMDD/audit.jsonl`, and the server process writes `sn-server.log`. None is
+canonical Session/Run state or used for replay. Audit records contain only the
+normalized action, stable target IDs, outcome, and error/status identity—never
+prompt/send content or resolved secrets.
 
 The precise contracts (state machines, crash recovery, digest/drift gating,
 filesystem safety model) live in the [contract docs](#documentation); this README

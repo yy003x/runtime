@@ -48,6 +48,9 @@ internal/
 `${SN_CLI_HOME:-~/.sn}`。本次包迁移不保留旧的
 `github.com/yy003x/runtime/{agent,session,...}` import shim。
 
+用户语境中的 SN root（`SN_ROOT` 概念）等同 Runtime Home；唯一公开配置环境变量是
+`SN_CLI_HOME`，缺省为 `~/.sn`，不提供第二个 home alias。
+
 source、release payload 与 active home 的配置映射固定为：
 
 ```text
@@ -147,13 +150,13 @@ file、严格 JSON 且无未知字段。当前 shape 与默认语义为：
 | `sn-cli session exec <cli-id> [--queue]` | non-interactive managed exec | Session child | `cli.jsonl` + Turn/Execution；queue 时另有 Run |
 | `sn-cli session req <api-id> [--queue]` | API request | Session executor | `api.jsonl` + Turn/Execution；queue 时另有 Run |
 | `sn-cli session open <cli-id>` | non-interactive managed exec per prompt | Session/Run + Tmux console | 每个已消费 prompt 都有 Turn/Execution 与 Durable Run |
-| `sn-cli tmux start <cli-id>` | interactive | Tmux window | `cli.jsonl`；无 Session |
+| `sn-cli tmux open <cli-id>` | interactive | Tmux window | `cli.jsonl`；无 Session |
 | `sn-cli agent <api-id> [--queue]` | API model/tool loop | Agent Kernel | 每轮 `api.jsonl` + Durable Run |
 
 namespace 先固定 execution mode，Profile `type` 再做严格配对校验。Profile 不保存
 execution mode；Session/Tmux schema 不因 CLI ingress 改名而变化。
 
-`session open|send|attach|interrupt|close` 是显式 composition：tmux window 只保存
+`session open|send|attach|interrupt|close|close-all` 是显式 composition：tmux window 只保存
 `binding={kind:"session",id:<session_id>}` 并承载人机交互；控制台每读入一次 prompt，
 就通过 `RunNow(kind=session)` 创建 durable Run，由既有 Session executor 生成
 Turn/Execution/Message/Event。pane 文本、终端回显和 paste 不进入 canonical history，
@@ -177,13 +180,13 @@ leading global `--json` 不包装其原生输出。
 bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`req` 只接受 API
 Profile。Profile ID 必须紧跟拥有它的 namespace/action，option 位于其后，input
 必须最后。固定根 namespace
-`exec|req|profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理
+`doctor|exec|req|profile|session|tmux|agent|run|server|help|version`，以及 Profile 管理
 action `list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。
 
 `profile` 只提供 `list|show|check` 管理动作，不执行 Profile。`profile check` 是纯
 静态校验，不解析真实 env/PATH/cwd，不读取 prompt file。
 
-## 3. 本地 Profile 执行日志
+## 3. 本地执行、审计与进程日志
 
 `${SN_CLI_HOME}/logs` 是 best-effort 本地诊断面，不是 canonical Session/Run Store，
 不参与 replay、幂等、恢复、terminal barrier 或 API contract：
@@ -193,6 +196,8 @@ logs/
   YYMMDD/
     cli.jsonl
     api.jsonl
+    audit.jsonl
+  sn-server.log
 ```
 
 每天、每种 Profile 类型只使用一个 append-only JSONL 文件。`time` 使用本地时间的
@@ -202,8 +207,8 @@ logs/
 记录门禁固定为：必须有 Profile ID，并且进入真实执行边界。CLI 在最终 invocation
 已构建并准备 launch 时写一条；API 只有在 driver 调用 `http.Client.Do` 时写一条。
 Profile 查询/校验、Session/Run/Tmux 查询与控制、无网络的前置校验失败、queue submit
-都不写；queued Session/Agent 由 worker 真正执行时写，Agent 每个 Provider round
-各写一条。HTTP `POST /v1/model/generate` 同样进入统一 API 日志。MCP HTTP 不属于
+都不写 `cli.jsonl`/`api.jsonl`；queued Session/Agent 由 worker 真正执行时写，Agent
+每个 Provider round 各写一条。HTTP `POST /v1/model/generate` 同样进入统一 API 日志。MCP HTTP 不属于
 Profile Provider attempt，不写 `api.jsonl`；其 call/result 由 Agent durable
 effect/event 记录。
 
@@ -222,6 +227,18 @@ API 行固定字段为
   中回显的 secret 必须脱敏；
 - `call_id` 每次 Provider call 唯一，不等同于 Provider request ID、Run ID 或 Tool
   call ID。
+
+`audit.jsonl` 是脱敏控制面审计，`schema_version=1`，时间为 UTC RFC3339Nano。CLI
+记录 `doctor`，Session 的执行提交/terminal/lifecycle mutation，Tmux mutation，Agent
+提交，Run mutation 与 server lifecycle/update；只读 list/show/query 不记录。HTTP
+记录每个请求的 method、规范化 route、HTTP status 和通过严格校验的 Session/Run ID。
+字段只允许 `source,namespace,action,outcome,targets,error_code,error_phase,http_status`，
+不得保存任意 argv、query、request/response body、prompt/send 内容、error message、
+header、cookie 或 resolved secret。审计写入是 best-effort；只有 `doctor` 会显式探测
+并报告 audit sink 不可写。
+
+`sn-server.log` 仅接收后台 server process 的 stdout/stderr。它与每日 JSONL 同属
+Runtime log root，不得重新写入 `state/`。
 
 日志写入错误、锁冲突、非法路径或 observer panic 一律丢弃，不改变返回值、event、
 exit code、retry 或 durable state，也不与请求/Session/Run 建事务。写入使用 private
@@ -404,6 +421,11 @@ cutoff 且当前仍为 `retention=ephemeral,state=idle` 的 Session；`--apply` 
 `candidates`、实际移动的 `moved` 与并发变化后安全跳过的 `skipped`；单个候选失效
 不使整批失败。`session delete` 同样是可恢复移动，不物理擦除 trash。
 
+`session close-all` 对调用开始时的 Session-bound window 做快照并逐个执行与
+`session close` 相同的 cooperative close：请求 console 退出、取消并等待 active
+Session Run settled、再按 `tmux_id` 停止 window。它不删除 Session/Turn/Run fact；
+空快照成功返回 `closed_count=0`。中途失败返回错误并保留已完成的 close，可安全重跑。
+
 ## 6. Tmux
 
 Tmux 是独立 interactive process manager：
@@ -413,15 +435,17 @@ Tmux 是独立 interactive process manager：
 - session 固定为 `sn-session`；default 使用用户正常 tmux 配置且允许其他 session
   共存，dedicated 只读取 active `${SN_CLI_HOME}/resources/tmux.conf`；该文件由
   source/payload `release/tmux.conf` 经 activation 映射；
-- 每次 `start` 建一个 window，Profile 固定 interactive mode；
+- 每次 `open` 建一个 window，Profile 固定 interactive mode；
 - initial prompt 是最终 argv token，后续 `send` 才使用 paste buffer；
 - default session marker 或 dedicated server marker 绑定 full canonical-home
   digest、uid、config digest 和 incarnation；
 - `tmux_id`、window/pane identity、owner 和 incarnation 每次 mutation 都复核；
-- start 使用 ready/go gate 和 mode 0600、消费即 unlink 的 launch manifest；
+- open 使用 ready/go gate 和 mode 0600、消费即 unlink 的 launch manifest；
 - tmux server 只继承 sanitized env，不缓存 Profile secret；
 - `stop` 只 kill 精确 managed window；最后一个 window 退出后，default 只关闭
   `sn-session`，dedicated 关闭 sentinel/server；
+- `stop-all` 只处理无 binding 的 raw window；快照中只要存在 Session binding 就在
+  mutation 前整体返回 conflict，并提示先执行 `session close-all`；
 - registry 只表示当前 live/dead window，不建立 durable transcript/history。
 
 `default` 模式遵循当前 `TMUX_TMPDIR` 与用户 `~/.tmux.conf`。Runtime 只拥有带合法
@@ -430,7 +454,7 @@ session 不受影响。`dedicated` 模式的 sentinel 只负责维持隔离 serv
 window。修改 `server_mode` 不迁移 live window；同一 Runtime home 在另一模式仍有
 managed window 时返回 conflict。
 
-`start` 先生成 `tmux_id` 并创建 blocked helper。helper 写 ready fact 后等待 go；
+`open` 先生成 `tmux_id` 并创建 blocked helper。helper 写 ready fact 后等待 go；
 Runtime 校验 pane、process、executable 与 manifest，再提交 registered marker 并释放
 target。marker 前失败删除 window，marker 后失败保留可查询、可 `stop` 的
 `starting|exited` record。Session console 的 target 与 helper 同为 `sn-cli` 时还使用
@@ -443,6 +467,10 @@ paste buffer 发送；success 只表示 tmux accepted。`interrupt` 发送 `C-c`
 使用 tmux window identity 精确 `kill-window`，不按 PID/PGID 猜测。`attach` 只支持
 human TTY；同一 managed server 内允许 switch，从其它 tmux server nested attach
 则拒绝。当前模式下 `sn-session` 不存在时，`list` 成功返回空集合。
+
+`stop-all` 对调用开始时的 raw window 快照逐个调用精确 `stop`；空快照成功返回
+`stopped_count=0`。并发新建 window 不属于该快照，中途失败可留下尚未处理的 raw
+window，调用方可重跑。Tmux namespace 不绕过 Session owner 关闭绑定窗口。
 
 window 可保存唯一 opaque `binding={kind,id}`。Tmux 只校验形态和 registry 唯一性，
 不读取绑定目标 Store；`session open` 使用该绑定关联 Session，canonical 完成信号仍
@@ -662,10 +690,10 @@ SQLite `PRAGMA user_version=4`。缺失、不相等或混合 schema fail closed�
 固定 CLI namespace：
 
 ```text
-exec req profile session tmux agent run server help version
+doctor exec req profile session tmux agent run server help version
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=4`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=5`。
 bare CLI direct、`exec` 和 `tmux attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -680,21 +708,33 @@ sn-cli <cli-profile-id> [options] [input]
 sn-cli <cli-profile-id> resume [native-session-id] [--model M] [--effort E]
 sn-cli exec <cli-profile-id> [options] [input]
 sn-cli req <api-profile-id> [options] [input]
+sn-cli doctor
 sn-cli profile list|show|check
 
 sn-cli session exec <cli-profile-id> [options] [input]
 sn-cli session req <api-profile-id> [options] [input]
 sn-cli session open <cli-profile-id> [options] [input]
 sn-cli session send|attach|interrupt|close --session-id <id>
+sn-cli session close-all
 sn-cli session list|show|messages|events|logs|executions|execution
 sn-cli session reconcile|configure|export|delete|gc
 
-sn-cli tmux start <cli-profile-id> [options] [input]
-sn-cli tmux list|show|send|attach|interrupt|stop
+sn-cli tmux open <cli-profile-id> [options] [input]
+sn-cli tmux list|show|send|attach|interrupt|stop|stop-all
 sn-cli agent <api-profile-id> [options] [input]
 sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
-sn-cli server info|doctor|start|status|stop|update|upgrade-check
+sn-cli server info|start|status|stop|update|upgrade-check
 ```
+
+`open` 是 Session console 与 raw Tmux window 的统一 action；不支持省略 action，因为
+`sn-cli <cli-profile-id>` 已是 direct Profile 入口，省略会使 namespace grammar 与
+Profile 路由产生歧义。旧 `tmux start` 不提供 alias，并按 unknown action 拒绝。
+
+顶层 `sn-cli doctor` 加载当前 Runtime contract，检查所有 Profile command/PATH 与
+环境引用、Tool manifest 环境引用、SQLite Run Store、audit log 写入，以及当前模式的
+tmux binary/version/`sn-session` identity；不调用 Provider/MCP 远端。machine result
+成功时报告各缺失项、`tmux_window_count`、`tmux_error`、`audit_log_error` 和 log
+root；失败时返回单一 canonical error envelope，并在 message 中列出失败项。
 
 bare Profile/`exec` 只接受 CLI Profile，`req`/`agent` 只接受 API Profile；Profile ID
 必须紧跟拥有它的 namespace/action，option 位于其后，input 至多一个并且最后。
@@ -711,12 +751,12 @@ Session/Run；adapter 分别映射为 Codex `resume` 与 Claude `--resume`。`pr
 | `req` | 单次 API request | 无 Session/Run |
 | `session exec|req` | 一个 recorded Turn；`--queue` 时入队 | Session；可选 Run |
 | `session open` | tmux console，每个 prompt 执行 Session Run | Session + Run |
-| `tmux start` | 原始 interactive managed window | 无 Session/Run |
+| `tmux open` | 原始 interactive managed window | 无 Session/Run |
 | `agent` | durable model/tool loop；`--queue` 只入队 | Run；可选 Session |
 | `run` | 查询/控制已有 Run | 不提交 fresh work |
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=4` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=5` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`tmux attach`
 只支持 human TTY。
@@ -776,12 +816,13 @@ malformed resource ID 是 `invalid_request/400`；合法 ID 指向不存在的�
 `sn-server` 读取 `HTTP_ADDR`（默认 `127.0.0.1:8080`）、`SN_SERVER_TOKEN` 与
 `SN_CLI_HOME`。监听非 loopback 地址必须配置 Bearer token。`server start` 只启动
 active `${SN_CLI_HOME}/bin/sn-server`；PID identity、process lease、日志与生命周期
-锁均位于 active `state/`。启动前同样必须通过 activation gate；server 才启动
+由 Runtime 管理：PID/lease/lifecycle lock 位于 active `state/`，process log 位于
+active `logs/sn-server.log`。启动前同样必须通过 activation gate；server 才启动
 scheduler 与 Run reaper，单次 `sn-cli` 命令不启动后台 worker。
 
 ## 10. 激活协议
 
-contract-v4 archive 带 activation epoch 4、当前 contract、Tool manifest、Session
+contract-v5 archive 带 activation epoch 4、当前 contract、Tool manifest、Session
 和 Run schema
 版本。installer/updater 只能由 staged candidate 在 maintenance/lifecycle lock、
 quiescence 和 exact-schema preflight 全部通过后激活。
@@ -826,6 +867,6 @@ queued/running/paused/needs-reconciliation Run、目标 home binary process 或
 reset 授权不能由 archive installer 或 `server update` 获得。
 
 所有公开配置、Session/Run fact、SDK request 和 machine output 都必须完整符合当前
-schema。CLI Profile 只进入 bare direct、`exec`、`session exec` 或 `tmux start`；
+schema。CLI Profile 只进入 bare direct、`exec`、`session exec` 或 `tmux open`；
 API Profile 只进入 `req`、`session req` 或 `agent`。类型不匹配 fail closed，不提供
 alias、自动迁移或 legacy ingress。
