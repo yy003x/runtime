@@ -141,7 +141,7 @@ func UpgradeActivate(
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("load payload release manifest: %w", err)
 	}
-	if manifest.ActivationEpoch != 4 || manifest.ContractVersion != 4 ||
+	if manifest.ActivationEpoch != 4 || manifest.ContractVersion != 5 ||
 		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 4 {
 		return UpgradeResult{}, fmt.Errorf(
 			"payload activation contract is incompatible: epoch=%d contract=%d session_schema=%d run_schema=%d",
@@ -449,7 +449,7 @@ func managedServerExclusions(
 
 func validateActiveHomeShape(target string) error {
 	for _, name := range []string{
-		"bin", "configs", "tools", "resources",
+		"bin", "configs", "tools", "resources", "logs",
 		"sessions", "state", "tmp",
 	} {
 		path := filepath.Join(target, name)

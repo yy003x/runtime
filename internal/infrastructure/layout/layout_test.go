@@ -26,7 +26,7 @@ func TestResolveUsesSNCLIHome(t *testing.T) {
 		paths.RunDBFile != filepath.Join(home, "state", "runtime.db") ||
 		paths.ServerBinary != filepath.Join(home, "bin", "sn-server") ||
 		paths.ServerPIDFile != filepath.Join(home, "state", "sn-server.pid") ||
-		paths.ServerLogFile != filepath.Join(home, "state", "sn-server.log") ||
+		paths.ServerLogFile != filepath.Join(home, "logs", "sn-server.log") ||
 		paths.ServerLeaseFile != filepath.Join(home, "state", "sn-server.lease.lock") ||
 		paths.ServerLockFile != filepath.Join(home, "state", "sn-server.lifecycle.lock") ||
 		paths.TmuxLockFile != filepath.Join(home, "state", "tmux.lock") ||
@@ -56,7 +56,7 @@ func TestEnsureCreatesPrivateDirectoryTree(t *testing.T) {
 	}
 	for _, dir := range []string{
 		paths.BinDir, paths.ConfigDir, paths.ToolsDir, paths.ResourcesDir,
-		paths.SchemaDir, paths.SessionsDir, paths.StateDir, paths.TmpDir,
+		paths.SchemaDir, paths.SessionsDir, paths.LogsDir, paths.StateDir, paths.TmpDir,
 		paths.TmuxManifestDir,
 	} {
 		info, err := os.Stat(dir)

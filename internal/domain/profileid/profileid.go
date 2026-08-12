@@ -7,7 +7,7 @@ import "fmt"
 const maxLength = 128
 
 var reservedNamespaces = [...]string{
-	"exec", "req", "profile", "session", "tmux", "agent", "run", "server", "help", "version",
+	"exec", "req", "profile", "session", "tmux", "agent", "run", "server", "doctor", "help", "version",
 }
 
 // ReservedNamespaces returns the canonical public namespaces that every

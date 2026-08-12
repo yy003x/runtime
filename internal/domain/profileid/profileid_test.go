@@ -7,7 +7,7 @@ import (
 
 func TestReservedNamespacesAreCanonicalAndDefensivelyCopied(t *testing.T) {
 	want := []string{
-		"exec", "req", "profile", "session", "tmux", "agent", "run", "server", "help", "version",
+		"exec", "req", "profile", "session", "tmux", "agent", "run", "server", "doctor", "help", "version",
 	}
 	first := ReservedNamespaces()
 	if !reflect.DeepEqual(first, want) {

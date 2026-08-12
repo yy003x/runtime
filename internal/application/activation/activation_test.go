@@ -85,7 +85,7 @@ func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
 		"schema_version":1,
 		"schema_version":1,
 		"activation_epoch":4,
-		"contract_version":4,
+		"contract_version":5,
 		"session_schema_version":2,
 		"run_schema_version":4
 	}`
@@ -170,7 +170,7 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ActivationEpoch != 4 || result.ContractVersion != 4 ||
+	if result.ActivationEpoch != 4 || result.ContractVersion != 5 ||
 		result.SessionSchemaVersion != 2 ||
 		result.RunSchemaVersion != 4 {
 		t.Fatalf("result=%#v", result)
@@ -635,6 +635,18 @@ func TestActivationRuntimeValidationRequiresRegularFiles(t *testing.T) {
 			t.Fatalf("error=%v", err)
 		}
 	})
+}
+
+func TestValidateActiveHomeShapeRejectsSymlinkLogRoot(t *testing.T) {
+	target := t.TempDir()
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(target, "logs")); err != nil {
+		t.Fatal(err)
+	}
+	err := validateActiveHomeShape(target)
+	if err == nil || !strings.Contains(err.Error(), "active logs") {
+		t.Fatalf("error=%v", err)
+	}
 }
 
 func TestUpgradeActivateRejectsIncompleteResourcesBeforeMutation(
@@ -1758,7 +1770,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "release", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":4,\"session_schema_version\":2,\"run_schema_version\":4}\n",
+		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":5,\"session_schema_version\":2,\"run_schema_version\":4}\n",
 		0o600,
 	)
 	return payload, target, candidate

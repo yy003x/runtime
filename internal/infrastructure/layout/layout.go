@@ -89,7 +89,7 @@ func FromHome(home string) (Paths, error) {
 		StateDir:          stateDir,
 		RunDBFile:         filepath.Join(stateDir, "runtime.db"),
 		ServerPIDFile:     filepath.Join(stateDir, "sn-server.pid"),
-		ServerLogFile:     filepath.Join(stateDir, "sn-server.log"),
+		ServerLogFile:     filepath.Join(absolute, "logs", "sn-server.log"),
 		ServerLeaseFile:   filepath.Join(stateDir, "sn-server.lease.lock"),
 		ServerLockFile:    filepath.Join(stateDir, "sn-server.lifecycle.lock"),
 		UpdateStateFile:   filepath.Join(stateDir, "update.json"),

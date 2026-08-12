@@ -11,7 +11,7 @@ import (
 
 const (
 	cliOutputSchemaVersion   = 1
-	cliOutputContractVersion = 4
+	cliOutputContractVersion = 5
 )
 
 type cliOutput struct {
