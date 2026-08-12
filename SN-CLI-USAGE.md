@@ -7,7 +7,7 @@
 定位某条命令时，先看 [命令速查表](#命令速查表)，再跳到对应编号章节。
 
 本文只描述当前协议。所有入口、配置和 machine output 都按本文的完整结构严格校验；
-架构约束和内部一致性要求仍以 `docs/` 下的专题契约为准。
+架构约束和内部一致性要求以 `docs/runtime-contract.md` 的唯一契约为准。
 
 ## 目录
 
@@ -552,7 +552,7 @@ API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai driv
 
 ### 4.3 runtime.json
 
-`runtime.json` 控制 Agent、scheduler 和 Run retention：
+`runtime.json` 控制 Agent、scheduler、Run retention 和 tmux server mode：
 
 ```json
 {
@@ -575,6 +575,9 @@ API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai driv
   },
   "run": {
     "settled_retention": "168h"
+  },
+  "tmux": {
+    "server_mode": "default"
   }
 }
 ```
@@ -1785,7 +1788,7 @@ source root device/inode，并只允许
 durable Run 建立伪 transaction。safe-fs 覆盖 symlink/hardlink、路径替换、
 确定性并发 swap 和 crash；不承诺抵抗已获同 UID 任意代码执行、可持续枚举随机
 quarantine 名称或使用 ptrace/kill 的攻击者。完整边界见
-[Session 与 History 契约](docs/session-history-contract.md)。
+[SN Runtime 契约](docs/runtime-contract.md)。
 
 ### 6.18 Tmux-backed Session console
 
@@ -1844,11 +1847,16 @@ Turn 完成。
 
 - 只接受 `type=cli` Profile。
 - 固定使用 interactive adapter。
-- 使用专用 `sn-session` Tmux server。
+- 固定使用 `sn-session`；`tmux.server_mode=default|dedicated` 选择普通或专用
+  Tmux server，缺省为 `default`。
 - 每次 `start` 创建一个 managed window。
 - 自身不创建 Runtime Session、Turn 或 Run；Session console 由 `session open` 组合。
 - 不保存 pane transcript 或 paste 内容。
 - 需要 `tmux >= 3.2`。
+
+默认模式下普通 `tmux list-sessions` 可见 `sn-session`，也可用
+`tmux attach-session -t sn-session` 进入并使用原生 window 导航；生命周期 mutation
+仍应使用带 `tmux_id` 的 `sn-cli tmux ...` 命令。`dedicated` 模式保留隔离 socket。
 
 ### 7.1 `tmux start`
 
@@ -1902,7 +1910,7 @@ window name。
 sn-cli tmux list
 ```
 
-不接受参数。专用 Tmux server 不存在时，成功返回空列表。
+不接受参数。当前模式的 managed `sn-session` 不存在时，成功返回空列表。
 
 ```bash
 sn-cli tmux list
@@ -1975,7 +1983,7 @@ sn-cli tmux attach --tmux-id=<id>
 
 - stdin/stdout 必须是 TTY。
 - 不支持 `--json`。
-- nested Tmux attach 受到专用 server 身份限制。
+- nested Tmux attach 受到当前 managed server 身份限制。
 
 ```bash
 sn-cli tmux attach --tmux-id <tmux_id>
@@ -2013,8 +2021,9 @@ sn-cli tmux stop --tmux-id=<id>
 sn-cli tmux stop --tmux-id <tmux_id>
 ```
 
-最后一个 managed window 被停止时，Runtime 会清理专用 server/socket。对于
-`orphaned` window，只有能够证明身份时才会停止。
+最后一个 managed window 被停止时，`default` 只删除 `sn-session`，不影响普通
+server 中的其他 session；`dedicated` 清理隔离 server/socket。对于 `orphaned`
+window，只有能够证明身份时才会停止。
 
 ### 7.8 Tmux 状态
 
@@ -3735,11 +3744,7 @@ sn-cli __sn_session_terminal_helper ...
 已有 Run 控制 → run ...
 ```
 
-## 16. 相关契约文档
+## 16. 契约文档
 
-- [SN Runtime 总契约](docs/runtime-contract.md)
-- [CLI 路由契约](docs/cli-routing-contract.md)
-- [配置契约](docs/configuration.md)
-- [Session 与 History 契约](docs/session-history-contract.md)
-- [Tmux 管理契约](docs/tmux-contract.md)
-- [集成架构](docs/integration-arch.md)
+[SN Runtime 契约](docs/runtime-contract.md) 是当前架构、配置、CLI/HTTP、Session、
+Run、Agent、Tmux 与激活语义的唯一契约文档。

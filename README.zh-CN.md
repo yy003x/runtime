@@ -212,43 +212,35 @@ secret 通过 headers 中的 `${VAR}` 引用从环境变量读取，profile 只�
 driver 对裸 `Authorization` 自动补 `Bearer` scheme，anthropic 不补。`runtime.json`
 选择 Agent tool、预算、scheduler 与 run retention；source `resources/tools/` 默认交付
 使用 `Z_AI_API_KEY` 的 `web_search` / `web_fetch` MCP manifest。完整字段、覆盖顺序与示例见
-[sn-cli 详细使用手册](SN-CLI-USAGE.md)与[配置契约](docs/configuration.md)。
+[sn-cli 详细使用手册](SN-CLI-USAGE.md)与[SN Runtime 契约](docs/runtime-contract.md)。
 
 ## 目录架构
 
 ```text
-agent/       自主 model/tool 循环（Agent Kernel）
-command/     CLI Command Bridge 领域
-contract/    provider-neutral 的 request / event / error 契约
-model/       单次模型调用 + API profile 领域
-profile/     command/model catalog 门面
-run/         durable run 应用领域（SQLite）
-session/     本地 canonical session + context projection
-tmux/        专用 tmux server / window 管理
-provider/    openai/ + anthropic/ driver
-store/sqlite/  run store adapter
-transport/   http/（HTTP/SSE）adapter
-internal/    cli adapter、runtime bootstrap、config loader、builtin/MCP tool
-cmd/         sn-cli、sn-server 入口
-configs/     源 CLI/API profile
-resources/   schema/ + 源 tools/（未来 skills/、mcp/ 资产也留在这里）
-release/     runtime.json、tmux.conf 与 release.json payload 模板
+cmd/             sn-cli、sn-server 入口
+pkg/             公开 Go API：agent、command、contract、model、profile、
+                 provider、run、session、store、tmux 与 HTTP transport
+internal/
+  domain/        私有 Runtime 值对象与不变量
+  application/   activation、bootstrap、tool/use-case 编排
+  infrastructure/配置、文件、日志、进程与 MCP adapter
+  interfaces/    入站 CLI adapter
+  testkit/       仅测试复用资产
+configs/         source CLI/API profile
+resources/       schema 与 source tool
+release/         runtime.json、tmux.conf 与 release.json payload 模板
 ```
 
-领域包不读 CLI 参数、不打开配置目录、不依赖 HTTP。`internal/runtimebootstrap` 是
-composition root；provider、SQLite、CLI、HTTP 和 tool executor 都是 adapter。
+外部 Go 调用方统一 import `github.com/yy003x/runtime/pkg/...`，不提供旧根 package
+兼容 shim。`internal/application/runtimebootstrap` 是 composition root；四个 internal
+层按 CLI Runtime + Agent 场景适配，不套用固定 HTTP 服务模板。
 
 ## 文档
 
 | 文档 | 范围 |
 |---|---|
 | [sn-cli 详细使用手册](SN-CLI-USAGE.md) | 完整 CLI 命令、参数、场景与示例参考 |
-| [SN Runtime 契约](docs/runtime-contract.md) | 顶层契约与架构 |
-| [CLI 路由契约](docs/cli-routing-contract.md) | 命令路由与 ID 规则 |
-| [配置契约](docs/configuration.md) | profile / runtime 配置 schema |
-| [Session 与 history 契约](docs/session-history-contract.md) | session 状态机与 crash 恢复 |
-| [Tmux 管理契约](docs/tmux-contract.md) | tmux 窗口管理 |
-| [集成架构](docs/integration-arch.md) | 调用方如何经 CLI / HTTP 集成 |
+| [SN Runtime 契约](docs/runtime-contract.md) | 唯一的架构、配置、CLI/HTTP、Session、Run、Agent、Tmux 与激活契约 |
 
 ## 构建与验证
 

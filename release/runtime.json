@@ -16,5 +16,8 @@
   },
   "run": {
     "settled_retention": "168h"
+  },
+  "tmux": {
+    "server_mode": "default"
   }
 }

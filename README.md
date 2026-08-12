@@ -54,8 +54,8 @@ rejected rather than silently papered over.
 - 🤖 **Autonomous agent loops** — model + controlled builtin/MCP tools
   (including `web_search` and `web_fetch`) with budgets, durable effects, and
   streaming events.
-- 🪟 **Long-lived tmux windows** — a dedicated tmux server you can start, send,
-  attach, interrupt, and stop by stable ID.
+- 🪟 **Long-lived tmux windows** — native/default or isolated tmux transport you
+  can start, send, attach, interrupt, and stop by stable ID.
 - 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
   unknown fields and ambiguous states fail closed.
 - 🌐 **HTTP / SSE control plane** — a loopback `sn-server` exposes the full
@@ -178,7 +178,7 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
 | `sn-cli session open\|send\|attach\|interrupt\|close` | durable multi-turn Session console | Session facts + one durable Run per consumed prompt; opaque tmux binding |
-| `sn-cli tmux ...` | dedicated tmux interactive window | tmux registry and local CLI log (no transcript) |
+| `sn-cli tmux ...` | managed tmux interactive window | tmux registry and local CLI log (no transcript) |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
 | `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
 
@@ -218,6 +218,11 @@ The repository source tree and every release archive use the same left-hand
 layout. Activation is the only owner of the mapping into the active home; the
 active home is not a source or archive template.
 
+`runtime.json` sets `tmux.server_mode` to `default` (the default native tmux
+server, visible to `tmux list-sessions`) or `dedicated` (the isolated Runtime
+socket). Both modes use the fixed `sn-session` name and preserve the same
+`tmux_id`-based management contract.
+
 The profile ID is the filename without `.json`. A CLI profile wraps a command;
 an API profile points at a provider:
 
@@ -247,48 +252,40 @@ Secrets are referenced via `${VAR}` in `headers` and expanded from environment
 variables at call time — the profile only stores the reference name, never the
 value. The openai driver auto-prepends the `Bearer ` scheme to a bare
 `Authorization` value; the anthropic driver does not. `runtime.json` selects
-the agent tools, budgets, scheduler, and run retention; source
+the agent tools, budgets, scheduler, run retention, and tmux server mode; source
 `resources/tools/` ships `web_search` and `web_fetch` MCP manifests using
 `Z_AI_API_KEY`. Full field reference, override order, and
 examples: [sn-cli reference](SN-CLI-USAGE.md) and
-[configuration contract](docs/configuration.md).
+[SN Runtime contract](docs/runtime-contract.md).
 
 ## Project layout
 
 ```text
-agent/       autonomous model/tool loop (Agent Kernel)
-command/     CLI Command Bridge domain
-contract/    provider-neutral request / event / error contract
-model/       single model call + API profile domain
-profile/     command/model catalog facade
-run/         durable run application domain (SQLite)
-session/     local canonical session + context projection
-tmux/        dedicated tmux server / window management
-provider/    openai/ + anthropic/ drivers
-store/sqlite/  run store adapter
-transport/   http/ (HTTP/SSE) adapter
-internal/    cli adapter, runtime bootstrap, config loader, builtin/MCP tools
-cmd/         sn-cli, sn-server entry points
-configs/     source CLI/API profiles
-resources/   schema/ + source tools/ (future skills/ and mcp/ assets stay here)
-release/     runtime.json, tmux.conf, and release.json payload templates
+cmd/             sn-cli and sn-server entry points
+pkg/             public Go API: agent, command, contract, model, profile,
+                 provider, run, session, store, tmux, and HTTP transport
+internal/
+  domain/        private Runtime values and invariants
+  application/   activation, bootstrap, and tool/use-case orchestration
+  infrastructure/config, filesystem, log, process, and MCP adapters
+  interfaces/    inbound CLI adapter
+  testkit/       reusable test-only assets
+configs/         source CLI/API profiles
+resources/       schemas and source tools
+release/         runtime.json, tmux.conf, and release.json payload templates
 ```
 
-Domain packages don't read CLI args, don't open the config dir, and don't depend
-on HTTP. `internal/runtimebootstrap` is the composition root; providers, SQLite,
-CLI, HTTP, and tool executors are all adapters.
+External Go consumers import `github.com/yy003x/runtime/pkg/...`; legacy root
+package paths have no compatibility shim. `internal/application/runtimebootstrap`
+is the composition root, and the four internal layers are adapted to a CLI
+Runtime + Agent rather than an HTTP-service template.
 
 ## Documentation
 
 | Document | Scope |
 |---|---|
 | [sn-cli reference](SN-CLI-USAGE.md) · 中文 | Full CLI command, argument, scenario, and example reference |
-| [SN Runtime contract](docs/runtime-contract.md) | Top-level contracts and architecture |
-| [CLI routing contract](docs/cli-routing-contract.md) | Command routing and ID rules |
-| [Configuration contract](docs/configuration.md) | Profile / runtime config schema |
-| [Session & history contract](docs/session-history-contract.md) | Session state machine and crash recovery |
-| [Tmux contract](docs/tmux-contract.md) | Tmux window management |
-| [Integration architecture](docs/integration-arch.md) | How callers integrate over CLI / HTTP |
+| [SN Runtime contract](docs/runtime-contract.md) | The sole architecture, configuration, CLI/HTTP, Session, Run, Agent, Tmux, and activation contract |
 
 ## Build & verify
 

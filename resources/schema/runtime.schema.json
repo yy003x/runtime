@@ -106,6 +106,17 @@
           "default": "168h"
         }
       }
+    },
+    "tmux": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "server_mode": {
+          "type": "string",
+          "enum": ["default", "dedicated"],
+          "default": "default"
+        }
+      }
     }
   }
 }
