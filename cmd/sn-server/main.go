@@ -76,6 +76,7 @@ func main() {
 	if config.BearerToken != "" {
 		handler = bearerAuth(config.BearerToken, handler)
 	}
+	handler = auditHTTP(paths.LogsDir, handler)
 	server := &http.Server{
 		Addr: config.Address, Handler: handler,
 		ReadHeaderTimeout: 10 * time.Second,

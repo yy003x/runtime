@@ -82,6 +82,103 @@ func TestAppendSeparatesDailyCLIAndAPIRecords(t *testing.T) {
 	assertMode(t, filepath.Join(dayDir, "api.jsonl"), 0o600)
 }
 
+func TestAppendAuditUsesRedactedPrivateDailyFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "logs")
+	when := time.Date(
+		2026, 8, 12, 8, 9, 10, 123,
+		time.FixedZone("CST", 8*60*60),
+	)
+	targets := map[string]string{
+		"session_id": "session_11111111111111111111111111111111",
+	}
+	if err := AppendAudit(root, AuditRecord{
+		Time: when, Source: "sn-cli", Namespace: "session",
+		Action: "close", Outcome: "succeeded", Targets: targets,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	targets["prompt"] = "must not be retained"
+	path := filepath.Join(root, "260812", "audit.jsonl")
+	record := decodeLine(t, path)
+	if record["schema_version"] != float64(1) ||
+		record["source"] != "sn-cli" ||
+		record["namespace"] != "session" ||
+		record["action"] != "close" ||
+		record["outcome"] != "succeeded" {
+		t.Fatalf("record=%#v", record)
+	}
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "must not be retained") {
+		t.Fatalf("audit record retained caller mutation: %s", encoded)
+	}
+	assertMode(t, path, 0o600)
+}
+
+func TestOpenProcessLogUsesPrivateNoFollowTarget(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "logs")
+	file, err := OpenProcessLog(root, "sn-server.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("server line\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "sn-server.log")
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "server line\n" {
+		t.Fatalf("data=%q error=%v", data, err)
+	}
+	assertMode(t, root, 0o700)
+	assertMode(t, path, 0o600)
+	for _, name := range []string{"", ".", "../outside", "nested/log"} {
+		if file, err := OpenProcessLog(root, name); err == nil {
+			_ = file.Close()
+			t.Fatalf("invalid process log name %q was accepted", name)
+		}
+	}
+}
+
+func TestOpenProcessLogRejectsRedirectedRootAndFile(t *testing.T) {
+	parent := t.TempDir()
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(outside, "target")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rootLink := filepath.Join(parent, "root-link")
+	if err := os.Symlink(outside, rootLink); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := OpenProcessLog(rootLink, "sn-server.log"); err == nil {
+		_ = file.Close()
+		t.Fatal("symlink process log root was accepted")
+	}
+	root := filepath.Join(parent, "logs")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "sn-server.log")); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := OpenProcessLog(root, "sn-server.log"); err == nil {
+		_ = file.Close()
+		t.Fatal("symlink process log file was accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "outside\n" {
+		t.Fatalf("outside target changed: data=%q error=%v", data, err)
+	}
+}
+
 func TestAppendConcurrentRecordsRemainValidJSONLines(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "logs")
 	when := time.Date(2026, 8, 4, 11, 0, 0, 0, time.UTC)
