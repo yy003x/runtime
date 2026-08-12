@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yy003x/runtime/contract"
+	"github.com/yy003x/runtime/internal/identity"
 )
 
 const (
@@ -32,6 +33,7 @@ const (
 	helperCommandName   = "__sn_tmux_helper"
 	maxManifestBytes    = 1 << 20
 	maxSendBytes        = 1 << 20
+	maxFramedSendBytes  = 2 << 20
 	defaultReadyTimeout = 5 * time.Second
 	defaultGateTimeout  = 15 * time.Second
 )
@@ -55,6 +57,19 @@ type Invocation struct {
 	Environment  []string
 	CWD          string
 	ConfigDigest string
+	Binding      *Binding
+	// CooperativeReady asks the target to publish the private launch-ready fact
+	// after exec. It is needed only when target and bootstrap helper share one
+	// executable identity.
+	CooperativeReady bool
+}
+
+// Binding is an optional, opaque ownership reference supplied by a composing
+// caller. Tmux validates and preserves it, but never reads the referenced
+// domain state or derives lifecycle decisions from it.
+type Binding struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }
 
 type StartRequest struct {
@@ -77,6 +92,7 @@ type Window struct {
 	ProfileID     string     `json:"profile_id,omitempty"`
 	CWD           string     `json:"cwd,omitempty"`
 	ConfigDigest  string     `json:"config_digest,omitempty"`
+	Binding       *Binding   `json:"binding,omitempty"`
 	ExitCode      *int       `json:"exit_code,omitempty"`
 	Signal        string     `json:"signal,omitempty"`
 	LaunchError   *SafeError `json:"launch_error,omitempty"`
@@ -155,6 +171,9 @@ type windowRecord struct {
 	CreatedAt                time.Time  `json:"created_at"`
 	CWD                      string     `json:"cwd"`
 	ConfigDigest             string     `json:"config_digest"`
+	Binding                  *Binding   `json:"binding,omitempty"`
+	CooperativeReady         bool       `json:"cooperative_ready,omitempty"`
+	TargetReady              bool       `json:"target_ready,omitempty"`
 	WindowID                 string     `json:"window_id"`
 	PaneID                   string     `json:"pane_id"`
 	HelperPID                int        `json:"helper_pid"`
@@ -182,6 +201,7 @@ type launchManifest struct {
 	ReadyPath          string   `json:"ready_path"`
 	GoPath             string   `json:"go_path"`
 	StatusPath         string   `json:"status_path"`
+	TargetReadyPath    string   `json:"target_ready_path,omitempty"`
 	GateTimeoutMS      int64    `json:"gate_timeout_ms"`
 }
 
@@ -207,6 +227,16 @@ type helperStatus struct {
 	Nonce          string     `json:"nonce"`
 	ManifestDigest string     `json:"manifest_digest"`
 	Error          *SafeError `json:"error,omitempty"`
+}
+
+type targetReadyFact struct {
+	SchemaVersion      int    `json:"schema_version"`
+	Nonce              string `json:"nonce"`
+	ManifestDigest     string `json:"manifest_digest"`
+	PID                int    `json:"pid"`
+	ProcessStart       string `json:"process_start"`
+	Executable         string `json:"executable"`
+	ExecutableIdentity string `json:"executable_identity"`
 }
 
 type liveWindow struct {
@@ -250,6 +280,10 @@ func safeRuntimeError(err error) *SafeError {
 
 func cloneWindow(value Window) Window {
 	result := value
+	if value.Binding != nil {
+		current := *value.Binding
+		result.Binding = &current
+	}
 	if value.ExitCode != nil {
 		current := *value.ExitCode
 		result.ExitCode = &current
@@ -259,6 +293,24 @@ func cloneWindow(value Window) Window {
 		result.LaunchError = &current
 	}
 	return result
+}
+
+func cloneBinding(value *Binding) *Binding {
+	if value == nil {
+		return nil
+	}
+	result := *value
+	return &result
+}
+
+func validateBinding(value *Binding) error {
+	if value == nil {
+		return nil
+	}
+	if err := identity.Validate(value.ID, value.Kind); err != nil {
+		return fmt.Errorf("invalid Tmux binding: %w", err)
+	}
+	return nil
 }
 
 func strictDecode(data []byte, target any) error {

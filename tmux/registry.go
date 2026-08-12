@@ -214,6 +214,8 @@ func (service *Service) validateRegisteredWindow(
 		)
 	}
 	if err := profileid.Validate(record.ProfileID); err != nil ||
+		validateBinding(record.Binding) != nil ||
+		record.TargetReady && !record.CooperativeReady ||
 		!filepath.IsAbs(record.CWD) ||
 		!configDigestPattern.MatchString(record.ConfigDigest) ||
 		!windowIDPattern.MatchString(record.WindowID) ||
@@ -256,6 +258,7 @@ func (service *Service) validateRegisteredWindow(
 		CreatedAt: record.CreatedAt.UTC(), WindowID: record.WindowID,
 		PaneID: record.PaneID, ProfileID: record.ProfileID,
 		CWD: record.CWD, ConfigDigest: record.ConfigDigest,
+		Binding:     cloneBinding(record.Binding),
 		LaunchError: record.LaunchError,
 	}
 	return nil
@@ -313,6 +316,17 @@ func (service *Service) projectState(
 	current := filepath.Clean(identity.Executable)
 	helper := filepath.Clean(record.HelperExecutable)
 	target := filepath.Clean(record.ResolvedExecutable)
+	if record.CooperativeReady && record.TargetReady {
+		if !processExecutableMatches(current, target) ||
+			identity.ExecutableIdentity != record.ExecutableIdentity {
+			return tmuxTransportError(
+				contract.ErrorConflict,
+				"Tmux pane %s cooperative target identity changed", value.PaneID,
+			)
+		}
+		value.State = StateRunning
+		return nil
+	}
 	if processExecutableMatches(current, helper) {
 		if identity.ExecutableIdentity != record.HelperExecutableIdentity {
 			return tmuxTransportError(

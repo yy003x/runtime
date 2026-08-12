@@ -30,11 +30,13 @@ func runSessionNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: session exec|req|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
+		return cliValidationf("usage: session exec|req|open|send|attach|interrupt|close|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
 	}
 	switch args[0] {
 	case "exec", "req":
 		return runSessionExecution(paths, args[0], args[1:], output)
+	case "open", "send", "attach", "interrupt", "close":
+		return runSessionTerminalAction(paths, args[0], args[1:], output)
 	}
 	if err := validateSessionManagementInvocation(args); err != nil {
 		return cliValidation(err)

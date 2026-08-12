@@ -33,6 +33,11 @@ type tmuxManager interface {
 	Stop(context.Context, string) (runtimetmux.ActionResult, error)
 }
 
+type sessionTerminalTmuxManager interface {
+	tmuxManager
+	SendFramed(context.Context, string, string) (runtimetmux.ActionResult, error)
+}
+
 type tmuxStartResolver func(
 	context.Context,
 	tmuxStartOptions,
@@ -545,6 +550,13 @@ func renderTmuxWindow(output *cliOutput, value runtimetmux.Window) error {
 	if value.ProfileID != "" {
 		if err := output.line(
 			"Profile: %s, cwd: %s", value.ProfileID, value.CWD,
+		); err != nil {
+			return err
+		}
+	}
+	if value.Binding != nil {
+		if err := output.line(
+			"Binding: %s=%s", value.Binding.Kind, value.Binding.ID,
 		); err != nil {
 			return err
 		}

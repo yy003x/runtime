@@ -35,14 +35,17 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"sn-cli <cli-profile-id> [options...] [input]",
+		"sn-cli <cli-profile-id> resume [session-id]",
 		"sn-cli exec <cli-profile-id> [options...] [input]",
 		"sn-cli req <api-profile-id> [options...] [input]",
 		"sn-cli session exec <cli-profile-id> [options...] [input]",
 		"sn-cli session req <api-profile-id> [options...] [input]",
+		"sn-cli session open <cli-profile-id> [options...] [input]",
+		"sn-cli session send|attach|interrupt|close --session-id <id>",
 		"sn-cli session list|show|messages|events|logs|executions|execution",
 		"sn-cli session reconcile|configure|export|delete|gc",
 		"sn-cli agent <api-profile-id> [options...] [input]",
-		"sn-cli run get|list|result|events|watch|cancel|resume|retry|reconcile|gc",
+		"sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc",
 		"stable req/management output; must be first",
 		"direct/exec CLI output remains target-native",
 		"Tools:               <runtime-home>/tools",

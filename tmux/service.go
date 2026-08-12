@@ -174,6 +174,34 @@ func (service *Service) Start(
 	if err := service.prepare(ctx, true); err != nil {
 		return StartResult{}, err
 	}
+	if invocation.Binding != nil {
+		exists, err := service.socketExists()
+		if err != nil {
+			return StartResult{}, err
+		}
+		if exists {
+			marker, err := service.loadAndValidateServer(ctx)
+			if err != nil {
+				return StartResult{}, err
+			}
+			windows, err := service.loadWindows(ctx, marker)
+			if err != nil {
+				return StartResult{}, err
+			}
+			for _, current := range windows {
+				if current.Binding != nil &&
+					current.Binding.Kind == invocation.Binding.Kind &&
+					current.Binding.ID == invocation.Binding.ID {
+					return StartResult{}, tmuxTransportError(
+						contract.ErrorConflict,
+						"Tmux binding %s=%s already belongs to window %s",
+						invocation.Binding.Kind, invocation.Binding.ID,
+						current.TmuxID,
+					)
+				}
+			}
+		}
+	}
 	return service.startWindow(ctx, invocation)
 }
 
@@ -236,7 +264,33 @@ func (service *Service) Send(
 	tmuxID string,
 	input string,
 ) (ActionResult, error) {
-	if err := validateSendInput(input); err != nil {
+	return service.send(ctx, tmuxID, input, maxSendBytes)
+}
+
+// SendFramed sends one opaque, single-line carrier frame. It exists for
+// composition layers whose encoded frame can exceed the public raw-input
+// limit; Tmux does not decode or persist the frame.
+func (service *Service) SendFramed(
+	ctx context.Context,
+	tmuxID string,
+	frame string,
+) (ActionResult, error) {
+	if strings.ContainsAny(frame, "\r\n") {
+		return ActionResult{}, runtimeError(
+			contract.ErrorInvalidRequest, contract.PhaseRequest,
+			"Tmux carrier frame must be one line",
+		)
+	}
+	return service.send(ctx, tmuxID, frame, maxFramedSendBytes)
+}
+
+func (service *Service) send(
+	ctx context.Context,
+	tmuxID string,
+	input string,
+	limit int,
+) (ActionResult, error) {
+	if err := validateSendInput(input, limit); err != nil {
 		return ActionResult{}, err
 	}
 	value, marker, lock, err := service.resolve(ctx, tmuxID, false)
@@ -845,6 +899,12 @@ func (service *Service) validateInvocation(
 			"invalid command environment: %v", err,
 		)
 	}
+	if err := validateBinding(value.Binding); err != nil {
+		return Invocation{}, runtimeError(
+			contract.ErrorInvalidRequest, contract.PhaseRequest,
+			"%v", err,
+		)
+	}
 	for _, argument := range value.Argv {
 		if !utf8.ValidString(argument) ||
 			strings.ContainsRune(argument, '\x00') {
@@ -859,20 +919,22 @@ func (service *Service) validateInvocation(
 	result.Argv = append([]string(nil), value.Argv...)
 	result.Environment = append([]string(nil), value.Environment...)
 	result.CWD = filepath.Clean(value.CWD)
+	result.Binding = cloneBinding(value.Binding)
+	result.CooperativeReady = value.CooperativeReady
 	return result, nil
 }
 
-func validateSendInput(value string) error {
+func validateSendInput(value string, limit int) error {
 	if value == "" {
 		return runtimeError(
 			contract.ErrorInvalidRequest, contract.PhaseRequest,
 			"Tmux input must not be empty",
 		)
 	}
-	if len(value) > maxSendBytes {
+	if len(value) > limit {
 		return runtimeError(
 			contract.ErrorContextOverflow, contract.PhaseRequest,
-			"Tmux input exceeds %d bytes", maxSendBytes,
+			"Tmux input exceeds %d bytes", limit,
 		)
 	}
 	if !utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {

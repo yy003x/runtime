@@ -73,6 +73,22 @@ func TestExactTargetEnvironmentReplacesTmuxReservedValues(t *testing.T) {
 	}
 }
 
+func TestFramedSendHeadroomDoesNotWidenRawSendLimit(t *testing.T) {
+	value := strings.Repeat("x", maxSendBytes+1)
+	if err := validateSendInput(value, maxSendBytes); err == nil {
+		t.Fatal("raw Tmux input exceeded its public limit")
+	}
+	if err := validateSendInput(value, maxFramedSendBytes); err != nil {
+		t.Fatalf("valid carrier frame rejected: %v", err)
+	}
+	service := &Service{}
+	if _, err := service.SendFramed(
+		context.Background(), "unused", "two\nlines",
+	); err == nil {
+		t.Fatal("multi-line carrier frame was accepted")
+	}
+}
+
 func TestManifestDigestDetectsMutation(t *testing.T) {
 	manifest := launchManifest{
 		SchemaVersion:      WindowSchemaVersion,
@@ -312,6 +328,9 @@ func TestFastExitTargetIsRegisteredBeforeExecution(t *testing.T) {
 			ProfileID: "fast", Path: "/usr/bin/true",
 			Argv: []string{"true"}, Environment: []string{"ONLY_CONFIGURED=yes"},
 			CWD: service.home, ConfigDigest: digestString("fast-config"),
+			Binding: &Binding{
+				Kind: "session", ID: "session_11111111111111111111111111111111",
+			},
 		},
 	})
 	if err != nil {
@@ -323,9 +342,77 @@ func TestFastExitTargetIsRegisteredBeforeExecution(t *testing.T) {
 	if result.Window.ExitCode == nil || *result.Window.ExitCode != 0 {
 		t.Fatalf("exit code = %#v", result.Window.ExitCode)
 	}
+	if result.Window.Binding == nil || result.Window.Binding.Kind != "session" ||
+		result.Window.Binding.ID != "session_11111111111111111111111111111111" {
+		t.Fatalf("binding = %#v", result.Window.Binding)
+	}
 	if _, err := service.Stop(
 		context.Background(), result.Window.TmuxID,
 	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCooperativeTargetMustAcknowledgeReadiness(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	service := newTestService(t, true)
+	result, err := service.Start(context.Background(), StartRequest{
+		Invocation: Invocation{
+			ProfileID: "cooperative-fast", Path: "/usr/bin/true",
+			Argv: []string{"true"}, Environment: []string{"ONLY_CONFIGURED=yes"},
+			CWD: service.home, ConfigDigest: digestString("cooperative-fast-config"),
+			CooperativeReady: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LaunchAccepted || result.Window.State != StateExited ||
+		result.Window.LaunchError == nil ||
+		!strings.Contains(
+			result.Window.LaunchError.Message,
+			"exited before readiness acknowledgement",
+		) {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := service.Stop(
+		context.Background(), result.Window.TmuxID,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBindingIsUniqueWithinDedicatedRegistry(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	service := newTestService(t, true)
+	binding := &Binding{
+		Kind: "session", ID: "session_22222222222222222222222222222222",
+	}
+	request := StartRequest{Invocation: Invocation{
+		ProfileID: "bound", Path: "/usr/bin/true", Argv: []string{"true"},
+		Environment: []string{"ONLY_CONFIGURED=yes"}, CWD: service.home,
+		ConfigDigest: digestString("bound-config"), Binding: binding,
+	}}
+	first, err := service.Start(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Start(context.Background(), request); err == nil ||
+		!strings.Contains(err.Error(), "already belongs to window") {
+		t.Fatalf("duplicate binding error = %v", err)
+	}
+	windows, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 1 || windows[0].TmuxID != first.Window.TmuxID {
+		t.Fatalf("windows = %#v", windows)
+	}
+	if _, err := service.Stop(context.Background(), first.Window.TmuxID); err != nil {
 		t.Fatal(err)
 	}
 }

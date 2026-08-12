@@ -51,6 +51,9 @@ func (service *Service) startWindow(
 		ReadyPath: paths.ready, GoPath: paths.goFile, StatusPath: paths.status,
 		GateTimeoutMS: service.gateTimeout.Milliseconds(),
 	}
+	if invocation.CooperativeReady {
+		manifest.TargetReadyPath = paths.targetReady
+	}
 	manifestDigest, _, err := marshalManifest(manifest)
 	if err != nil {
 		return StartResult{}, err
@@ -77,6 +80,7 @@ func (service *Service) startWindow(
 		if cleanupFiles {
 			removeExact(
 				paths.manifest, paths.ready, paths.goFile, paths.status,
+				paths.targetReady,
 			)
 		}
 	}()
@@ -148,7 +152,9 @@ func (service *Service) startWindow(
 		SchemaVersion: WindowSchemaVersion, RegistryVersion: registryVersion,
 		TmuxID: tmuxID, ProfileID: invocation.ProfileID, CreatedAt: createdAt,
 		CWD: invocation.CWD, ConfigDigest: invocation.ConfigDigest,
-		WindowID: windowID, PaneID: paneID, HelperPID: ready.PID,
+		Binding:          cloneBinding(invocation.Binding),
+		CooperativeReady: invocation.CooperativeReady,
+		WindowID:         windowID, PaneID: paneID, HelperPID: ready.PID,
 		HelperPGID: ready.PGID, ProcessStart: ready.ProcessStart,
 		HelperExecutable:         helperExecutable,
 		HelperExecutableIdentity: helperExecutableID,
@@ -213,7 +219,10 @@ func (service *Service) startWindow(
 			postCommitCtx, marker, currentEncoded, paneID,
 		)
 		cleanupFiles = false
-		removeExact(paths.manifest, paths.ready, paths.goFile, paths.status)
+		removeExact(
+			paths.manifest, paths.ready, paths.goFile, paths.status,
+			paths.targetReady,
+		)
 		window, loadErr := service.loadCommittedWindow(
 			postCommitCtx, marker, tmuxID,
 		)
@@ -225,13 +234,28 @@ func (service *Service) startWindow(
 	accepted, launchError := service.waitLaunchAck(
 		postCommitCtx, paths, paneID, nonce, manifestDigest,
 		ready.ProcessStart, helperExecutable,
-		executable, executableID,
+		executable, executableID, invocation.CooperativeReady,
 	)
+	currentEncoded := recordEncoded
+	if launchError == nil && accepted && invocation.CooperativeReady {
+		record.TargetReady = true
+		updated, updateErr := service.updateRecord(
+			postCommitCtx, marker, currentEncoded, record,
+		)
+		if updateErr != nil {
+			launchError = safeRuntimeError(tmuxTransportError(
+				contract.ErrorConflict,
+				"publish Tmux cooperative target ready state: %v", updateErr,
+			))
+			accepted = false
+		} else {
+			currentEncoded = updated
+		}
+	}
 	if launchError != nil {
 		record.LaunchError = launchError
-		currentEncoded := recordEncoded
 		if updated, updateErr := service.updateRecord(
-			postCommitCtx, marker, recordEncoded, record,
+			postCommitCtx, marker, currentEncoded, record,
 		); updateErr == nil {
 			currentEncoded = updated
 		}
@@ -240,7 +264,10 @@ func (service *Service) startWindow(
 		)
 	}
 	cleanupFiles = false
-	removeExact(paths.manifest, paths.ready, paths.goFile, paths.status)
+	removeExact(
+		paths.manifest, paths.ready, paths.goFile, paths.status,
+		paths.targetReady,
+	)
 	window, err := service.loadCommittedWindow(postCommitCtx, marker, tmuxID)
 	if err != nil {
 		window = committedWindowFallback(record, accepted)
@@ -532,24 +559,27 @@ func committedWindowFallback(record windowRecord, accepted bool) Window {
 		State: state, CreatedAt: record.CreatedAt.UTC(),
 		WindowID: record.WindowID, PaneID: record.PaneID,
 		ProfileID: record.ProfileID, CWD: record.CWD,
-		ConfigDigest: record.ConfigDigest, LaunchError: record.LaunchError,
+		ConfigDigest: record.ConfigDigest, Binding: cloneBinding(record.Binding),
+		LaunchError: record.LaunchError,
 	}
 }
 
 type launchFilePaths struct {
-	manifest string
-	ready    string
-	goFile   string
-	status   string
+	manifest    string
+	ready       string
+	goFile      string
+	status      string
+	targetReady string
 }
 
 func (service *Service) launchPaths(nonce string) launchFilePaths {
 	base := filepath.Join(service.config.ManifestDir, "launch-"+nonce)
 	return launchFilePaths{
-		manifest: base + ".json",
-		ready:    base + ".ready",
-		goFile:   base + ".go",
-		status:   base + ".status",
+		manifest:    base + ".json",
+		ready:       base + ".ready",
+		goFile:      base + ".go",
+		status:      base + ".status",
+		targetReady: base + ".target-ready",
 	}
 }
 
@@ -620,9 +650,41 @@ func (service *Service) waitLaunchAck(
 	helperExecutable string,
 	targetExecutable string,
 	targetExecutableIdentity string,
+	cooperativeReady bool,
 ) (bool, *SafeError) {
 	deadline := time.Now().Add(service.gateTimeout)
 	for time.Now().Before(deadline) {
+		if cooperativeReady {
+			var ready targetReadyFact
+			readyErr := decodePrivateJSON(
+				paths.targetReady, 64<<10, service.uid, &ready,
+			)
+			if readyErr == nil {
+				panePID, identity, identityErr := service.lookupPaneProcess(ctx, paneID)
+				if ready.SchemaVersion != WindowSchemaVersion ||
+					ready.Nonce != nonce ||
+					ready.ManifestDigest != manifestDigest ||
+					ready.PID <= 0 || ready.PID != panePID ||
+					ready.ProcessStart != processStart ||
+					identityErr != nil || identity.StartToken != processStart ||
+					ready.ExecutableIdentity != targetExecutableIdentity ||
+					identity.ExecutableIdentity != targetExecutableIdentity ||
+					!processExecutableMatches(ready.Executable, targetExecutable) ||
+					!processExecutableMatches(identity.Executable, targetExecutable) {
+					return false, safeRuntimeError(tmuxTransportError(
+						contract.ErrorConflict,
+						"Tmux cooperative target ready identity is invalid",
+					))
+				}
+				return true, nil
+			}
+			if !isNotExist(readyErr) {
+				return false, safeRuntimeError(tmuxTransportError(
+					contract.ErrorProtocol,
+					"read Tmux cooperative target ready fact: %v", readyErr,
+				))
+			}
+		}
 		var status helperStatus
 		statusErr := decodePrivateJSON(
 			paths.status, 64<<10, service.uid, &status,
@@ -652,6 +714,12 @@ func (service *Service) waitLaunchAck(
 		}
 		dead, err := service.paneFormat(ctx, paneID, "#{pane_dead}")
 		if err == nil && dead == "1" {
+			if cooperativeReady {
+				return false, safeRuntimeError(tmuxTransportError(
+					contract.ErrorConflict,
+					"Tmux cooperative target exited before readiness acknowledgement",
+				))
+			}
 			return true, nil
 		}
 		identity, identityErr := service.lookupProcessFromPane(
@@ -666,7 +734,11 @@ func (service *Service) waitLaunchAck(
 			case processExecutableMatches(
 				identity.Executable, targetExecutable,
 			) && identity.ExecutableIdentity == targetExecutableIdentity:
-				return true, nil
+				if !cooperativeReady {
+					return true, nil
+				}
+				// The cooperative target has exec'd but has not yet published
+				// its one-shot readiness fact.
 			default:
 				return false, safeRuntimeError(tmuxTransportError(
 					contract.ErrorConflict,
@@ -676,26 +748,47 @@ func (service *Service) waitLaunchAck(
 		}
 		select {
 		case <-ctx.Done():
+			if cooperativeReady {
+				return false, safeRuntimeError(tmuxTransportError(
+					contract.ErrorTimeout,
+					"wait for Tmux cooperative target readiness: %v", ctx.Err(),
+				))
+			}
 			return true, nil
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	if cooperativeReady {
+		return false, safeRuntimeError(tmuxTransportError(
+			contract.ErrorTimeout,
+			"wait for Tmux cooperative target readiness timed out",
+		))
+	}
 	return true, nil
+}
+
+func (service *Service) lookupPaneProcess(
+	ctx context.Context,
+	paneID string,
+) (int, ProcessIdentity, error) {
+	pidValue, err := service.paneFormat(ctx, paneID, "#{pane_pid}")
+	if err != nil {
+		return 0, ProcessIdentity{}, err
+	}
+	pid, err := strconv.Atoi(pidValue)
+	if err != nil || pid <= 0 {
+		return 0, ProcessIdentity{}, fmt.Errorf("Tmux pane PID is invalid")
+	}
+	identity, err := service.lookupProcess(pid)
+	return pid, identity, err
 }
 
 func (service *Service) lookupProcessFromPane(
 	ctx context.Context,
 	paneID string,
 ) (ProcessIdentity, error) {
-	pidValue, err := service.paneFormat(ctx, paneID, "#{pane_pid}")
-	if err != nil {
-		return ProcessIdentity{}, err
-	}
-	pid, err := strconv.Atoi(pidValue)
-	if err != nil || pid <= 0 {
-		return ProcessIdentity{}, fmt.Errorf("Tmux pane PID is invalid")
-	}
-	return service.lookupProcess(pid)
+	_, identity, err := service.lookupPaneProcess(ctx, paneID)
+	return identity, err
 }
 
 func (service *Service) waitPaneDead(

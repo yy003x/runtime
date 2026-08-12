@@ -28,6 +28,23 @@ func TestSessionListUsesCanonicalFilterValidation(t *testing.T) {
 	}
 }
 
+func TestCreateWithIDPublishesExactIdentityOnce(t *testing.T) {
+	service := newTestService(t, &scriptedGenerator{}, nil, nil)
+	sessionID := "session_11111111111111111111111111111111"
+	value, err := service.CreateWithID(sessionID, RetentionPinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.ID != sessionID || value.Retention != RetentionPinned ||
+		value.State != SessionIdle {
+		t.Fatalf("Session = %#v", value)
+	}
+	if _, err := service.CreateWithID(sessionID, RetentionPinned); err == nil ||
+		!errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate create error = %v", err)
+	}
+}
+
 func TestSessionCollectionQueriesRejectMissingSession(t *testing.T) {
 	service := newTestService(t, &scriptedGenerator{}, nil, nil)
 	sessionID := "session_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

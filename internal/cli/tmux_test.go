@@ -251,6 +251,14 @@ func (manager *fakeTmuxManager) Send(
 	}, nil
 }
 
+func (manager *fakeTmuxManager) SendFramed(
+	ctx context.Context,
+	tmuxID string,
+	input string,
+) (runtimetmux.ActionResult, error) {
+	return manager.Send(ctx, tmuxID, input)
+}
+
 func (manager *fakeTmuxManager) Attach(
 	context.Context,
 	string,

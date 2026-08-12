@@ -35,21 +35,40 @@ func ValidateListFilter(filter ListFilter) error {
 }
 
 func (service *Service) Create(retention Retention) (Session, error) {
+	sessionID, err := NewID()
+	if err != nil {
+		return Session{}, err
+	}
+	return service.CreateWithID(sessionID, retention)
+}
+
+// CreateWithID creates an empty Session using a caller-generated canonical
+// identity. It is used by composition layers that must bind an external
+// carrier before publishing the Session fact.
+func (service *Service) CreateWithID(
+	sessionID string,
+	retention Retention,
+) (Session, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return Session{}, err
+	}
 	switch retention {
 	case "", RetentionEphemeral, RetentionStandard, RetentionPinned:
 	default:
 		return Session{}, fmt.Errorf("unsupported retention %q", retention)
 	}
-	sessionID, err := NewID()
-	if err != nil {
-		return Session{}, err
-	}
 	var value Session
-	err = service.store.withLock(sessionID, func() error {
-		value, err = service.loadOrCreateSession(
+	err := service.store.withLock(sessionID, func() error {
+		if _, loadErr := service.store.loadSession(sessionID); loadErr == nil {
+			return fmt.Errorf("%w: Session %s already exists", ErrConflict, sessionID)
+		} else if !errors.Is(loadErr, os.ErrNotExist) {
+			return loadErr
+		}
+		var createErr error
+		value, createErr = service.loadOrCreateSession(
 			sessionID, retention, service.now().UTC(),
 		)
-		return err
+		return createErr
 	})
 	if err == nil {
 		if indexErr := service.store.rebuildIndex(); indexErr != nil {
@@ -295,7 +314,7 @@ func (service *Service) SubmitToolResult(
 			"tool_call_id and idempotency_key are required",
 		)
 	}
-	if len(input.Content) > maxSessionInputBytes || len(input.IdempotencyKey) > 256 {
+	if len(input.Content) > MaxInputBytes || len(input.IdempotencyKey) > 256 {
 		return ToolResultReceipt{}, sessionRuntimeError(
 			contract.ErrorInvalidRequest, "tool result exceeds size limits",
 		)

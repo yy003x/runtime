@@ -14,6 +14,12 @@ import (
 	"github.com/yy003x/runtime/internal/activation"
 )
 
+const (
+	targetReadyPathEnv   = "SN_TMUX_TARGET_READY_PATH"
+	targetReadyNonceEnv  = "SN_TMUX_TARGET_READY_NONCE"
+	targetReadyDigestEnv = "SN_TMUX_TARGET_READY_DIGEST"
+)
+
 // HelperCommandName is the hidden argv token the CLI root must dispatch before
 // loading Runtime configuration.
 const HelperCommandName = helperCommandName
@@ -133,6 +139,14 @@ func RunHelper(args []string) error {
 		return fmt.Errorf("target executable identity changed")
 	}
 	environment := exactTargetEnvironment(current.Environment, os.Environ())
+	if current.TargetReadyPath != "" {
+		environment = append(
+			environment,
+			targetReadyPathEnv+"="+current.TargetReadyPath,
+			targetReadyNonceEnv+"="+current.Nonce,
+			targetReadyDigestEnv+"="+current.ManifestDigest,
+		)
+	}
 	if err := validateExactEnvironment(environment); err != nil {
 		writeHelperFailure(manifest, "target environment is invalid")
 		return err
@@ -170,6 +184,15 @@ func validateManifest(value launchManifest) error {
 	}
 	if !filepath.IsAbs(value.CWD) || !filepath.IsAbs(value.Path) {
 		return fmt.Errorf("Tmux launch paths must be absolute")
+	}
+	if value.TargetReadyPath != "" {
+		expected := filepath.Join(
+			filepath.Dir(value.ReadyPath),
+			"launch-"+value.Nonce+".target-ready",
+		)
+		if value.TargetReadyPath != expected {
+			return fmt.Errorf("Tmux cooperative target ready path is invalid")
+		}
 	}
 	if value.GateTimeoutMS <= 0 ||
 		value.GateTimeoutMS > int64(time.Minute/time.Millisecond) {
@@ -272,7 +295,8 @@ func exactTargetEnvironment(
 			continue
 		}
 		switch value[:index] {
-		case "TERM", "TMUX", "TMUX_PANE":
+		case "TERM", "TMUX", "TMUX_PANE",
+			targetReadyPathEnv, targetReadyNonceEnv, targetReadyDigestEnv:
 			continue
 		default:
 			result = append(result, value)
@@ -285,4 +309,47 @@ func exactTargetEnvironment(
 	}
 	sort.Strings(result)
 	return result
+}
+
+// AcknowledgeTargetReady publishes the one-shot fact requested by a
+// CooperativeReady invocation. It must be called by the target after exec and
+// before it starts its own runtime initialization.
+func AcknowledgeTargetReady() error {
+	path := os.Getenv(targetReadyPathEnv)
+	nonce := os.Getenv(targetReadyNonceEnv)
+	digest := os.Getenv(targetReadyDigestEnv)
+	if path == "" || nonce == "" || digest == "" {
+		return fmt.Errorf("Tmux cooperative target ready environment is incomplete")
+	}
+	defer func() {
+		_ = os.Unsetenv(targetReadyPathEnv)
+		_ = os.Unsetenv(targetReadyNonceEnv)
+		_ = os.Unsetenv(targetReadyDigestEnv)
+	}()
+	if !filepath.IsAbs(path) || !incarnationPattern.MatchString(nonce) ||
+		filepath.Base(path) != "launch-"+nonce+".target-ready" {
+		return fmt.Errorf("Tmux cooperative target ready identity is invalid")
+	}
+	if err := requirePrivateDir(filepath.Dir(path), os.Getuid()); err != nil {
+		return fmt.Errorf("validate Tmux cooperative target ready directory: %w", err)
+	}
+	if info, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("Tmux cooperative target ready fact already exists: mode=%s", info.Mode())
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	identity, err := lookupProcessIdentity(os.Getpid())
+	if err != nil {
+		return fmt.Errorf("identify Tmux cooperative target: %w", err)
+	}
+	fact := targetReadyFact{
+		SchemaVersion: WindowSchemaVersion, Nonce: nonce,
+		ManifestDigest: digest, PID: os.Getpid(),
+		ProcessStart: identity.StartToken, Executable: identity.Executable,
+		ExecutableIdentity: identity.ExecutableIdentity,
+	}
+	if err := writeJSONPrivate(path, fact, os.Getuid()); err != nil {
+		return fmt.Errorf("write Tmux cooperative target ready fact: %w", err)
+	}
+	return nil
 }

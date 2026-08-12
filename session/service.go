@@ -18,7 +18,8 @@ import (
 	"github.com/yy003x/runtime/profile"
 )
 
-const maxSessionInputBytes = 1 << 20
+// MaxInputBytes is the canonical upper bound shared by every Session ingress.
+const MaxInputBytes = 1 << 20
 
 type Service struct {
 	store    *Store
@@ -1129,8 +1130,8 @@ func validateRunRequest(request RunRequest, entry profile.Entry) error {
 	if strings.TrimSpace(request.Input) == "" {
 		return fmt.Errorf("input is required")
 	}
-	if len(request.Input) > maxSessionInputBytes {
-		return fmt.Errorf("input exceeds %d bytes", maxSessionInputBytes)
+	if len(request.Input) > MaxInputBytes {
+		return fmt.Errorf("input exceeds %d bytes", MaxInputBytes)
 	}
 	if !utf8.ValidString(request.Input) ||
 		strings.ContainsRune(request.Input, '\x00') {

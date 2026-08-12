@@ -24,6 +24,13 @@ func Main(args []string) int {
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == sessionTerminalHelperCommandName {
+		if err := runSessionTerminalHelperVNext(args[1:]); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	jsonOutput := len(args) > 0 && args[0] == "--json"
 	if jsonOutput {
 		args = args[1:]
@@ -128,6 +135,7 @@ func printHelp(output *cliOutput) error {
 
 Usage:
   sn-cli <cli-profile-id> [options...] [input]
+  sn-cli <cli-profile-id> resume [session-id]
   sn-cli exec <cli-profile-id> [options...] [input]
   sn-cli req <api-profile-id> [options...] [input]
   sn-cli --json req <api-profile-id> [options...] [input]
@@ -135,12 +143,14 @@ Usage:
   sn-cli profile list|show|check
   sn-cli session exec <cli-profile-id> [options...] [input]
   sn-cli session req <api-profile-id> [options...] [input]
+  sn-cli session open <cli-profile-id> [options...] [input]
+  sn-cli session send|attach|interrupt|close --session-id <id>
   sn-cli session list|show|messages|events|logs|executions|execution
   sn-cli session reconcile|configure|export|delete|gc
   sn-cli tmux start <cli-profile-id> [options...] [input]
   sn-cli tmux list|show|send|attach|interrupt|stop
   sn-cli agent <api-profile-id> [options...] [input]
-  sn-cli run get|list|result|events|watch|cancel|resume|retry|reconcile|gc
+  sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
   sn-cli server info|doctor|start|status|stop|update|upgrade-check
 
 Execution semantics:
@@ -148,6 +158,7 @@ Execution semantics:
   exec               noninteractive CLI; no Session/Run; best-effort CLI log
   req                one API request; no Session/Run; best-effort API log
   session exec|req   one recorded Session turn; --queue submits a durable Run
+  session open       tmux console; every input creates a durable Session Run
   tmux start         one managed interactive command window; no Runtime Session
   agent              durable API-only model/tool loop; --queue submits only
   run ...            durable Run query and control plane; never submits new work
