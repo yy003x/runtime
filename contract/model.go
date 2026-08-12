@@ -68,6 +68,7 @@ const (
 	ErrorConflict                ErrorCode = "conflict"
 	ErrorNotFound                ErrorCode = "not_found"
 	ErrorInternal                ErrorCode = "internal"
+	ErrorValidationFailed        ErrorCode = "validation_failed"
 )
 
 type ErrorPhase string
@@ -121,6 +122,27 @@ type ToolSpec struct {
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
 }
+
+// Effect 分级声明一个 tool 对运行环境的副作用边界。read_only 不改变外部
+// 状态；write_local 仅改变本地 workspace；write_external 可改变本地以外的
+// 状态（进程、网络、远端系统）。effect 是 Provider-neutral 的运行期元数据，
+// 不进入发给 Provider 的 ToolSpec，仅由 Runtime/Agent 用于风险分级与确认门禁。
+type Effect string
+
+const (
+	EffectReadOnly      Effect = "read_only"
+	EffectWriteLocal    Effect = "write_local"
+	EffectWriteExternal Effect = "write_external"
+)
+
+// Risk 是 tool 的风险等级，配合 Effect 决定是否需要人工确认。high 风险的
+// 写副作用必须经过 UserConfirmation 才能执行。
+type Risk string
+
+const (
+	RiskLow  Risk = "low"
+	RiskHigh Risk = "high"
+)
 
 type ToolCall struct {
 	ID        string          `json:"id"`

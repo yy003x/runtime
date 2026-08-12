@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -642,6 +643,227 @@ func TestKernelPauseAndResume(t *testing.T) {
 		state.Pause != nil || state.Messages[2].ToolCallID != "call_pause" {
 		t.Fatalf("state=%#v outcome=%#v err=%v", state, outcome, runtimeErr)
 	}
+}
+
+func TestKernelUserConfirmationPauseKeepsEffectStarted(t *testing.T) {
+	call := contract.ToolCall{
+		ID: "call_confirm", Name: "shell",
+		Arguments: json.RawMessage(`{"command":"echo","args":["hi"]}`),
+	}
+	model := &kernelModel{results: []contract.ModelResult{
+		{
+			Message: contract.Message{
+				Role: contract.RoleAssistant, ToolCalls: []contract.ToolCall{call},
+			},
+			FinishReason: contract.FinishToolCall,
+		},
+		{
+			Message: contract.Message{
+				Role: contract.RoleAssistant, Content: "done",
+			},
+			FinishReason: contract.FinishStop,
+		},
+		{
+			Message: contract.Message{
+				Role: contract.RoleAssistant, Content: "done",
+			},
+			FinishReason: contract.FinishStop,
+		},
+	}}
+	var handlerCalls []ToolRequest
+	registry, err := NewRegistry(RegisteredTool{
+		Definition: contract.ToolSpec{
+			Name: "shell", InputSchema: json.RawMessage(
+				`{"type":"object","properties":{"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["command"],"additionalProperties":false}`,
+			),
+		},
+		Handler: func(_ context.Context, request ToolRequest) (ToolResult, error) {
+			handlerCalls = append(handlerCalls, request)
+			if len(request.Approval) == 0 {
+				return ToolResult{Pause: &Pause{
+					ID: "confirm_1", Kind: PauseKindUserConfirmation,
+					InputSchema: json.RawMessage(
+						`{"type":"object","properties":{"approved":{"type":"boolean"}},"required":["approved"],"additionalProperties":false}`,
+					),
+					Prompt: "run echo hi?",
+				}}, nil
+			}
+			var approval struct {
+				Approved bool `json:"approved"`
+			}
+			if err := json.Unmarshal(request.Approval, &approval); err != nil {
+				return ToolResult{}, err
+			}
+			if !approval.Approved {
+				return ToolResult{
+					Content: `{"error":{"code":"not_approved","message":"rejected"}}`,
+					IsError: true,
+				}, nil
+			}
+			return ToolResult{Content: `{"exit_code":0,"stdout":"hi"}`}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := &confirmationEffects{}
+	kernel := Kernel{Model: model, Tools: registry, Effects: effects}
+	state, outcome, runtimeErr := kernel.Run(
+		context.Background(),
+		LoopState{
+			SchemaVersion: LoopStateSchemaVersion,
+			RunID:         "run_00000000000000000000000000000003",
+			ModelProfile:  "api", Messages: []contract.Message{{
+				Role: contract.RoleUser, Content: "start",
+			}},
+			BaseMessageCount: 1,
+		},
+		nil,
+	)
+	if runtimeErr != nil || outcome.State != StatePaused ||
+		state.Pause == nil ||
+		state.Pause.Kind != PauseKindUserConfirmation {
+		t.Fatalf("pause state=%#v outcome=%#v err=%v", state, outcome, runtimeErr)
+	}
+	// 副作用尚未发生：effect 必须停在 started，绝不能 Completed。
+	if effects.started != 1 || effects.completed != 0 {
+		t.Fatalf(
+			"effect counts after pause: started=%d completed=%d",
+			effects.started, effects.completed,
+		)
+	}
+	if len(handlerCalls) != 1 || len(handlerCalls[0].Approval) != 0 {
+		t.Fatalf("handler calls before resume=%#v", handlerCalls)
+	}
+	// 未批准：副作用仍不发生，但以 tool 结果（IsError）闭合 effect 并继续。
+	rejectedState, _, rejectErr := kernel.Resume(
+		context.Background(), cloneForResume(state),
+		ResumeInput{
+			PauseID: "confirm_1",
+			Input:   json.RawMessage(`{"approved":false}`),
+		},
+		nil,
+	)
+	if rejectErr != nil {
+		t.Fatalf("rejected resume err=%v", rejectErr)
+	}
+	if effects.completed != 1 {
+		t.Fatalf("completed after rejected resume=%d", effects.completed)
+	}
+	// 未批准时 tool 结果以 IsError 闭合（副作用未发生），模型继续到下一轮。
+	var rejectedTool contract.Message
+	for index := len(rejectedState.Messages) - 1; index >= 0; index-- {
+		message := rejectedState.Messages[index]
+		if message.Role == contract.RoleTool &&
+			message.ToolCallID == "call_confirm" {
+			rejectedTool = message
+			break
+		}
+	}
+	if !rejectedTool.IsError ||
+		!strings.Contains(rejectedTool.Content, "not_approved") {
+		t.Fatalf("rejected tool result=%#v", rejectedTool)
+	}
+	// 批准：handler 第二次被调用且带 approval，真正副作用发生。
+	approvedState, approvedOutcome, resumeErr := kernel.Resume(
+		context.Background(), cloneForResume(state),
+		ResumeInput{
+			PauseID: "confirm_1",
+			Input:   json.RawMessage(`{"approved":true}`),
+		},
+		nil,
+	)
+	if resumeErr != nil || approvedOutcome.State != StateCompleted {
+		t.Fatalf(
+			"approved resume state=%#v outcome=%#v err=%v",
+			approvedState, approvedOutcome, resumeErr,
+		)
+	}
+	if len(handlerCalls) != 3 {
+		t.Fatalf("handler calls after both resumes=%d", len(handlerCalls))
+	}
+	if string(handlerCalls[2].Approval) != `{"approved":true}` {
+		t.Fatalf(
+			"approved handler call approval=%q",
+			handlerCalls[2].Approval,
+		)
+	}
+	if effects.completed != 2 {
+		t.Fatalf("completed after approved resume=%d", effects.completed)
+	}
+	// tool 结果必须是真实副作用输出，而不是 approval 本身。
+	var toolResult contract.Message
+	for index := len(approvedState.Messages) - 1; index >= 0; index-- {
+		message := approvedState.Messages[index]
+		if message.Role == contract.RoleTool &&
+			message.ToolCallID == "call_confirm" {
+			toolResult = message
+			break
+		}
+	}
+	if !strings.Contains(toolResult.Content, `"stdout":"hi"`) {
+		t.Fatalf("approved tool result message=%#v", toolResult)
+	}
+}
+
+// confirmationEffects 是一个可观测的 effect 记录器，专门用于断言
+// user_confirmation pause 期间 effect 停在 started、Resume 后才 completed。
+type confirmationEffects struct {
+	prepared, started, completed int
+}
+
+func (effects *confirmationEffects) Lookup(
+	context.Context, string, string,
+) (EffectRecord, bool, error) {
+	return EffectRecord{}, false, nil
+}
+
+func (effects *confirmationEffects) Prepared(
+	_ context.Context,
+	request *ToolRequest,
+	state *LoopState,
+) (string, error) {
+	effects.prepared++
+	request.CheckpointID = "checkpoint_confirm"
+	state.PendingEffectCheckpointID = request.CheckpointID
+	state.PendingCheckpointID = request.CheckpointID
+	return request.CheckpointID, nil
+}
+
+func (effects *confirmationEffects) Started(context.Context, ToolRequest) error {
+	effects.started++
+	return nil
+}
+
+func (effects *confirmationEffects) Completed(
+	context.Context, ToolRequest, ToolResult,
+) error {
+	effects.completed++
+	return nil
+}
+
+func (effects *confirmationEffects) Failed(
+	context.Context, ToolRequest, *contract.RuntimeError,
+) error {
+	return nil
+}
+
+// cloneForResume 复制一份 LoopState，使多次 Resume 断言基于同一暂停快照。
+func cloneForResume(state LoopState) LoopState {
+	clone := state
+	clone.Messages = append([]contract.Message(nil), state.Messages...)
+	clone.PendingToolCalls = append(
+		[]contract.ToolCall(nil), state.PendingToolCalls...,
+	)
+	if state.Pause != nil {
+		pause := *state.Pause
+		clone.Pause = &pause
+	}
+	if state.TerminalOutcome != nil {
+		outcome := *state.TerminalOutcome
+		clone.TerminalOutcome = &outcome
+	}
+	return clone
 }
 
 func TestValidatePauseRejectsZeroExpiry(t *testing.T) {

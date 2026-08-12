@@ -388,7 +388,8 @@ func (runtimeError RuntimeError) Validate() error {
 	case ErrorInvalidRequest, ErrorAuthenticationFailed, ErrorPermissionDenied,
 		ErrorRateLimited, ErrorTimeout, ErrorProviderUnavailable, ErrorProtocol,
 		ErrorInvalidProviderResponse, ErrorContextOverflow, ErrorToolFailed,
-		ErrorCancelled, ErrorConflict, ErrorNotFound, ErrorInternal:
+		ErrorCancelled, ErrorConflict, ErrorNotFound, ErrorInternal,
+		ErrorValidationFailed:
 	default:
 		return fmt.Errorf("unsupported error code %q", runtimeError.Code)
 	}

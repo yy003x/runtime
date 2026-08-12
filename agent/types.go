@@ -80,6 +80,12 @@ type Pause struct {
 	ToolCallID  string          `json:"tool_call_id"`
 }
 
+// PauseKindUserConfirmation 标识高风险写副作用执行前的人工确认门禁。该 kind
+// 的 Pause 不闭合 durable effect（保持 started），Resume 时携带 approval 重跑
+// handler 才触发真正副作用；期间崩溃则 effect 仍是 started，按既有不变量进入
+// needs_reconciliation（fail-closed：副作用未发生）。
+const PauseKindUserConfirmation = "user_confirmation"
+
 type LoopState struct {
 	SchemaVersion             int                 `json:"schema_version"`
 	RunID                     string              `json:"run_id"`
@@ -122,6 +128,11 @@ type ToolRequest struct {
 	Name           string          `json:"name"`
 	Arguments      json.RawMessage `json:"arguments"`
 	CheckpointID   string          `json:"checkpoint_id,omitempty"`
+
+	// Approval 携带 user_confirmation pause 的 resume 输入，仅在 Resume 重跑
+	// handler 的内存路径上设置；不持久化（json:"-"），不进入 checkpoint/effect
+	// journal 或 digest。handler 据此判定是否执行真正副作用。
+	Approval json.RawMessage `json:"-"`
 }
 
 type ToolResult struct {

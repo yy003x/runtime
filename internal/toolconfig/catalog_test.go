@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/yy003x/runtime/contract"
 )
 
 func TestLoadSourceManifests(t *testing.T) {
@@ -226,6 +228,56 @@ func manifestDocument(name string) string {
 		`"executor":{"type":"mcp","endpoint":"https://example.com/mcp",` +
 		`"remote_tool":"remote","headers":{"Authorization":"Bearer ${TOKEN}"},` +
 		`"timeout":"30s","max_response_bytes":1048576}}`
+}
+
+func TestManifestEffectAndRiskValidation(t *testing.T) {
+	manifest := func(effect contract.Effect, risk contract.Risk) Manifest {
+		return Manifest{
+			SchemaVersion: SchemaVersion,
+			Name:          "tool", Effect: effect, Risk: risk,
+			Description: "test",
+			InputSchema: json.RawMessage(
+				`{"type":"object","properties":{},"additionalProperties":false}`,
+			),
+			Executor: Executor{
+				Type: ExecutorMCP, Endpoint: "https://example.com/mcp",
+				RemoteTool: "remote",
+				Headers:    map[string]string{"Authorization": "Bearer ${TOKEN}"},
+				Timeout:    "30s", MaxResponseBytes: 1048576,
+			},
+		}
+	}
+	for name, test := range map[string]struct {
+		effect contract.Effect
+		risk   contract.Risk
+		want   string
+	}{
+		"read_only without risk": {contract.EffectReadOnly, "", ""},
+		"read_only low risk":     {contract.EffectReadOnly, contract.RiskLow, ""},
+		"write_local low":        {contract.EffectWriteLocal, contract.RiskLow, ""},
+		"write_external high":    {contract.EffectWriteExternal, contract.RiskHigh, ""},
+		"unknown effect":         {contract.Effect("write"), "", "effect must be"},
+		"write_local missing risk": {
+			contract.EffectWriteLocal, "", "risk is required for write effects",
+		},
+		"write_external missing risk": {
+			contract.EffectWriteExternal, "", "risk is required for write effects",
+		},
+		"invalid risk": {contract.EffectReadOnly, contract.Risk("medium"), "risk must be"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := manifest(test.effect, test.risk).Validate()
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want %q", err, test.want)
+			}
+		})
+	}
 }
 
 func mustSelect(

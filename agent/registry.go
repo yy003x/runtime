@@ -22,6 +22,8 @@ type ToolHandler func(context.Context, ToolRequest) (ToolResult, error)
 type RegisteredTool struct {
 	Definition contract.ToolSpec
 	Handler    ToolHandler
+	Effect     contract.Effect
+	Risk       contract.Risk
 }
 
 type compiledTool struct {
@@ -71,6 +73,27 @@ func (registry *Registry) Register(value RegisteredTool) error {
 	}
 	if value.Handler == nil {
 		return fmt.Errorf("tool %q handler is required", value.Definition.Name)
+	}
+	switch value.Effect {
+	case "":
+		value.Effect = contract.EffectReadOnly
+	case contract.EffectReadOnly, contract.EffectWriteLocal, contract.EffectWriteExternal:
+	default:
+		return fmt.Errorf(
+			"tool %q effect must be one of %q, %q, %q",
+			value.Definition.Name, contract.EffectReadOnly,
+			contract.EffectWriteLocal, contract.EffectWriteExternal,
+		)
+	}
+	switch value.Risk {
+	case "":
+		value.Risk = contract.RiskLow
+	case contract.RiskLow, contract.RiskHigh:
+	default:
+		return fmt.Errorf(
+			"tool %q risk must be %q or %q",
+			value.Definition.Name, contract.RiskLow, contract.RiskHigh,
+		)
 	}
 	canonicalSchema, err := canonicalJSONObject(value.Definition.InputSchema)
 	if err != nil {

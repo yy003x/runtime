@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/yy003x/runtime/agent"
@@ -21,7 +22,7 @@ const (
 	maxToolOutputBytes               = 1 << 20
 	maxReadOnlyToolErrorBytes        = 4 << 10
 	ExecutionImplementation          = "runtime.toolbuiltin"
-	ExecutionImplementationVersion   = 4
+	ExecutionImplementationVersion   = 5
 	toolExecutionConfigSchemaVersion = 2
 )
 
@@ -36,6 +37,9 @@ type Options struct {
 	Names []string
 	Roots []string
 	CWD   string
+	// MaxShellWallTime 是 shell tool 单次执行的上限；零值采用 shellMaxWallTime
+	// 默认（2m）。仅暴露给测试注入短超时以验证进程组终止路径，生产配置不应设置。
+	MaxShellWallTime time.Duration
 }
 
 // Bundle 保存选中的内置工具及其冻结后的非 secret 执行配置，composition root
@@ -74,6 +78,10 @@ func BuildBundle(options Options) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
+	resolver.shellTimeout = options.MaxShellWallTime
+	if resolver.shellTimeout <= 0 {
+		resolver.shellTimeout = shellMaxWallTime
+	}
 	available := map[string]agent.RegisteredTool{
 		"read_file": {
 			Definition: contract.ToolSpec{
@@ -84,6 +92,7 @@ func BuildBundle(options Options) (Bundle, error) {
 				),
 			},
 			Handler: resolver.readFile,
+			Effect:  contract.EffectReadOnly, Risk: contract.RiskLow,
 		},
 		"list_directory": {
 			Definition: contract.ToolSpec{
@@ -94,6 +103,7 @@ func BuildBundle(options Options) (Bundle, error) {
 				),
 			},
 			Handler: resolver.listDirectory,
+			Effect:  contract.EffectReadOnly, Risk: contract.RiskLow,
 		},
 		"write_file": {
 			Definition: contract.ToolSpec{
@@ -104,6 +114,18 @@ func BuildBundle(options Options) (Bundle, error) {
 				),
 			},
 			Handler: resolver.writeFile,
+			Effect:  contract.EffectWriteLocal, Risk: contract.RiskLow,
+		},
+		"shell": {
+			Definition: contract.ToolSpec{
+				Name:        "shell",
+				Description: "Execute a child process (argv form, no shell interpolation) within the configured workspace. High risk: requires explicit user confirmation before the side effect runs.",
+				InputSchema: json.RawMessage(
+					`{"type":"object","properties":{"command":{"type":"string","description":"Executable name or absolute path"},"args":{"type":"array","items":{"type":"string"},"description":"argv tokens passed to the command"}},"required":["command"],"additionalProperties":false}`,
+				),
+			},
+			Handler: resolver.shell,
+			Effect:  contract.EffectWriteExternal, Risk: contract.RiskHigh,
 		},
 	}
 	values := make([]agent.RegisteredTool, 0, len(options.Names))
@@ -129,7 +151,7 @@ func BuildBundle(options Options) (Bundle, error) {
 // Catalog 独立解析。
 func IsBuiltin(name string) bool {
 	switch name {
-	case "read_file", "list_directory", "write_file":
+	case "read_file", "list_directory", "write_file", "shell":
 		return true
 	default:
 		return false
@@ -137,9 +159,10 @@ func IsBuiltin(name string) bool {
 }
 
 type resolver struct {
-	roots     []workspaceRoot
-	cwd       string
-	testHooks *resolverTestHooks
+	roots        []workspaceRoot
+	cwd          string
+	shellTimeout time.Duration
+	testHooks    *resolverTestHooks
 }
 
 type workspaceRoot struct {

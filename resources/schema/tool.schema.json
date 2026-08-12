@@ -21,7 +21,10 @@
       "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
     },
     "effect": {
-      "const": "read_only"
+      "enum": ["read_only", "write_local", "write_external"]
+    },
+    "risk": {
+      "enum": ["low", "high"]
     },
     "description": {
       "type": "string",

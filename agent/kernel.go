@@ -536,15 +536,21 @@ func (kernel *Kernel) executePreparedTool(
 		pause.ToolCallID = request.CallID
 		result.Pause = &pause
 	}
-	if err := kernel.Effects.Completed(
-		context.WithoutCancel(ctx), request, result,
-	); err != nil {
-		runtimeErr := agentError(
-			contract.ErrorInternal, "record tool completion: "+err.Error(),
-		)
-		return true, failureOutcome(
-			StateNeedsReconciliation, "tool_completion_unknown", runtimeErr,
-		), runtimeErr
+	// user_confirmation pause 发生在真正副作用之前：副作用尚未发生，不能闭合
+	// durable effect。保持 effect 处于 started，由 Resume 携带 approval 重跑
+	// handler 时再 Completed；期间崩溃则按 started→needs_reconciliation 收口。
+	if result.Pause == nil ||
+		result.Pause.Kind != PauseKindUserConfirmation {
+		if err := kernel.Effects.Completed(
+			context.WithoutCancel(ctx), request, result,
+		); err != nil {
+			runtimeErr := agentError(
+				contract.ErrorInternal, "record tool completion: "+err.Error(),
+			)
+			return true, failureOutcome(
+				StateNeedsReconciliation, "tool_completion_unknown", runtimeErr,
+			), runtimeErr
+		}
 	}
 	return kernel.finishCompletedTool(state, request, result, emitter)
 }
@@ -745,6 +751,11 @@ func (kernel *Kernel) Resume(
 		runtimeErr := agentError(contract.ErrorInvalidRequest, err.Error())
 		return state, failureOutcome(StateFailed, "invalid_resume", runtimeErr), runtimeErr
 	}
+	// user_confirmation 的 resume 输入是"是否批准"，不是 tool 结果：必须重跑
+	// handler 让被批准的副作用真正发生，再用真实结果闭合 effect。
+	if state.Pause.Kind == PauseKindUserConfirmation {
+		return kernel.resumeUserConfirmation(ctx, state, input, sink)
+	}
 	state.Messages = append(state.Messages, contract.Message{
 		Role: contract.RoleTool, ToolCallID: state.Pause.ToolCallID,
 		Content: string(input.Input),
@@ -757,6 +768,111 @@ func (kernel *Kernel) Resume(
 	if state.PendingToolCursor >= len(state.PendingToolCalls) {
 		clearPendingTools(&state)
 	}
+	return kernel.Run(ctx, state, sink)
+}
+
+// resumeUserConfirmation 在 user_confirmation pause 被批准后重跑对应 tool
+// handler。effect 此前已进入 started 且未闭合；这里把 approval 附进 ToolRequest
+// 重新 Execute，成功后 Completed 并以真实结果继续 loop。handler 仍可再次返回
+// user_confirmation pause（例如多阶段确认），此时保持 started 并重新冻结。
+func (kernel *Kernel) resumeUserConfirmation(
+	ctx context.Context,
+	state LoopState,
+	input ResumeInput,
+	sink contract.EventSink,
+) (LoopState, Outcome, *contract.RuntimeError) {
+	emitter := eventEmitter{state: &state, sink: sink, now: kernel.now}
+	call := state.PendingToolCalls[state.PendingToolCursor]
+	request := ToolRequest{
+		RunID: state.RunID, CallID: call.ID, Name: call.Name,
+		Arguments:      append([]byte(nil), call.Arguments...),
+		IdempotencyKey: toolIdempotencyKey(state.RunID, call),
+		CheckpointID:   state.PendingEffectCheckpointID,
+		Approval:       append([]byte(nil), input.Input...),
+	}
+	result, err := kernel.Tools.Execute(ctx, request)
+	if err != nil {
+		if ctx.Err() != nil ||
+			errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+			runtimeErr := agentError(contract.ErrorToolFailed, err.Error())
+			return state, failureOutcome(
+				StateNeedsReconciliation, "tool_effect_unknown", runtimeErr,
+			), runtimeErr
+		}
+		var knownFailure *KnownFailure
+		if !errors.As(err, &knownFailure) ||
+			knownFailure == nil ||
+			knownFailure.RuntimeError == nil ||
+			knownFailure.RuntimeError.Validate() != nil {
+			runtimeErr := agentError(contract.ErrorToolFailed, err.Error())
+			return state, failureOutcome(
+				StateNeedsReconciliation, "tool_effect_unknown", runtimeErr,
+			), runtimeErr
+		}
+		runtimeErr := cloneRuntimeError(knownFailure.RuntimeError)
+		if recorderErr := kernel.Effects.Failed(
+			context.WithoutCancel(ctx), request, runtimeErr,
+		); recorderErr != nil {
+			runtimeErr.Message += "; record failure: " + recorderErr.Error()
+			return state, failureOutcome(
+				StateNeedsReconciliation, "tool_effect_unknown", runtimeErr,
+			), runtimeErr
+		}
+		if !state.PendingToolTerminal {
+			if eventErr := emitter.emit(
+				toolFailedEvent(request, runtimeErr),
+			); eventErr != nil {
+				return state, failureOutcome(
+					StateNeedsReconciliation,
+					"tool_failure_event_unknown", eventErr,
+				), eventErr
+			}
+			state.PendingToolTerminal = true
+		}
+		outcome := freezeTerminalFailure(
+			&state, StateFailed, "tool_failed", runtimeErr,
+		)
+		return state, outcome, runtimeErr
+	}
+	if vErr := validateToolResult(result, request.CallID); vErr != nil {
+		runtimeErr := agentError(contract.ErrorToolFailed, vErr.Error())
+		return state, failureOutcome(
+			StateNeedsReconciliation, "tool_effect_unknown", runtimeErr,
+		), runtimeErr
+	}
+	if result.Pause != nil {
+		pause := clonePause(*result.Pause)
+		pause.ToolCallID = request.CallID
+		result.Pause = &pause
+	}
+	// 仅当 handler 这次返回非 user_confirmation 结果时才闭合 effect；若再次
+	// user_confirmation 则保持 started，由 finishCompletedTool 重新冻结 pause。
+	if result.Pause == nil ||
+		result.Pause.Kind != PauseKindUserConfirmation {
+		if err := kernel.Effects.Completed(
+			context.WithoutCancel(ctx), request, result,
+		); err != nil {
+			runtimeErr := agentError(
+				contract.ErrorInternal, "record tool completion: "+err.Error(),
+			)
+			return state, failureOutcome(
+				StateNeedsReconciliation, "tool_completion_unknown", runtimeErr,
+			), runtimeErr
+		}
+	}
+	terminal, outcome, runtimeErr := kernel.finishCompletedTool(
+		&state, request, result, &emitter,
+	)
+	if terminal {
+		// handler 再次返回 pause（例如多阶段确认）：finishCompletedTool 已用新
+		// pause 重新冻结，effect 仍处于 started，直接返回该 paused outcome。
+		return state, outcome, runtimeErr
+	}
+	// 真实结果已闭合 effect、追加 tool message、推进游标并清证；清除旧 pause 后
+	// 继续主循环。
+	state.Pause = nil
+	state.TerminalOutcome = nil
 	return kernel.Run(ctx, state, sink)
 }
 
@@ -1146,6 +1262,7 @@ func cloneToolCalls(values []contract.ToolCall) []contract.ToolCall {
 
 func cloneToolRequest(value ToolRequest) ToolRequest {
 	value.Arguments = append([]byte(nil), value.Arguments...)
+	value.Approval = append([]byte(nil), value.Approval...)
 	return value
 }
 

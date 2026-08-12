@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/yy003x/runtime/contract"
@@ -138,6 +139,54 @@ func registeredSnapshotTool(name string, schema string) RegisteredTool {
 		Handler: func(context.Context, ToolRequest) (ToolResult, error) {
 			return ToolResult{}, nil
 		},
+	}
+}
+
+func TestRegistryDefaultsAndValidatesEffectRisk(t *testing.T) {
+	handler := func(context.Context, ToolRequest) (ToolResult, error) {
+		return ToolResult{}, nil
+	}
+	for name, test := range map[string]struct {
+		tool RegisteredTool
+		want string
+	}{
+		"defaults read_only low": {RegisteredTool{
+			Definition: contract.ToolSpec{
+				Name: "t1", InputSchema: json.RawMessage(`{"type":"object"}`),
+			}, Handler: handler,
+		}, ""},
+		"write_external high": {RegisteredTool{
+			Definition: contract.ToolSpec{
+				Name: "t2", InputSchema: json.RawMessage(`{"type":"object"}`),
+			}, Handler: handler,
+			Effect: contract.EffectWriteExternal, Risk: contract.RiskHigh,
+		}, ""},
+		"invalid effect": {RegisteredTool{
+			Definition: contract.ToolSpec{
+				Name: "t3", InputSchema: json.RawMessage(`{"type":"object"}`),
+			}, Handler: handler, Effect: contract.Effect("nuke"),
+		}, "effect must be"},
+		"invalid risk": {RegisteredTool{
+			Definition: contract.ToolSpec{
+				Name: "t4", InputSchema: json.RawMessage(`{"type":"object"}`),
+			}, Handler: handler, Risk: contract.Risk("medium"),
+		}, "risk must be"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry, err := NewRegistry(test.tool)
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if registry == nil || len(registry.Definitions()) != 1 {
+					t.Fatalf("registry=%#v", registry)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want %q", err, test.want)
+			}
+		})
 	}
 }
 

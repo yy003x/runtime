@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yy003x/runtime/agent"
+	"github.com/yy003x/runtime/contract"
 	"github.com/yy003x/runtime/internal/toolconfig"
 )
 
@@ -92,6 +93,101 @@ func TestMCPExecutionNegotiatesSessionAndCallsRemoteTool(t *testing.T) {
 	if calls.Load() != 3 {
 		t.Fatalf("calls = %d", calls.Load())
 	}
+}
+
+func TestMCPOptionsConfigureProtocolNegotiation(t *testing.T) {
+	const secret = "token-value"
+	// 协商服务器：用入参决定 initialize 回复的 protocolVersion，并断言客户端
+	// 发出的 requested 版本。
+	newServer := func(t *testing.T, negotiated string) (*httptest.Server, *string) {
+		var requested string
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(
+			writer http.ResponseWriter,
+			request *http.Request,
+		) {
+			body, _ := io.ReadAll(request.Body)
+			step := calls.Add(1)
+			switch step {
+			case 1:
+				assertRequestMethod(t, body, "initialize")
+				var init struct {
+					Params struct {
+						ProtocolVersion string `json:"protocolVersion"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal(body, &init); err != nil {
+					t.Fatalf("decode initialize: %v", err)
+				}
+				requested = init.Params.ProtocolVersion
+				writer.Header().Set("Content-Type", "text/event-stream")
+				writer.Header().Set("Mcp-Session-Id", "session-1")
+				fmt.Fprint(writer, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\""+negotiated+"\",\"capabilities\":{},\"serverInfo\":{\"name\":\"t\",\"version\":\"1\"}}}"+"\n\n")
+			case 2:
+				writer.WriteHeader(http.StatusOK)
+			case 3:
+				writer.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(writer, `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+			}
+		}))
+		t.Cleanup(server.Close)
+		return server, &requested
+	}
+
+	t.Run("allowed version negotiated", func(t *testing.T) {
+		server, requested := newServer(t, "2024-11-05")
+		bundle, err := Build([]toolconfig.Manifest{testManifest(server.URL)}, Options{
+			LookupEnv:                func(string) (string, bool) { return secret, true },
+			RequestedProtocolVersion: "2025-06-18",
+			AllowedProtocolVersions:  []string{"2025-06-18", "2024-11-05"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := bundle.Tools[0].Handler(context.Background(), agent.ToolRequest{
+			Name: "web_search", Arguments: json.RawMessage(`{"query":"x"}`),
+		})
+		if err != nil || result.IsError || result.Content != "ok" {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
+		if *requested != "2025-06-18" {
+			t.Fatalf("initialize requested=%q", *requested)
+		}
+	})
+
+	t.Run("version outside allowed rejected", func(t *testing.T) {
+		server, _ := newServer(t, "2024-11-05")
+		bundle, err := Build([]toolconfig.Manifest{testManifest(server.URL)}, Options{
+			LookupEnv:                func(string) (string, bool) { return secret, true },
+			RequestedProtocolVersion: "2025-06-18",
+			AllowedProtocolVersions:  []string{"2025-06-18"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := bundle.Tools[0].Handler(context.Background(), agent.ToolRequest{
+			Name: "web_search", Arguments: json.RawMessage(`{"query":"x"}`),
+		})
+		if err != nil ||
+			!result.IsError ||
+			!strings.Contains(result.Content, "unsupported protocol version") {
+			t.Fatalf(
+				"expected is_error unsupported protocol version result, got %#v err=%v",
+				result, err,
+			)
+		}
+	})
+
+	t.Run("requested outside allowed fails build", func(t *testing.T) {
+		_, err := Build(nil, Options{
+			RequestedProtocolVersion: "2025-06-18",
+			AllowedProtocolVersions:  []string{"2024-11-05"},
+		})
+		if err == nil ||
+			!strings.Contains(err.Error(), "must be in the allowed set") {
+			t.Fatalf("expected allowed-set build error, got %v", err)
+		}
+	})
 }
 
 func TestMCPRemoteAndTransportFailuresAreReadOnlyResults(t *testing.T) {
@@ -306,7 +402,7 @@ func testManifest(endpoint string) toolconfig.Manifest {
 	return toolconfig.Manifest{
 		SchemaVersion: toolconfig.SchemaVersion,
 		Name:          "web_search",
-		Effect:        toolconfig.EffectReadOnly,
+		Effect:        contract.EffectReadOnly,
 		Description:   "search",
 		InputSchema: json.RawMessage(
 			`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}`,

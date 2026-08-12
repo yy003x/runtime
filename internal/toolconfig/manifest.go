@@ -24,8 +24,7 @@ import (
 const (
 	SchemaVersion = 1
 
-	EffectReadOnly Effect = "read_only"
-	ExecutorMCP    string = "mcp"
+	ExecutorMCP string = "mcp"
 
 	minimumTimeout          = time.Second
 	maximumTimeout          = 2 * time.Minute
@@ -35,12 +34,11 @@ const (
 
 var namePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 
-type Effect string
-
 type Manifest struct {
 	SchemaVersion int             `json:"schema_version"`
 	Name          string          `json:"name"`
-	Effect        Effect          `json:"effect"`
+	Effect        contract.Effect `json:"effect"`
+	Risk          contract.Risk   `json:"risk,omitempty"`
 	Description   string          `json:"description"`
 	InputSchema   json.RawMessage `json:"input_schema"`
 	Executor      Executor        `json:"executor"`
@@ -73,8 +71,22 @@ func (manifest Manifest) Validate() error {
 	if err := ValidateName(manifest.Name); err != nil {
 		return err
 	}
-	if manifest.Effect != EffectReadOnly {
-		return fmt.Errorf("effect must be %q", EffectReadOnly)
+	switch manifest.Effect {
+	case contract.EffectReadOnly, contract.EffectWriteLocal, contract.EffectWriteExternal:
+	default:
+		return fmt.Errorf(
+			"effect must be one of %q, %q, %q",
+			contract.EffectReadOnly, contract.EffectWriteLocal,
+			contract.EffectWriteExternal,
+		)
+	}
+	if manifest.Risk != "" &&
+		manifest.Risk != contract.RiskLow && manifest.Risk != contract.RiskHigh {
+		return fmt.Errorf("risk must be %q or %q", contract.RiskLow, contract.RiskHigh)
+	}
+	// 写副作用必须显式声明 risk，避免高危 tool 因缺省被当作 low 静默放行。
+	if manifest.Effect != contract.EffectReadOnly && manifest.Risk == "" {
+		return fmt.Errorf("risk is required for write effects")
 	}
 	if strings.TrimSpace(manifest.Description) == "" {
 		return fmt.Errorf("description is required")

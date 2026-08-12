@@ -2,6 +2,7 @@
   "schema_version": 1,
   "name": "web_search",
   "effect": "read_only",
+  "risk": "low",
   "description": "Search web information, returns results including web page title, web page URL, web page summary, website name, website icon, etc.",
   "input_schema": {
     "type": "object",

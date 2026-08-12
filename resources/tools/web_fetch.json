@@ -2,6 +2,7 @@
   "schema_version": 1,
   "name": "web_fetch",
   "effect": "read_only",
+  "risk": "low",
   "description": "Fetch and Convert URL to Large Model Friendly Input.",
   "input_schema": {
     "type": "object",

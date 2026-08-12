@@ -23,17 +23,28 @@ import (
 
 const (
 	ExecutionImplementation        = "runtime.toolmcp"
-	ExecutionImplementationVersion = 1
+	ExecutionImplementationVersion = 2
 
-	requestedProtocolVersion  = "2025-06-18"
-	negotiatedProtocolVersion = "2024-11-05"
-	maxToolResultBytes        = 1 << 20
-	maxFailureBytes           = 4 << 10
+	// defaultRequestedProtocolVersion 是客户端在 initialize 中声明的首选协议
+	// 版本；服务端可在 allowed 集合内协商回更早版本。协议版本现在完全可配置，
+	// 对齐 2026-07-28 Streamable HTTP spec（client/server 可协商支持集合内的
+	// 任意版本，不再硬绑单一 negotiated 常量）。
+	defaultRequestedProtocolVersion = "2025-06-18"
+	maxToolResultBytes              = 1 << 20
+	maxFailureBytes                 = 4 << 10
 )
 
+// defaultAllowedProtocolVersions 是允许服务端协商回来的版本白名单。服务端
+// 返回的 protocolVersion 必须落在该集合内，否则按不支持收口。
+var defaultAllowedProtocolVersions = []string{
+	"2025-06-18", "2024-11-05",
+}
+
 type Options struct {
-	LookupEnv  func(string) (string, bool)
-	HTTPClient *http.Client
+	LookupEnv                func(string) (string, bool)
+	HTTPClient               *http.Client
+	RequestedProtocolVersion string
+	AllowedProtocolVersions  []string
 }
 
 type Bundle struct {
@@ -54,6 +65,12 @@ func Build(
 		lookup = os.LookupEnv
 	}
 	client := singleAttemptClient(options.HTTPClient)
+	requested, allowed, err := resolveProtocolOptions(
+		options.RequestedProtocolVersion, options.AllowedProtocolVersions,
+	)
+	if err != nil {
+		return Bundle{}, err
+	}
 	registered := make([]agent.RegisteredTool, 0, len(manifests))
 	seen := make(map[string]struct{}, len(manifests))
 	for _, source := range manifests {
@@ -64,6 +81,8 @@ func Build(
 		seen[manifest.Name] = struct{}{}
 		handler := &handler{
 			manifest: manifest, lookupEnv: lookup, client: client,
+			requestedProtocolVersion: requested,
+			allowedProtocolVersions:  allowed,
 		}
 		registered = append(registered, agent.RegisteredTool{
 			Definition: manifest.Definition(), Handler: handler.execute,
@@ -72,10 +91,45 @@ func Build(
 	return Bundle{Tools: registered, Configuration: configuration}, nil
 }
 
+func resolveProtocolOptions(
+	requested string,
+	allowed []string,
+) (string, []string, error) {
+	if strings.TrimSpace(requested) == "" {
+		requested = defaultRequestedProtocolVersion
+	}
+	if len(allowed) == 0 {
+		allowed = append([]string(nil), defaultAllowedProtocolVersions...)
+	}
+	seen := make(map[string]struct{}, len(allowed))
+	for _, version := range allowed {
+		if strings.TrimSpace(version) == "" {
+			return "", nil, fmt.Errorf(
+				"allowed protocol versions must not contain empty strings",
+			)
+		}
+		if _, exists := seen[version]; exists {
+			return "", nil, fmt.Errorf(
+				"allowed protocol versions contain duplicate %q", version,
+			)
+		}
+		seen[version] = struct{}{}
+	}
+	if _, accepts := seen[requested]; !accepts {
+		return "", nil, fmt.Errorf(
+			"requested protocol version %q must be in the allowed set",
+			requested,
+		)
+	}
+	return requested, allowed, nil
+}
+
 type handler struct {
-	manifest  toolconfig.Manifest
-	lookupEnv func(string) (string, bool)
-	client    *http.Client
+	manifest                 toolconfig.Manifest
+	lookupEnv                func(string) (string, bool)
+	client                   *http.Client
+	requestedProtocolVersion string
+	allowedProtocolVersions  []string
 }
 
 func (handler *handler) execute(
@@ -95,7 +149,9 @@ func (handler *handler) execute(
 	client := sessionClient{
 		endpoint: handler.manifest.Executor.Endpoint,
 		headers:  headers, secrets: secrets, client: handler.client,
-		maxResponseBytes: handler.manifest.Executor.MaxResponseBytes,
+		maxResponseBytes:         handler.manifest.Executor.MaxResponseBytes,
+		requestedProtocolVersion: handler.requestedProtocolVersion,
+		allowedProtocolVersions:  handler.allowedProtocolVersions,
 	}
 	result, err := client.call(
 		ctx, handler.manifest.Executor.RemoteTool, request.Arguments,
@@ -158,13 +214,15 @@ func resolveHeaders(
 }
 
 type sessionClient struct {
-	endpoint         string
-	headers          http.Header
-	secrets          []string
-	client           *http.Client
-	maxResponseBytes int64
-	sessionID        string
-	protocolVersion  string
+	endpoint                 string
+	headers                  http.Header
+	secrets                  []string
+	client                   *http.Client
+	maxResponseBytes         int64
+	sessionID                string
+	protocolVersion          string
+	requestedProtocolVersion string
+	allowedProtocolVersions  []string
 }
 
 func (client *sessionClient) call(
@@ -175,7 +233,7 @@ func (client *sessionClient) call(
 	initialize, err := client.exchange(ctx, rpcRequest{
 		JSONRPC: "2.0", ID: 1, Method: "initialize",
 		Params: initializeParams{
-			ProtocolVersion: requestedProtocolVersion,
+			ProtocolVersion: client.requestedProtocolVersion,
 			Capabilities:    struct{}{},
 			ClientInfo: clientInfo{
 				Name: "sn-runtime", Version: "1",
@@ -189,7 +247,7 @@ func (client *sessionClient) call(
 	if err := decodeResult(initialize.Result, &initialized); err != nil {
 		return agent.ToolResult{}, fmt.Errorf("decode initialize result: %w", err)
 	}
-	if initialized.ProtocolVersion != negotiatedProtocolVersion {
+	if !protocolAllowed(initialized.ProtocolVersion, client.allowedProtocolVersions) {
 		return agent.ToolResult{}, fmt.Errorf(
 			"server negotiated unsupported protocol version %q",
 			initialized.ProtocolVersion,
@@ -543,6 +601,15 @@ func redact(value string, secrets []string) string {
 		}
 	}
 	return value
+}
+
+func protocolAllowed(version string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if candidate == version {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueNonEmpty(values []string) []string {
