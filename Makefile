@@ -32,7 +32,7 @@ else
 override SN_CLI_VERSION := $(value SN_CLI_VERSION)
 endif
 
-SN_CLI_DEFAULT_LDFLAGS := -X github.com/yy003x/runtime/internal/cli/version.Version=$(SN_CLI_VERSION) -X github.com/yy003x/runtime/internal/cli/version.Commit=$(SN_CLI_COMMIT) -X github.com/yy003x/runtime/internal/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X github.com/yy003x/runtime/internal/cli/version.Dirty=$(SN_CLI_DIRTY)
+SN_CLI_DEFAULT_LDFLAGS := -X github.com/yy003x/runtime/internal/interfaces/cli/version.Version=$(SN_CLI_VERSION) -X github.com/yy003x/runtime/internal/interfaces/cli/version.Commit=$(SN_CLI_COMMIT) -X github.com/yy003x/runtime/internal/interfaces/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X github.com/yy003x/runtime/internal/interfaces/cli/version.Dirty=$(SN_CLI_DIRTY)
 ifeq ($(origin SN_CLI_LDFLAGS), command line)
 override SN_CLI_LDFLAGS := $(value SN_CLI_LDFLAGS)
 else
@@ -108,7 +108,7 @@ fmt:
 
 fmt-check:
 	@$(MAKE_STEP) --stage fmt-check --meta scope=go -- \
-		bash -c 'cd "$${RUNTIME_ROOT}"; files="$$(gofmt -l $$(find agent cmd command contract internal model profile provider run runtimetest session store tmux transport -name "*.go" -type f))"; if [[ -n "$$files" ]]; then printf "Go files require formatting:\n%s\n" "$$files"; exit 1; fi'
+		bash -c 'cd "$${RUNTIME_ROOT}"; files="$$(gofmt -l $$(find cmd internal pkg -name "*.go" -type f))"; if [[ -n "$$files" ]]; then printf "Go files require formatting:\n%s\n" "$$files"; exit 1; fi'
 
 test:
 	@$(MAKE_STEP) --stage test --meta scope=./... -- \
@@ -120,7 +120,7 @@ test-serial:
 
 test-race:
 	@$(MAKE_STEP) --stage test-race --meta scope=runtime-domains -- \
-		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./agent ./command ./model ./session ./run ./store/sqlite ./tmux ./transport/http -count=1
+		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./pkg/agent ./pkg/command ./pkg/model ./pkg/session ./pkg/run ./pkg/store/sqlite ./pkg/tmux ./pkg/transport/http -count=1
 
 coverage:
 	@$(MAKE_STEP) --stage coverage --meta "minimum=$${COVERAGE_MIN}%" --meta "profile=$${COVERAGE_PROFILE}" -- \
@@ -164,7 +164,7 @@ publish-test:
 
 sn-cli-test:
 	@$(MAKE_STEP) --stage sn-cli-test --meta scope=cli -- \
-		"$${GO}" -C "$${RUNTIME_ROOT}" test ./agent ./command ./contract ./model ./profile ./provider/... ./session ./run ./store/sqlite ./tmux ./transport/... ./internal/... ./runtimetest/...
+		"$${GO}" -C "$${RUNTIME_ROOT}" test ./pkg/... ./internal/...
 
 sn-cli-doctor: sn-cli-build
 	@$(MAKE_STEP) --live --stage sn-cli-doctor --meta home=temporary -- \

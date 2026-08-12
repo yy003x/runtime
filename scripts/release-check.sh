@@ -204,6 +204,8 @@ archive="$DIST_DIR/sn-cli-$os_name-$arch_name.tar.gz"
 release_server_pid=""
 local_source_home=""
 local_source_bin=""
+release_tmux_tmp=""
+tmux_id=""
 cleanup() {
   if [ -n "$release_server_pid" ]; then
     kill "$release_server_pid" >/dev/null 2>&1 || true
@@ -211,6 +213,12 @@ cleanup() {
   fi
   if [ -x "$install_dir/sn-cli" ]; then
     SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" server stop >/dev/null 2>&1 || true
+  fi
+  if [ -n "$release_tmux_tmp" ] && [ -n "$tmux_id" ] &&
+    [ -x "$install_dir/sn-cli" ]; then
+    SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
+      "$install_dir/sn-cli" tmux stop --tmux-id "$tmux_id" \
+      >/dev/null 2>&1 || true
   fi
   if [ -n "$local_source_home" ] && [ -x "$local_source_bin/sn-cli" ]; then
     SN_CLI_HOME="$local_source_home" \
@@ -443,7 +451,7 @@ cp "$archive" "$release_dir/"
 cp "$DIST_DIR/checksums.txt" "$release_dir/"
 release_server="$temp_root/release-fileserver"
 "$GO_BIN" -C "$ROOT_DIR" build \
-  -o "$release_server" ./runtimetest/releasefileserver
+  -o "$release_server" ./internal/testkit/releasefileserver
 release_address_file="$temp_root/release-server.address"
 "$release_server" \
   --root "$release_root" \
@@ -543,7 +551,7 @@ direct_home="$temp_root/direct-home"
 direct_bin="$direct_home/fake-bin"
 mkdir -p "$direct_home/configs" "$direct_bin"
 $GO_BIN -C "$ROOT_DIR" build \
-  -o "$temp_root/ptyrun" ./runtimetest/ptyx/cmd/ptyrun
+  -o "$temp_root/ptyrun" ./internal/testkit/ptyx/cmd/ptyrun
 # macOS platform binaries can be killed by AMFI after being copied to a new
 # path. Keep the signed executable at its system path while exposing the
 # adapter fixture under the expected command name.
@@ -602,8 +610,11 @@ fi
 SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" server stop >/dev/null
 
 require_command tmux
+release_tmux_tmp="$temp_root/tmux-tmp"
+mkdir -m 0700 "$release_tmux_tmp"
 tmux_start="$(
   PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+    TMUX_TMPDIR="$release_tmux_tmp" \
     "$install_dir/sn-cli" --json tmux start cx "tmux-smoke"
 )"
 tmux_id="$(
@@ -611,20 +622,31 @@ tmux_id="$(
     sed -n 's/.*"tmux_id":"\([^"]*\)".*/\1/p'
 )"
 [ -n "$tmux_id" ] || die "tmux start did not return tmux_id: $tmux_start"
+TMUX_TMPDIR="$release_tmux_tmp" \
+  tmux -L default list-sessions -F '#{session_name}' |
+  grep -Fxq 'sn-session' ||
+  die "default Tmux mode did not expose sn-session to ordinary tmux"
 tmux_digest_before="$(sha256_file "$runtime_home/bin/sn-cli")"
-if bash "$ROOT_DIR/install.sh" \
+if TMUX_TMPDIR="$release_tmux_tmp" bash "$ROOT_DIR/install.sh" \
   --archive "$archive" \
   --checksums "$DIST_DIR/checksums.txt" \
   --home "$runtime_home" \
   --install-dir "$install_dir" \
   --overwrite-configs; then
-  die "installer activated while the dedicated Tmux server was live"
+  die "installer activated while the managed Tmux session was live"
 fi
 [ "$(sha256_file "$runtime_home/bin/sn-cli")" = "$tmux_digest_before" ] ||
   die "blocked Tmux-live upgrade changed the active binary"
 PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+  TMUX_TMPDIR="$release_tmux_tmp" \
   "$install_dir/sn-cli" tmux stop --tmux-id "$tmux_id" >/dev/null
-bash "$ROOT_DIR/install.sh" \
+tmux_id=""
+if TMUX_TMPDIR="$release_tmux_tmp" \
+  tmux -L default list-sessions -F '#{session_name}' 2>/dev/null |
+  grep -Fxq 'sn-session'; then
+  die "stopping the final managed window left sn-session behind"
+fi
+TMUX_TMPDIR="$release_tmux_tmp" bash "$ROOT_DIR/install.sh" \
   --archive "$archive" \
   --checksums "$DIST_DIR/checksums.txt" \
   --home "$runtime_home" \
