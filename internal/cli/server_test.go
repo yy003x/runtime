@@ -15,9 +15,26 @@ import (
 
 	"github.com/yy003x/runtime/internal/layout"
 	"github.com/yy003x/runtime/profile"
+	runtimetmux "github.com/yy003x/runtime/tmux"
 )
 
 func TestMain(main *testing.M) {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case runtimetmux.HelperCommandName:
+			if err := runtimetmux.RunHelper(os.Args[2:]); err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				os.Exit(1)
+			}
+			os.Exit(0)
+		case sessionTerminalHelperCommandName:
+			if err := runSessionTerminalHelperVNext(os.Args[2:]); err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+	}
 	if os.Getenv("SN_CLI_TEST_SERVER_HOLD") == "1" {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)

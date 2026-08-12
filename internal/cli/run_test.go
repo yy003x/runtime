@@ -357,6 +357,33 @@ func TestRunManagementUsesCanonicalIDAndNotFoundErrors(t *testing.T) {
 	}
 }
 
+func TestRunTraceIsAdmittedAndReachesDispatch(t *testing.T) {
+	const missingRunID = "run_00000000000000000000000000000000"
+	// trace 的校验语义与 get 一致（仅 --run-id）；白名单漏项会让它在这里就返回
+	// "unknown run action \"trace\""，根本到不了 dispatch。
+	if err := validateRunManagementInvocation([]string{
+		"trace", "--run-id", missingRunID,
+	}); err != nil {
+		t.Fatalf("trace admission: %v", err)
+	}
+	if err := validateRunManagementInvocation([]string{
+		"trace", "--run-id", "run_missing",
+	}); err == nil {
+		t.Fatal("malformed run ID was accepted for trace")
+	}
+	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runRunNamespaceVNext(
+		prepareVNextHome(t),
+		[]string{"trace", "--run-id", missingRunID},
+		output,
+	)
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorNotFound {
+		t.Fatalf("expected not_found reaching TraceByRun, got %v", err)
+	}
+}
+
 func TestRunCompositionIgnoresUnrelatedExecutionInputs(t *testing.T) {
 	ctx := context.Background()
 	paths := prepareVNextHome(t)

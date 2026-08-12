@@ -55,23 +55,24 @@ func (state State) Terminal() bool {
 }
 
 type Request struct {
-	Kind             Kind                     `json:"kind"`
-	ProfileID        string                   `json:"profile_id"`
-	Input            string                   `json:"input"`
-	SessionID        string                   `json:"session_id,omitempty"`
-	SessionRetention string                   `json:"session_retention,omitempty"`
-	TaskID           string                   `json:"task_id,omitempty"`
-	Model            string                   `json:"model,omitempty"`
-	Effort           string                   `json:"effort,omitempty"`
-	CWD              string                   `json:"cwd,omitempty"`
-	ModelOptions     contract.GenerateOptions `json:"model_options,omitempty"`
-	AgentBudget      agent.Budget             `json:"agent_budget,omitempty"`
-	Labels           map[string]string        `json:"labels,omitempty"`
-	RetryOf          string                   `json:"retry_of,omitempty"`
-	Resume           json.RawMessage          `json:"resume,omitempty"`
-	RequestDigest    string                   `json:"request_digest,omitempty"`
-	ConfigDigest     string                   `json:"config_digest,omitempty"`
-	BasePromptDigest string                   `json:"base_prompt_digest,omitempty"`
+	Kind               Kind                     `json:"kind"`
+	ProfileID          string                   `json:"profile_id"`
+	Input              string                   `json:"input"`
+	SessionID          string                   `json:"session_id,omitempty"`
+	SessionRetention   string                   `json:"session_retention,omitempty"`
+	TaskID             string                   `json:"task_id,omitempty"`
+	Model              string                   `json:"model,omitempty"`
+	Effort             string                   `json:"effort,omitempty"`
+	CWD                string                   `json:"cwd,omitempty"`
+	ModelOptions       contract.GenerateOptions `json:"model_options,omitempty"`
+	AgentBudget        agent.Budget             `json:"agent_budget,omitempty"`
+	CompletionCriteria CompletionCriteria       `json:"completion_criteria,omitempty"`
+	Labels             map[string]string        `json:"labels,omitempty"`
+	RetryOf            string                   `json:"retry_of,omitempty"`
+	Resume             json.RawMessage          `json:"resume,omitempty"`
+	RequestDigest      string                   `json:"request_digest,omitempty"`
+	ConfigDigest       string                   `json:"config_digest,omitempty"`
+	BasePromptDigest   string                   `json:"base_prompt_digest,omitempty"`
 
 	// PrivateRequest is a store-only execution snapshot. It is persisted in the
 	// dedicated private_request_json column and must never be serialized by a
@@ -214,11 +215,91 @@ type GCResult struct {
 	Applied    bool     `json:"applied"`
 }
 
+// Trace is the aggregated, read-only evidence for a single Run: the durable
+// record plus its event, model-call and tool-effect journals. It surfaces the
+// structured trace that already exists across the four tables (correlated by
+// run_id) for one Run, without introducing a parallel trace store or a separate
+// trace_id column. model_calls.provider_request_id serves as the per-call span
+// identifier when one is needed.
+type Trace struct {
+	Run         Record           `json:"run"`
+	Events      []contract.Event `json:"events"`
+	ModelCalls  []ModelCall      `json:"model_calls"`
+	ToolEffects []ToolEffect     `json:"tool_effects"`
+}
+
+// ReaperOptions controls a background sweep that settles Runs stuck in
+// non-terminal states (paused, needs_reconciliation) past their TTL. A zero TTL
+// disables that state's sweep.
+type ReaperOptions struct {
+	Interval               time.Duration
+	PausedTTL              time.Duration
+	NeedsReconciliationTTL time.Duration
+}
+
 type ExecutionOutcome struct {
 	State  State
 	Result json.RawMessage
 	Pause  json.RawMessage
 	Error  *contract.RuntimeError
+}
+
+// CompletionCriteria declares how a Run's completion is verified against real
+// environment evidence rather than the model's claim. Checks run after the
+// executor returns StateCompleted and before the run settles.
+type CompletionCriteria struct {
+	Checks []CompletionCheck `json:"checks,omitempty"`
+}
+
+// CompletionCheck is a single verifiable completion assertion. Type "command"
+// runs Command as a subprocess (exit 0 == pass) in the Run's CWD.
+type CompletionCheck struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	Command []string `json:"command,omitempty"`
+}
+
+// ValidationResult is the outcome of a CompletionValidator pass.
+type ValidationResult struct {
+	Passed  bool          `json:"passed"`
+	Checks  []CheckResult `json:"checks,omitempty"`
+	Summary string        `json:"summary,omitempty"`
+}
+
+// CheckResult is the result of one CompletionCheck.
+type CheckResult struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// CompletionValidator is an optional Executor capability. When an executor
+// implements it, the run service validates a StateCompleted outcome before
+// settling: a non-nil error means validation itself failed and the run cannot
+// be judged complete (it enters needs_reconciliation); a ValidationResult with
+// Passed=false means the run demonstrably failed its criteria and is settled as
+// failed with the validation evidence. Executors that do not implement this
+// interface are validated exactly as before (model/executor outcome is trusted).
+type CompletionValidator interface {
+	ValidateCompletion(
+		ctx context.Context,
+		record Record,
+		outcome ExecutionOutcome,
+	) (ValidationResult, error)
+}
+
+// ValidationRuntimeError translates a failed ValidationResult into a
+// RuntimeError suitable for settling the Run as failed.
+func ValidationRuntimeError(validation ValidationResult) *contract.RuntimeError {
+	summary := validation.Summary
+	if summary == "" {
+		summary = "completion validation failed"
+	}
+	return &contract.RuntimeError{
+		Code:    contract.ErrorValidationFailed,
+		Phase:   contract.PhaseRun,
+		Message: summary,
+	}
 }
 
 type Executor interface {

@@ -24,7 +24,7 @@ func runRunNamespaceVNext(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: run get|list|result|events|watch|cancel|resume|retry|reconcile|gc")
+		return cliValidationf("usage: run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc")
 	}
 	if args[0] == "watch" {
 		output.beginStream()
@@ -48,7 +48,7 @@ func runRunNamespaceVNext(
 		gcOlderThan         time.Duration
 	)
 	switch args[0] {
-	case "get", "list", "result", "events", "watch":
+	case "get", "list", "result", "events", "watch", "trace":
 		queryServices, err = runtimebootstrap.LoadRunQueryServices(paths)
 		if err != nil {
 			return err
@@ -168,6 +168,24 @@ func runRunNamespaceVNext(
 			})
 		}
 		return renderRunResult(output, record)
+	case "trace":
+		if err := validateManagementArgs(
+			args[1:], []string{"--run-id"}, nil,
+		); err != nil {
+			return err
+		}
+		runID, err := requiredOption(args[1:], "--run-id")
+		if err != nil {
+			return err
+		}
+		runTrace, err := queryServices.Runs.TraceByRun(context.Background(), runID)
+		if err != nil {
+			return canonicalRunManagementError(err)
+		}
+		if output.JSON() {
+			return output.writeJSON(map[string]any{"trace": runTrace})
+		}
+		return renderRunTrace(output, runTrace)
 	case "events":
 		if err := validateManagementArgs(
 			args[1:], []string{"--run-id", "--after-seq"}, nil,
@@ -346,7 +364,7 @@ func validateRunManagementInvocation(args []string) error {
 	action := args[0]
 	actionArgs := args[1:]
 	switch action {
-	case "get", "result", "cancel", "retry":
+	case "get", "result", "trace", "cancel", "retry":
 		if err := validateManagementArgs(
 			actionArgs, []string{"--run-id"}, nil,
 		); err != nil {
@@ -479,6 +497,46 @@ func parseRunListFilter(args []string) (runtime.ListFilter, error) {
 	return runtime.NormalizeListFilter(runtime.ListFilter{
 		State: runtime.State(state), Kind: runtime.Kind(kind), Limit: limit,
 	})
+}
+
+func renderRunTrace(output *cliOutput, trace runtime.Trace) error {
+	if err := output.line(
+		"Run %s  %s  %s  %s",
+		trace.Run.ID, trace.Run.State, trace.Run.Request.Kind,
+		trace.Run.Request.ProfileID,
+	); err != nil {
+		return err
+	}
+	if err := output.line("Events (%d)", len(trace.Events)); err != nil {
+		return err
+	}
+	for _, event := range trace.Events {
+		if err := output.line("  #%d  %s", event.Sequence, event.Type); err != nil {
+			return err
+		}
+	}
+	if err := output.line("Model calls (%d)", len(trace.ModelCalls)); err != nil {
+		return err
+	}
+	for _, call := range trace.ModelCalls {
+		if err := output.line(
+			"  #%d  %s  provider=%s",
+			call.Sequence, call.State, call.ProviderRequestID,
+		); err != nil {
+			return err
+		}
+	}
+	if err := output.line("Tool effects (%d)", len(trace.ToolEffects)); err != nil {
+		return err
+	}
+	for _, effect := range trace.ToolEffects {
+		if err := output.line(
+			"  %s  %s  %s", effect.Name, effect.CallID, effect.State,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func renderRunRecord(output *cliOutput, record runtime.Record) error {

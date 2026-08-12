@@ -257,6 +257,28 @@ func (service *Service) execute(
 			persistContext, current,
 		)
 	}
+	if outcome.State == StateCompleted {
+		if validator, ok := executor.(CompletionValidator); ok {
+			validation, validationErr := validator.ValidateCompletion(
+				persistContext, record, outcome,
+			)
+			if validationErr != nil {
+				outcome = ExecutionOutcome{
+					State: StateNeedsReconciliation,
+					Error: runError(
+						contract.ErrorInternal,
+						"completion validation failed: "+validationErr.Error(),
+					),
+				}
+			} else if !validation.Passed {
+				outcome = ExecutionOutcome{
+					State:  StateFailed,
+					Error:  ValidationRuntimeError(validation),
+					Result: outcome.Result,
+				}
+			}
+		}
+	}
 	switch outcome.State {
 	case StatePaused:
 		value, err := service.store.Pause(persistContext, record.ID, outcome.Pause)
@@ -392,6 +414,36 @@ func (service *Service) Events(
 		return nil, err
 	}
 	return service.store.Events(ctx, runID, afterSequence, limit)
+}
+
+// TraceByRun aggregates the durable record and the event, model-call and
+// tool-effect journals for a single Run into a read-only Trace. It composes
+// existing Store read methods; no new schema column is required because every
+// journal is already correlated by run_id.
+func (service *Service) TraceByRun(
+	ctx context.Context,
+	runID string,
+) (Trace, error) {
+	record, err := service.store.Get(ctx, runID)
+	if err != nil {
+		return Trace{}, err
+	}
+	events, err := service.store.Events(ctx, runID, 0, MaxListLimit)
+	if err != nil {
+		return Trace{}, err
+	}
+	modelCalls, err := service.store.ModelCalls(ctx, runID)
+	if err != nil {
+		return Trace{}, err
+	}
+	toolEffects, err := service.store.ToolEffects(ctx, runID)
+	if err != nil {
+		return Trace{}, err
+	}
+	return Trace{
+		Run: record, Events: events,
+		ModelCalls: modelCalls, ToolEffects: toolEffects,
+	}, nil
 }
 
 func (service *Service) Watch(

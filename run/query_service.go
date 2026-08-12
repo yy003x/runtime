@@ -48,6 +48,13 @@ func (service *QueryService) Events(
 	return service.service.Events(ctx, runID, afterSequence, limit)
 }
 
+func (service *QueryService) TraceByRun(
+	ctx context.Context,
+	runID string,
+) (Trace, error) {
+	return service.service.TraceByRun(ctx, runID)
+}
+
 func (service *QueryService) Watch(
 	ctx context.Context,
 	runID string,
