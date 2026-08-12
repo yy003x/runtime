@@ -14,7 +14,10 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli profile list|show|check`：Profile 只读管理面，不执行 Profile；
 - `sn-cli session exec|req ...`：文件型本地执行会话，`--queue` 时进入 durable
   Run；Session 不自动执行 tool；
-- `sn-cli tmux ...`：固定专用 tmux server/window 的交互进程管理，不进入 Session；
+- `sn-cli session open|send|attach|interrupt|close ...`：以 tmux 为终端界面，
+  每次输入仍创建 canonical Turn 与 durable Run；
+- `sn-cli tmux ...`：固定专用 tmux server/window 的原始交互进程管理，本身不创建
+  Session；
 - `sn-cli agent <api-profile-id>`：唯一 API-only Agent Kernel，`--queue` 时排队；
 - `sn-cli run ...`：SQLite durable Run 查询与控制面，不负责提交新 Run。
 
@@ -80,7 +83,8 @@ source/payload 路径当成 active home 路径，也不得反向从 active home 
 
 source/payload `resources/tools/*.json` 经 activation 映射到 active
 `tools/*.json`，后者是 Agent 外部工具的唯一运行配置面；文件 basename 必须等于
-tool `name`。当前只支持 `effect=read_only`、`executor.type=mcp`，secret 只保留
+tool `name`。`effect` 为 `read_only`/`write_local`/`write_external` 三档之一
+（写副作用必须显式声明 `risk`），`executor.type=mcp`，secret 只保留
 `${VAR}` 引用并在实际 tool call 时解析。`req` 和 Session 不自动执行这里的工具。
 
 只有携带 Profile ID 并进入真实 CLI launch/API Provider call 的执行才写本地日志；

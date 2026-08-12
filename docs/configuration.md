@@ -280,6 +280,9 @@ execution mode 由入口固定，不读取 Profile mode 字段：
   `--model`、`--effort`、`--cwd`；
 - `sn-cli session req <api-profile> ... <input>` 执行一次 API request；
 - 两条 Session 执行入口在 Profile ID 后使用 `--queue` 时创建 durable Run；
+- `sn-cli session open <cli-profile> ...` 冻结 CLI Profile/base-prompt digest 与
+  effective model/effort/cwd，启动 tmux-backed console；每个已消费 prompt 都创建 durable
+  Session Run；
 - `sn-cli tmux start <cli-profile> ... [input]` 固定 interactive mode，在专用 tmux
   server 的 `sn-session` 中创建一个 window。
 
@@ -290,7 +293,8 @@ Tmux 管理详见 [Tmux 管理契约](tmux-contract.md)。
 `session list|show|messages|events|logs|executions|execution|reconcile`
 与 `session configure|export|delete|gc` 只加载 Session maintenance service，
 不依赖 Profile 目录、Provider 或 `runtime.json`。只有 `session exec|req`
-加载执行所需依赖。
+和 `session open` 加载 Profile；terminal helper 使用仅含 Session executor 的窄
+Session Run composition，不加载 Agent tools。
 
 Run 同样按 action 最小加载：`get|list|result|events|watch` 只需要 SQLite Run
 Store；`cancel|reconcile` 只需要 Run Store 与 Session maintenance service，不依赖
@@ -303,14 +307,17 @@ loaded snapshot 比较，不按当前配置生成一份新 snapshot。
 ## Tool manifest
 
 外部 Agent tool 位于 active `${SN_CLI_HOME}/tools/<name>.json`，source/payload
-位于 `resources/tools/<name>.json`。文件 basename 必须与 `name` 完全一致；当前只接受
-`schema_version=1`、`effect=read_only` 和 `executor.type=mcp`。例如：
+位于 `resources/tools/<name>.json`。文件 basename 必须与 `name` 完全一致；接受
+`schema_version=1`、`executor.type=mcp`，`effect` 为
+`read_only`/`write_local`/`write_external` 三档之一（写副作用必须声明 `risk`，
+`read_only` 缺省视为 `low`）。例如：
 
 ```json
 {
   "schema_version": 1,
   "name": "web_search",
   "effect": "read_only",
+  "risk": "low",
   "description": "Search web information.",
   "input_schema": {
     "type": "object",

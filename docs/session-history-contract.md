@@ -187,6 +187,22 @@ Execution 保存：
 assistant。OS exit=0 和 canonical protocol terminal 双门禁通过后，才追加唯一
 assistant Message。
 
+## Tmux-backed Session console
+
+`session open|send|attach|interrupt|close` 不改变 Session schema。`open` 创建或绑定
+一个 idle Session，并让 Tmux 保存唯一 opaque `session_id` binding；Tmux 不读取
+Session Store。控制台中的每个输入都通过 `RunNow(kind=session)` 先创建 SQLite
+Durable Run，再由同一个 CLI Session executor 创建 Turn 与 Execution。历史投影仍从
+canonical Message 构建，因此底层可以每轮启动新的 non-interactive CLI child，而不
+依赖 Provider TUI transcript 或 Provider-native resume。
+
+控制台输入使用单行私有 frame 穿过 tmux paste，解码后仍受 Session 1 MiB、UTF-8、
+no-NUL 门禁。pane output 只是展示；唯一历史来自 Session facts，唯一 durable 执行
+状态来自 Run Store。`send` 的 accepted receipt 不是完成信号；完成必须读取
+Session event/message 或 Run terminal state。`interrupt` 使用 Run cancellation；
+`close` 在 active Run 未收口或进入 `needs_reconciliation` 时 fail closed 并保留
+window，避免把 tmux exit 当成 Turn terminal。
+
 Runtime 进程崩溃后，已经可能运行的 child 不自动重放。stale Turn 保持 blocked；
 durable Session Run 进入 `needs_reconciliation`。
 

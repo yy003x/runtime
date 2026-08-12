@@ -1,7 +1,7 @@
 {
   "type": "cli",
   "command": "claude",
-  "model": "glm-5.2[1m]",
+  "model": "glm-5.2",
   "effort": "max",
   "args": [
     "--dangerously-skip-permissions",

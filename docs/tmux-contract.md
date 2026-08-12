@@ -16,6 +16,10 @@ sn-cli tmux interrupt --tmux-id <id>
 sn-cli tmux stop --tmux-id <id>
 ```
 
+`sn-cli session open|send|attach|interrupt|close` 在 CLI composition 层复用同一个
+Tmux Service 作为终端载体，但 canonical facts 仍由 Session/Run services 负责。
+原始 `sn-cli tmux ...` 语义不变。
+
 除 `attach` 外，management action 支持 leading global `--json`。`attach` 要求
 stdin/stdout 都是 TTY；位于同一专用 server 时 switch，位于其它 tmux server 时
 拒绝 nested attach。
@@ -33,6 +37,9 @@ stdin/stdout 都是 TTY；位于同一专用 server 时 switch，位于其它 tm
   只继承最小环境，record、argv、日志和 JSON 不保存 resolved secret。
 - `list/show` 使用 shared lock；mutation 使用 exclusive lock，并在一个 tmux client
   command queue 内完成 identity conditional 与 action。
+- window record 可以保存可选 opaque `binding={kind,id}`。同一个 binding 在专用 registry
+  中必须唯一；Tmux 只校验 ID 形态、约束唯一性并原样返回，不读取 binding 指向的
+  Store，也不据此创建、取消或完成 Turn/Run。
 
 ## 启动事务
 
@@ -40,6 +47,12 @@ stdin/stdout 都是 TTY；位于同一专用 server 时 switch，位于其它 tm
 等待 go；Runtime 校验 pane/helper/process/executable/manifest，最后写 registered
 marker，再释放 helper exec target。marker 前失败删除 window；marker 后失败保留
 可查询、可 stop 的 `starting|exited` record，避免调用方误重试。
+
+当目标与 bootstrap helper 是同一个 executable（Session console 均为 `sn-cli`）时，
+invocation 必须显式启用 `CooperativeReady`。Tmux helper 仅对此类 invocation 注入
+一次性 private ready path/nonce/digest；目标 exec 后写入带 PID、start token 与
+executable identity 的 ready fact。父进程验证后把 `target_ready=true` 提交到唯一
+window record，并清理临时 fact。普通 `tmux start` 不启用该协议。
 
 markerless crash window 以 provisional name 显示为 `orphaned`。只有专用 server
 owner、唯一 window/pane/link 和完整 provisional ID 可证明时才能 stop；record
@@ -56,7 +69,9 @@ window state 为 `starting|running|exited|orphaned`。自然退出由
 `remain-on-exit` 保留，`exit_code` 为 nullable；`send/interrupt` 只接受 running，
 `stop` 接受全部 state。`list` 在 server 不存在时返回空数组。
 
-Tmux 不保存 transcript、paste、canonical message、Session/Turn/Run ID，也不提供
-HTTP route、retention、export 或 GC。`tmux start` 在最终 invocation 构建后会尝试写
+Tmux 不保存 transcript、paste 或 canonical message，也不提供 HTTP route、
+retention、export 或 GC。原始 `tmux start` 不创建 Session/Turn/Run；由 composition
+层提供的可选 binding 只是关联 ID，不是 Session fact。`tmux start` 在最终 invocation
+构建后会尝试写
 best-effort `logs/YYMMDD/cli.jsonl`，但 management action 不写；该日志只是 launch
 diagnostic，不是 window registry 或 launch acknowledgement，缺失时不影响 Tmux 状态。

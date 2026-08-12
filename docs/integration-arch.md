@@ -12,7 +12,8 @@ Business Orchestrator
   ├─ CLI direct ─────> <cli-id>
   ├─ one shot ───────> exec <cli-id> / req <api-id>
   ├─ recorded turn ──> session exec|req [--queue]
-  ├─ interactive TUI > tmux start|send|attach
+  ├─ durable console > session open|send|attach|interrupt|close
+  ├─ raw TUI ────────> tmux start|send|attach
   └─ tool loop ──────> agent <api-id> [--queue]
 
 Runtime
@@ -25,8 +26,9 @@ Runtime
   └─ Run Harness
 ```
 
-业务 Session 可保存 `runtime_session_id`，业务 Run 可保存 `runtime_run_id`；
-Runtime Tmux window 只暴露 `tmux_id`，三者不共享 identity 或 storage。
+业务 Session 可保存 `runtime_session_id`，业务 Run 可保存 `runtime_run_id`。原始
+Tmux window 只暴露 `tmux_id`；由 `session open` 创建的 window 额外保存 opaque
+Session binding，但不读取 Session/Run Store，也不创建第二份 identity 或 history。
 
 ## 公开入口边界
 
@@ -35,6 +37,8 @@ Runtime Tmux window 只暴露 `tmux_id`，三者不共享 identity 或 storage�
   本机 process replacement，无 HTTP 等价入口；
 - `session exec|req <profile> [--queue]` ↔ Session Turn/Run HTTP：记录 canonical
   Turn；
+- `session open|send|attach|interrupt|close`：本机 tmux-backed Session console，
+  每个已消费 prompt 创建 durable Session Run，不暴露 HTTP；
 - `tmux ...`：本机 human/management CLI，不暴露 HTTP；
 - `agent <api-id> [--queue]` ↔ `POST /v1/agent/run` / `POST /v1/runs`：同步或
   queued durable API-only Agent；
@@ -92,7 +96,7 @@ projection、cancel 和 reconcile 不要求 current Profile、Provider 或 tool 
 
 composition 按动作最小化：
 
-- `run get|list|result|events|watch` 只加载 Run Store；
+- `run get|list|result|trace|events|watch` 只加载 Run Store；
 - `run gc` 只加载 Run Store；省略 `--older-than` 时额外只读取 retention 配置；
 - `run cancel|reconcile` 只加载 Run Store 与 Session maintenance service；
 - `run resume|retry`、带 `--queue` 的 `session exec|req`、`agent [--queue]` 和 worker
@@ -114,10 +118,13 @@ private 仅表示不经公共 DTO、event、log 或 error 输出，不表示加�
 - 有副作用 tool effect 已 started 且结果未知：`needs_reconciliation`，不自动重放；
   显式 `run reconcile` 保留 effect evidence 并以 failed 收口；绑定的 Session
   在此之前保持 blocked；
-- 当前 MCP manifest 只允许 `read_only`；transport/HTTP/protocol/remote failure
+- MCP manifest 支持 `read_only`/`write_local`/`write_external` 三档 effect；
+  transport/HTTP/protocol/remote failure
   作为 `ToolResult{is_error=true}` 确定闭合，不自动 retry；
 - worker 单 Run 失败：结案后继续领队列；Store/claim 错误才停止 worker；
 - Tmux window 的 pane transcript 不进入 Session，也不伪装 canonical result。
+- `session send` accepted 只表示 console 接收；调用方仍以 Session/Run terminal fact
+  判断完成。
 
 ## 发布、安装与激活
 

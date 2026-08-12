@@ -13,7 +13,7 @@
 | API Driver | `provider/*` | HTTP/SSE codec、Provider error | retry、tool、Session |
 | Tool Config/MCP adapter | `internal/toolconfig`、`internal/toolmcp` | 严格 manifest、单次只读 MCP call | model loop、retry、持久化 |
 | Session Service | `session/` | Session/Turn/history/execution | 自动执行 canonical tool |
-| Tmux Service | `tmux/` | 专用 tmux server/window lifecycle | Session/history |
+| Tmux Service | `tmux/` | 专用 tmux server/window lifecycle、opaque binding | Session/history、Turn/Run 创建 |
 | Agent Kernel | `agent/` | 唯一 model/tool loop、预算、暂停恢复 | Profile、SQLite |
 | Run Harness | `run/` | durable identity、queue、journal、checkpoint | Session 策略 |
 | Store | `store/sqlite/` | SQLite WAL 与 terminal barrier | 业务 workflow |
@@ -43,11 +43,18 @@ ID、第二层映射或 raw/native argv passthrough。
 | `sn-cli req <api-id>` | API request | Model Core | `api.jsonl`；无 Session/Run |
 | `sn-cli session exec <cli-id> [--queue]` | non-interactive managed exec | Session child | `cli.jsonl` + Turn/Execution；queue 时另有 Run |
 | `sn-cli session req <api-id> [--queue]` | API request | Session executor | `api.jsonl` + Turn/Execution；queue 时另有 Run |
+| `sn-cli session open <cli-id>` | non-interactive managed exec per prompt | Session/Run + Tmux console | 每个已消费 prompt 都有 Turn/Execution 与 Durable Run |
 | `sn-cli tmux start <cli-id>` | interactive | Tmux window | `cli.jsonl`；无 Session |
 | `sn-cli agent <api-id> [--queue]` | API model/tool loop | Agent Kernel | 每轮 `api.jsonl` + Durable Run |
 
 namespace 先固定 execution mode，Profile `type` 再做严格配对校验。Profile 不保存
 execution mode；Session/Tmux schema 不因 CLI ingress 改名而变化。
+
+`session open|send|attach|interrupt|close` 是显式 composition：tmux window 只保存
+`binding={kind:"session",id:<session_id>}` 并承载人机交互；控制台每读入一次 prompt，
+就通过 `RunNow(kind=session)` 创建 durable Run，由既有 Session executor 生成
+Turn/Execution/Message/Event。pane 文本、终端回显和 paste 不进入 canonical history，
+`send accepted=true` 也只表示输入已交给控制台，不表示 Run 完成。
 
 Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Claude。adapter
 用显式 option grammar：
@@ -152,6 +159,14 @@ Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作
 `context.reserved_output_tokens`、Profile 默认输出上限和请求级输出上限的最大值，
 都未声明时默认 `8192`。输入预算是窗口减去有效输出预留，必须至少为 `2`；较低的
 请求级输出上限不能扩大 Profile 输入预算，较高值必须收紧输入预算。
+
+Provider transient error（`RuntimeError.retryable=true`，含 `rate_limited`、
+`provider_unavailable`、`timeout`）由 `model.Service` 外层的 `ResilientModel`
+按 `retry_after_ms` 与指数退避做有界重试（默认最多 3 次）。Driver 仍只执行
+单次 HTTP attempt，重试不改变 execution snapshot、不跨越 before-effect gate；
+non-retryable error 与 reconcile 路径抑制的 error 不重试。每次重试的流式
+event 在内部捕获，仅成功 attempt 的事件重放到 sink，失败 attempt 不泄漏部分
+事件。
 
 ## 5. Session
 
@@ -358,9 +373,11 @@ read 额外拒绝 FIFO、非 regular 和 `nlink>1` hardlink。不宣称抵抗已
 UID 进程、可 ptrace 或可直接操纵既有 fd 的攻击者。
 
 外部 tool 的唯一运行配置面是 active `${SN_CLI_HOME}/tools/<name>.json`；
-source/payload 是 `resources/tools/<name>.json`。当前 loader 只接受 `schema_version=1`、
-`effect=read_only`、`executor.type=mcp`，文件 basename 必须等于 local tool
-name，并拒绝与 builtin 同名。`runtime.json` 只保存 enabled name；bootstrap 将
+source/payload 是 `resources/tools/<name>.json`。loader 接受 `schema_version=1`、
+`executor.type=mcp`，`effect` 为三档之一（`read_only`/`write_local`/`write_external`），
+文件 basename 必须等于 local tool name，并拒绝与 builtin 同名。`risk` 为
+`low`/`high` 两档：写副作用（`write_local`/`write_external`）必须显式声明 risk，
+`read_only` 缺省视为 `low`。`runtime.json` 只保存 enabled name；bootstrap 将
 builtin 与选中的 manifest 组合为一个 Registry，任何 enabled name 无 owner 都
 fail closed。默认启用 `web_search` 和 `web_fetch`，分别绑定 BigModel MCP 的
 `web_search_prime` 与 `webReader`，认证引用均为
@@ -368,11 +385,29 @@ fail closed。默认启用 `web_search` 和 `web_fetch`，分别绑定 BigModel 
 
 每个 MCP handler execution 建立一个有界 Streamable HTTP session，执行
 `initialize`、`notifications/initialized` 和一次 `tools/call`；不 retry、不跟随
-redirect。manifest 的 canonical definition、endpoint、remote tool、header 环境
+redirect。客户端在 `initialize` 中声明 `requested_protocol_version`，服务端在
+`allowed_protocol_versions` 集合内协商回任一版本即接受，否则按不支持收口；两者
+均可经 `runtime.json` 的 `mcp` 段配置，缺省为 requested `2025-06-18`、allowed
+`{2025-06-18, 2024-11-05}`，对齐 2026-07-28 Streamable HTTP spec 的可配置协商。
+manifest 的 canonical definition、endpoint、remote tool、header 环境
 引用、timeout 和 response limit 冻结进 child tool snapshot，resolved secret 不
 进入 snapshot、digest、event 或错误。网络、HTTP、JSON-RPC、协议与远端 tool
 错误用有界、脱敏的 `ToolResult{IsError:true}` 闭合只读 effect，使模型可在下一轮
 解释失败；Session 和 `req` 不执行该 handler。
+
+builtin 工具新增 `shell`（`effect=write_external`、`risk=high`），以 argv 形式
+（不经 shell 插值）在独立进程组内执行子进程，有界捕获 stdout/stderr，并在 ctx
+deadline 或输出超限时向整个进程组 `SIGTERM`→`SIGKILL`。它是进程级、无容器隔离的
+工具，靠风险分级与人工确认兜底，默认不在 `runtime.json` 的 `agent.tools` 中启用。
+high-risk 写副作用在真正执行前必须经过 UserConfirmation：handler 首次返回
+`Pause{Kind:"user_confirmation"}`，Kernel 据此**不闭合** durable effect（保持
+`started`），Run 进入 `paused`；`run resume` 携带 `{approved:bool}` 后 Kernel 把
+approval 附进 `ToolRequest` **重跑** handler 才触发真正副作用，再用真实结果
+`Completed`。期间崩溃则 effect 仍是 `started`，按既有不变量进入
+`needs_reconciliation`（副作用未发生，fail-closed）。这是 stock builtin 工具首次
+产生 Pause：`shell` 默认不在 `agent.tools` 中启用，需显式配置后才会出现在
+tool loop 中。`server info` 的 capability map 是静态声明，仍不列举 `resume`；
+pause/resume 仍是 Kernel-level extension，由 Agent Run 的 paused 事实驱动。
 
 private execution snapshot 是 Store-only 明文元数据，不是加密容器。它不会进入
 公开 DTO、event、log 或 error，但会保存 endpoint、model、按契约视为 non-secret
@@ -390,8 +425,8 @@ record。Agent 在执行 tool 前在 Turn 上原子持久化 `agent_owned=true` 
 marker；若进程在 unknown projection 前退出，Execution 可以仍是 `running`，
 `run reconcile` 仍按精确 `run_id` 收口。`paused` 不走 reconciliation，只能通过
 `run resume` 恢复。pause/resume 是 Kernel extension：底层 CLI/API/Store 和
-validator 保留，但 stock builtin/MCP tools 不产生 Pause，`server info` 因此不发布
-`resume` capability。
+validator 保留，`shell` 等 high-risk 写工具经 `user_confirmation` pause 产生
+暂停态。
 
 ## 8. Durable Run
 
@@ -435,6 +470,26 @@ reservation，只有 cancellation-owned publish 可以消费它。
 result 带显式 acknowledgement marker，重复调用幂等返回该 record；普通 terminal
 Agent Run 不会被误报为已 reconciliation。
 
+实现 `CompletionValidator` 的 executor 在 Run 返回 `completed` 后、terminal
+publish barrier 之前执行 completion validation gate：`completion_criteria`
+声明 `command` 类型检查，以 Run CWD 为工作目录执行，非零退出视为未达标。
+验证未通过（`Passed=false`）以 canonical `validation_failed`/`phase=run` 错误
+settle 为 `failed` 并保留产物；验证器自身报错（无法判定）则进入
+`needs_reconciliation`。未声明 criteria 或 executor 不实现该接口时，沿用
+既有「信任 executor 终态」语义。`completion_criteria` 属公开 Run request 字段。
+
+`run trace` 聚合单个 Run 的 record 与 event/model_call/tool_effect journal 为
+只读 Trace，复用四张表已有的 `run_id` 关联，不引入独立 `trace_id` 列或并行 trace
+存储；`model_calls.provider_request_id` 作为单次模型调用的 span 标识。Trace 属
+query 路径，只加载 Run Store。
+
+sn-server 后台 reaper 周期扫描 `paused` 与 `needs_reconciliation` Run，对
+`updated_at` 早于 `run.reaper.paused_ttl` / `run.reaper.needs_reconciliation_ttl`
+（默认 30m / 24h，0 禁用）的 Run 以 `timeout`/`phase=run` 错误 settle 为 `failed`，
+避免单点卡死永久占用队列或 `runs_one_open_session` 唯一槽位。reaper 复用现有
+`List(state)` 查询与内存过滤，不新增 schema 列或索引；跳过 `cancel_requested`
+Run（cancellation-owned）；sn-cli 单命令模式不启动 reaper。
+
 SQLite `PRAGMA user_version=4`。缺失、不相等或混合 schema fail closed。
 
 ## 9. CLI 与 HTTP
@@ -453,7 +508,7 @@ Run Record 可以公开 Runtime-owned `request_digest/config_digest`，但
 public machine contract，不得经 CLI/HTTP query、result、event、watch、log 或 error
 输出。
 
-Run application composition 按 action 分层：query/watch 只加载 Run Store；
+Run application composition 按 action 分层：query/watch/trace 只加载 Run Store；
 cancel/reconcile 只加载 Run Store 和 Session maintenance service；GC 仅在未显式
 提供 cutoff 时读取 retention 配置。上述 maintenance 路径必须能只用 private
 snapshot 和 durable evidence 工作，不加载 current Profile、Provider 或 tool。

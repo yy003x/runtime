@@ -9,7 +9,7 @@ implementation_status: implemented
 phase_mode: single
 owner: wb-design
 manager: wb-design
-last_updated: 2026-07-31
+last_updated: 2026-08-09
 ---
 
 # CLI Profile、Session Executor 与 Tmux 管理协议
@@ -21,7 +21,9 @@ mode 由公开入口固定。bare CLI Profile 是 interactive direct，`sn-cli e
 non-interactive CLI 调用，`sn-cli req` 是一次 API request；`sn-cli profile` 只管理
 配置。`sn-cli session` 是 Provider-neutral 的 canonical Session 服务，
 `sn-cli tmux` 是长期交互进程管理器；三者使用独立解析和状态机，只共享纯 command
-adapter。
+adapter。`session open|send|attach|interrupt|close` 是显式 composition：tmux 只承载
+console 和 opaque binding，每个已消费 prompt 仍由 Session/Run 创建 durable
+canonical Turn。
 
 ## 目标与非目标
 
@@ -35,6 +37,8 @@ adapter。
   context owner 身份，并允许每个 Turn 选择 API 或 CLI executor。
 - 新增独立的 `sn-cli tmux`，在固定 tmux session `sn-session` 中管理多个
   interactive window。
+- 支持 tmux-backed Session console，使多次输入各自拥有 durable Run、Turn、
+  Execution、Message 与 Event，而不依赖 pane transcript。
 - 让 namespace 固定执行语义：bare Profile/`exec` 只接受 CLI Profile，`req` 只接受
   API Profile；Profile `type` 做严格配对校验。
 
@@ -42,7 +46,8 @@ adapter。
 
 - 不增加字段 alias、自动 migration、第二套 artifact reader 或兼容 shim。
 - 不让 Tmux transcript、pane 内容或 paste 输入自动进入 Session history。
-- 不让 `sn-cli tmux` 进入 HTTP API、durable Run 或 Agent Kernel。
+- 不让原始 `sn-cli tmux` 进入 HTTP API、durable Run 或 Agent Kernel；Session console
+  只在 CLI composition 层调用既有 Session/Run service。
 - 不修改 active `${SN_CLI_HOME:-~/.sn}`；实现与验证只修改 source，并使用临时
   `SN_CLI_HOME`。
 
@@ -60,6 +65,8 @@ adapter。
   不复用 Tmux 状态。
 - `tmux/` 与 `sn-cli tmux` 已作为独立领域实现，固定使用专用 socket 和
   `sn-session`，以 live window registry 管理 interactive command。
+- `session open` 已实现长期 Runtime console；tmux record 只保存可选 opaque
+  Session binding，每轮输入由窄 Session Run composition 同步创建 durable Run。
 - machine envelope 使用 `schema_version=1`、`contract_version=4`；Session fact
   与 Agent LoopState 使用 schema=2，SQLite 使用 schema=4，所有版本都必须显式匹配。
 - `configs/*.json` 是唯一 Profile 配置层；各执行 namespace 使用同一个 loader 和
@@ -76,6 +83,7 @@ adapter。
 | `sn-cli req <api-id> ...` | `api` | one request | 一次 HTTP model call；本地 API 日志；无 Session/Run |
 | `sn-cli session exec <cli-id> ... [--queue]` | `cli` | managed non-interactive | Session managed subprocess；canonical Turn + CLI 日志；可选 durable queue |
 | `sn-cli session req <api-id> ... [--queue]` | `api` | one request | Session API executor；canonical Turn + API 日志；可选 durable queue |
+| `sn-cli session open <cli-id> ...` | `cli` | managed exec per prompt | tmux console；每个已消费 prompt 创建 durable Session Run 与 canonical Turn |
 | `sn-cli tmux start <cli-id> ...` | `cli` | interactive | 固定 `sn-session` 新 window；本地 CLI 日志；无 Runtime Session |
 | `sn-cli agent <api-id> ... [--queue]` | `api` | model/tool loop | Agent Kernel；durable Run；每轮本地 API 日志 |
 
@@ -331,6 +339,28 @@ Session
   `--queue` 由 durable Run worker 执行同一 Session service，不能在仅启动进程后把
   Turn 标为 settled。
 
+Tmux-backed Session console 使用同级公开 action：
+
+```text
+session open <cli-profile> [--session-id ID] [--retention R]
+             [--model M] [--effort E] [--cwd DIR] [input]
+session send --session-id ID [input]
+session attach|interrupt|close --session-id ID
+```
+
+`open` 创建或绑定 idle Session，并冻结 Profile config、base-prompt digest 与
+effective model/effort/cwd。CLI composition 启动绑定该 `session_id` 的 tmux console；
+console 每读到一次输入都调用 `RunNow(kind=session)`，先提交 SQLite durable Run，
+再由现有 Session executor 创建 Turn/Execution/Message/Event。已有 canonical history
+继续经 CLI projection 注入每轮 non-interactive child，不读取 Provider TUI transcript，
+也不依赖 Provider-native resume。`send accepted=true` 仅表示 console 接收输入；
+Run/Turn terminal 才是完成事实。
+
+`interrupt` 通过 Run cancellation 请求终止 active Turn。`close` 保留 Session；如果
+active Run 在有界等待内不能 terminal，或进入 `needs_reconciliation`，必须保留
+window 并返回 conflict。Tmux exit、pane text 或 paste receipt 都不能把 Turn/Run
+标为完成。
+
 managed subprocess 使用独立 process group。direct CLI 用 signal-aware context；
 SIGINT、SIGTERM、Run cancel、timeout 或 output-limit 都按
 TERM→有界等待→KILL 终止整个 group，并完整 wait/reap。Execution 区分
@@ -527,13 +557,22 @@ command，同时保留 tmux 注入的 `TERM`、`TMUX`、`TMUX_PANE`；exec 保�
 PID/start token。manifest/gate 路径和 tmux user options 不包含 secret；start 失败
 与后续 bounded orphan cleanup 都清理未消费文件。
 
+当 target 与 bootstrap helper 共用同一个 executable identity 时，invocation 必须
+显式声明 `CooperativeReady`。helper 只对此类 invocation 注入一次性 private ready
+path/nonce/manifest digest；target exec 后写入包含 PID、process-start-token 与
+executable identity 的 ready fact。父进程验证后将 `target_ready=true` 提交进同一个
+window record，再删除临时 fact。普通 `tmux start` 不启用该协议；ready fact 不是
+第二个 live Store。
+
 每次 `start` 先生成带 UTC millisecond 时间的 UUIDv7-style opaque `tmux_id`
 （时间段 + CSPRNG，Tmux 领域自行校验），`new-window -n` 的固定 window name 保存
 完整可恢复的 provisional ID，且 bootstrap 已禁用 automatic/allow rename；
 权威记录是一个 canonical JSON→base64url 编码的 window user option，包含
 `tmux_id`、ProfileRef、cwd、command/config digest、创建时间、window/pane ID、
 helper pane PID/PGID、process start token、resolved executable identity、
-server incarnation 和 registry version。动态值不直接依赖分隔符或“不含换行”
+server incarnation、registry version 和可选 opaque `{kind,id}` binding。同一个
+binding 在专用 registry 中必须唯一；Tmux 只校验、约束唯一性并返回 binding，不读取
+其领域 Store。动态值不直接依赖分隔符或“不含换行”
 假设。
 
 `start` 的唯一 commit point 是 registered marker，严格顺序为：写完全部非 marker
@@ -568,7 +607,8 @@ Tmux registry 只管理当前专用 tmux server 中的 live/dead window：
   `running|starting|exited|orphaned` 并删除 window；
 - 最后一个 window 被删除后，`sn-session` 可以自然消失，下次 `start` 重建；
 - 不持久化明文 paste、完整 transcript 或 canonical message；
-- 不创建 `session_id`、`turn_id`、durable Run、HTTP route、delete 或 GC。
+- 不创建 `session_id`、`turn_id`、durable Run、HTTP route、delete 或 GC；可选
+  Session binding 由调用方提供，只是关联元数据。
 
 Tmux machine success envelope 固定如下；字段只做 additive 扩展，不复用 Session
 结构：
@@ -583,8 +623,23 @@ send/interrupt/stop:
 
 tmux_window:
   {schema_version, tmux_id, state, created_at, window_id, pane_id,
-   profile_id?, cwd?, config_digest?, exit_code?, signal?, launch_error?}
+   profile_id?, cwd?, config_digest?, binding?, exit_code?, signal?, launch_error?}
 ```
+
+Session console 的 machine success envelope 固定为：
+
+```text
+open:
+  {schema_version, contract_version, session, tmux_window,
+   launch_accepted, initial_input_accepted}
+send/interrupt/close:
+  {schema_version, contract_version, session_id, tmux_id,
+   run_id?, action, accepted}
+```
+
+`attach` 是 human-only，不提供 machine success。`initial_input_accepted` 与
+`send.accepted` 只确认 tmux carrier 接收，不确认 console 已消费、Run 已创建或执行
+已经 terminal。
 
 `tmux_window.schema_version=1`；`state` 只取
 `starting|running|exited|orphaned`，`exit_code` 用 pointer/nullable 表达，不能把
@@ -594,6 +649,10 @@ tmux_window:
 （tmux 3.6b 不提供可靠的 `#{window_created}`），其
 `profile_id/cwd/config_digest` 不可证明时必须省略；排序仍按
 `created_at,tmux_id`。human list/show 使用同一事实生成，不另行探测猜测。
+
+`binding` 若存在固定为 `{kind,id}`，当前 Session console 使用
+`{kind:"session",id:<session_id>}`；它是 additive window metadata，不改变
+`tmux_window.schema_version=1`。
 
 Tmux error 只复用 canonical code/phase：tmux binary 缺失为
 `provider_unavailable/transport`，能力或 bootstrap/registry schema 不支持为
@@ -606,21 +665,24 @@ Tmux error 只复用 canonical code/phase：tmux binary 缺失为
 `switch-client`；位于其它 tmux server 时拒绝 nested attach；外部 attach 到目标
 window 会改变固定 `sn-session` 的 current window，这是明确接受的共享 tmux 语义。
 
-因此 Session 与 Tmux 不共享领域记录。若实现中确实出现重复的 regular-file、
-atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得让 Tmux 调用
-`session.Store`，也不预先新增通用 Record 状态机。
+因此 Session 与 Tmux 不共享领域 Store 或状态机。跨域组合只允许 CLI 层传入 opaque
+binding 并调用各自公开 service；不得让 Tmux 调用 `session.Store`、读取 Session
+fact、从 pane transcript 生成 Message，或预先新增通用 Record 状态机。
 
 ### 6. Composition、配置与运行态
 
-- `internal/cli` 只负责各 namespace 的 decode/call/encode。
-- `internal/runtimebootstrap` 分别组装 Profile、Session 和 Tmux service。
+- `internal/cli` 负责各 namespace 的 decode/call/encode；Session console 只组合
+  Session/Run/Tmux public service，不建立 transcript 或第二套 durable 状态机。
+- `internal/runtimebootstrap` 分别组装 Profile、Session 和 Tmux service，并为 console
+  提供不加载 Agent tools 的窄 Session Run composition。
 - `fixedNamespaces` 包含 `exec|req|profile|session|tmux|agent|run|server|help|version`；
   与 `list|show|check` 一起成为保留 Profile ID，不提供 alias 或 shim。
 - `runtime.json` 只保存 Agent、scheduler 和 Run 的当前配置。
 - source/payload `release/tmux.conf` 与 `release/release.json` 分别保存无 secret
   的固定 bootstrap config 和当前 activation/contract/schema identity，并映射到
   active `resources/{tmux.conf,release.json}`；active home 只新增
-  `state/tmux.lock`、短生命周期的 0700/0600 manifest/gate 和升级 journal/guard，
+  `state/tmux.lock`、短生命周期的 0700/0600 manifest/gate/cooperative-ready fact 和
+  升级 journal/guard，
   socket 位于受控 `/tmp` 根；不新增 Tmux history。
 - source/payload 配置布局固定为 `configs/*.json`、`resources/schema/*.json`、
   `resources/tools/*.json` 和 `release/{runtime.json,tmux.conf,release.json}`；
@@ -686,6 +748,9 @@ atomic write 或 lock 需求，只能提取窄的 `internal` I/O 原语；不得
 - Tmux 以 tmux server/window options 作为 live source of truth，排除独立 durable
   Tmux history；这避免双写、GC、隐私和 transcript 边界。
 - Session 只接受有 terminal result 的 executor，排除 `transcript_only` 伪完成。
+- Session console 的长期性来自 tmux carrier；对话连续性来自 canonical projection，
+  每次输入仍是一个可取消、可查询、可收口的 durable Run，不保留 Provider TUI 作为
+  Session source of truth。
 - command adapter 可以共享，Profile/Session/Tmux parser 和状态机不能共享。
 - 配置、Session fact、Agent LoopState、SQLite 和 activation journal 都要求完整匹配
   当前 schema，不提供 alias、补齐或第二套 reader。
