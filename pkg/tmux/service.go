@@ -281,23 +281,6 @@ func (service *Service) Send(
 	return service.send(ctx, tmuxID, input, maxSendBytes)
 }
 
-// SendFramed sends one opaque, single-line carrier frame. It exists for
-// composition layers whose encoded frame can exceed the public raw-input
-// limit; Tmux does not decode or persist the frame.
-func (service *Service) SendFramed(
-	ctx context.Context,
-	tmuxID string,
-	frame string,
-) (ActionResult, error) {
-	if strings.ContainsAny(frame, "\r\n") {
-		return ActionResult{}, runtimeError(
-			contract.ErrorInvalidRequest, contract.PhaseRequest,
-			"Tmux carrier frame must be one line",
-		)
-	}
-	return service.send(ctx, tmuxID, frame, maxFramedSendBytes)
-}
-
 func (service *Service) send(
 	ctx context.Context,
 	tmuxID string,

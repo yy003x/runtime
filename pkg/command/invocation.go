@@ -28,7 +28,9 @@ type preparedConfig struct {
 }
 
 // ResolveExecutable applies the same cwd, env, PATH, and reference rules used
-// by Build without constructing or executing a final argv.
+// by Build without constructing or executing a final argv. Profile arguments
+// are invocation inputs, so their environment references are validated
+// structurally by Profile.Validate but are not resolved here.
 func ResolveExecutable(
 	profile Profile,
 	invocationBase string,
@@ -37,8 +39,10 @@ func ResolveExecutable(
 	if err := profile.Validate(); err != nil {
 		return "", err
 	}
+	executableProfile := profile
+	executableProfile.Args = nil
 	prepared, err := prepareEffectiveConfig(BuildRequest{
-		Profile:              profile,
+		Profile:              executableProfile,
 		InvocationBase:       invocationBase,
 		InheritedEnvironment: inheritedEnvironment,
 	})

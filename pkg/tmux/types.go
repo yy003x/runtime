@@ -34,7 +34,6 @@ const (
 	helperCommandName   = "__sn_tmux_helper"
 	maxManifestBytes    = 1 << 20
 	maxSendBytes        = 1 << 20
-	maxFramedSendBytes  = 2 << 20
 	defaultReadyTimeout = 5 * time.Second
 	defaultGateTimeout  = 15 * time.Second
 )

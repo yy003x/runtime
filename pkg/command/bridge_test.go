@@ -466,6 +466,28 @@ func TestResolveExecutableUsesProfileEnvironmentCWDAndPATH(t *testing.T) {
 	}
 }
 
+func TestResolveExecutableDoesNotRequireInvocationArgumentReferences(t *testing.T) {
+	root := t.TempDir()
+	commandPath := filepath.Join(root, "codex")
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveExecutable(
+		Profile{
+			Command: commandPath,
+			Args:    []string{"--image", "${WB_RUNTIME_IMAGE_PATH}"},
+		},
+		root,
+		[]string{"PATH=/definitely/not/used"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != commandPath {
+		t.Fatalf("resolved=%q want=%q", resolved, commandPath)
+	}
+}
+
 func TestReplaceProcessAppliesCWDAndNullStdin(t *testing.T) {
 	const childMarker = "SN_COMMAND_REPLACE_CHILD"
 	if os.Getenv(childMarker) == "1" {

@@ -773,6 +773,13 @@ func validateSessionFact(value Session) error {
 	if err := identity.Validate(value.ID, "session"); err != nil {
 		return err
 	}
+	switch value.Interface {
+	case InterfaceManaged, InterfaceNativeTUI:
+	default:
+		return fmt.Errorf(
+			"unsupported Session interface %q", value.Interface,
+		)
+	}
 	switch value.State {
 	case SessionIdle, SessionActive, SessionBlocked, SessionArchived:
 	default:

@@ -13,7 +13,7 @@ import (
 	"github.com/yy003x/runtime/pkg/profile"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // ErrConflict marks a Session state conflict that callers may safely map to a
 // public conflict response without treating Store failures as user errors.
@@ -26,6 +26,16 @@ const (
 	SessionActive   SessionState = "active"
 	SessionBlocked  SessionState = "blocked"
 	SessionArchived SessionState = "archived"
+)
+
+// Interface identifies the authoritative interaction contract for a Session.
+// Managed Sessions own canonical Turn/Execution facts. Native TUI Sessions
+// own only durable identity metadata while tmux carries opaque I/O.
+type Interface string
+
+const (
+	InterfaceManaged   Interface = "managed"
+	InterfaceNativeTUI Interface = "native_tui"
 )
 
 type TurnState string
@@ -72,6 +82,7 @@ const (
 type Session struct {
 	SchemaVersion   int          `json:"schema_version"`
 	ID              string       `json:"session_id"`
+	Interface       Interface    `json:"interface"`
 	State           SessionState `json:"state"`
 	Retention       Retention    `json:"retention"`
 	CreatedAt       time.Time    `json:"created_at"`

@@ -42,12 +42,29 @@ func (service *Service) Create(retention Retention) (Session, error) {
 	return service.CreateWithID(sessionID, retention)
 }
 
-// CreateWithID creates an empty Session using a caller-generated canonical
-// identity. It is used by composition layers that must bind an external
-// carrier before publishing the Session fact.
+// CreateWithID creates an empty managed Session using a caller-generated
+// canonical identity.
 func (service *Service) CreateWithID(
 	sessionID string,
 	retention Retention,
+) (Session, error) {
+	return service.createWithID(sessionID, retention, InterfaceManaged)
+}
+
+// CreateNativeTUIWithID creates a durable Session identity for one opaque
+// provider-native TUI. Native TUI Sessions never accept canonical Turn/Run
+// execution through Session Service.
+func (service *Service) CreateNativeTUIWithID(
+	sessionID string,
+	retention Retention,
+) (Session, error) {
+	return service.createWithID(sessionID, retention, InterfaceNativeTUI)
+}
+
+func (service *Service) createWithID(
+	sessionID string,
+	retention Retention,
+	interfaceKind Interface,
 ) (Session, error) {
 	if err := identity.Validate(sessionID, "session"); err != nil {
 		return Session{}, err
@@ -57,6 +74,13 @@ func (service *Service) CreateWithID(
 	default:
 		return Session{}, fmt.Errorf("unsupported retention %q", retention)
 	}
+	switch interfaceKind {
+	case InterfaceManaged, InterfaceNativeTUI:
+	default:
+		return Session{}, fmt.Errorf(
+			"unsupported Session interface %q", interfaceKind,
+		)
+	}
 	var value Session
 	err := service.store.withLock(sessionID, func() error {
 		if _, loadErr := service.store.loadSession(sessionID); loadErr == nil {
@@ -65,8 +89,8 @@ func (service *Service) CreateWithID(
 			return loadErr
 		}
 		var createErr error
-		value, createErr = service.loadOrCreateSession(
-			sessionID, retention, service.now().UTC(),
+		value, createErr = service.loadOrCreateSessionWithInterface(
+			sessionID, retention, interfaceKind, service.now().UTC(),
 		)
 		return createErr
 	})

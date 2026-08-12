@@ -755,6 +755,7 @@ func TestSessionMutationCrashHelper(t *testing.T) {
 			return store.writeSession(Session{
 				SchemaVersion: SchemaVersion,
 				ID:            mutationTestSessionID,
+				Interface:     InterfaceManaged,
 				State:         SessionIdle,
 				Retention:     RetentionStandard,
 				CreatedAt:     now,
@@ -873,6 +874,7 @@ func seedMutationTestSession(
 		value := Session{
 			SchemaVersion: SchemaVersion,
 			ID:            mutationTestSessionID,
+			Interface:     InterfaceManaged,
 			State:         SessionIdle,
 			Retention:     RetentionStandard,
 			CreatedAt:     now,

@@ -141,8 +141,8 @@ func UpgradeActivate(
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("load payload release manifest: %w", err)
 	}
-	if manifest.ActivationEpoch != 4 || manifest.ContractVersion != 5 ||
-		manifest.SessionSchemaVersion != 2 || manifest.RunSchemaVersion != 4 {
+	if manifest.ActivationEpoch != 4 || manifest.ContractVersion != 6 ||
+		manifest.SessionSchemaVersion != 3 || manifest.RunSchemaVersion != 4 {
 		return UpgradeResult{}, fmt.Errorf(
 			"payload activation contract is incompatible: epoch=%d contract=%d session_schema=%d run_schema=%d",
 			manifest.ActivationEpoch, manifest.ContractVersion,

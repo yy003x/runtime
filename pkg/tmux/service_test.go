@@ -74,22 +74,6 @@ func TestExactTargetEnvironmentReplacesTmuxReservedValues(t *testing.T) {
 	}
 }
 
-func TestFramedSendHeadroomDoesNotWidenRawSendLimit(t *testing.T) {
-	value := strings.Repeat("x", maxSendBytes+1)
-	if err := validateSendInput(value, maxSendBytes); err == nil {
-		t.Fatal("raw Tmux input exceeded its public limit")
-	}
-	if err := validateSendInput(value, maxFramedSendBytes); err != nil {
-		t.Fatalf("valid carrier frame rejected: %v", err)
-	}
-	service := &Service{}
-	if _, err := service.SendFramed(
-		context.Background(), "unused", "two\nlines",
-	); err == nil {
-		t.Fatal("multi-line carrier frame was accepted")
-	}
-}
-
 func TestManifestDigestDetectsMutation(t *testing.T) {
 	manifest := launchManifest{
 		SchemaVersion:      WindowSchemaVersion,

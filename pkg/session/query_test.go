@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/yy003x/runtime/pkg/contract"
@@ -35,13 +36,35 @@ func TestCreateWithIDPublishesExactIdentityOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.ID != sessionID || value.Retention != RetentionPinned ||
+	if value.ID != sessionID || value.Interface != InterfaceManaged ||
+		value.Retention != RetentionPinned ||
 		value.State != SessionIdle {
 		t.Fatalf("Session = %#v", value)
 	}
 	if _, err := service.CreateWithID(sessionID, RetentionPinned); err == nil ||
 		!errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate create error = %v", err)
+	}
+}
+
+func TestCreateNativeTUIWithIDPublishesIsolatedInterface(t *testing.T) {
+	service := newTestService(t, &scriptedGenerator{}, nil, nil)
+	sessionID := "session_22222222222222222222222222222222"
+	value, err := service.CreateNativeTUIWithID(sessionID, RetentionStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.ID != sessionID || value.Interface != InterfaceNativeTUI ||
+		value.State != SessionIdle || value.MessageCount != 0 ||
+		value.EventCount != 0 {
+		t.Fatalf("Session = %#v", value)
+	}
+	_, runtimeErr := service.Run(t.Context(), RunRequest{
+		SessionID: sessionID, ProfileID: "api", Input: "must not run",
+	})
+	if runtimeErr == nil || runtimeErr.Code != contract.ErrorConflict ||
+		!strings.Contains(runtimeErr.Message, "native_tui") {
+		t.Fatalf("managed execution error = %#v", runtimeErr)
 	}
 }
 

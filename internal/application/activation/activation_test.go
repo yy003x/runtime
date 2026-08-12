@@ -85,8 +85,8 @@ func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
 		"schema_version":1,
 		"schema_version":1,
 		"activation_epoch":4,
-		"contract_version":5,
-		"session_schema_version":2,
+		"contract_version":6,
+		"session_schema_version":3,
 		"run_schema_version":4
 	}`
 	if err := os.WriteFile(
@@ -170,8 +170,8 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ActivationEpoch != 4 || result.ContractVersion != 5 ||
-		result.SessionSchemaVersion != 2 ||
+	if result.ActivationEpoch != 4 || result.ContractVersion != 6 ||
+		result.SessionSchemaVersion != 3 ||
 		result.RunSchemaVersion != 4 {
 		t.Fatalf("result=%#v", result)
 	}
@@ -779,6 +779,7 @@ func TestActiveExecutionPreflightAcceptsCompleteSettledFacts(t *testing.T) {
 	sessionData, err := json.Marshal(session.Session{
 		SchemaVersion:   session.SchemaVersion,
 		ID:              sessionID,
+		Interface:       session.InterfaceManaged,
 		State:           session.SessionIdle,
 		Retention:       session.RetentionEphemeral,
 		CreatedAt:       now,
@@ -1770,7 +1771,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "release", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":5,\"session_schema_version\":2,\"run_schema_version\":4}\n",
+		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":6,\"session_schema_version\":3,\"run_schema_version\":4}\n",
 		0o600,
 	)
 	return payload, target, candidate
@@ -1848,7 +1849,7 @@ func seedRuntimeStateForReset(t *testing.T, target string) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(target, "sessions", "_system", "index.json"),
-		[]byte("{\"schema_version\":2,\"sessions\":[]}\n"), 0o600,
+		[]byte("{\"schema_version\":3,\"sessions\":[]}\n"), 0o600,
 	); err != nil {
 		t.Fatal(err)
 	}

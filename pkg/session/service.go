@@ -325,6 +325,12 @@ func (service *Service) begin(
 		if err != nil {
 			return err
 		}
+		if sessionValue.Interface != InterfaceManaged {
+			return fmt.Errorf(
+				"session %s uses interface %s and cannot execute canonical turns",
+				sessionValue.ID, sessionValue.Interface,
+			)
+		}
 		if sessionValue.State == SessionArchived {
 			return fmt.Errorf("session %s is archived", ids.session)
 		}
@@ -442,8 +448,25 @@ func (service *Service) loadOrCreateSession(
 	retention Retention,
 	now time.Time,
 ) (Session, error) {
+	return service.loadOrCreateSessionWithInterface(
+		sessionID, retention, InterfaceManaged, now,
+	)
+}
+
+func (service *Service) loadOrCreateSessionWithInterface(
+	sessionID string,
+	retention Retention,
+	interfaceKind Interface,
+	now time.Time,
+) (Session, error) {
 	value, err := service.store.loadSession(sessionID)
 	if err == nil {
+		if value.Interface != interfaceKind {
+			return Session{}, fmt.Errorf(
+				"session %s uses interface %s, not %s",
+				sessionID, value.Interface, interfaceKind,
+			)
+		}
 		return value, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -453,7 +476,8 @@ func (service *Service) loadOrCreateSession(
 		retention = RetentionStandard
 	}
 	value = Session{
-		SchemaVersion: SchemaVersion, ID: sessionID, State: SessionIdle,
+		SchemaVersion: SchemaVersion, ID: sessionID,
+		Interface: interfaceKind, State: SessionIdle,
 		Retention: retention, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := service.store.writeSession(value); err != nil {

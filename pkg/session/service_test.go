@@ -1093,6 +1093,7 @@ func TestReconcileRequiresExplicitAcknowledgementForAPIUnknownOutcome(
 		if err := service.store.writeSession(Session{
 			SchemaVersion: SchemaVersion,
 			ID:            ids.session,
+			Interface:     InterfaceManaged,
 			State:         SessionBlocked,
 			Retention:     RetentionStandard,
 			ActiveTurnID:  ids.turn,
@@ -1206,6 +1207,7 @@ func TestStoreRejectsMixedOrUnknownSessionFacts(t *testing.T) {
 	if err := atomicJSON(filepath.Join(sessionDir, "session.json"), Session{
 		SchemaVersion: SchemaVersion,
 		ID:            sessionID,
+		Interface:     InterfaceManaged,
 		State:         SessionIdle,
 		Retention:     RetentionStandard,
 		CreatedAt:     now,
@@ -1235,9 +1237,10 @@ func TestStoreRejectsDuplicateSessionFactFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte(`{
-		"schema_version":2,
-		"schema_version":2,
+		"schema_version":3,
+		"schema_version":3,
 		"id":"` + sessionID + `",
+		"interface":"managed",
 		"state":"idle",
 		"retention":"standard",
 		"created_at":"2026-07-30T00:00:00Z",
@@ -1263,6 +1266,7 @@ func TestStoreIgnoresOwnedAtomicTempFacts(t *testing.T) {
 	if err := atomicJSON(filepath.Join(sessionDir, "session.json"), Session{
 		SchemaVersion: SchemaVersion,
 		ID:            sessionID,
+		Interface:     InterfaceManaged,
 		State:         SessionIdle,
 		Retention:     RetentionStandard,
 		CreatedAt:     now,
@@ -1293,6 +1297,7 @@ func TestStoreRejectsUnknownSessionState(t *testing.T) {
 		map[string]any{
 			"schema_version": SchemaVersion,
 			"session_id":     sessionID,
+			"interface":      InterfaceManaged,
 			"state":          "future_state",
 			"retention":      RetentionStandard,
 			"created_at":     now,
