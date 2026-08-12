@@ -102,9 +102,12 @@ grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
 grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
   "$ROOT_DIR/release/release.json" ||
   die "release manifest does not declare activation epoch 4"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5([,}[:space:]]|$)' \
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6([,}[:space:]]|$)' \
   "$ROOT_DIR/release/release.json" ||
-  die "release manifest does not declare contract version 5"
+  die "release manifest does not declare contract version 6"
+grep -Eq '"session_schema_version"[[:space:]]*:[[:space:]]*3([,}[:space:]]|$)' \
+  "$ROOT_DIR/release/release.json" ||
+  die "release manifest does not declare Session schema 3"
 [ -f "$ROOT_DIR/release/tmux.conf" ] && [ ! -L "$ROOT_DIR/release/tmux.conf" ] ||
   die "missing or unsafe dedicated Tmux bootstrap config: release/tmux.conf"
 
@@ -410,9 +413,12 @@ grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
 grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
   "$runtime_home/resources/release.json" ||
   die "installed release manifest does not declare activation epoch 4"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5([,}[:space:]]|$)' \
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6([,}[:space:]]|$)' \
   "$runtime_home/resources/release.json" ||
-  die "installed release manifest does not declare contract version 5"
+  die "installed release manifest does not declare contract version 6"
+grep -Eq '"session_schema_version"[[:space:]]*:[[:space:]]*3([,}[:space:]]|$)' \
+  "$runtime_home/resources/release.json" ||
+  die "installed release manifest does not declare Session schema 3"
 
 printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$runtime_home/configs/local-only.json"
@@ -527,8 +533,8 @@ SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json profile list >/dev/null
 server_info="$(
   SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json server info
 )"
-printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5' ||
-  die "server info did not report contract_version=5"
+printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6' ||
+  die "server info did not report contract_version=6"
 printf '%s\n' "$server_info" | grep -Eq '"server"' ||
   die "server info did not report the server namespace"
 [[ "$server_info" != *$'\n'* ]] ||
@@ -544,8 +550,8 @@ if SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json unknown info \
   die "unknown namespace was accepted"
 fi
 [ ! -s "$unknown_stdout" ] || die "failed JSON command wrote to stdout"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5' "$unknown_stderr" ||
-  die "failed JSON command did not return a contract v5 error"
+grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6' "$unknown_stderr" ||
+  die "failed JSON command did not return a contract v6 error"
 [ "$(awk 'NF {count++} END {print count + 0}' "$unknown_stderr")" -eq 1 ] ||
   die "failed JSON command did not return exactly one compact error document"
 
@@ -573,7 +579,6 @@ doctor_output="$(
     ALIYUN_API_KEY=doctor-smoke \
     KMM_API_KEY=doctor-smoke \
     BAILIAN_API_KEY=doctor-smoke \
-    WB_RUNTIME_IMAGE_PATH="$temp_root/doctor-image" \
     SN_CLI_HOME="$runtime_home" \
     TMUX_TMPDIR="$release_tmux_tmp" \
     "$install_dir/sn-cli" --json doctor
@@ -582,8 +587,19 @@ printf '%s\n' "$doctor_output" |
   grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' ||
   die "doctor did not report an OK installed Runtime: $doctor_output"
 printf '%s\n' "$doctor_output" |
-  grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*5' ||
-  die "doctor did not report contract_version=5"
+  grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6' ||
+  die "doctor did not report contract_version=6"
+help_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" help tmux)"
+printf '%s\n' "$help_output" |
+  grep -Fq 'sn-cli tmux stop-all' ||
+  die "topic help did not document tmux stop-all"
+printf '%s\n' "$help_output" |
+  grep -Fq 'run session close-all first' ||
+  die "topic help did not document Session binding safety"
+help_json="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json help doctor)"
+printf '%s\n' "$help_json" |
+  grep -Eq '"name"[[:space:]]*:[[:space:]]*"doctor"' ||
+  die "machine topic help did not identify doctor"
 direct_output="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
   "$temp_root/ptyrun" "$install_dir/sn-cli" cx release-smoke | tr -d '\r')"
 [ "$direct_output" = "-- release-smoke" ] ||
@@ -685,10 +701,20 @@ TMUX_TMPDIR="$release_tmux_tmp" bash "$ROOT_DIR/install.sh" \
   --install-dir "$install_dir" \
   --overwrite-configs
 
+session_fixture_bin="$temp_root/session-fixture-bin"
+mkdir -p "$session_fixture_bin"
+"$GO_BIN" -C "$ROOT_DIR" build \
+  -o "$session_fixture_bin/codex" ./internal/testkit/nativetuitarget
+printf '{"type":"cli","command":"%s","model":"fixture"}\n' \
+  "$session_fixture_bin/codex" \
+  >"$runtime_home/configs/session-control-smoke.json"
+session_fixture_fact="$temp_root/session-native-tui.fact"
+session_large_input="$(printf 'session-frame-%04d;' {1..128})"
 session_open="$(
-  PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+  SN_CLI_HOME="$runtime_home" SN_NATIVE_TUI_FACT="$session_fixture_fact" \
     TMUX_TMPDIR="$release_tmux_tmp" \
-    "$install_dir/sn-cli" --json session open cx
+    "$install_dir/sn-cli" --json session open session-control-smoke \
+      "$session_large_input"
 )"
 session_id="$(
   printf '%s\n' "$session_open" |
@@ -696,6 +722,74 @@ session_id="$(
 )"
 [ -n "$session_id" ] ||
   die "session open did not return session_id: $session_open"
+printf '%s\n' "$session_open" |
+  grep -Eq '"launch_accepted"[[:space:]]*:[[:space:]]*true' ||
+  die "session open did not launch the native TUI: $session_open"
+printf '%s\n' "$session_open" |
+  grep -Eq '"initial_input_supplied"[[:space:]]*:[[:space:]]*true' ||
+  die "session open did not report its initial input: $session_open"
+printf '%s\n' "$session_open" |
+  grep -Eq '"interface"[[:space:]]*:[[:space:]]*"native_tui"' ||
+  die "session open did not publish a native_tui Session: $session_open"
+session_fixture_output=""
+for _ in {1..100}; do
+  if [ -f "$session_fixture_fact" ]; then
+    session_fixture_output="$(cat "$session_fixture_fact")"
+  fi
+  if printf '%s\n' "$session_fixture_output" | grep -Fq 'tty:true' &&
+    printf '%s\n' "$session_fixture_output" | grep -Fq "$session_large_input"; then
+    break
+  fi
+  sleep 0.1
+done
+printf '%s\n' "$session_fixture_output" | grep -Fq 'tty:true' ||
+  die "session open target did not receive a tmux PTY: $session_fixture_output"
+printf '%s\n' "$session_fixture_output" | grep -Fq "$session_large_input" ||
+  die "native TUI initial input was not preserved in interactive argv"
+session_messages="$(
+  SN_CLI_HOME="$runtime_home" \
+    "$install_dir/sn-cli" --json session messages --session-id "$session_id"
+)"
+printf '%s\n' "$session_messages" |
+  grep -Eq '"messages"[[:space:]]*:[[:space:]]*(null|\[\])' ||
+  die "native TUI Session unexpectedly created canonical messages: $session_messages"
+session_events="$(
+  SN_CLI_HOME="$runtime_home" \
+    "$install_dir/sn-cli" --json session events --session-id "$session_id"
+)"
+printf '%s\n' "$session_events" |
+  grep -Eq '"events"[[:space:]]*:[[:space:]]*(null|\[\])' ||
+  die "native TUI Session unexpectedly created canonical events: $session_events"
+session_second_input="send-native-smoke"
+session_send="$(
+  SN_CLI_HOME="$runtime_home" \
+    TMUX_TMPDIR="$release_tmux_tmp" \
+    "$install_dir/sn-cli" --json session send --session-id "$session_id" \
+      "$session_second_input"
+)"
+printf '%s\n' "$session_send" |
+  grep -Eq '"accepted"[[:space:]]*:[[:space:]]*true' ||
+  die "session send was not accepted by tmux: $session_send"
+for _ in {1..100}; do
+  session_fixture_output="$(cat "$session_fixture_fact")"
+  if printf '%s\n' "$session_fixture_output" |
+    grep -Fq "input:$session_second_input"; then
+    break
+  fi
+  sleep 0.1
+done
+printf '%s\n' "$session_fixture_output" |
+  grep -Fq "input:$session_second_input" ||
+  die "session send did not reach the Provider-native TUI"
+if SN_CLI_HOME="$runtime_home" \
+  "$install_dir/sn-cli" session exec session-control-smoke \
+    --session-id "$session_id" "must-not-run" \
+    >"$temp_root/native-session-exec.out" \
+    2>"$temp_root/native-session-exec.err"; then
+  die "session exec accepted a native_tui Session ID"
+fi
+grep -Fq 'native_tui' "$temp_root/native-session-exec.err" ||
+  die "session exec native_tui rejection was not explicit"
 if PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
   TMUX_TMPDIR="$release_tmux_tmp" \
   "$install_dir/sn-cli" tmux stop-all >/dev/null 2>&1; then
@@ -708,13 +802,22 @@ session_close_all="$(
 )"
 printf '%s\n' "$session_close_all" |
   grep -Eq '"closed_count"[[:space:]]*:[[:space:]]*1' ||
-  die "session close-all did not close the Session terminal: $session_close_all"
+  die "session close-all did not close the native TUI window: $session_close_all"
 session_show="$(
   SN_CLI_HOME="$runtime_home" \
     "$install_dir/sn-cli" --json session show --session-id "$session_id"
 )"
 printf '%s\n' "$session_show" | grep -Fq "$session_id" ||
-  die "session close-all removed the canonical Session"
+  die "session close-all removed the native_tui Session fact"
+printf '%s\n' "$session_show" |
+  grep -Eq '"interface"[[:space:]]*:[[:space:]]*"native_tui"' ||
+  die "closed Session lost its native_tui interface: $session_show"
+if SN_CLI_HOME="$runtime_home" SN_NATIVE_TUI_FACT="$session_fixture_fact" \
+  TMUX_TMPDIR="$release_tmux_tmp" \
+  "$install_dir/sn-cli" session open session-control-smoke \
+    --session-id "$session_id" >/dev/null 2>&1; then
+  die "session open reused an existing native_tui Session without resume identity"
+fi
 audit_file="$runtime_home/logs/$(date +%y%m%d)/audit.jsonl"
 [ -f "$audit_file" ] || die "control audit log was not created"
 grep -Fq '"namespace":"doctor"' "$audit_file" ||
@@ -811,7 +914,7 @@ mkdir -p \
   "$local_source_home/state/session-invocations" \
   "$local_source_home/state/session-mutations" \
   "$local_source_home/state/session-trash-moves"
-printf '%s\n' '{"schema_version":2,"sessions":[]}' \
+printf '%s\n' '{"schema_version":3,"sessions":[]}' \
   >"$local_source_home/sessions/_system/index.json"
 printf '%s\n' runtime-state \
   >"$local_source_home/state/session-locks/index.lock"

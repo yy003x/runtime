@@ -84,6 +84,7 @@ Verify the install and the active profiles:
 
 ```bash
 sn-cli --version
+sn-cli help tmux         # detailed help for one public command topic
 sn-cli doctor            # check profiles, tools, run store, logs, and tmux
 sn-cli profile list      # list active profiles and their types
 sn-cli profile check     # validate every profile's structure
@@ -130,25 +131,27 @@ sn-cli --json session exec cx-deep --queue --task-id analysis --cwd "$PWD" "Run 
 sn-cli run watch --run-id <run_id>     # stream events until it settles
 ```
 
-### A tmux-backed durable session console
+### A tmux-backed native TUI Session
 
 ```bash
 sn-cli --json session open cx --cwd "$PWD" "Inspect this repository"
 sn-cli session send --session-id <session_id> "Continue with the next step"
 sn-cli session attach --session-id <session_id>
 sn-cli session close --session-id <session_id>
-# Or close every open Session console while retaining all Session facts:
+# Or close every bound native TUI window while retaining its Session fact:
 sn-cli session close-all
 ```
 
-The window is only the terminal carrier. Every prompt consumed by the console
-is executed as a durable Session Run and produces canonical Turn, Execution,
-Message, and Event facts. `send` acceptance is not consumption or completion;
-inspect `session events`,
-`session messages`, or the resulting Run facts.
+`session open` launches the CLI Profile's provider-native interactive mode
+directly inside a tmux PTY and publishes an `interface=native_tui` Session fact
+with an opaque tmux binding. It opens detached by default; add `--attach` for an
+immediate human attach. `session send` injects raw input into the TUI, so
+`accepted=true` only confirms that tmux accepted the transport operation.
+Native TUI input/output is provider-owned and does not create canonical Turn,
+Execution, Message, Event, or durable Run facts.
 
-For a raw provider TUI without canonical Session/Run facts, use the same
-`open` verb under the `tmux` namespace:
+For the same native TUI without a Runtime Session identity, use the raw `tmux`
+namespace:
 
 ```bash
 sn-cli --json tmux open cx --cwd "$PWD" "Inspect this repository"
@@ -181,7 +184,7 @@ sn-cli exec <cli-id> ───> Command Bridge ─> one-shot CLI process
 sn-cli req <api-id> ────> Model Core ─────> one HTTP/SSE request
 
 sn-cli session exec|req ─> Session Service ─> command or model
-sn-cli session open ... ─> Session/Run ─────> tmux-backed console
+sn-cli session open ... ─> native_tui Session ─> provider TUI in tmux PTY
 sn-cli tmux ... ───────> Tmux Service ─────> raw interactive command window
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
 sn-cli run ... ────────> Run Harness ──────> SQLite WAL control plane
@@ -193,7 +196,7 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli exec <cli-profile-id>` | non-interactive CLI one-shot | local `cli.jsonl`; no Session/Run |
 | `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
-| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | durable multi-turn Session console | Session facts + one durable Run per consumed prompt; opaque tmux binding |
+| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | provider-native TUI with Runtime identity | `interface=native_tui` Session fact + opaque tmux binding; no canonical transcript or Run |
 | `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | managed raw tmux interactive window | tmux registry and local CLI log (no transcript) |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
 | `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
@@ -204,8 +207,10 @@ Key boundaries worth remembering up front:
   selects the execution contract and `type` validates that the profile belongs there.
 - **Sessions never auto-execute tool calls** — a tool call from the model pauses
   the turn at `requires_action`. Autonomous tool loops belong to `agent`.
-- Raw **`tmux` never creates a session**. `session open` is the explicit
-  composition layer: tmux carries the console while Session/Run remain canonical.
+- Raw **`tmux` never creates a session**. `session open` adds an opaque
+  `native_tui` Session identity, but tmux and the provider still own interaction.
+- `managed` Sessions from `session exec|req` and `native_tui` Sessions from
+  `session open` cannot share a Session ID.
 - **Submitting a run doesn't start the server** — enqueue and worker are decoupled.
 
 All diagnostics stay below `${SN_CLI_HOME:-~/.sn}/logs`: Profile execution

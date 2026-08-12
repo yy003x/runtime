@@ -77,6 +77,7 @@ make install
 
 ```bash
 sn-cli --version
+sn-cli help tmux         # 查看某个公开命令主题的详细帮助
 sn-cli doctor            # 检查 Profile、Tool、Run Store、日志和 tmux
 sn-cli profile list      # 列出 active profile 及其类型
 sn-cli profile check     # 校验每个 profile 的结构
@@ -119,7 +120,7 @@ sn-cli --json session exec cx-deep --queue --task-id analysis --cwd "$PWD" "后�
 sn-cli run watch --run-id <run_id>     # 流式追踪事件直到 settled
 ```
 
-### 一个 tmux-backed durable Session console
+### 一个 tmux-backed Provider 原生 TUI Session
 
 ```bash
 sn-cli --json session open cx --cwd "$PWD" "分析当前仓库"
@@ -129,7 +130,13 @@ sn-cli session close --session-id <session_id>
 sn-cli session close-all
 ```
 
-只需要原生 TUI、不需要 canonical Session/Run 时，使用统一的 `open` action：
+`session open` 直接在 tmux PTY 中启动 CLI Profile 的 Provider 原生交互模式，发布
+`interface=native_tui` Session fact，并保存 opaque tmux binding。默认 detached；需要
+立即进入界面时加 `--attach`。`session send` 把 raw input 注入 TUI，`accepted=true`
+只表示 tmux 接受了传输操作。TUI 输入输出由 Provider 管理，不创建 canonical Turn、
+Execution、Message、Event 或 Durable Run。
+
+只需要原生 TUI、不需要 Runtime Session identity 时，使用 raw `tmux` namespace：
 
 ```bash
 sn-cli --json tmux open cx "分析当前仓库"
@@ -138,7 +145,7 @@ sn-cli tmux stop-all
 ```
 
 `tmux stop-all` 只处理 raw window；只要存在 Session binding 就整体拒绝，需先执行
-`session close-all`。后者只关闭 console 并处理 active Run，不删除 canonical Session。
+`session close-all`。后者只关闭 Session-bound native TUI window，不删除 Session fact。
 
 ### 一次自主 agent 循环
 
@@ -159,7 +166,7 @@ sn-cli exec <cli-id> ───> Command Bridge ─> 一次性 CLI process
 sn-cli req <api-id> ────> Model Core ─────> 一次 HTTP/SSE request
 
 sn-cli session exec|req ─> Session Service ─> command or model
-sn-cli session open ... ─> Session/Run ─────> tmux-backed console
+sn-cli session open ... ─> native_tui Session ─> tmux PTY 中的 Provider TUI
 sn-cli tmux ... ───────> Tmux Service ─────> interactive command window
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
 sn-cli run ... ────────> Run Harness ──────> SQLite WAL 控制面
@@ -171,7 +178,7 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli exec <cli-profile-id>` | CLI 非交互一次执行 | 本地 `cli.jsonl`；无 Session/Run |
 | `sn-cli req <api-profile-id>` | 一次 API request | 本地 `api.jsonl`；无 Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | 文件型 session；本地执行日志；可选 durable run |
-| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | durable 多轮 Session console | Session facts + 每个 prompt 一个 durable Run；opaque tmux binding |
+| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | 带 Runtime identity 的 Provider 原生 TUI | `interface=native_tui` Session fact + opaque tmux binding；无 canonical transcript/Run |
 | `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | raw tmux 交互窗口 | tmux registry 与本地 CLI 日志（不存 transcript） |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool 循环 | durable run；每轮本地 API 日志（session 可选） |
 | `sn-cli run ...` | 查询和控制已有 durable run | SQLite WAL |
@@ -182,7 +189,10 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
   选择执行契约，`type` 校验 Profile 是否属于该入口。
 - **session 永不自动执行 tool call**——模型返回 tool call 时 turn 停在 `requires_action`。
   自主工具循环属于 `agent`。
-- raw **tmux 不创建 session**；`session open` 才是显式组合入口。
+- raw **tmux 不创建 session**；`session open` 只增加 opaque `native_tui` Session
+  identity，交互仍由 tmux 与 Provider 管理。
+- `session exec|req` 创建的 `managed` Session 与 `session open` 创建的 `native_tui`
+  Session 不能共用同一个 Session ID。
 - **提交 run 不会自动启动 server**——入队与执行是解耦的。
 
 所有诊断都位于 `${SN_CLI_HOME:-~/.sn}/logs`：Profile 执行记录为

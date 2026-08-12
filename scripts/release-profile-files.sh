@@ -11,7 +11,6 @@ SN_CLI_RELEASE_PROFILE_FILES=(
   commit.json
   cx-adv.json
   cx-deep.json
-  cx-image.json
   cx-spark.json
   cx.json
 )

@@ -12,10 +12,11 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli exec <cli-profile-id>`：CLI Profile 的非交互任务调用，不创建 Session/Run；
 - `sn-cli req <api-profile-id>`：API Profile 的单次请求，不创建 Session/Run；
 - `sn-cli profile list|show|check`：Profile 只读管理面，不执行 Profile；
-- `sn-cli session exec|req ...`：文件型本地执行会话，`--queue` 时进入 durable
-  Run；Session 不自动执行 tool；
-- `sn-cli session open|send|attach|interrupt|close ...`：以 tmux 为终端界面，
-  每次输入仍创建 canonical Turn 与 durable Run；
+- `sn-cli session exec|req ...`：`interface=managed` 的文件型本地执行会话，
+  `--queue` 时进入 durable Run；Session 不自动执行 tool；
+- `sn-cli session open|send|attach|interrupt|close ...`：`interface=native_tui`，
+  在 tmux PTY 中直接运行 Provider 原生交互 TUI；输入输出不创建 canonical
+  Turn/Message/Event/Execution 或 durable Run；
 - `sn-cli tmux ...`：按 `runtime.json` 的 `tmux.server_mode=default|dedicated`
   选择普通或专用 tmux server，在固定 `sn-session` 中管理原始交互 window，本身不创建
   Session；
@@ -45,6 +46,8 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
   `internal/infrastructure/toolmcp/` 每次只执行一个声明 effect/risk 的 MCP tool call，
   不 retry、不持久化；
 - Session 遇到 tool call 只进入 `requires_action`；
+- `managed` 与 `native_tui` Session ID 不混用；Runtime Session ID 不推断
+  Provider 原生 resume identity；
 - Run terminal state、result/error、terminal event 和 `run.settled` 必须同事务提交。
 
 外部 Go API 统一落在 `pkg/`；旧根 package 不提供兼容 shim。新增私有源码优先落入
