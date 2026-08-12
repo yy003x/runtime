@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yy003x/runtime/contract"
-	"github.com/yy003x/runtime/internal/layout"
+	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/runtime/pkg/contract"
 )
 
 func TestLoadServerConfigUsesLoopbackDefaults(t *testing.T) {

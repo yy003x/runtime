@@ -16,13 +16,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/contract"
-	"github.com/yy003x/runtime/internal/activation"
-	"github.com/yy003x/runtime/internal/layout"
-	"github.com/yy003x/runtime/internal/profileid"
-	"github.com/yy003x/runtime/internal/runtimebootstrap"
-	runtime "github.com/yy003x/runtime/run"
-	transporthttp "github.com/yy003x/runtime/transport/http"
+	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
+	"github.com/yy003x/runtime/internal/domain/profileid"
+	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
+	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/runtime/pkg/contract"
+	runtime "github.com/yy003x/runtime/pkg/run"
+	transporthttp "github.com/yy003x/runtime/pkg/transport/http"
 )
 
 type serverConfig struct {
@@ -149,7 +149,7 @@ func validateServerArgs(args []string) error {
 }
 
 func requireActivationReady(paths layout.Paths) error {
-	return activation.RequireNoGuard(paths.StateDir)
+	return activationgate.RequireOpen(paths.StateDir)
 }
 
 func loadServerConfig(getenv func(string) string) (serverConfig, error) {

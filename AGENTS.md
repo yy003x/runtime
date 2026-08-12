@@ -16,7 +16,8 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
   Run；Session 不自动执行 tool；
 - `sn-cli session open|send|attach|interrupt|close ...`：以 tmux 为终端界面，
   每次输入仍创建 canonical Turn 与 durable Run；
-- `sn-cli tmux ...`：固定专用 tmux server/window 的原始交互进程管理，本身不创建
+- `sn-cli tmux ...`：按 `runtime.json` 的 `tmux.server_mode=default|dedicated`
+  选择普通或专用 tmux server，在固定 `sn-session` 中管理原始交互 window，本身不创建
   Session；
 - `sn-cli agent <api-profile-id>`：唯一 API-only Agent Kernel，`--queue` 时排队；
 - `sn-cli run ...`：SQLite durable Run 查询与控制面，不负责提交新 Run。
@@ -27,21 +28,29 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 
 ## 架构边界
 
-- `command/`、`model/`、`session/`、`tmux/`、`agent/`、`run/` 是独立领域；
-- `contract/` 保存 Provider-neutral request/event/error；
-- `provider/*`、`store/sqlite/`、`transport/*` 是 adapter；
-- `internal/executionlog/` 只保存 best-effort 本地执行诊断，不是 canonical Store；
-- `internal/runtimebootstrap/` 是 composition root；
-- `internal/cli/` 只做 decode/call/encode，不建立第二套状态机；
+- `pkg/{command,model,session,tmux,agent,run}` 是公开 Runtime 领域能力；
+- `pkg/contract` 保存 Provider-neutral request/event/error；
+- `pkg/provider/*`、`pkg/store/sqlite/`、`pkg/transport/http/` 是公开 adapter；
+- `internal/domain/` 只保存私有值对象与不变量，不依赖其它层；
+- `internal/application/` 保存激活、启动和 tool/use-case 编排；
+- `internal/infrastructure/` 保存配置、文件、日志、进程与 MCP adapter，不反向依赖
+  application/interfaces；
+- `internal/interfaces/cli/` 只做 decode/call/encode，不建立第二套状态机；
+- `internal/application/runtimebootstrap/` 是 composition root；
+- `internal/infrastructure/executionlog/` 只保存 best-effort 本地执行诊断，不是
+  canonical Store；
 - Agent Kernel 不读取 profile/config、不打开数据库；
 - Provider driver 只做一次 HTTP attempt，不执行 tool、fallback 或持久化；
-- `internal/toolconfig/` 只加载严格 tool manifest；`internal/toolmcp/` 每次只执行
-  一个只读 MCP tool call，不 retry、不持久化；
+- `internal/infrastructure/toolconfig/` 只加载严格 tool manifest；
+  `internal/infrastructure/toolmcp/` 每次只执行一个声明 effect/risk 的 MCP tool call，
+  不 retry、不持久化；
 - Session 遇到 tool call 只进入 `requires_action`；
 - Run terminal state、result/error、terminal event 和 `run.settled` 必须同事务提交。
 
-新增源码优先落入现有 owner。不得在根目录新增运行态目录、临时兼容 package 或
-职责不明的共享层。
+外部 Go API 统一落在 `pkg/`；旧根 package 不提供兼容 shim。新增私有源码优先落入
+`internal/{domain,application,infrastructure,interfaces}` 的现有 owner；测试复用资产
+只进入 `internal/testkit/`。不得在根目录新增运行态目录、临时兼容 package 或职责
+不明的共享层。
 
 ## 配置与目录
 
@@ -100,7 +109,7 @@ barrier 时，同步：
 - 对应领域测试；
 - `sn-cli --help`；
 - `README.md`；
-- `docs/runtime-contract.md` 及相关专题契约；
+- 唯一契约文档 `docs/runtime-contract.md`；
 - install/self-update/release payload（如影响交付物）。
 
 ## 验证
