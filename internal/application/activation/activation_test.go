@@ -85,7 +85,7 @@ func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
 		"schema_version":1,
 		"schema_version":1,
 		"activation_epoch":4,
-		"contract_version":6,
+		"contract_version":7,
 		"session_schema_version":3,
 		"run_schema_version":6
 	}`
@@ -170,7 +170,7 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ActivationEpoch != 4 || result.ContractVersion != 6 ||
+	if result.ActivationEpoch != 4 || result.ContractVersion != 7 ||
 		result.SessionSchemaVersion != 3 ||
 		result.RunSchemaVersion != 6 {
 		t.Fatalf("result=%#v", result)
@@ -888,11 +888,16 @@ func TestLocalSourceInstallValidatesCandidateBeforeStoppingOrResetting(
 	seedActiveHome(t, target)
 	seedRuntimeStateForReset(t, target)
 	t.Setenv("SN_ACTIVATION_TEST_REJECT_CANDIDATE", "1")
+	closeCalls := 0
 	stopCalls := 0
 	_, err := UpgradeActivate(context.Background(), UpgradeRequest{
 		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
 		OverwriteConfig: true, LocalSourceInstall: true,
 		InspectServer: inspectStoppedServer,
+		CloseNativeTUISessions: func() error {
+			closeCalls++
+			return nil
+		},
 		StopServer: func() error {
 			stopCalls++
 			return nil
@@ -904,6 +909,9 @@ func TestLocalSourceInstallValidatesCandidateBeforeStoppingOrResetting(
 	if stopCalls != 0 {
 		t.Fatalf("candidate failure stopped server %d time(s)", stopCalls)
 	}
+	if closeCalls != 0 {
+		t.Fatalf("candidate failure closed native TUI Sessions %d time(s)", closeCalls)
+	}
 	for _, path := range []string{
 		filepath.Join(target, "configs", "old.json"),
 		filepath.Join(target, "sessions", "_system", "index.json"),
@@ -912,6 +920,34 @@ func TestLocalSourceInstallValidatesCandidateBeforeStoppingOrResetting(
 		if _, statErr := os.Stat(path); statErr != nil {
 			t.Fatalf("candidate failure changed %s: %v", path, statErr)
 		}
+	}
+}
+
+func TestLocalSourceInstallClosesNativeTUISessionsBeforeServer(
+	t *testing.T,
+) {
+	payload, target, candidate := upgradeFixture(t)
+	seedActiveHome(t, target)
+	t.Setenv("SN_ACTIVATION_TEST_CANDIDATE", "1")
+	var calls []string
+	_, err := UpgradeActivate(context.Background(), UpgradeRequest{
+		TargetHome: target, PayloadDir: payload, CandidateBinary: candidate,
+		OverwriteConfig: true, LocalSourceInstall: true,
+		InspectServer: inspectStoppedServer,
+		CloseNativeTUISessions: func() error {
+			calls = append(calls, "close-all")
+			return nil
+		},
+		StopServer: func() error {
+			calls = append(calls, "stop-server")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(calls, ","), "close-all,stop-server"; got != want {
+		t.Fatalf("install lifecycle calls=%q, want %q", got, want)
 	}
 }
 
@@ -1772,7 +1808,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "release", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":6,\"session_schema_version\":3,\"run_schema_version\":6}\n",
+		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":7,\"session_schema_version\":3,\"run_schema_version\":6}\n",
 		0o600,
 	)
 	return payload, target, candidate

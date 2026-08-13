@@ -39,9 +39,13 @@ type UpgradeRequest struct {
 	CandidateBinary    string
 	OverwriteConfig    bool
 	LocalSourceInstall bool
-	InspectServer      func() (ManagedServerProcess, error)
-	StopServer         func() error
-	CoordinatorPID     int
+	// CloseNativeTUISessions closes Session-bound native TUI windows before
+	// local-source activation. It is intentionally supplied by the CLI layer so
+	// activation stays independent from the private PTY carrier.
+	CloseNativeTUISessions func() error
+	InspectServer          func() (ManagedServerProcess, error)
+	StopServer             func() error
+	CoordinatorPID         int
 }
 
 // ManagedServerProcess is the process identity that a local-source install is
@@ -139,14 +143,6 @@ func UpgradeActivate(
 		return UpgradeResult{}, err
 	}
 	defer lifecycle.Close()
-	tmuxLifecycle, err := acquireUpgradeLock(
-		filepath.Join(stateDir, "tmux.lock"),
-	)
-	if err != nil {
-		return UpgradeResult{}, err
-	}
-	defer tmuxLifecycle.Close()
-
 	journalPath := filepath.Join(stateDir, journalName)
 	if err := recoverUpgradeTransaction(target, journalPath); err != nil {
 		return UpgradeResult{}, fmt.Errorf("recover previous activation: %w", err)
@@ -195,6 +191,13 @@ func UpgradeActivate(
 		}
 	}
 	if !request.LocalSourceInstall {
+		tmuxLifecycle, lockErr := acquireUpgradeLock(
+			filepath.Join(stateDir, "tmux.lock"),
+		)
+		if lockErr != nil {
+			return UpgradeResult{}, lockErr
+		}
+		defer tmuxLifecycle.Close()
 		if err := preflightQuiescence(
 			target, manifest, excluded, processTargets,
 			quiescenceOptions{},
@@ -257,6 +260,20 @@ func UpgradeActivate(
 		if err != nil {
 			return UpgradeResult{}, err
 		}
+		if request.CloseNativeTUISessions != nil {
+			if err := request.CloseNativeTUISessions(); err != nil {
+				return UpgradeResult{}, fmt.Errorf(
+					"close native_tui Sessions for local source install: %w", err,
+				)
+			}
+		}
+		tmuxLifecycle, lockErr := acquireUpgradeLock(
+			filepath.Join(stateDir, "tmux.lock"),
+		)
+		if lockErr != nil {
+			return UpgradeResult{}, lockErr
+		}
+		defer tmuxLifecycle.Close()
 		if err := preflightQuiescence(
 			target, manifest, preStopExcluded, processTargets,
 			quiescenceOptions{

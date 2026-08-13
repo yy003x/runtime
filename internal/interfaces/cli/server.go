@@ -23,6 +23,7 @@ import (
 	"github.com/yy003x/runtime/internal/interfaces/cli/config"
 	snupdate "github.com/yy003x/runtime/internal/interfaces/cli/update"
 	"github.com/yy003x/runtime/internal/interfaces/cli/version"
+	"github.com/yy003x/runtime/pkg/contract"
 )
 
 const serverPIDSchemaVersion = 1
@@ -271,6 +272,7 @@ func runUpgradeActivate(
 		return err
 	}
 	var stopServerForInstall func() error
+	var closeNativeTUISessionsForInstall func() error
 	var inspectServerForInstall func() (
 		activation.ManagedServerProcess,
 		error,
@@ -306,16 +308,33 @@ func runUpgradeActivate(
 				newCLIOutput(false, io.Discard, io.Discard),
 			)
 		}
+		closeNativeTUISessionsForInstall = func() error {
+			manager, managerErr := runtimebootstrap.LoadTmuxService(paths)
+			if managerErr != nil {
+				return managerErr
+			}
+			_, closeErr := closeAllSessionNativeTUILifecycles(
+				context.Background(), paths, manager,
+			)
+			if isForeignTmuxCarrier(closeErr) {
+				// A default-server sn-session owned by another Runtime home
+				// cannot contain bindings for this home. It is intentionally
+				// ignored by activation preflight as well.
+				return nil
+			}
+			return closeErr
+		}
 	}
 	result, err := activation.UpgradeActivate(
 		context.Background(),
 		activation.UpgradeRequest{
 			TargetHome: targetAbsolute, PayloadDir: payload,
 			CandidateBinary: executable, OverwriteConfig: overwrite,
-			LocalSourceInstall: localSourceInstall,
-			InspectServer:      inspectServerForInstall,
-			StopServer:         stopServerForInstall,
-			CoordinatorPID:     coordinatorPID,
+			LocalSourceInstall:     localSourceInstall,
+			CloseNativeTUISessions: closeNativeTUISessionsForInstall,
+			InspectServer:          inspectServerForInstall,
+			StopServer:             stopServerForInstall,
+			CoordinatorPID:         coordinatorPID,
 		},
 	)
 	if err != nil {
@@ -341,6 +360,20 @@ func runUpgradeActivate(
 		"Activated contract v%d in %s",
 		result.ContractVersion, result.TargetHome,
 	)
+}
+
+func isForeignTmuxCarrier(err error) bool {
+	var runtimeErr *contract.RuntimeError
+	return errors.As(err, &runtimeErr) &&
+		runtimeErr.Phase == contract.PhaseTransport &&
+		runtimeErr.Code == contract.ErrorConflict &&
+		(strings.Contains(
+			runtimeErr.Message,
+			"Tmux session \"sn-session\" does not match this Runtime home",
+		) || strings.Contains(
+			runtimeErr.Message,
+			"Tmux session \"sn-session\" already exists but is not owned by this Runtime home",
+		))
 }
 
 func validateActivationCommandLink(
@@ -829,9 +862,8 @@ func serverCapabilities() map[string][]string {
 		"profile": {"single_call", "cli", "api", "typed_override", "stream"},
 		"session": {
 			"history", "run", "submit", "managed_cli", "execution_query",
-			"reconcile", "terminal_close_all",
+			"reconcile", "native_tui", "paste", "attach", "close_all",
 		},
-		"tmux":  {"interactive_windows", "paste", "attach", "stop_all"},
 		"agent": {"api_harness", "tool_loop", "stream"},
 		"run": {
 			"durable_queue", "events", "watch", "cancel",

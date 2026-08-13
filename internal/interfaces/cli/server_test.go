@@ -15,8 +15,9 @@ import (
 
 	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
+	"github.com/yy003x/runtime/pkg/contract"
 	"github.com/yy003x/runtime/pkg/profile"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
 func TestMain(main *testing.M) {
@@ -194,6 +195,22 @@ func TestServerRunningRejectsUnsupportedPIDRecord(t *testing.T) {
 	}
 }
 
+func TestIsForeignTmuxCarrier(t *testing.T) {
+	foreign := &contract.RuntimeError{
+		Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
+		Message: `Tmux session "sn-session" does not match this Runtime home`,
+	}
+	if !isForeignTmuxCarrier(foreign) {
+		t.Fatalf("foreign tmux carrier was not recognized: %v", foreign)
+	}
+	if isForeignTmuxCarrier(&contract.RuntimeError{
+		Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
+		Message: "Tmux session identity changed during stop",
+	}) {
+		t.Fatal("unrelated tmux conflict was treated as foreign")
+	}
+}
+
 func TestServerLifecycleLockRejectsConcurrentOwner(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lifecycle.lock")
 	first, acquired, err := tryAcquireFileLock(path)
@@ -266,7 +283,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 6 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != 7 ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
 		payload.ConfiguredAddr != "127.0.0.1:8080" ||
