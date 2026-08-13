@@ -44,32 +44,22 @@ jobs:
         run: go vet ./...
 
       - name: 串行测试
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          command: make test-serial
+        timeout-minutes: 10
+        run: make test-serial
 
       - name: 并行测试
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          command: go test ./... -count=1
+        timeout-minutes: 10
+        run: go test ./... -count=1
 
       - name: Race 门禁
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 12
-          max_attempts: 3
-          command: make test-race
+        timeout-minutes: 12
+        run: make test-race
 
       - name: 覆盖率门禁
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          command: make coverage COVERAGE_PROFILE=/tmp/sn-runtime-coverage.out COVERAGE_MIN=65.0
+        timeout-minutes: 10
+        run: |
+          make coverage COVERAGE_PROFILE=/tmp/sn-runtime-coverage.out COVERAGE_MIN=65.0
+          make coverage-critical
 
   real-provider-smoke:
     if: github.event_name == 'workflow_dispatch' && inputs.real_provider_smoke

@@ -10,27 +10,17 @@ GO_BIN="${GO:-go}"
 source "$ROOT_DIR/scripts/release-profile-files.sh"
 # shellcheck source=scripts/release-tool-files.sh
 source "$ROOT_DIR/scripts/release-tool-files.sh"
+# shellcheck source=scripts/release-check-source.sh
+source "$ROOT_DIR/scripts/release-check-source.sh"
+# shellcheck source=scripts/release-check-assets.sh
+source "$ROOT_DIR/scripts/release-check-assets.sh"
+# shellcheck source=scripts/release-check-installer.sh
+source "$ROOT_DIR/scripts/release-check-installer.sh"
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'release-check: %s\n' "$*" >&2; exit 1; }
 run_make() {
   make --no-print-directory -C "$ROOT_DIR" V="${V:-0}" "$@"
-}
-# Test stages are timing-sensitive on CI; retry them at the shell level so a
-# flaky run does not block a release. (The release workflow itself must not use
-# a retry action: that changes the process-control environment and hangs the
-# smoke section's background sn-server.) fmt-check is deterministic and is not
-# retried.
-retry_make() {
-  local attempts=3 n=0
-  until run_make "$@"; do
-    n=$((n + 1))
-    if [ "$n" -ge "$attempts" ]; then
-      log "[release-check] $* failed after $attempts attempts"
-      return 1
-    fi
-    log "[release-check] $* attempt $n failed, retrying"
-  done
 }
 replay_logs() {
   local file
@@ -57,136 +47,9 @@ if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*
   die "SN_CLI_VERSION must be a SemVer Git tag such as v0.1.0: $RELEASE_VERSION"
 fi
 
-log "[release-check] validating source"
-for legacy_source in \
-  "$ROOT_DIR/tools" \
-  "$ROOT_DIR/configs/runtime" \
-  "$ROOT_DIR/resources/tmux.conf" \
-  "$ROOT_DIR/resources/release.json"; do
-  [ ! -e "$legacy_source" ] && [ ! -L "$legacy_source" ] ||
-    die "legacy source layout entry remains: $legacy_source"
-done
-[ -d "$ROOT_DIR/resources/tools" ] && [ ! -L "$ROOT_DIR/resources/tools" ] ||
-  die "resources/tools must be a directory, not a symlink"
-[ -d "$ROOT_DIR/release" ] && [ ! -L "$ROOT_DIR/release" ] ||
-  die "release must be a directory, not a symlink"
-[ -f "$ROOT_DIR/release/runtime.json" ] && [ ! -L "$ROOT_DIR/release/runtime.json" ] ||
-  die "missing or unsafe release/runtime.json"
-for profile in "${SN_CLI_RELEASE_PROFILE_FILES[@]}"; do
-  [ -f "$ROOT_DIR/configs/$profile" ] || die "missing profile: $profile"
-done
-for tool in "${SN_CLI_RELEASE_TOOL_FILES[@]}"; do
-  [ -f "$ROOT_DIR/resources/tools/$tool" ] && [ ! -L "$ROOT_DIR/resources/tools/$tool" ] ||
-    die "missing or unsafe tool: $tool"
-done
-unexpected_config_entries="$(find "$ROOT_DIR/configs" -mindepth 1 -maxdepth 1 \
-  ! -name '*.json' -print -quit)"
-[ -z "$unexpected_config_entries" ] || die "unexpected configs entry: $unexpected_config_entries"
-unexpected_resource_entries="$(find "$ROOT_DIR/resources" -mindepth 1 -maxdepth 1 \
-  ! -name schema ! -name tools -print -quit)"
-[ -z "$unexpected_resource_entries" ] || die "unexpected resources entry: $unexpected_resource_entries"
-unexpected_tool_entries="$(find "$ROOT_DIR/resources/tools" -mindepth 1 -maxdepth 1 \
-  ! -name '*.json' -print -quit)"
-[ -z "$unexpected_tool_entries" ] || die "unexpected tools entry: $unexpected_tool_entries"
-unexpected_release_entries="$(find "$ROOT_DIR/release" -mindepth 1 -maxdepth 1 \
-  ! -name runtime.json ! -name tmux.conf ! -name release.json -print -quit)"
-[ -z "$unexpected_release_entries" ] || die "unexpected release entry: $unexpected_release_entries"
-for schema in profile.schema.json runtime.schema.json tool.schema.json; do
-  [ -f "$ROOT_DIR/resources/schema/$schema" ] || die "missing resource schema: $schema"
-done
-[ -f "$ROOT_DIR/release/release.json" ] && [ ! -L "$ROOT_DIR/release/release.json" ] ||
-  die "missing or unsafe activation manifest: release/release.json"
-grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
-  "$ROOT_DIR/release/release.json" ||
-  die "release manifest does not declare Run SQLite schema 4"
-grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
-  "$ROOT_DIR/release/release.json" ||
-  die "release manifest does not declare activation epoch 4"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6([,}[:space:]]|$)' \
-  "$ROOT_DIR/release/release.json" ||
-  die "release manifest does not declare contract version 6"
-grep -Eq '"session_schema_version"[[:space:]]*:[[:space:]]*3([,}[:space:]]|$)' \
-  "$ROOT_DIR/release/release.json" ||
-  die "release manifest does not declare Session schema 3"
-[ -f "$ROOT_DIR/release/tmux.conf" ] && [ ! -L "$ROOT_DIR/release/tmux.conf" ] ||
-  die "missing or unsafe dedicated Tmux bootstrap config: release/tmux.conf"
-
-run_make fmt-check
-retry_make test-serial
-retry_make test-race
-env GOCACHE="${GOCACHE:-$("$GO_BIN" env GOCACHE)}" \
-  GOMODCACHE="${GOMODCACHE:-$("$GO_BIN" env GOMODCACHE)}" \
-  "$GO_BIN" -C "$ROOT_DIR" vet ./...
-bash "$ROOT_DIR/scripts/make-step-test.sh"
-
-log "[release-check] building assets version=$RELEASE_VERSION"
-run_make release-assets SN_CLI_VERSION="$RELEASE_VERSION"
-
-expected_assets=(checksums.txt)
-for platform in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
-  expected_assets+=("sn-cli-$platform.tar.gz")
-done
-for asset in "${expected_assets[@]}"; do
-  [ -f "$DIST_DIR/$asset" ] || die "missing release asset: $asset"
-done
-for asset in "${expected_assets[@]:1}"; do
-  awk -v name="$asset" '$2 == name || $2 == "*" name {found=1} END {exit !found}' \
-    "$DIST_DIR/checksums.txt" || die "checksum missing for $asset"
-  expected_profile_entries="$(
-    printf 'configs/%s\n' "${SN_CLI_RELEASE_PROFILE_FILES[@]}" |
-      LC_ALL=C sort
-  )"
-  actual_profile_entries="$(
-    tar -tzf "$DIST_DIR/$asset" |
-      awk 'index($0, "configs/") == 1 && $0 != "configs/" {print}' |
-      LC_ALL=C sort
-  )"
-  [ "$actual_profile_entries" = "$expected_profile_entries" ] ||
-    die "release asset Profile set does not match the formal release list: $asset"
-  expected_tool_entries="$(
-    printf 'resources/tools/%s\n' "${SN_CLI_RELEASE_TOOL_FILES[@]}" |
-      LC_ALL=C sort
-  )"
-  actual_tool_entries="$(
-    tar -tzf "$DIST_DIR/$asset" |
-      awk 'index($0, "resources/tools/") == 1 && $0 != "resources/tools/" {print}' |
-      LC_ALL=C sort
-  )"
-  [ "$actual_tool_entries" = "$expected_tool_entries" ] ||
-    die "release asset Tool set does not match the formal release list: $asset"
-  expected_release_entries="$(printf '%s\n' \
-    release/release.json release/runtime.json release/tmux.conf | LC_ALL=C sort)"
-  actual_release_entries="$(
-    tar -tzf "$DIST_DIR/$asset" |
-      awk 'index($0, "release/") == 1 && $0 != "release/" {print}' |
-      LC_ALL=C sort
-  )"
-  [ "$actual_release_entries" = "$expected_release_entries" ] ||
-    die "release asset fixed release set is invalid: $asset"
-  legacy_payload_entries="$(
-    tar -tzf "$DIST_DIR/$asset" |
-      awk '$0 == "tools/" || index($0, "tools/") == 1 ||
-        $0 == "runtime.json" || $0 == "resources/release.json" ||
-        $0 == "resources/tmux.conf" {print}'
-  )"
-  [ -z "$legacy_payload_entries" ] ||
-    die "release asset retained a legacy config path: $asset"
-done
-checksum_log="$(mktemp)"
-if command -v sha256sum >/dev/null 2>&1; then
-  if ! (cd "$DIST_DIR" && sha256sum --check checksums.txt) >"$checksum_log" 2>&1; then
-    replay_logs "$checksum_log"
-    rm -f "$checksum_log"
-    die "release asset checksum verification failed"
-  fi
-else
-  if ! (cd "$DIST_DIR" && shasum -a 256 --check checksums.txt) >"$checksum_log" 2>&1; then
-    replay_logs "$checksum_log"
-    rm -f "$checksum_log"
-    die "release asset checksum verification failed"
-  fi
-fi
-rm -f "$checksum_log"
+require_command curl
+validate_release_source
+build_and_validate_release_assets
 
 case "$(uname -s)" in
   Darwin) os_name="darwin" ;;
@@ -233,120 +96,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "[release-check] validating installer path safety"
-if bash "$ROOT_DIR/install.sh" --dry-run \
-  --binary "$temp_root/a" --archive "$temp_root/b" \
-  >"$temp_root/mixed-local.out" 2>"$temp_root/mixed-local.err"; then
-  die "installer accepted mutually exclusive local source modes"
-fi
-if bash "$ROOT_DIR/install.sh" --dry-run \
-  --archive "$temp_root/a" --server "$temp_root/b" \
-  >"$temp_root/archive-extra.out" 2>"$temp_root/archive-extra.err"; then
-  die "installer accepted a binary-only option with --archive"
-fi
-if bash "$ROOT_DIR/install.sh" --dry-run \
-  --checksums "$temp_root/a" \
-  >"$temp_root/network-checksum.out" 2>"$temp_root/network-checksum.err"; then
-  die "installer accepted --checksums without --archive"
-fi
-if bash "$ROOT_DIR/install.sh" --dry-run --home / \
-  >"$temp_root/root-home.out" 2>"$temp_root/root-home.err"; then
-  die "installer accepted / as Runtime home"
-fi
-if bash "$ROOT_DIR/install.sh" --dry-run --home "" \
-  >"$temp_root/empty-home.out" 2>"$temp_root/empty-home.err"; then
-  die "installer accepted an empty Runtime home"
-fi
-(
-  cd "$temp_root"
-  bash "$ROOT_DIR/install.sh" --dry-run \
-    --home relative-home --install-dir relative-bin
-) >"$temp_root/relative-home.out" 2>&1
-grep -q "home: $temp_root/relative-home" "$temp_root/relative-home.out" ||
-  die "installer did not canonicalize a relative Runtime home"
-
-inside_home="$temp_root/inside-home"
-if bash "$ROOT_DIR/install.sh" \
-  --archive "$archive" \
-  --checksums "$DIST_DIR/checksums.txt" \
-  --home "$inside_home" \
-  --install-dir "$inside_home/configs" \
-  --overwrite-configs; then
-  die "installer accepted an install directory inside Runtime home"
-fi
-[ ! -e "$inside_home" ] ||
-  die "invalid nested install directory created Runtime home"
-
-case_home="$temp_root/RuntimeHome"
-if bash "$ROOT_DIR/install.sh" --dry-run \
-  --home "$case_home" \
-  --install-dir "$temp_root/runtimehome/configs" \
-  >"$temp_root/case-home.out" 2>"$temp_root/case-home.err"; then
-  die "installer accepted a case-folded install directory inside Runtime home"
-fi
-[ ! -e "$case_home" ] && [ ! -e "$temp_root/runtimehome" ] ||
-  die "case-folded invalid paths created Runtime home"
-
-unicode_home="$temp_root/ÄHome"
-if bash "$ROOT_DIR/install.sh" --dry-run \
-  --home "$unicode_home" \
-  --install-dir "$temp_root/ähome/configs" \
-  >"$temp_root/unicode-home.out" 2>"$temp_root/unicode-home.err"; then
-  die "installer accepted unresolved non-ASCII paths with ambiguous containment"
-fi
-[ ! -e "$unicode_home" ] && [ ! -e "$temp_root/ähome" ] ||
-  die "invalid unresolved Unicode paths created Runtime home"
-
-alias_parent="$temp_root/alias-parent"
-real_parent="$temp_root/real-parent"
-alias_install="$temp_root/alias-bin"
-mkdir -p "$real_parent"
-ln -s "$real_parent" "$alias_parent"
-alias_home="$alias_parent/runtime"
-bash "$ROOT_DIR/install.sh" \
-  --archive "$archive" \
-  --checksums "$DIST_DIR/checksums.txt" \
-  --home "$alias_home" \
-  --install-dir "$alias_install" \
-  --overwrite-configs
-[ -x "$real_parent/runtime/bin/sn-cli" ] ||
-  die "installer did not canonicalize a missing home below a symlink ancestor"
-[ "$(readlink "$alias_install/sn-cli")" = "$real_parent/runtime/bin/sn-cli" ] ||
-  die "installer command link did not use canonical Runtime home"
-
-external_home="$temp_root/external-home"
-symlink_home="$temp_root/symlink-home"
-mkdir -p "$external_home"
-chmod 700 "$external_home"
-printf '%s\n' safe >"$external_home/sentinel"
-ln -s "$external_home" "$symlink_home"
-if bash "$ROOT_DIR/install.sh" \
-  --archive "$archive" \
-  --checksums "$DIST_DIR/checksums.txt" \
-  --home "$symlink_home" \
-  --install-dir "$temp_root/symlink-bin" \
-  --overwrite-configs; then
-  die "installer accepted a symlink Runtime home"
-fi
-[ "$(cat "$external_home/sentinel")" = "safe" ] ||
-  die "symlink Runtime home changed an external sentinel"
-[ ! -e "$external_home/bin/sn-cli" ] ||
-  die "symlink Runtime home installed outside its declared root"
-
-conflict_home="$temp_root/conflict-home"
-conflict_install="$temp_root/conflict-bin"
-mkdir -p "$conflict_install"
-printf '%s\n' occupied >"$conflict_install/sn-cli"
-if bash "$ROOT_DIR/install.sh" \
-  --archive "$archive" \
-  --checksums "$DIST_DIR/checksums.txt" \
-  --home "$conflict_home" \
-  --install-dir "$conflict_install" \
-  --overwrite-configs; then
-  die "installer overwrote a non-symlink command target"
-fi
-[ ! -e "$conflict_home/bin/sn-cli" ] ||
-  die "install-link conflict was detected after Runtime activation"
+validate_installer_path_safety
 
 log "[release-check] installing and exercising $archive"
 mkdir -p "$runtime_home/configs" "$runtime_home/tools" "$runtime_home/resources"
@@ -407,18 +157,9 @@ cmp "$ROOT_DIR/resources/schema/runtime.schema.json" \
 cmp "$ROOT_DIR/release/tmux.conf" \
   "$runtime_home/resources/tmux.conf" >/dev/null ||
   die "install did not refresh the Tmux bootstrap config"
-grep -Eq '"run_schema_version"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
-  "$runtime_home/resources/release.json" ||
-  die "installed release manifest does not declare Run SQLite schema 4"
-grep -Eq '"activation_epoch"[[:space:]]*:[[:space:]]*4([,}[:space:]]|$)' \
-  "$runtime_home/resources/release.json" ||
-  die "installed release manifest does not declare activation epoch 4"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6([,}[:space:]]|$)' \
-  "$runtime_home/resources/release.json" ||
-  die "installed release manifest does not declare contract version 6"
-grep -Eq '"session_schema_version"[[:space:]]*:[[:space:]]*3([,}[:space:]]|$)' \
-  "$runtime_home/resources/release.json" ||
-  die "installed release manifest does not declare Session schema 3"
+cmp "$ROOT_DIR/release/release.json" \
+  "$runtime_home/resources/release.json" >/dev/null ||
+  die "installed release manifest differs from the source compatibility contract"
 
 printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$runtime_home/configs/local-only.json"
@@ -533,8 +274,9 @@ SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json profile list >/dev/null
 server_info="$(
   SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json server info
 )"
-printf '%s\n' "$server_info" | grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6' ||
-  die "server info did not report contract_version=6"
+printf '%s\n' "$server_info" |
+  grep -Eq "\"contract_version\"[[:space:]]*:[[:space:]]*$contract_version" ||
+  die "server info did not report contract_version=$contract_version"
 printf '%s\n' "$server_info" | grep -Eq '"server"' ||
   die "server info did not report the server namespace"
 [[ "$server_info" != *$'\n'* ]] ||
@@ -550,8 +292,9 @@ if SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json unknown info \
   die "unknown namespace was accepted"
 fi
 [ ! -s "$unknown_stdout" ] || die "failed JSON command wrote to stdout"
-grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6' "$unknown_stderr" ||
-  die "failed JSON command did not return a contract v6 error"
+grep -Eq "\"contract_version\"[[:space:]]*:[[:space:]]*$contract_version" \
+  "$unknown_stderr" ||
+  die "failed JSON command did not return a contract v$contract_version error"
 [ "$(awk 'NF {count++} END {print count + 0}' "$unknown_stderr")" -eq 1 ] ||
   die "failed JSON command did not return exactly one compact error document"
 
@@ -587,8 +330,8 @@ printf '%s\n' "$doctor_output" |
   grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' ||
   die "doctor did not report an OK installed Runtime: $doctor_output"
 printf '%s\n' "$doctor_output" |
-  grep -Eq '"contract_version"[[:space:]]*:[[:space:]]*6' ||
-  die "doctor did not report contract_version=6"
+  grep -Eq "\"contract_version\"[[:space:]]*:[[:space:]]*$contract_version" ||
+  die "doctor did not report contract_version=$contract_version"
 help_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" help tmux)"
 printf '%s\n' "$help_output" |
   grep -Fq 'sn-cli tmux stop-all' ||
@@ -624,17 +367,91 @@ if PATH="$direct_bin:$PATH" SN_CLI_HOME="$direct_home" \
 	die "removed profile execution route was accepted"
 fi
 
-HTTP_ADDR="127.0.0.1:0" SN_CLI_HOME="$runtime_home" \
-  "$install_dir/sn-cli" server start >/dev/null
-for _ in {1..100}; do
-  status="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json server status)"
-  if printf '%s\n' "$status" | grep -Eq '"running"[[:space:]]*:[[:space:]]*true'; then
+server_probe_token="release-check-probe-token"
+server_probe_base=$((49152 + (($$ + RANDOM) % 12000)))
+server_probe_address=""
+for server_probe_offset in 0 137 277 419 563 719; do
+  server_probe_port=$((49152 + ((server_probe_base - 49152 + server_probe_offset) % 12000)))
+  candidate_address="127.0.0.1:$server_probe_port"
+  if HTTP_ADDR="$candidate_address" SN_SERVER_TOKEN="$server_probe_token" \
+    SN_CLI_HOME="$runtime_home" \
+    "$install_dir/sn-cli" server start >/dev/null 2>&1; then
+    candidate_url="http://$candidate_address"
+    for _ in {1..20}; do
+      candidate_code="$(
+        curl --silent --show-error --output /dev/null \
+          --write-out '%{http_code}' --connect-timeout 0.25 --max-time 0.5 \
+          --header "Authorization: Bearer $server_probe_token" \
+          "$candidate_url/healthz" 2>/dev/null || true
+      )"
+      if [ "$candidate_code" = "200" ]; then
+        server_probe_address="$candidate_address"
+        break
+      fi
+      sleep 0.05
+    done
+  fi
+  if [ -n "$server_probe_address" ]; then
+    break
+  fi
+  # A candidate may have become unavailable between selection and bind. Stop
+  # through the lifecycle owner so its pid/lease state is reconciled before the
+  # next bounded candidate is attempted.
+  SN_CLI_HOME="$runtime_home" \
+    "$install_dir/sn-cli" server stop >/dev/null 2>&1 || true
+done
+[ -n "$server_probe_address" ] ||
+  die "sn-server did not start on any loopback probe candidate"
+
+server_probe_url="http://$server_probe_address"
+unauthorized_ready_body="$temp_root/readyz-unauthorized.json"
+unauthorized_ready_code="$(
+  curl --silent --show-error --output "$unauthorized_ready_body" \
+    --write-out '%{http_code}' --connect-timeout 1 --max-time 2 \
+    "$server_probe_url/readyz"
+)"
+[ "$unauthorized_ready_code" = "401" ] ||
+  die "unauthenticated /readyz returned HTTP $unauthorized_ready_code, expected 401"
+if grep -Eqi '(^|[^[:alnum:]_])(ready|not_ready)([^[:alnum:]_]|$)' \
+  "$unauthorized_ready_body"; then
+  die "unauthenticated /readyz leaked readiness state"
+fi
+
+health_body="$temp_root/healthz.json"
+health_code="$(
+  curl --silent --show-error --output "$health_body" \
+    --write-out '%{http_code}' --connect-timeout 1 --max-time 2 \
+    --header "Authorization: Bearer $server_probe_token" \
+    "$server_probe_url/healthz"
+)"
+[ "$health_code" = "200" ] ||
+  die "authenticated /healthz returned HTTP $health_code, expected 200"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$health_body" ||
+  die "authenticated /healthz did not report status=ok"
+
+ready_body="$temp_root/readyz.json"
+ready_code=""
+ready_deadline=$((SECONDS + 10))
+while [ "$SECONDS" -lt "$ready_deadline" ]; do
+  ready_code="$(
+    curl --silent --show-error --output "$ready_body" \
+      --write-out '%{http_code}' --connect-timeout 0.25 --max-time 0.5 \
+      --header "Authorization: Bearer $server_probe_token" \
+      "$server_probe_url/readyz" 2>/dev/null || true
+  )"
+  if [ "$ready_code" = "200" ] &&
+    grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "$ready_body"; then
     break
   fi
   sleep 0.1
 done
+if [ "$ready_code" != "200" ] ||
+  ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "$ready_body"; then
+  die "authenticated /readyz did not become ready within 10s"
+fi
+status="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json server status)"
 printf '%s\n' "$status" | grep -Eq '"running"[[:space:]]*:[[:space:]]*true' ||
-  die "sn-server did not start"
+  die "sn-server exited after reporting ready"
 running_digest_before="$(sha256_file "$runtime_home/bin/sn-cli")"
 if bash "$ROOT_DIR/install.sh" \
   --archive "$archive" \
@@ -914,7 +731,7 @@ mkdir -p \
   "$local_source_home/state/session-invocations" \
   "$local_source_home/state/session-mutations" \
   "$local_source_home/state/session-trash-moves"
-printf '%s\n' '{"schema_version":3,"sessions":[]}' \
+printf '{"schema_version":%s,"sessions":[]}\n' "$session_schema_version" \
   >"$local_source_home/sessions/_system/index.json"
 printf '%s\n' runtime-state \
   >"$local_source_home/state/session-locks/index.lock"

@@ -62,7 +62,7 @@ export SN_CLI_COMMIT SN_CLI_TAG SN_CLI_DIRTY SN_CLI_BUILDDATE SN_CLI_VERSION SN_
 export GO GOCACHE GOMODCACHE V
 export COVERAGE_PROFILE COVERAGE_MIN TAG RUNTIME_ROOT
 
-.PHONY: help tidy fmt fmt-check test test-serial test-race coverage build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor make-step-contract-test _make-variable-probe
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage coverage-critical build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor make-step-contract-test _make-variable-probe
 
 help:
 	@printf '%s\n' \
@@ -77,6 +77,7 @@ help:
 		"  make check                    run fmt-check and tests" \
 		"  make test-serial | test-race  run deterministic or race tests" \
 		"  make coverage                 enforce the configured minimum coverage" \
+		"  make coverage-critical        enforce package floors for critical paths" \
 		"  make sn-cli-test              test sn-cli domains and adapters" \
 		"  make sn-cli-doctor            build and inspect an isolated sn-cli home" \
 		"  make make-step-contract-test  validate Make output and argv safety" \
@@ -125,6 +126,10 @@ test-race:
 coverage:
 	@$(MAKE_STEP) --stage coverage --meta "minimum=$${COVERAGE_MIN}%" --meta "profile=$${COVERAGE_PROFILE}" -- \
 		bash -c '"$${GO}" -C "$${RUNTIME_ROOT}" test $$( "$${GO}" -C "$${RUNTIME_ROOT}" list ./... | grep -v /cmd/ ) -covermode=atomic -coverprofile="$${COVERAGE_PROFILE}" -count=1 && total="$$("$${GO}" -C "$${RUNTIME_ROOT}" tool cover -func="$${COVERAGE_PROFILE}" | awk "$$1")" && awk -v total="$$total" -v minimum="$${COVERAGE_MIN}" "BEGIN { printf \"total coverage: %.1f%% (minimum %.1f%%)\\n\", total, minimum; if (total + 0 < minimum + 0) exit 1 }"' _ '/^total:/ {gsub(/%/, "", $$3); print $$3}'
+
+coverage-critical:
+	@$(MAKE_STEP) --stage coverage-critical --meta scope=run,session,sqlite,sn-server -- \
+		bash "$${RUNTIME_ROOT}/scripts/coverage-critical.sh"
 
 bin:
 	@$(MAKE_STEP) --stage prepare-bin --meta path=bin -- \
