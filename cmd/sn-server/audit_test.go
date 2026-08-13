@@ -131,3 +131,20 @@ func TestAuditHTTPMarksPanicsFailedWithoutRecovering(t *testing.T) {
 		t.Fatalf("audit=%s", data)
 	}
 }
+
+func TestHTTPAuditIntentNamesHealthRoutesWithoutPathDetails(t *testing.T) {
+	for _, test := range []struct {
+		path   string
+		action string
+	}{
+		{path: "/healthz", action: "GET health"},
+		{path: "/readyz", action: "GET readiness"},
+	} {
+		action, targets := httpAuditIntent(http.MethodGet, test.path)
+		if action != test.action || targets != nil {
+			t.Fatalf(
+				"path=%s action=%q targets=%v", test.path, action, targets,
+			)
+		}
+	}
+}

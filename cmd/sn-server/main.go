@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -33,23 +32,38 @@ type serverConfig struct {
 var fixedNamespaces = profileid.ReservedNamespaces()
 
 func main() {
-	if err := validateServerArgs(os.Args[1:]); err != nil {
-		log.Fatalf("arguments: %v", err)
+	ctx, stop := signal.NotifyContext(
+		context.Background(), syscall.SIGINT, syscall.SIGTERM,
+	)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Getenv); err != nil {
+		log.Printf("sn-server: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run(
+	ctx context.Context,
+	args []string,
+	getenv func(string) string,
+) (resultErr error) {
+	if err := validateServerArgs(args); err != nil {
+		return fmt.Errorf("arguments: %w", err)
 	}
 	paths, err := layout.Resolve()
 	if err != nil {
-		log.Fatalf("resolve runtime home: %v", err)
+		return fmt.Errorf("resolve runtime home: %w", err)
 	}
 	if err := requireActivationReady(paths); err != nil {
-		log.Fatalf("activation gate: %v", err)
+		return fmt.Errorf("activation gate: %w", err)
 	}
-	config, err := loadServerConfig(os.Getenv)
+	config, err := loadServerConfig(getenv)
 	if err != nil {
-		log.Fatalf("server config: %v", err)
+		return fmt.Errorf("server config: %w", err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("resolve working directory: %v", err)
+		return fmt.Errorf("resolve working directory: %w", err)
 	}
 	services, err := runtimebootstrap.LoadServicesWithRunRecovery(
 		paths,
@@ -57,9 +71,15 @@ func main() {
 		fixedNamespaces...,
 	)
 	if err != nil {
-		log.Fatalf("initialize SN Runtime: %v", err)
+		return fmt.Errorf("initialize SN Runtime: %w", err)
 	}
-	defer services.Runs.Close()
+	defer func() {
+		if err := services.Runs.Close(); err != nil {
+			resultErr = errors.Join(
+				resultErr, fmt.Errorf("close Run service: %w", err),
+			)
+		}
+	}()
 	runtimeHandler, err := transporthttp.NewRuntimeHandler(
 		transporthttp.RuntimeServices{
 			Model:            transporthttp.NewHandler(services.Models),
@@ -70,12 +90,10 @@ func main() {
 		},
 	)
 	if err != nil {
-		log.Fatalf("build HTTP handler: %v", err)
+		return fmt.Errorf("build HTTP handler: %w", err)
 	}
-	handler := http.Handler(runtimeHandler)
-	if config.BearerToken != "" {
-		handler = bearerAuth(config.BearerToken, handler)
-	}
+	readiness := &readinessState{}
+	handler := newServerHandler(readiness, config.BearerToken, runtimeHandler)
 	handler = auditHTTP(paths.LogsDir, handler)
 	server := &http.Server{
 		Addr: config.Address, Handler: handler,
@@ -85,20 +103,22 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
 	}
-	workerContext, cancelWorkers := context.WithCancel(context.Background())
-	var workers sync.WaitGroup
+	listener, err := net.Listen("tcp", config.Address)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", config.Address, err)
+	}
+	defer listener.Close()
+	tasks := make([]backgroundTask, 0, services.Config.Scheduler.Workers+1)
 	for index := 0; index < services.Config.Scheduler.Workers; index++ {
-		workers.Add(1)
-		go func(worker int) {
-			defer workers.Done()
-			workerID := fmt.Sprintf("sn-server-%d-%d", os.Getpid(), worker)
-			err := services.Runs.Worker(
-				workerContext, workerID, services.Config.PollInterval(),
-			)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("worker %s stopped: %v", workerID, err)
-			}
-		}(index + 1)
+		workerID := fmt.Sprintf("sn-server-%d-%d", os.Getpid(), index+1)
+		tasks = append(tasks, backgroundTask{
+			Name: workerID,
+			Run: func(taskContext context.Context) error {
+				return services.Runs.Worker(
+					taskContext, workerID, services.Config.PollInterval(),
+				)
+			},
+		})
 	}
 	reaperOptions := runtime.ReaperOptions{
 		Interval:               services.Config.ReaperInterval(),
@@ -106,40 +126,26 @@ func main() {
 		NeedsReconciliationTTL: services.Config.ReaperNeedsReconciliationTTL(),
 	}
 	if reaperOptions.Interval > 0 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			if err := services.Runs.RunReaper(
-				workerContext, reaperOptions,
-			); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("reaper stopped: %v", err)
-			}
-		}()
+		tasks = append(tasks, backgroundTask{
+			Name: "reaper",
+			Run: func(taskContext context.Context) error {
+				return services.Runs.RunReaper(taskContext, reaperOptions)
+			},
+		})
 	}
-	serveDone := make(chan error, 1)
-	go func() {
-		log.Printf("listening on %s with %d worker(s)", config.Address, services.Config.Scheduler.Workers)
-		serveDone <- server.ListenAndServe()
-	}()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	var serveErr error
-	select {
-	case <-stop:
-		shutdownContext, cancelShutdown := context.WithTimeout(
-			context.Background(), 10*time.Second,
-		)
-		if err := server.Shutdown(shutdownContext); err != nil {
-			log.Printf("shutdown HTTP: %v", err)
-		}
-		cancelShutdown()
-	case serveErr = <-serveDone:
-	}
-	cancelWorkers()
-	workers.Wait()
-	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-		log.Fatalf("listen: %v", serveErr)
-	}
+	log.Printf(
+		"listening on %s with %d worker(s)",
+		listener.Addr(), services.Config.Scheduler.Workers,
+	)
+	return superviseServer(ctx, serverLifecycle{
+		Readiness: readiness,
+		Tasks:     tasks,
+		Serve: func() error {
+			return server.Serve(listener)
+		},
+		Shutdown:        server.Shutdown,
+		ShutdownTimeout: 10 * time.Second,
+	})
 }
 
 func validateServerArgs(args []string) error {

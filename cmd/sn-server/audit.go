@@ -73,6 +73,12 @@ func auditHTTP(logsDir string, next http.Handler) http.Handler {
 
 func httpAuditIntent(method string, path string) (string, map[string]string) {
 	method = normalizedHTTPMethod(method)
+	switch path {
+	case "/healthz":
+		return method + " health", nil
+	case "/readyz":
+		return method + " readiness", nil
+	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	if len(segments) < 2 || segments[0] != "v1" {
 		return method + " unknown", nil

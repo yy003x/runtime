@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
@@ -77,6 +79,17 @@ func TestServerEntryRejectsArguments(t *testing.T) {
 	}
 	if err := validateServerArgs(nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunRejectsArgumentsBeforeInitialization(t *testing.T) {
+	err := run(
+		context.Background(),
+		[]string{"--unexpected"},
+		func(string) string { return "" },
+	)
+	if err == nil || !strings.Contains(err.Error(), "arguments") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
