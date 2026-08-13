@@ -7,7 +7,7 @@ import (
 
 func TestReservedNamespacesAreCanonicalAndDefensivelyCopied(t *testing.T) {
 	want := []string{
-		"exec", "req", "profile", "session", "tmux", "agent", "run", "server", "doctor", "help", "version",
+		"exec", "req", "profile", "session", "agent", "run", "server", "doctor", "help", "version",
 	}
 	first := ReservedNamespaces()
 	if !reflect.DeepEqual(first, want) {
@@ -20,7 +20,9 @@ func TestReservedNamespacesAreCanonicalAndDefensivelyCopied(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	for _, value := range []string{"cx", "cc-batch", "model_1", "vendor.model"} {
+	for _, value := range []string{
+		"cx", "cc-batch", "model_1", "vendor.model", "tmux",
+	} {
 		if err := Validate(value); err != nil {
 			t.Fatalf("Validate(%q): %v", value, err)
 		}

@@ -14,13 +14,11 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli profile list|show|check`：Profile 只读管理面，不执行 Profile；
 - `sn-cli session exec|req ...`：`interface=managed` 的文件型本地执行会话，
   `--queue` 时进入 durable Run；Session 不自动执行 tool；
-- `sn-cli session open|send|attach|interrupt|close ...`：`interface=native_tui`，
+- `sn-cli session open|send|attach|interrupt|close|close-all ...`：`interface=native_tui`，
   在 tmux PTY 中直接运行 Provider 原生交互 TUI；`open` 创建 opaque lifecycle
   Run/Execution，Provider 退出或 `close` 时收口；输入输出不创建 canonical
-  Turn/Message/Event 或 transcript；
-- `sn-cli tmux ...`：按 `runtime.json` 的 `tmux.server_mode=default|dedicated`
-  选择普通或专用 tmux server，在固定 `sn-session` 中管理原始交互 window，本身不创建
-  Session；
+  Turn/Message/Event 或 transcript；公开发现和控制只使用 Session ID，tmux 仅是私有
+  PTY carrier；
 - `sn-cli agent <api-profile-id>`：唯一 API-only Agent Kernel，`--queue` 时排队；
 - `sn-cli run ...`：SQLite durable Run 查询与控制面，不负责提交新 Run。
 
@@ -30,13 +28,13 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 
 ## 架构边界
 
-- `pkg/{command,model,session,tmux,agent,run}` 是公开 Runtime 领域能力；
+- `pkg/{command,model,session,agent,run}` 是公开 Runtime 领域能力；
 - `pkg/contract` 保存 Provider-neutral request/event/error；
 - `pkg/provider/*`、`pkg/store/sqlite/`、`pkg/transport/http/` 是公开 adapter；
 - `internal/domain/` 只保存私有值对象与不变量，不依赖其它层；
 - `internal/application/` 保存激活、启动和 tool/use-case 编排；
-- `internal/infrastructure/` 保存配置、文件、日志、进程与 MCP adapter，不反向依赖
-  application/interfaces；
+- `internal/infrastructure/` 保存配置、文件、日志、进程、private tmux carrier、
+  Provider HTTP helper 与 MCP adapter，不反向依赖 application/interfaces；
 - `internal/interfaces/cli/` 只做 decode/call/encode，不建立第二套状态机；
 - `internal/application/runtimebootstrap/` 是 composition root；
 - `internal/infrastructure/executionlog/` 只保存 best-effort 本地执行诊断，不是
@@ -53,8 +51,9 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 
 外部 Go API 统一落在 `pkg/`；旧根 package 不提供兼容 shim。新增私有源码优先落入
 `internal/{domain,application,infrastructure,interfaces}` 的现有 owner；测试复用资产
-只进入 `internal/testkit/`。不得在根目录新增运行态目录、临时兼容 package 或职责
-不明的共享层。
+只进入 `internal/testkit/`。`pkg/` 下的每个 package 都必须是明确登记的公开 API 或
+adapter，不得在其中嵌套仅供仓内使用的 `internal` package。不得在根目录新增运行态
+目录、临时兼容 package 或职责不明的共享层。
 
 ## 配置与目录
 

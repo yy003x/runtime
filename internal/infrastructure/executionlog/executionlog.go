@@ -27,7 +27,6 @@ const (
 	NamespaceRequest Namespace = "req"
 	NamespaceSession Namespace = "session"
 	NamespaceAgent   Namespace = "agent"
-	NamespaceTmux    Namespace = "tmux"
 )
 
 type CLIRecord struct {

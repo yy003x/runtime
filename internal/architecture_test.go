@@ -50,19 +50,16 @@ var allowedPublicModuleDependencies = map[string][]string{
 	},
 	modulePath + "/pkg/provider": {},
 	modulePath + "/pkg/provider/anthropic": {
+		modulePath + "/internal/infrastructure/providerhttp",
 		modulePath + "/pkg/contract",
 		modulePath + "/pkg/model",
 		modulePath + "/pkg/provider",
-		modulePath + "/pkg/provider/internal/httpx",
-	},
-	modulePath + "/pkg/provider/internal/httpx": {
-		modulePath + "/pkg/contract",
 	},
 	modulePath + "/pkg/provider/openai": {
+		modulePath + "/internal/infrastructure/providerhttp",
 		modulePath + "/pkg/contract",
 		modulePath + "/pkg/model",
 		modulePath + "/pkg/provider",
-		modulePath + "/pkg/provider/internal/httpx",
 	},
 	modulePath + "/pkg/run": {
 		modulePath + "/internal/domain/identity",
@@ -89,12 +86,6 @@ var allowedPublicModuleDependencies = map[string][]string{
 		modulePath + "/pkg/contract",
 		modulePath + "/pkg/run",
 	},
-	modulePath + "/pkg/tmux": {
-		modulePath + "/internal/domain/identity",
-		modulePath + "/internal/domain/profileid",
-		modulePath + "/internal/infrastructure/activationgate",
-		modulePath + "/pkg/contract",
-	},
 	modulePath + "/pkg/transport/http": {
 		modulePath + "/internal/domain/identity",
 		modulePath + "/internal/infrastructure/strictjson",
@@ -107,6 +98,15 @@ var allowedPublicModuleDependencies = map[string][]string{
 }
 
 var allowedConcreteAdapterConsumers = map[string][]string{
+	modulePath + "/internal/infrastructure/providerhttp": {
+		modulePath + "/pkg/provider/anthropic",
+		modulePath + "/pkg/provider/openai",
+	},
+	modulePath + "/internal/infrastructure/tmux": {
+		modulePath + "/internal/application/nativeconsole",
+		modulePath + "/internal/application/runtimebootstrap",
+		modulePath + "/internal/interfaces/cli",
+	},
 	modulePath + "/internal/infrastructure/toolbuiltin": {
 		modulePath + "/internal/application/activation",
 		modulePath + "/internal/application/runtimebootstrap",
@@ -145,6 +145,18 @@ func TestSourceLayoutAndLayerDependencies(t *testing.T) {
 			violations = append(violations,
 				current.ImportPath+" is outside cmd, pkg, or internal",
 			)
+		}
+		if inLayer(current.ImportPath, "pkg") {
+			if _, declared := allowedPublicModuleDependencies[current.ImportPath]; !declared {
+				violations = append(violations,
+					current.ImportPath+" is not a declared public package",
+				)
+			}
+			if strings.Contains(current.ImportPath+"/", "/internal/") {
+				violations = append(violations,
+					current.ImportPath+" is private implementation under pkg",
+				)
+			}
 		}
 
 		for _, dependency := range current.Imports {
