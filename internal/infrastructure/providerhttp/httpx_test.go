@@ -1,4 +1,4 @@
-package httpx
+package providerhttp
 
 import (
 	"context"

@@ -1,4 +1,6 @@
-package httpx
+// Package providerhttp contains private HTTP response limits and error mapping
+// shared by the public Provider drivers.
+package providerhttp
 
 import (
 	"context"

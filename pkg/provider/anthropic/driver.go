@@ -13,10 +13,10 @@ import (
 	"sort"
 	"strings"
 
+	httpx "github.com/yy003x/runtime/internal/infrastructure/providerhttp"
 	"github.com/yy003x/runtime/pkg/contract"
 	"github.com/yy003x/runtime/pkg/model"
 	"github.com/yy003x/runtime/pkg/provider"
-	"github.com/yy003x/runtime/pkg/provider/internal/httpx"
 )
 
 const (
