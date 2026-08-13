@@ -55,7 +55,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `session exec <cli-profile>` | 同步执行并记录 CLI Turn | session + cli-log + audit | `sn-cli session exec cx "分析当前仓库"` |
 | `session req <api-profile>` | 同步执行并记录 API Turn | session + api-log + audit | `sn-cli session req api-cx "分析这段内容"` |
 | `session exec\|req <profile> --queue` | 创建 queued Session Turn | durable + audit；worker 执行时 log | `sn-cli session exec cx-deep --queue "后台执行"` |
-| `session open <cli-profile>` | 在 tmux PTY 中创建 Provider 原生 TUI Session | session + tmux + cli-log + audit | `sn-cli session open cx --cwd "$PWD"` |
+| `session open <cli-profile>` | 在 tmux PTY 中创建 Provider 原生 TUI Session | session + lifecycle Run/Execution + tmux + cli-log + audit | `sn-cli session open cx --cwd "$PWD"` |
 | `session send` | 向原生 TUI 注入 raw input | audit + tmux | `sn-cli session send --session-id <id> "继续"` |
 | `session attach\|interrupt\|close` | attach、发送 C-c、关闭 native TUI window | audit + tmux | `sn-cli session close --session-id <id>` |
 | `session close-all` | 关闭全部 Session-bound native TUI window，保留 Session fact | audit + tmux | `sn-cli session close-all` |
@@ -143,7 +143,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | 保存一轮 CLI 会话历史 | `sn-cli session exec <cli-profile> ...` | session / cli-log | managed non-interactive Turn |
 | 保存一轮 API 会话历史 | `sn-cli session req <api-profile> ...` | session / api-log | 单次 API Turn |
 | 后台执行并保存会话 | `session exec\|req <profile> --queue ...` | durable / worker log | 提交 Durable Session Run |
-| 带 Runtime identity 的长期 TUI | `session open <cli-profile> ...` | session + tmux / cli-log | `interface=native_tui`，无 canonical transcript/Run |
+| 带 Runtime identity 的长期 TUI | `session open <cli-profile> ...` | session + lifecycle Run + tmux / cli-log | `interface=native_tui`，无 canonical transcript/Turn |
 | 不带 Session identity 的长期 TUI | `sn-cli tmux open ...` | tmux / cli-log | 独立 Tmux window manager |
 | 自动执行 model/tool 循环 | `sn-cli agent <api-profile> ...` | Durable Run / 每轮 api-log | 默认同步；`--queue` 只入队 |
 | 查询和控制后台任务 | `sn-cli run ...` | — | 不接受 fresh submission |
@@ -159,8 +159,9 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 - 当前 contract 不提供旧入口 alias、兼容 shim 或迁移版本。
 - `session exec|req` 创建 `interface=managed` Session，由 Runtime 管理 Turn、Message、
   Event 和 Execution，且不自动执行 tool call。
-- `session open` 创建 `interface=native_tui` Session；Provider 原生 TUI 的输入输出不进入
-  canonical Session/Run。两种 interface 不共用 Session ID。
+- `session open` 创建 `interface=native_tui` Session 和 running 的 `kind=native_tui`
+  lifecycle Run/Execution；Provider 原生 TUI 的输入输出不进入 canonical transcript，
+  也不创建 Turn/Message/Event。两种 interface 不共用 Session ID。
 - 原始 `tmux` 只管理交互窗口，不创建 Session/Run；`session open` 是增加 Runtime
   Session identity 的显式组合入口。
 - `session open` 与 `tmux open` 统一使用 `open`；action 不可省略，旧 `tmux start`
@@ -403,6 +404,10 @@ logs/
     audit.jsonl
   sn-server.log
 sessions/
+  <session-id>/
+  _system/
+    index.json
+    trash/<timestamp>/<session-id>/
 state/
   session-locks/
   session-invocations/
@@ -458,6 +463,9 @@ configs/api-cx.json  → api-cx
 
 不存在额外的第二层 Profile 映射。调用方也不应直接
 读写 `sessions/` 和 `state/runtime.db`，应通过公开 CLI 或 HTTP。
+`sessions/_system/index.json` 是 Session list 的 derived read model，不是另一份
+canonical Store；每个 `<session-id>/session.json` 仍是 Session summary 的事实来源，
+`_system/trash/` 只保存 delete/GC 已移动的可恢复目录。
 `state/session-mutations/` 是 private `mutation_version=3` crash journal；
 `state/session-trash-moves/` 是 delete/GC 使用的 private `version=1` rename
 journal；`state/session-invocations/` 保存 managed CLI helper 的短生命周期
@@ -605,13 +613,22 @@ API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai driv
     "poll_interval": "250ms"
   },
   "run": {
-    "settled_retention": "168h"
+    "settled_retention": "168h",
+    "reaper": {
+      "interval": "5m",
+      "paused_ttl": "30m",
+      "needs_reconciliation_ttl": "24h"
+    }
   },
   "tmux": {
     "server_mode": "default"
   }
 }
 ```
+
+`run.reaper` 只由 `sn-server` 使用。以上也是字段省略时的默认值：`interval=0`
+会禁用整个周期回收；`paused_ttl=0` 或 `needs_reconciliation_ttl=0` 只禁用对应
+状态的回收。非零 `interval` 最大为 `1h`，两个 TTL 最大为 `720h`。
 
 允许的 builtin tool：
 
@@ -1184,8 +1201,9 @@ CLI 的权限配置，调用前应通过 `profile show` 确认 active 配置。
 Session fact 分为两种互斥 interface：
 
 - `managed`：由 `session exec|req` 使用，持久化以下 canonical facts；
-- `native_tui`：由 `session open` 使用，只保存 Runtime Session identity 和 tmux
-  binding，不保存 Provider TUI transcript，也不创建 Turn/Run。
+- `native_tui`：由 `session open` 使用，保存 Runtime Session identity、tmux binding，
+  以及 opaque process lifecycle Run/Execution；不保存 Provider TUI transcript，也不
+  创建 Turn/Message/Event。
 
 `managed` Session 持久化：
 
@@ -1345,10 +1363,11 @@ sn-cli session req <api-profile-id> --queue [options] [INPUT]
 | `run_id` | Session Turn 执行关联 ID | Durable Run ID，同时关联 Session Turn |
 | `sn-cli run get|watch|result` | 不适用 | 支持 |
 
-显式后台提交 Durable Session Run 只由带 `--queue` 的 `session exec|req` 承担；
-`session open` 的 Provider 原生 TUI 不创建 Runtime Run。`run` namespace 不提供创建
-入口。`session exec|req` 支持 `--retention`、API `--max-tokens/--temperature`，并沿用
-Session 的 stdin 与 positional input 合并规则。
+显式后台提交 Durable managed Session Run 只由带 `--queue` 的 `session exec|req`
+承担；`session open` 则直接创建 running 的 `kind=native_tui` lifecycle Run，不进入
+worker queue。`run` namespace 不提供 fresh 创建入口。`session exec|req` 支持
+`--retention`、API `--max-tokens/--temperature`，并沿用 Session 的 stdin 与
+positional input 合并规则。
 
 示例：
 
@@ -1402,7 +1421,12 @@ sn-cli session list
 sn-cli session list --state idle|active|blocked|archived
 ```
 
-用途：查询全部 Session 或按状态过滤。
+用途：查询全部 Session 或按状态过滤。该路径严格读取
+`sessions/_system/index.json`，不会在普通 Runtime bootstrap 或每次 list 时扫描全部
+Session、Turn、Execution 和 JSONL，因此启动与 list 的工作量不再随 canonical fact
+总量做 O(N) 校验。index 缺失时会从 canonical `session.json` 重建；index 损坏、
+schema 不匹配或事实冲突时 fail closed。`sn-cli doctor` 与 activation preflight
+显式调用全量 `Validate`，并核对 index 与 canonical Session facts 完全一致。
 
 示例：
 
@@ -1815,6 +1839,11 @@ canonical fact 和 private journal 必须是 single-link regular file。replace 
 - committed recovery 保留已发布 facts，只按 owner marker → journal 的顺序清理；
   identity、scope 或 durable state 无法证明时保留证据并报错，不启发式修复。
 
+canonical mutation commit 后，在同一个 Session 锁和 recovery contract 内对 index 做
+单 Session upsert；不会为一次业务 mutation 重建全部 index。若另一个进程在 canonical
+facts 已提交但 index 更新前退出，长期运行的 Store 会在下一次 list 前只扫描 pending
+mutation/trash journal，幂等补齐 index 后再读取，不扫描全部 canonical Session。
+
 managed CLI 启动时在 `state/session-invocations/` 创建随机命名、mode `0600`、
 single-link 的 manifest。Runtime 把 manifest directory/file identity 交给 private
 helper；helper 通过 marker-before-exec handshake 后，按该 identity no-follow
@@ -1832,7 +1861,7 @@ source root device/inode，并只允许
 - source 不存在且 target identity 匹配：视为 rename 已完成；
 - source/target 同时存在、同时缺失或 identity 不匹配：保留 journal 并 fail
   closed；
-- move 可证明完成后重建 `_system/index.json`，最后删除 journal。
+- move 可证明完成后在 index 锁下移除该 Session，最后删除 journal。
 
 以上恢复只处理文件事实，不调用 Provider、不执行 command/tool，也不与 SQLite
 durable Run 建立伪 transaction。safe-fs 覆盖 symlink/hardlink、路径替换、
@@ -1873,8 +1902,10 @@ CLI Profile 的 `resume` 入口管理，不会自动绑定到旧 Runtime Session
 
 初始 INPUT 合并后作为 interactive argv 的最终 prompt token；后续 `session send` 使用
 tmux paste buffer 注入 raw input。Provider 直接拥有 TUI 状态、transcript、tool 行为与
-完成语义；Runtime 不解析 pane，也不为输入输出创建 Turn、Execution、Message、Event
-或 Durable Run。`session exec|req` 会拒绝 `native_tui` Session ID。
+完成语义；Runtime 不解析 pane，也不为输入输出创建 Turn、Message、Event 或
+transcript。`open` 创建一个 running 的 `kind=native_tui` Durable Run 和唯一
+`execution_id`，Execution 只记录 opaque process/window lifecycle。
+`session exec|req` 会拒绝 `native_tui` Session ID。
 
 `session send` 受 PTY line discipline 与 Provider line editor 语义约束，不承诺大块
 结构化 payload 被完整消费；需要稳定 machine input/canonical result 时使用
@@ -1892,16 +1923,20 @@ sn-cli session close --session-id <session_id>
 sn-cli session close-all
 ```
 
-machine `open` 返回 `launch_accepted`、`initial_input_supplied`、Session fact 和
-`tmux_window`。`launch_accepted=true` 只证明 tmux launch handshake 完成；
+machine `open` 返回 `launch_accepted`、`initial_input_supplied`、Session fact、Run、
+Execution 和 `tmux_window`。`launch_accepted=true` 只证明 tmux launch handshake 完成；
 `send.accepted=true` 只证明 tmux 接受输入 transport。两者都不证明 Provider 已消费
-输入、产生输出或完成任务，native TUI 不提供 Runtime canonical completion receipt。
-`interrupt` 对 running pane 发送 `C-c`；`close` 按 opaque binding 找到精确
-`tmux_id` 并停止 window，同时保留 `native_tui` Session fact。
+输入、产生输出或完成交互任务。Provider process 自然退出时，supervisor 先把 lifecycle
+Run settle：exit code 0 为 `completed`，其它 exit/signal 为 `failed`；随后自动停止精确
+window。该 terminal receipt 只证明 opaque process lifecycle 收口，不是 canonical Turn
+completion。`interrupt` 对 running pane 发送 `C-c`；`close` 先把仍 open 的 Run settle
+为 `cancelled`，再按 opaque binding 停止精确 `tmux_id`，同时保留 `native_tui`
+Session fact。`run cancel|retry|resume` 不接管 native TUI，关闭使用 `session close`。
 
 `close-all` 不接受参数。它对调用开始时所有 `binding.kind=session` 的 window 做
-快照并逐个精确停止；不触碰 raw Tmux window，也不删除 `native_tui` Session fact。
-空集合成功返回 `closed_count=0`。中途失败时已完成的 close 保留，剩余项可重跑。
+快照并逐个先 settle lifecycle Run、再精确停止；不触碰 raw Tmux window，也不删除
+`native_tui` Session fact。空集合成功返回 `closed_count=0`。中途失败时已完成的
+close 保留，剩余项可重跑。
 
 ## 7. Tmux
 
@@ -1912,8 +1947,8 @@ machine `open` 返回 `launch_accepted`、`initial_input_supplied`、Session fac
 - 固定使用 `sn-session`；`tmux.server_mode=default|dedicated` 选择普通或专用
   Tmux server，缺省为 `default`。
 - 每次 `open` 创建一个 managed window。
-- 自身不创建 Runtime Session、Turn 或 Run；`session open` 只在相同交互窗口能力上增加
-  `native_tui` Session identity 与 opaque binding。
+- 自身不创建 Runtime Session、Turn 或 Run；`session open` 在相同交互窗口能力上增加
+  `native_tui` Session identity、opaque lifecycle Run/Execution 与 binding。
 - 不保存 pane transcript 或 paste 内容。
 - 需要 `tmux >= 3.2`。
 
@@ -2422,6 +2457,16 @@ cancelled
 Terminal transition 会把 result/error、terminal event、`run.settled` 和
 `settled_sequence` 在同一 SQLite transaction 中提交。
 
+`sn-server` 的 Run reaper 周期扫描超过 TTL 的 `paused` 与
+`needs_reconciliation` Run，并以 `timeout/phase=run` settle 为 `failed`。扫描使用
+`(state,cancel_requested,updated_at,run_id)` 索引及按 `updated_at,run_id` 升序的稳定
+keyset cursor，因此超过 1000 条时也不会受普通 list limit 或新记录影响。每个候选在
+同一 SQLite transaction 内以原 `state+updated_at` 和 `cancel_requested=0` 做 CAS；
+并发 resume/state transition 或 cancellation ownership race 被跳过，其它 query/
+settlement 错误会终止 reaper，并由 server supervisor 撤销 readiness 后收口进程。
+单次 `sn-cli` 命令不启动 reaper。当前 Run Store 为 SQLite
+`PRAGMA user_version=6`，不接受其它或混合 schema。
+
 ### 9.2 创建入口
 
 `run` namespace 不接受 fresh submission。新的执行意图必须由拥有执行语义的入口创建：
@@ -2440,10 +2485,14 @@ sn-cli agent api-cx "分析当前问题"
 sn-cli agent api-cx --queue --label task=analysis "分析当前问题"
 ```
 
-三条创建路径都要求 Profile ID 紧跟 execution namespace/action，option 位于其后，
+另有 `session open` 直接创建 running 的 `kind=native_tui` lifecycle Run；它不进入队列，
+也不接受 `run cancel|resume|retry`，由 Provider exit 或 `session close|close-all` 收口。
+
+这些创建入口都要求 Profile ID 紧跟 execution namespace/action，option 位于其后，
 input 最后。`--queue` 只入队且不自动启动 `sn-server`；`run` 只接收创建后返回的
-`run_id` 做查询、观察、取消、恢复、重试、reconciliation 和 GC；其中 `retry` 会从
-已有终态 Run 创建一个关联的新 Run，但不接受新的 Profile/input。
+`run_id` 做查询、观察和适用的 lifecycle control/GC。`kind=native_tui` 只支持查询，
+不接受 `run cancel|resume|retry`；其它 kind 的 `retry` 会从已有终态 Run 创建一个关联的
+新 Run，但不接受新的 Profile/input。
 
 ### 9.3 `run get`
 
@@ -2467,7 +2516,7 @@ sn-cli --json run get --run-id <run_id>
 ```text
 sn-cli run list
   [--state queued|running|paused|needs_reconciliation|completed|failed|cancelled]
-  [--kind agent|session]
+  [--kind agent|session|native_tui]
   [--limit N]
 ```
 
@@ -2479,6 +2528,7 @@ sn-cli run list
 sn-cli run list
 sn-cli run list --state queued
 sn-cli run list --kind session --limit 50
+sn-cli run list --kind native_tui
 sn-cli --json run list --state failed --kind agent
 ```
 
@@ -2719,6 +2769,7 @@ Run 及其 event、checkpoint 和 effect，不移动到 trash。
 
 - Runtime HTTP API。
 - Durable Run scheduler/worker。
+- Run reaper。
 - Server lifecycle。
 
 默认地址：
@@ -2825,6 +2876,11 @@ sn-cli --json server start
 - 写入 PID record 并持有 lease。
 - 已运行时幂等返回同一 PID。
 - 成功后不把 server 留作 `sn-cli` 的 child wait。
+
+listener 已绑定且全部已配置的 worker/reaper goroutine 建立后，server 才发布 ready。
+任一 worker、reaper 或 HTTP serve 意外退出都会先撤销 readiness，再取消同组任务、
+执行 bounded graceful shutdown，并让 `sn-server` 非零退出；不能只凭 PID 存活判断
+执行面健康。
 
 示例：
 
@@ -3115,6 +3171,18 @@ SN_SERVER_TOKEN
 Authorization: Bearer <token>
 ```
 
+健康与就绪探针：
+
+| Method/path | 语义 |
+|---|---|
+| `GET /healthz` | 只表示 `sn-server` 进程存活，不读取 canonical Store |
+| `GET /readyz` | 表示已配置的 worker/reaper 与 HTTP execution plane 已就绪 |
+
+配置 `SN_SERVER_TOKEN` 时，probe 与其它 Runtime route 一样先做 Bearer 认证；未认证
+调用方不能观察 readiness。unready 期间只有新的 durable submission
+`POST /v1/runs` 返回 retryable `503`，已有 Run 的 query/cancel/resume/reconcile 仍然
+放行，用于诊断与收口。loopback 且未配置 token 时可直接访问 probe。
+
 ### 12.1 公共 HTTP 规则
 
 所有 `POST` route 都要求严格 JSON body；没有业务字段的 control action 使用
@@ -3177,7 +3245,7 @@ parameter 最多出现一次，malformed encoding、未知参数、重复参数�
 | `429` | Provider rate limit |
 | `499` | request 已取消 |
 | `502` | Provider protocol/response 无效 |
-| `503` | Provider 或 Runtime service 暂不可用 |
+| `503` | Provider 暂不可用，或 Runtime execution plane 未 ready |
 | `504` | Provider timeout |
 
 malformed resource ID 返回 `400/invalid_request`；合法 ID 指向不存在的
@@ -3453,7 +3521,8 @@ POST /v1/runs
 }
 ```
 
-`kind`、`profile_id` 和非空 `input` 必填。`kind=agent|session` 的字段约束与 CLI
+`kind`、`profile_id` 和非空 `input` 必填。HTTP fresh submission 只接受
+`kind=agent|session`，字段约束与 CLI
 对应带 `--queue` 的 `agent` 或 `session exec|req` 相同；缺少 Session kind 的
 `session_id` 时由 server 生成。Agent `budget` 使用与 `/v1/agent/run` 相同的默认值和纳秒表示。成功返回
 `202 Run Record`，只表示入队，不表示已经执行。
@@ -3468,7 +3537,7 @@ Record 只返回 `request_digest/config_digest`，不会返回 private payload�
 
 | Route | Query | 默认 | 成功响应 |
 |---|---|---|---|
-| `GET /v1/runs` | `state`、`kind=agent|session`、`limit=1..1000` | 全部 state/kind，`limit=100` | `200 {"runs":[Run Record...]}` |
+| `GET /v1/runs` | `state`、`kind=agent|session|native_tui`、`limit=1..1000` | 全部 state/kind，`limit=100` | `200 {"runs":[Run Record...]}` |
 | `GET /v1/runs/{run_id}` | 无 | 无 | `200 Run Record` |
 | `GET /v1/runs/{run_id}/events` | `after_seq` | `0` | `200 {"events":[Event...]}`，单次最多 1000 条 |
 
@@ -3814,11 +3883,12 @@ sn-cli doctor
 ```text
 sn-cli server upgrade-activate ...
 sn-cli __sn_tmux_helper --manifest ABS_PATH
+sn-cli __sn_native_tui_supervisor --manifest ABS_PATH --digest SHA256
 ```
 
-`__sn_tmux_helper` 由 Tmux Service 写入 launch manifest 后在 pane 中调用，是 private
-bootstrap protocol，不要手工构造。`session open` 的 target 直接是 Profile 解析后的
-Provider CLI，不存在 Runtime Session terminal helper。
+`__sn_tmux_helper` 由 Tmux Service 写入 launch manifest 后在 pane 中调用；
+`__sn_native_tui_supervisor` 在同一 pane 中启动 Profile 解析后的 Provider CLI、收口
+lifecycle Run 并自动停止 window。二者都是 private bootstrap protocol，不要手工构造。
 
 ### 入口职责
 

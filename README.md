@@ -59,7 +59,8 @@ rejected rather than silently papered over.
 - 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
   unknown fields and ambiguous states fail closed.
 - 🌐 **HTTP / SSE control plane** — a loopback `sn-server` exposes the full
-  Session / Run / Agent / Model API.
+  Session / Run / Agent / Model API, with `/healthz` and execution-aware
+  `/readyz` probes.
 
 ## Quick start
 
@@ -147,8 +148,11 @@ directly inside a tmux PTY and publishes an `interface=native_tui` Session fact
 with an opaque tmux binding. It opens detached by default; add `--attach` for an
 immediate human attach. `session send` injects raw input into the TUI, so
 `accepted=true` only confirms that tmux accepted the transport operation.
-Native TUI input/output is provider-owned and does not create canonical Turn,
-Execution, Message, Event, or durable Run facts.
+`session open` also creates one running `kind=native_tui` durable Run and one
+opaque lifecycle Execution. Provider exit settles that Run and automatically
+closes the tmux window; `session close` settles it as cancelled before stopping
+the window. TUI input/output remains provider-owned and creates no canonical
+Turn, Message, Event, or transcript.
 
 For the same native TUI without a Runtime Session identity, use the raw `tmux`
 namespace:
@@ -196,7 +200,7 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli exec <cli-profile-id>` | non-interactive CLI one-shot | local `cli.jsonl`; no Session/Run |
 | `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
-| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | provider-native TUI with Runtime identity | `interface=native_tui` Session fact + opaque tmux binding; no canonical transcript or Run |
+| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | provider-native TUI with Runtime identity | `interface=native_tui` Session + opaque lifecycle Run/Execution and tmux binding; no canonical transcript |
 | `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | managed raw tmux interactive window | tmux registry and local CLI log (no transcript) |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
 | `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
@@ -212,6 +216,9 @@ Key boundaries worth remembering up front:
 - `managed` Sessions from `session exec|req` and `native_tui` Sessions from
   `session open` cannot share a Session ID.
 - **Submitting a run doesn't start the server** — enqueue and worker are decoupled.
+- **Readiness follows the execution plane** — an unexpected worker or reaper
+  exit makes the server unready and shuts it down; while unready, new durable
+  submissions receive `503` without blocking existing-run control requests.
 
 All diagnostics stay below `${SN_CLI_HOME:-~/.sn}/logs`: Profile execution
 records use `YYMMDD/{cli,api}.jsonl`, redacted CLI/HTTP control-plane audit uses
@@ -301,7 +308,9 @@ release/         runtime.json, tmux.conf, and release.json payload templates
 External Go consumers import `github.com/yy003x/runtime/pkg/...`; legacy root
 package paths have no compatibility shim. `internal/application/runtimebootstrap`
 is the composition root, and the four internal layers are adapted to a CLI
-Runtime + Agent rather than an HTTP-service template.
+Runtime + Agent rather than an HTTP-service template. An architecture test
+allowlists every direct module dependency of public `pkg/` packages so new
+cross-domain or internal-adapter coupling requires an explicit review.
 
 ## Documentation
 
@@ -316,6 +325,8 @@ Runtime + Agent rather than an HTTP-service template.
 make fmt-check
 make test-serial
 make test-race
+make coverage
+make coverage-critical
 go vet ./...
 make release-check SN_CLI_VERSION=v0.1.0
 git diff --check

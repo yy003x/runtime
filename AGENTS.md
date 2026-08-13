@@ -15,8 +15,9 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli session exec|req ...`：`interface=managed` 的文件型本地执行会话，
   `--queue` 时进入 durable Run；Session 不自动执行 tool；
 - `sn-cli session open|send|attach|interrupt|close ...`：`interface=native_tui`，
-  在 tmux PTY 中直接运行 Provider 原生交互 TUI；输入输出不创建 canonical
-  Turn/Message/Event/Execution 或 durable Run；
+  在 tmux PTY 中直接运行 Provider 原生交互 TUI；`open` 创建 opaque lifecycle
+  Run/Execution，Provider 退出或 `close` 时收口；输入输出不创建 canonical
+  Turn/Message/Event 或 transcript；
 - `sn-cli tmux ...`：按 `runtime.json` 的 `tmux.server_mode=default|dedicated`
   选择普通或专用 tmux server，在固定 `sn-session` 中管理原始交互 window，本身不创建
   Session；

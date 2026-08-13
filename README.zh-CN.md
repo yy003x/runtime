@@ -52,7 +52,7 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
   attach / interrupt / stop。
 - 🧪 **严格 JSON Schema 校验**——CLI 与 HTTP 用同一套规则；未知字段与歧义状态 fail closed。
 - 🌐 **HTTP / SSE 控制面**——loopback `sn-server` 暴露完整的 Session / Run / Agent /
-  Model API。
+  Model API，并提供 `/healthz` 与感知执行面的 `/readyz` 探针。
 
 ## 快速开始
 
@@ -133,8 +133,11 @@ sn-cli session close-all
 `session open` 直接在 tmux PTY 中启动 CLI Profile 的 Provider 原生交互模式，发布
 `interface=native_tui` Session fact，并保存 opaque tmux binding。默认 detached；需要
 立即进入界面时加 `--attach`。`session send` 把 raw input 注入 TUI，`accepted=true`
-只表示 tmux 接受了传输操作。TUI 输入输出由 Provider 管理，不创建 canonical Turn、
-Execution、Message、Event 或 Durable Run。
+只表示 tmux 接受了传输操作。`session open` 同时创建一个 running 的
+`kind=native_tui` Durable Run 和一个 opaque lifecycle Execution；Provider 退出时先
+settle Run，再自动关闭 tmux window；`session close` 则先 settle 为 `cancelled`，再停止
+window。TUI 输入输出仍由 Provider 管理，不创建 canonical Turn、Message、Event 或
+transcript。
 
 只需要原生 TUI、不需要 Runtime Session identity 时，使用 raw `tmux` namespace：
 
@@ -178,7 +181,7 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli exec <cli-profile-id>` | CLI 非交互一次执行 | 本地 `cli.jsonl`；无 Session/Run |
 | `sn-cli req <api-profile-id>` | 一次 API request | 本地 `api.jsonl`；无 Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | 文件型 session；本地执行日志；可选 durable run |
-| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | 带 Runtime identity 的 Provider 原生 TUI | `interface=native_tui` Session fact + opaque tmux binding；无 canonical transcript/Run |
+| `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | 带 Runtime identity 的 Provider 原生 TUI | `interface=native_tui` Session + opaque lifecycle Run/Execution 与 tmux binding；无 canonical transcript |
 | `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | raw tmux 交互窗口 | tmux registry 与本地 CLI 日志（不存 transcript） |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool 循环 | durable run；每轮本地 API 日志（session 可选） |
 | `sn-cli run ...` | 查询和控制已有 durable run | SQLite WAL |
@@ -194,6 +197,8 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 - `session exec|req` 创建的 `managed` Session 与 `session open` 创建的 `native_tui`
   Session 不能共用同一个 Session ID。
 - **提交 run 不会自动启动 server**——入队与执行是解耦的。
+- **readiness 跟随执行面**——worker 或 reaper 意外退出会让 server 立即 unready 并
+  关闭；unready 期间新的 durable submission 返回 `503`，已有 Run 的控制请求仍可收口。
 
 所有诊断都位于 `${SN_CLI_HOME:-~/.sn}/logs`：Profile 执行记录为
 `YYMMDD/{cli,api}.jsonl`，脱敏的 CLI/HTTP 控制面审计为 `YYMMDD/audit.jsonl`，server
@@ -269,7 +274,9 @@ release/         runtime.json、tmux.conf 与 release.json payload 模板
 
 外部 Go 调用方统一 import `github.com/yy003x/runtime/pkg/...`，不提供旧根 package
 兼容 shim。`internal/application/runtimebootstrap` 是 composition root；四个 internal
-层按 CLI Runtime + Agent 场景适配，不套用固定 HTTP 服务模板。
+层按 CLI Runtime + Agent 场景适配，不套用固定 HTTP 服务模板。架构测试对每个公开
+`pkg/` package 的直接 module dependency 做 allowlist；新增跨域或 internal adapter
+依赖必须显式评审。
 
 ## 文档
 
@@ -284,6 +291,8 @@ release/         runtime.json、tmux.conf 与 release.json payload 模板
 make fmt-check
 make test-serial
 make test-race
+make coverage
+make coverage-critical
 go vet ./...
 make release-check SN_CLI_VERSION=v0.1.0
 git diff --check
