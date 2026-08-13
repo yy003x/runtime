@@ -238,6 +238,327 @@ func TestListUsesCanonicalFilterValidationAndDefault(t *testing.T) {
 	}
 }
 
+func TestListExpiredRunsUsesStableKeysetOrder(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)
+	store, err := Open(
+		filepath.Join(t.TempDir(), "runtime.db"),
+		Options{Now: func() time.Time { return clock }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	createPaused := func(runID string, updatedAt time.Time) runtime.Record {
+		t.Helper()
+		clock = updatedAt
+		value, err := store.Create(ctx, runID, runtime.Request{
+			Kind: runtime.KindAgent, ProfileID: "api", Input: "hello",
+			AgentBudget: agent.DefaultBudget(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Start(ctx, value.ID); err != nil {
+			t.Fatal(err)
+		}
+		value, err = store.Pause(
+			ctx, value.ID, json.RawMessage(`{"pause_id":"pause"}`),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	firstTime := clock
+	firstID := "run_00000000000000000000000000000001"
+	secondID := "run_00000000000000000000000000000002"
+	thirdID := "run_00000000000000000000000000000003"
+	createPaused(secondID, firstTime)
+	createPaused(firstID, firstTime)
+	// Keep the third row in the same second with a fractional timestamp. The
+	// persisted fixed-width representation must still sort it after the exact
+	// second instead of using RFC3339Nano's misleading TEXT order.
+	third := createPaused(thirdID, firstTime.Add(500*time.Millisecond))
+	cancelled := createPaused(
+		"run_00000000000000000000000000000004",
+		firstTime.Add(2*time.Minute),
+	)
+	if _, err := store.RequestCancel(ctx, cancelled.ID); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := firstTime.Add(time.Hour)
+	createPaused(
+		"run_00000000000000000000000000000005",
+		cutoff,
+	)
+
+	page, err := store.ListExpiredRuns(ctx, runtime.ExpiredRunFilter{
+		State: runtime.StatePaused, UpdatedBefore: cutoff, Limit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || page[0].ID != firstID || page[1].ID != secondID {
+		t.Fatalf("first page ids=%v", []string{page[0].ID, page[1].ID})
+	}
+	page, err = store.ListExpiredRuns(ctx, runtime.ExpiredRunFilter{
+		State: runtime.StatePaused, UpdatedBefore: cutoff, Limit: 2,
+		After: &runtime.ExpiredRunCursor{
+			UpdatedAt: page[1].UpdatedAt, RunID: page[1].ID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].ID != third.ID {
+		t.Fatalf("second page=%#v", page)
+	}
+}
+
+func TestListExpiredRunsRejectsInvalidMaintenanceFilter(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	cutoff := time.Now().UTC()
+	for _, filter := range []runtime.ExpiredRunFilter{
+		{State: runtime.StateQueued, UpdatedBefore: cutoff, Limit: 1},
+		{State: runtime.StatePaused, Limit: 1},
+		{
+			State: runtime.StatePaused, UpdatedBefore: cutoff,
+			After: &runtime.ExpiredRunCursor{RunID: nextTestRunID()}, Limit: 1,
+		},
+		{
+			State: runtime.StatePaused, UpdatedBefore: cutoff,
+			After: &runtime.ExpiredRunCursor{
+				UpdatedAt: cutoff, RunID: "invalid",
+			},
+			Limit: 1,
+		},
+		{
+			State: runtime.StatePaused, UpdatedBefore: cutoff,
+			Limit: runtime.MaxListLimit + 1,
+		},
+	} {
+		if _, err := store.ListExpiredRuns(ctx, filter); err == nil {
+			t.Fatalf("accepted invalid filter=%#v", filter)
+		}
+	}
+}
+
+func TestSettleExpiredRunRequiresUnchangedCandidate(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)
+	store, err := Open(
+		filepath.Join(t.TempDir(), "runtime.db"),
+		Options{Now: func() time.Time { return clock }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	createPaused := func() runtime.Record {
+		t.Helper()
+		value := createTestRun(t, store)
+		if _, err := store.Start(ctx, value.ID); err != nil {
+			t.Fatal(err)
+		}
+		value, err = store.Pause(
+			ctx, value.ID, json.RawMessage(`{"pause_id":"pause"}`),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	reaperErr := &contract.RuntimeError{
+		Code: contract.ErrorTimeout, Phase: contract.PhaseRun,
+		Message: "expired",
+	}
+
+	resumed := createPaused()
+	if _, err := store.Resume(
+		ctx, resumed.ID, json.RawMessage(`{"approved":true}`),
+		runtime.ResumeConstraint{Pause: resumed.Pause},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleExpiredRun(
+		ctx, resumed.ID, runtime.StatePaused, resumed.UpdatedAt, reaperErr,
+	); !errors.Is(err, runtime.ErrConflict) {
+		t.Fatalf("resumed candidate error=%v", err)
+	}
+	current, err := store.Get(ctx, resumed.ID)
+	if err != nil || current.State != runtime.StateQueued {
+		t.Fatalf("resumed current=%#v error=%v", current, err)
+	}
+
+	cancelled := createPaused()
+	if _, err := store.RequestCancel(ctx, cancelled.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SettleExpiredRun(
+		ctx, cancelled.ID, runtime.StatePaused, cancelled.UpdatedAt, reaperErr,
+	); !errors.Is(err, runtime.ErrCancelReserved) {
+		t.Fatalf("cancel-reserved candidate error=%v", err)
+	}
+
+	expired := createPaused()
+	failed, err := store.SettleExpiredRun(
+		ctx, expired.ID, runtime.StatePaused, expired.UpdatedAt, reaperErr,
+	)
+	if err != nil || failed.State != runtime.StateFailed ||
+		failed.Error == nil || failed.Error.Code != contract.ErrorTimeout {
+		t.Fatalf("failed=%#v error=%v", failed, err)
+	}
+}
+
+func TestSchemaIncludesReaperKeysetIndex(t *testing.T) {
+	store := openTestStore(t)
+	var version int
+	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Fatalf("schema version=%d, want %d", version, SchemaVersion)
+	}
+	var statement string
+	if err := store.db.QueryRow(
+		`SELECT sql FROM sqlite_master
+		  WHERE type = 'index' AND name = 'runs_reaper_state_updated'`,
+	).Scan(&statement); err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(statement), " ")
+	if !strings.Contains(
+		normalized,
+		"(state, cancel_requested, updated_at, run_id)",
+	) {
+		t.Fatalf("index definition=%q", statement)
+	}
+}
+
+func TestOpenRejectsInvalidReaperKeysetIndexShape(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		replacement string
+	}{
+		{name: "missing"},
+		{
+			name: "wrong_column_order",
+			replacement: `CREATE INDEX runs_reaper_state_updated
+				ON runs(state, updated_at, cancel_requested, run_id)`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "runtime.db")
+			store, err := Open(path, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			database, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(
+				"DROP INDEX runs_reaper_state_updated",
+			); err != nil {
+				database.Close()
+				t.Fatal(err)
+			}
+			if test.replacement != "" {
+				if _, err := database.Exec(test.replacement); err != nil {
+					database.Close()
+					t.Fatal(err)
+				}
+			}
+			if err := database.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(path, Options{}); err == nil ||
+				!strings.Contains(err.Error(), "runs_reaper_state_updated") {
+				t.Fatalf("invalid reaper index error=%v", err)
+			}
+		})
+	}
+}
+
+func TestOpenRejectsMixedV5SchemaObjectSet(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		statements []string
+		want       string
+	}{
+		{
+			name:       "missing_existing_index",
+			statements: []string{"DROP INDEX runs_state_created"},
+			want:       "runs_state_created",
+		},
+		{
+			name: "unexpected_index",
+			statements: []string{`CREATE INDEX runtime_extra_index
+				ON runs(created_at, run_id)`},
+			want: "runtime_extra_index",
+		},
+		{
+			name: "unexpected_sqliteX_index",
+			statements: []string{`CREATE INDEX sqliteXextra
+				ON runs(created_at, run_id)`},
+			want: "sqliteXextra",
+		},
+		{
+			name: "changed_partial_index_literal",
+			statements: []string{
+				"DROP INDEX runs_one_open_session",
+				`CREATE UNIQUE INDEX runs_one_open_session
+					ON runs(session_id)
+				 WHERE kind = 'SESSION'
+				   AND session_id IS NOT NULL
+				   AND state IN ('queued','running','paused','needs_reconciliation')`,
+			},
+			want: "runs_one_open_session",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "runtime.db")
+			store, err := Open(path, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			database, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, statement := range test.statements {
+				if _, err := database.Exec(statement); err != nil {
+					database.Close()
+					t.Fatal(err)
+				}
+			}
+			if err := database.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(path, Options{}); err == nil ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("mixed schema error=%v", err)
+			}
+		})
+	}
+}
+
 func TestTerminalPublishBarrierCommitsAtomically(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -1017,6 +1338,53 @@ func TestGCOnlyDeletesSettledRunsAfterExplicitApply(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, active.ID); err != nil {
 		t.Fatalf("GC deleted active Run: %v", err)
+	}
+}
+
+func TestCreateRunningNativeTUIBypassesQueueAndOwnsSession(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	sessionID := "session_11111111111111111111111111111111"
+	record, err := store.CreateRunning(ctx, nextTestRunID(), runtime.Request{
+		Kind: runtime.KindNativeTUI, ProfileID: "cc", SessionID: sessionID,
+		ExecutionID: "execution_22222222222222222222222222222222",
+		CWD:         t.TempDir(), ConfigDigest: "sha256:fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != runtime.StateRunning ||
+		record.Request.ExecutionID == "" {
+		t.Fatalf("native_tui Run = %#v", record)
+	}
+	var queued int
+	if err := store.db.QueryRowContext(
+		ctx, `SELECT COUNT(*) FROM queue WHERE run_id = ?`, record.ID,
+	).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 {
+		t.Fatalf("native_tui Run queue rows = %d", queued)
+	}
+	open, found, err := store.OpenSessionRun(
+		ctx, sessionID, runtime.KindNativeTUI,
+	)
+	if err != nil || !found || open.ID != record.ID {
+		t.Fatalf("open=%#v found=%t error=%v", open, found, err)
+	}
+	_, err = store.Create(ctx, nextTestRunID(), runtime.Request{
+		Kind: runtime.KindSession, ProfileID: "api", Input: "hello",
+		SessionID: sessionID,
+	})
+	if !errors.Is(err, runtime.ErrSessionRunOpen) {
+		t.Fatalf("managed Session ownership error = %v", err)
+	}
+	_, err = store.Create(ctx, nextTestRunID(), runtime.Request{
+		Kind: runtime.KindNativeTUI, ProfileID: "cc", SessionID: sessionID,
+		ExecutionID: "execution_33333333333333333333333333333333",
+	})
+	if err == nil || !strings.Contains(err.Error(), "CreateRunning") {
+		t.Fatalf("queued native_tui creation error = %v", err)
 	}
 }
 

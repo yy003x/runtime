@@ -52,8 +52,9 @@ func (service *Service) CreateWithID(
 }
 
 // CreateNativeTUIWithID creates a durable Session identity for one opaque
-// provider-native TUI. Native TUI Sessions never accept canonical Turn/Run
-// execution through Session Service.
+// provider-native TUI. Native TUI Sessions never accept canonical Turn
+// execution through Session Service; their opaque lifecycle Run is owned by
+// the native console composition.
 func (service *Service) CreateNativeTUIWithID(
 	sessionID string,
 	retention Retention,
@@ -94,14 +95,6 @@ func (service *Service) createWithID(
 		)
 		return createErr
 	})
-	if err == nil {
-		if indexErr := service.store.rebuildIndex(); indexErr != nil {
-			err = fmt.Errorf(
-				"Session %s was created but index rebuild failed: %w",
-				value.ID, indexErr,
-			)
-		}
-	}
 	return value, err
 }
 
@@ -461,13 +454,6 @@ func (service *Service) SubmitToolResult(
 	if runtimeErr != nil {
 		return ToolResultReceipt{}, runtimeErr
 	}
-	if err := service.store.rebuildIndex(); err != nil {
-		return receipt, sessionRuntimeError(
-			contract.ErrorInternal,
-			"tool result was committed but Session index rebuild failed: "+
-				err.Error(),
-		)
-	}
 	return receipt, nil
 }
 
@@ -491,14 +477,6 @@ func (service *Service) ConfigureRetention(
 		value.UpdatedAt = service.now().UTC()
 		return service.store.writeSession(value)
 	})
-	if err == nil {
-		if indexErr := service.store.rebuildIndex(); indexErr != nil {
-			err = fmt.Errorf(
-				"Session retention was committed but index rebuild failed: %w",
-				indexErr,
-			)
-		}
-	}
 	return value, err
 }
 
@@ -511,14 +489,8 @@ func (service *Service) Delete(sessionID string) (string, error) {
 			service.store.sessionsDir, pending.TargetRelative,
 		)
 		err = service.store.withSessionFileLock(sessionID, func() error {
-			return service.store.reconcileTrashMove(pending)
+			return service.store.finishTrashMove(pending)
 		})
-		if err == nil {
-			err = service.store.rebuildIndex()
-		}
-		if err == nil {
-			err = service.store.completeTrashMove(sessionID)
-		}
 		return target, err
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -539,25 +511,12 @@ func (service *Service) Delete(sessionID string) (string, error) {
 		target, err = service.store.durableMoveSession(sessionID, target)
 		return err
 	})
-	if err == nil {
-		err = service.store.rebuildIndex()
-	}
-	if err == nil {
-		err = service.store.completeTrashMove(sessionID)
-	}
 	return target, err
 }
 
 func (service *Service) GC(options GCOptions) (GCResult, error) {
-	if recovered, err := service.store.recoverTrashMoves(); err != nil {
+	if _, err := service.store.recoverTrashMoves(); err != nil {
 		return GCResult{}, err
-	} else if recovered {
-		if err := service.store.rebuildIndex(); err != nil {
-			return GCResult{}, err
-		}
-		if err := service.store.completeAllTrashMoves(); err != nil {
-			return GCResult{}, err
-		}
 	}
 	if options.OlderThan <= 0 {
 		options.OlderThan = 24 * time.Hour
@@ -641,16 +600,6 @@ func (service *Service) applyGCCandidates(
 			moved = append(moved, sessionID)
 		case candidateSkipped:
 			skipped = append(skipped, sessionID)
-		}
-	}
-	if len(moved) > 0 {
-		if err := service.store.rebuildIndex(); err != nil {
-			return moved, skipped, err
-		}
-		for _, sessionID := range moved {
-			if err := service.store.completeTrashMove(sessionID); err != nil {
-				return moved, skipped, err
-			}
 		}
 	}
 	return moved, skipped, nil

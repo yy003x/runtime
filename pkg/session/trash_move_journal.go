@@ -35,7 +35,7 @@ func (store *Store) durableMoveSession(
 		return "", err
 	}
 	if pending, err := store.readTrashMoveJournal(sessionID); err == nil {
-		if err := store.reconcileTrashMove(pending); err != nil {
+		if err := store.finishTrashMove(pending); err != nil {
 			return "", fmt.Errorf(
 				"Session trash move is pending durable recovery: %w", err,
 			)
@@ -74,7 +74,7 @@ func (store *Store) durableMoveSession(
 	if err := store.persistTrashMoveJournal(journal); err != nil {
 		return "", err
 	}
-	if err := store.reconcileTrashMove(journal); err != nil {
+	if err := store.finishTrashMove(journal); err != nil {
 		return "", fmt.Errorf(
 			"Session trash move is pending durable recovery: %w", err,
 		)
@@ -117,20 +117,36 @@ func (store *Store) recoverTrashMoves() (bool, error) {
 		}
 		err := store.withSessionFileLock(sessionID, func() error {
 			journal, err := store.readTrashMoveJournal(sessionID)
+			if errors.Is(err, os.ErrNotExist) {
+				// Another Store may have completed the same journal after
+				// this directory snapshot was taken.
+				return nil
+			}
 			if err != nil {
 				return err
 			}
-			if err := store.reconcileTrashMove(journal); err != nil {
-				return err
-			}
-			return nil
+			return store.finishTrashMove(journal)
 		})
-		if err != nil {
+		if err != nil && !errors.Is(err, errSessionIndexNotReady) {
 			return false, err
 		}
 		recovered = true
 	}
 	return recovered, nil
+}
+
+func (store *Store) finishTrashMove(
+	journal sessionTrashMoveJournal,
+) error {
+	if err := store.reconcileTrashMove(journal); err != nil {
+		return err
+	}
+	if err := store.removeSessionFromIndex(journal.SessionID); err != nil {
+		return fmt.Errorf(
+			"remove Session %s from index: %w", journal.SessionID, err,
+		)
+	}
+	return store.removeTrashMoveJournal(journal)
 }
 
 func (store *Store) completeTrashMove(sessionID string) error {

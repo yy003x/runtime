@@ -23,10 +23,7 @@ import (
 	runtime "github.com/yy003x/runtime/pkg/run"
 )
 
-const (
-	schemaVersion   = 4
-	maxPayloadBytes = 4 << 20
-)
+const maxPayloadBytes = 4 << 20
 
 type Store struct {
 	db  *sql.DB
@@ -68,11 +65,11 @@ func Open(path string, options Options) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if existingVersion != 0 && existingVersion != schemaVersion {
+	if existingVersion != 0 && existingVersion != SchemaVersion {
 		db.Close()
 		return nil, fmt.Errorf(
 			"unsupported Runtime database schema %d; expected %d",
-			existingVersion, schemaVersion,
+			existingVersion, SchemaVersion,
 		)
 	}
 	if err := quickCheck(db); err != nil {
@@ -91,6 +88,10 @@ func Open(path string, options Options) (*Store, error) {
 	if err := initializeSchema(db); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := ValidateSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("validate Runtime database schema: %w", err)
 	}
 	if err := validateRunRows(db); err != nil {
 		db.Close()
@@ -114,232 +115,6 @@ func Open(path string, options Options) (*Store, error) {
 	return store, nil
 }
 
-func quickCheck(db *sql.DB) error {
-	rows, err := db.Query("PRAGMA quick_check")
-	if err != nil {
-		return fmt.Errorf("check Runtime database integrity: %w", err)
-	}
-	defer rows.Close()
-	var results []string
-	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
-			return fmt.Errorf("check Runtime database integrity: %w", err)
-		}
-		results = append(results, value)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("check Runtime database integrity: %w", err)
-	}
-	if len(results) != 1 || !strings.EqualFold(results[0], "ok") {
-		return fmt.Errorf(
-			"Runtime database integrity check failed: %s",
-			strings.Join(results, "; "),
-		)
-	}
-	return nil
-}
-
-func initializeSchema(db *sql.DB) error {
-	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return err
-	}
-	if version != 0 && version != schemaVersion {
-		return fmt.Errorf(
-			"unsupported Runtime database schema %d; expected %d",
-			version, schemaVersion,
-		)
-	}
-	if version == schemaVersion {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	statements := []string{
-		`CREATE TABLE runs (
-			run_id TEXT PRIMARY KEY,
-			kind TEXT NOT NULL,
-			session_id TEXT,
-			state TEXT NOT NULL,
-			request_json BLOB NOT NULL,
-			private_request_json BLOB,
-			result_json BLOB,
-			error_json BLOB,
-			pause_json BLOB,
-			resume_accepted_at TEXT,
-			retry_of TEXT,
-			cancel_requested INTEGER NOT NULL DEFAULT 0,
-			settled_sequence INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE INDEX runs_state_created ON runs(state, created_at)`,
-		`CREATE UNIQUE INDEX runs_one_open_session
-		   ON runs(session_id)
-		 WHERE kind = 'session'
-		   AND session_id IS NOT NULL
-		   AND state IN ('queued', 'running', 'paused', 'needs_reconciliation')`,
-		`CREATE TABLE events (
-			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-			sequence INTEGER NOT NULL,
-			event_json BLOB NOT NULL,
-			created_at TEXT NOT NULL,
-			PRIMARY KEY (run_id, sequence)
-		)`,
-		`CREATE TABLE checkpoints (
-			checkpoint_id TEXT PRIMARY KEY,
-			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-			sequence INTEGER NOT NULL,
-			state_json BLOB NOT NULL,
-			created_at TEXT NOT NULL
-		)`,
-		`CREATE INDEX checkpoints_run_sequence ON checkpoints(run_id, sequence DESC)`,
-		`CREATE TABLE model_calls (
-			model_call_id TEXT PRIMARY KEY,
-			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-			sequence INTEGER NOT NULL,
-			request_digest TEXT NOT NULL,
-			request_json BLOB NOT NULL,
-			provider_request_id TEXT,
-			result_json BLOB,
-			result_digest TEXT,
-			error_json BLOB,
-			state TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			UNIQUE (run_id, sequence)
-		)`,
-		`CREATE TABLE tool_effects (
-			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-			call_id TEXT NOT NULL,
-			idempotency_key TEXT NOT NULL,
-			name TEXT NOT NULL,
-			state TEXT NOT NULL,
-			request_json BLOB NOT NULL,
-			result_json BLOB,
-			error_json BLOB,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (run_id, call_id),
-			UNIQUE (run_id, idempotency_key)
-		)`,
-		`CREATE TABLE resumes (
-			run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-			sequence INTEGER NOT NULL,
-			input_json BLOB NOT NULL,
-			input_digest TEXT NOT NULL,
-			accepted_at TEXT NOT NULL,
-			PRIMARY KEY (run_id, sequence)
-		)`,
-		`CREATE TABLE queue (
-			run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
-			available_at TEXT NOT NULL,
-			claimed_by TEXT,
-			claimed_at TEXT
-		)`,
-		fmt.Sprintf("PRAGMA user_version = %d", schemaVersion),
-	}
-	for _, statement := range statements {
-		if _, err := tx.Exec(statement); err != nil {
-			return fmt.Errorf("initialize Runtime database schema: %w", err)
-		}
-	}
-	return tx.Commit()
-}
-
-func validateRunRows(db *sql.DB) error {
-	rows, err := db.Query(
-		`SELECT run_id, kind, session_id, state, request_json,
-		        private_request_json, resume_accepted_at, settled_sequence
-		   FROM runs`,
-	)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var runID string
-		var kind runtime.Kind
-		var sessionID sql.NullString
-		var state runtime.State
-		var requestJSON, privateJSON []byte
-		var resumeAcceptedAt sql.NullString
-		var settledSequence uint64
-		if err := rows.Scan(
-			&runID, &kind, &sessionID, &state, &requestJSON,
-			&privateJSON, &resumeAcceptedAt, &settledSequence,
-		); err != nil {
-			return err
-		}
-		if err := identity.Validate(runID, "run"); err != nil {
-			return fmt.Errorf("Runtime database has invalid run_id: %w", err)
-		}
-		switch kind {
-		case runtime.KindAgent, runtime.KindSession:
-		default:
-			return fmt.Errorf(
-				"run %s has unsupported kind %q", runID, kind,
-			)
-		}
-		switch state {
-		case runtime.StateQueued, runtime.StateRunning, runtime.StatePaused,
-			runtime.StateNeedsReconciliation:
-			if settledSequence != 0 {
-				return fmt.Errorf(
-					"nonterminal run %s has settled_sequence=%d",
-					runID, settledSequence,
-				)
-			}
-		case runtime.StateCompleted, runtime.StateFailed, runtime.StateCancelled:
-			if settledSequence == 0 {
-				return fmt.Errorf(
-					"terminal run %s has no settled_sequence", runID,
-				)
-			}
-		default:
-			return fmt.Errorf(
-				"run %s has unsupported state %q", runID, state,
-			)
-		}
-		var request runtime.Request
-		if err := decodeStrict(requestJSON, &request); err != nil {
-			return fmt.Errorf("run %s request: %w", runID, err)
-		}
-		if request.Kind != kind ||
-			request.SessionID != sessionID.String {
-			return fmt.Errorf(
-				"run %s request identity does not match indexed columns",
-				runID,
-			)
-		}
-		if _, err := marshalPrivateRequest(privateJSON); err != nil {
-			return fmt.Errorf("run %s private request: %w", runID, err)
-		}
-		if resumeAcceptedAt.Valid {
-			if len(request.Resume) == 0 {
-				return fmt.Errorf(
-					"run %s has resume_accepted_at without resume input",
-					runID,
-				)
-			}
-			if _, err := parseTime(resumeAcceptedAt.String); err != nil {
-				return fmt.Errorf(
-					"run %s resume_accepted_at: %w", runID, err,
-				)
-			}
-		} else if len(request.Resume) != 0 {
-			return fmt.Errorf(
-				"run %s has resume input without resume_accepted_at",
-				runID,
-			)
-		}
-	}
-	return rows.Err()
-}
-
 func (store *Store) Create(
 	ctx context.Context,
 	runID string,
@@ -351,6 +126,11 @@ func (store *Store) Create(
 	if len(request.Resume) != 0 {
 		return runtime.Record{}, fmt.Errorf(
 			"resume is invalid when creating a Run",
+		)
+	}
+	if request.Kind == runtime.KindNativeTUI {
+		return runtime.Record{}, fmt.Errorf(
+			"native_tui lifecycle Runs must use CreateRunning",
 		)
 	}
 	requestJSON, err := marshalPayload(request)
@@ -373,10 +153,10 @@ func (store *Store) Create(
 			ctx,
 			`SELECT run_id
 			   FROM runs
-			  WHERE kind = ? AND session_id = ?
+			  WHERE kind IN (?, ?) AND session_id = ?
 			    AND state IN (?, ?, ?, ?)
 			  LIMIT 1`,
-			runtime.KindSession, request.SessionID,
+			runtime.KindSession, runtime.KindNativeTUI, request.SessionID,
 			runtime.StateQueued, runtime.StateRunning, runtime.StatePaused,
 			runtime.StateNeedsReconciliation,
 		).Scan(&existing)
@@ -420,6 +200,118 @@ func (store *Store) Create(
 		return runtime.Record{}, err
 	}
 	return store.Get(ctx, runID)
+}
+
+// CreateRunning atomically creates an externally supervised native_tui Run
+// directly in running state. It never inserts a queue row, so a background
+// worker cannot race the tmux lifecycle owner.
+func (store *Store) CreateRunning(
+	ctx context.Context,
+	runID string,
+	request runtime.Request,
+) (runtime.Record, error) {
+	if err := identity.Validate(runID, "run"); err != nil {
+		return runtime.Record{}, err
+	}
+	if request.Kind != runtime.KindNativeTUI {
+		return runtime.Record{}, fmt.Errorf(
+			"CreateRunning requires run kind %q", runtime.KindNativeTUI,
+		)
+	}
+	if err := identity.Validate(request.SessionID, "session"); err != nil {
+		return runtime.Record{}, err
+	}
+	if err := identity.Validate(request.ExecutionID, "execution"); err != nil {
+		return runtime.Record{}, err
+	}
+	if len(request.Resume) != 0 || len(request.PrivateRequest) != 0 ||
+		request.RetryOf != "" {
+		return runtime.Record{}, fmt.Errorf(
+			"native_tui lifecycle Run cannot carry resume, private request, or retry",
+		)
+	}
+	requestJSON, err := marshalPayload(request)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	now := store.now().UTC()
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var existing string
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT run_id
+		   FROM runs
+		  WHERE kind IN (?, ?) AND session_id = ?
+		    AND state IN (?, ?, ?, ?)
+		  LIMIT 1`,
+		runtime.KindSession, runtime.KindNativeTUI, request.SessionID,
+		runtime.StateQueued, runtime.StateRunning, runtime.StatePaused,
+		runtime.StateNeedsReconciliation,
+	).Scan(&existing)
+	if err == nil {
+		return runtime.Record{}, fmt.Errorf(
+			"%w: session %s is owned by run %s",
+			runtime.ErrSessionRunOpen, request.SessionID, existing,
+		)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return runtime.Record{}, err
+	}
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO runs (
+			run_id, kind, session_id, state, request_json,
+			private_request_json, retry_of, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+		runID, request.Kind, request.SessionID, runtime.StateRunning,
+		requestJSON, formatTime(now), formatTime(now),
+	); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return runtime.Record{}, fmt.Errorf(
+				"%w: session %s", runtime.ErrSessionRunOpen, request.SessionID,
+			)
+		}
+		return runtime.Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return runtime.Record{}, err
+	}
+	return store.Get(ctx, runID)
+}
+
+func (store *Store) OpenSessionRun(
+	ctx context.Context,
+	sessionID string,
+	kind runtime.Kind,
+) (runtime.Record, bool, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return runtime.Record{}, false, err
+	}
+	if kind != runtime.KindSession && kind != runtime.KindNativeTUI {
+		return runtime.Record{}, false, fmt.Errorf(
+			"open Session Run kind must be session or native_tui",
+		)
+	}
+	value, err := scanRecord(store.db.QueryRowContext(
+		ctx,
+		`SELECT run_id, state, request_json, result_json, error_json,
+		        pause_json, resume_accepted_at, retry_of, cancel_requested,
+		        settled_sequence, created_at, updated_at
+		   FROM runs
+		  WHERE kind = ? AND session_id = ?
+		    AND state IN (?, ?, ?, ?)
+		  LIMIT 1`,
+		kind, sessionID, runtime.StateQueued, runtime.StateRunning,
+		runtime.StatePaused, runtime.StateNeedsReconciliation,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.Record{}, false, nil
+	}
+	return value, err == nil, err
 }
 
 func (store *Store) Get(
@@ -1651,7 +1543,7 @@ func (store *Store) Settle(
 	runtimeErr *contract.RuntimeError,
 ) (runtime.Record, error) {
 	return store.settle(
-		ctx, runID, state, resultJSON, runtimeErr, false,
+		ctx, runID, state, resultJSON, runtimeErr, false, nil,
 	)
 }
 
@@ -1663,7 +1555,7 @@ func (store *Store) SettleCancellation(
 	runtimeErr *contract.RuntimeError,
 ) (runtime.Record, error) {
 	return store.settle(
-		ctx, runID, state, resultJSON, runtimeErr, true,
+		ctx, runID, state, resultJSON, runtimeErr, true, nil,
 	)
 }
 
@@ -1674,6 +1566,7 @@ func (store *Store) settle(
 	resultJSON json.RawMessage,
 	runtimeErr *contract.RuntimeError,
 	cancellationReserved bool,
+	expectation *settleExpectation,
 ) (runtime.Record, error) {
 	if !state.Terminal() {
 		return runtime.Record{}, fmt.Errorf("state %q is not terminal", state)
@@ -1691,6 +1584,60 @@ func (store *Store) settle(
 		return runtime.Record{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
+	if expectation != nil {
+		reservation, err := tx.ExecContext(
+			ctx,
+			`UPDATE runs
+			    SET updated_at = updated_at
+			  WHERE run_id = ?
+			    AND state = ?
+			    AND updated_at = ?
+			    AND cancel_requested = 0
+			    AND settled_sequence = 0`,
+			runID, expectation.state, formatTime(expectation.updatedAt),
+		)
+		if err != nil {
+			return runtime.Record{}, err
+		}
+		affected, err := reservation.RowsAffected()
+		if err != nil {
+			return runtime.Record{}, err
+		}
+		if affected != 1 {
+			var current runtime.State
+			var currentUpdatedAt string
+			var cancelRequested int
+			var settled uint64
+			err := tx.QueryRowContext(
+				ctx,
+				`SELECT state, updated_at, cancel_requested, settled_sequence
+				   FROM runs WHERE run_id = ?`,
+				runID,
+			).Scan(
+				&current, &currentUpdatedAt, &cancelRequested, &settled,
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				return runtime.Record{}, fmt.Errorf(
+					"%w: %s", runtime.ErrNotFound, runID,
+				)
+			}
+			if err != nil {
+				return runtime.Record{}, err
+			}
+			if cancelRequested != 0 {
+				return runtime.Record{}, fmt.Errorf(
+					"%w: run %s", runtime.ErrCancelReserved, runID,
+				)
+			}
+			return runtime.Record{}, fmt.Errorf(
+				"%w: run %s changed from state=%s updated_at=%s "+
+					"to state=%s updated_at=%s settled_sequence=%d",
+				runtime.ErrConflict, runID, expectation.state,
+				formatTime(expectation.updatedAt), current,
+				currentUpdatedAt, settled,
+			)
+		}
+	}
 	var current runtime.State
 	var settled uint64
 	var cancelRequested int
@@ -2142,6 +2089,11 @@ func (store *Store) Reconcile(ctx context.Context) error {
 			}
 			continue
 		}
+		if current.kind == runtime.KindNativeTUI {
+			// native_tui Runs are supervised by a tmux-resident process.
+			// Merely reopening SQLite does not prove that external owner died.
+			continue
+		}
 		var started int
 		if err := tx.QueryRowContext(
 			ctx,
@@ -2317,7 +2269,7 @@ func scanRecord(row scanner) (runtime.Record, error) {
 	if err := decodeStrict(requestJSON, &value.Request); err != nil {
 		return runtime.Record{}, err
 	}
-	value.SchemaVersion = schemaVersion
+	value.SchemaVersion = SchemaVersion
 	value.Result = cloneBytes(resultJSON)
 	value.Pause = cloneBytes(pauseJSON)
 	if resumeAcceptedAt.Valid {
@@ -2348,7 +2300,15 @@ func scanRecord(row scanner) (runtime.Record, error) {
 		return runtime.Record{}, err
 	}
 	value.UpdatedAt, err = parseTime(updatedAt)
-	return value, err
+	if err != nil {
+		return runtime.Record{}, err
+	}
+	if value.Request.Kind == runtime.KindNativeTUI && value.State.Terminal() {
+		if _, err := runtime.NativeTUIExecutionFromRecord(value); err != nil {
+			return runtime.Record{}, err
+		}
+	}
+	return value, nil
 }
 
 func nextSequence(
@@ -2494,7 +2454,10 @@ func prepareDatabasePath(path string) error {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	// A fixed-width fractional component preserves chronological ordering when
+	// SQLite compares and indexes timestamps as TEXT. RFC3339Nano's optional
+	// fraction would sort a later fractional instant before an exact second.
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 
 func parseTime(value string) (time.Time, error) {

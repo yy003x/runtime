@@ -119,7 +119,7 @@ func (store *Store) recoverExistingMutations() error {
 		}
 		if err := store.withSessionFileLock(sessionID, func() error {
 			return store.recoverMutationLocked(sessionID)
-		}); err != nil {
+		}); err != nil && !errors.Is(err, errSessionIndexNotReady) {
 			return err
 		}
 	}
@@ -891,6 +891,12 @@ func (store *Store) requireNoMutationOwner(sessionID string) error {
 func (store *Store) cleanupCommittedMutation(
 	journal sessionMutationJournal,
 ) error {
+	if err := store.updateIndexForCommittedSession(journal.SessionID); err != nil {
+		return fmt.Errorf(
+			"update Session index for committed mutation %s: %w",
+			journal.SessionID, err,
+		)
+	}
 	if journal.SessionExisted {
 		if err := store.requireNoMutationOwner(journal.SessionID); err != nil {
 			return err

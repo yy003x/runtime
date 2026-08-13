@@ -1222,9 +1222,14 @@ func TestStoreRejectsMixedOrUnknownSessionFacts(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewStore(
+	store, err := NewStore(
 		filepath.Join(root, "sessions"), filepath.Join(root, "state"),
-	); err == nil || !strings.Contains(err.Error(), "unsupported Session fact") {
+	)
+	if err != nil {
+		t.Fatalf("bounded startup unexpectedly scanned Session facts: %v", err)
+	}
+	if err := store.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "unsupported Session fact") {
 		t.Fatalf("error=%v", err)
 	}
 }

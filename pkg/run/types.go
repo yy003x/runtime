@@ -29,8 +29,9 @@ const (
 type Kind string
 
 const (
-	KindAgent   Kind = "agent"
-	KindSession Kind = "session"
+	KindAgent     Kind = "agent"
+	KindSession   Kind = "session"
+	KindNativeTUI Kind = "native_tui"
 )
 
 type State string
@@ -59,6 +60,7 @@ type Request struct {
 	ProfileID          string                   `json:"profile_id"`
 	Input              string                   `json:"input"`
 	SessionID          string                   `json:"session_id,omitempty"`
+	ExecutionID        string                   `json:"execution_id,omitempty"`
 	SessionRetention   string                   `json:"session_retention,omitempty"`
 	TaskID             string                   `json:"task_id,omitempty"`
 	Model              string                   `json:"model,omitempty"`
@@ -79,6 +81,31 @@ type Request struct {
 	// public CLI/HTTP DTO, event, log, or error.
 	PrivateRequest json.RawMessage `json:"-"`
 	InvocationBase string          `json:"-"`
+}
+
+// NativeTUIExecution is the canonical lifecycle evidence for one provider
+// process hosted by a native_tui Session. It deliberately records only opaque
+// process/window facts: a successful process exit is not a canonical Turn or
+// a claim that any interactive task completed.
+type NativeTUIExecution struct {
+	SchemaVersion    int                    `json:"schema_version"`
+	ID               string                 `json:"execution_id"`
+	RunID            string                 `json:"run_id"`
+	SessionID        string                 `json:"session_id"`
+	TmuxID           string                 `json:"tmux_id,omitempty"`
+	State            string                 `json:"state"`
+	Outcome          string                 `json:"outcome,omitempty"`
+	CaptureQuality   string                 `json:"capture_quality"`
+	ExitCode         *int                   `json:"exit_code,omitempty"`
+	Signal           string                 `json:"signal,omitempty"`
+	CompletionReason string                 `json:"completion_reason,omitempty"`
+	Error            *contract.RuntimeError `json:"error,omitempty"`
+	StartedAt        time.Time              `json:"started_at"`
+	SettledAt        *time.Time             `json:"settled_at,omitempty"`
+}
+
+type NativeTUIResult struct {
+	Execution NativeTUIExecution `json:"execution"`
 }
 
 type Record struct {
@@ -171,6 +198,23 @@ type ListFilter struct {
 	Limit int
 }
 
+// ExpiredRunCursor is the stable keyset position used while scanning Runs for
+// reaping. UpdatedAt is ordered first and RunID breaks timestamp ties.
+type ExpiredRunCursor struct {
+	UpdatedAt time.Time
+	RunID     string
+}
+
+// ExpiredRunFilter selects one page of non-cancelled Runs that have remained
+// in a reaper-owned state before UpdatedBefore. After is an exclusive keyset
+// cursor; nil starts at the oldest matching Run.
+type ExpiredRunFilter struct {
+	State         State
+	UpdatedBefore time.Time
+	After         *ExpiredRunCursor
+	Limit         int
+}
+
 const (
 	DefaultListLimit = 100
 	MaxListLimit     = 1000
@@ -188,9 +232,11 @@ func NormalizeListFilter(filter ListFilter) (ListFilter, error) {
 		)
 	}
 	switch filter.Kind {
-	case "", KindAgent, KindSession:
+	case "", KindAgent, KindSession, KindNativeTUI:
 	default:
-		return ListFilter{}, fmt.Errorf("kind must be agent or session")
+		return ListFilter{}, fmt.Errorf(
+			"kind must be agent, session, or native_tui",
+		)
 	}
 	switch {
 	case filter.Limit == 0:
@@ -200,6 +246,44 @@ func NormalizeListFilter(filter ListFilter) (ListFilter, error) {
 			"limit must be between 1 and %d", MaxListLimit,
 		)
 	}
+	return filter, nil
+}
+
+// NormalizeExpiredRunFilter validates the private maintenance query contract.
+// The reaper uses the maximum page size explicitly; the default remains the
+// same as the public List filter for defensive direct Store callers.
+func NormalizeExpiredRunFilter(
+	filter ExpiredRunFilter,
+) (ExpiredRunFilter, error) {
+	switch filter.State {
+	case StatePaused, StateNeedsReconciliation:
+	default:
+		return ExpiredRunFilter{}, fmt.Errorf(
+			"state must be paused or needs_reconciliation",
+		)
+	}
+	if filter.UpdatedBefore.IsZero() {
+		return ExpiredRunFilter{}, fmt.Errorf("updated_before is required")
+	}
+	if filter.After != nil {
+		if filter.After.UpdatedAt.IsZero() || filter.After.RunID == "" {
+			return ExpiredRunFilter{}, fmt.Errorf(
+				"after cursor requires updated_at and run_id",
+			)
+		}
+		cursor := *filter.After
+		cursor.UpdatedAt = cursor.UpdatedAt.UTC()
+		filter.After = &cursor
+	}
+	switch {
+	case filter.Limit == 0:
+		filter.Limit = DefaultListLimit
+	case filter.Limit < 1 || filter.Limit > MaxListLimit:
+		return ExpiredRunFilter{}, fmt.Errorf(
+			"limit must be between 1 and %d", MaxListLimit,
+		)
+	}
+	filter.UpdatedBefore = filter.UpdatedBefore.UTC()
 	return filter, nil
 }
 
@@ -345,6 +429,24 @@ type RunReader interface {
 	Resumes(context.Context, string) ([]ResumeRecord, error)
 }
 
+// ReaperStore exposes the maintenance-only keyset scan and conditional
+// terminal transition. SettleExpiredRun must return ErrConflict when the
+// selected state or updated_at changed before it could reserve settlement, and
+// ErrCancelReserved when cancellation won the race.
+type ReaperStore interface {
+	ListExpiredRuns(
+		context.Context,
+		ExpiredRunFilter,
+	) ([]Record, error)
+	SettleExpiredRun(
+		context.Context,
+		string,
+		State,
+		time.Time,
+		*contract.RuntimeError,
+	) (Record, error)
+}
+
 // LeaseManager owns queue claim and cancellation reservation bookkeeping.
 type LeaseManager interface {
 	CancellationReservations(
@@ -441,6 +543,18 @@ type Store interface {
 	RunController
 	StoreMaintenance
 	Create(context.Context, string, Request) (Record, error)
+}
+
+// NativeTUILifecycleStore is the narrow durable surface used by the
+// native_tui composition. CreateRunning publishes an externally supervised
+// Run without exposing it to the worker queue; OpenSessionRun resolves the
+// unique nonterminal lifecycle owner for session close/recovery.
+type NativeTUILifecycleStore interface {
+	RunReader
+	RunController
+	CreateRunning(context.Context, string, Request) (Record, error)
+	OpenSessionRun(context.Context, string, Kind) (Record, bool, error)
+	Close() error
 }
 
 // AgentStore is the Store surface an AgentExecutor needs: read access, the

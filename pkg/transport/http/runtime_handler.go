@@ -787,7 +787,7 @@ func parseRunListFilter(request *nethttp.Request) (runtime.ListFilter, error) {
 	if values, exists := query["kind"]; exists {
 		if values[0] == "" {
 			return runtime.ListFilter{}, fmt.Errorf(
-				"kind must be agent or session",
+				"kind must be agent, session, or native_tui",
 			)
 		}
 		kind = runtime.Kind(values[0])

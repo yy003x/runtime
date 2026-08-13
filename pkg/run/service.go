@@ -487,6 +487,16 @@ func (service *Service) Cancel(
 	ctx context.Context,
 	runID string,
 ) (Record, error) {
+	current, err := service.store.Get(ctx, runID)
+	if err != nil {
+		return Record{}, err
+	}
+	if current.Request.Kind == KindNativeTUI {
+		return Record{}, fmt.Errorf(
+			"%w: native_tui Runs are closed through session close",
+			ErrConflict,
+		)
+	}
 	value, err := service.store.RequestCancel(ctx, runID)
 	if err != nil {
 		return Record{}, err
@@ -730,6 +740,12 @@ func (service *Service) Retry(
 			contract.ErrorConflict, "only terminal runs can be retried",
 		)
 	}
+	if previous.Request.Kind == KindNativeTUI {
+		return Record{}, runError(
+			contract.ErrorConflict,
+			"native_tui lifecycle Runs cannot be retried; open a new Session",
+		)
+	}
 	privateRequest, err := service.store.PrivateRequest(ctx, runID)
 	if err != nil {
 		return Record{}, runError(contract.ErrorInternal, err.Error())
@@ -784,6 +800,7 @@ func (service *Service) ReconcileRun(
 	// unrelated terminal Agent Run is not misreported as reconciled.
 	if record.State.Terminal() {
 		if record.Request.Kind == KindSession ||
+			record.Request.Kind == KindNativeTUI ||
 			agentReconciliationAcknowledged(record.Result) {
 			return record, nil
 		}
@@ -890,6 +907,12 @@ func (service *Service) validateRequest(
 		return runError(
 			contract.ErrorInvalidRequest,
 			"resume is Store-owned and cannot be supplied at Run submission",
+		)
+	}
+	if request.ExecutionID != "" && request.Kind != KindNativeTUI {
+		return runError(
+			contract.ErrorInvalidRequest,
+			"execution_id is reserved for native_tui lifecycle Runs",
 		)
 	}
 	executor, exists := service.executors[request.Kind]

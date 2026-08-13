@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -37,6 +37,9 @@ type Store struct {
 	activeMutations    map[string]*sessionMutation
 	mutationFailpoint  func(stage, relativePath string)
 	mutationErrorpoint func(stage, relativePath string) error
+	indexInitMu        sync.Mutex
+	indexRecoveryMu    sync.Mutex
+	indexReady         atomic.Bool
 
 	directoryIdentityMu sync.Mutex
 	directoryIdentities map[string]safeFileIdentity
@@ -74,29 +77,52 @@ func NewStore(sessionsDir, stateDir string) (*Store, error) {
 		directoryIdentities: make(map[string]safeFileIdentity),
 		lockIdentities:      make(map[string]safeFileIdentity),
 	}
-	recoveredMove, err := store.recoverTrashMoves()
+	indexExists, err := store.inspectSessionIndex()
 	if err != nil {
+		return nil, fmt.Errorf("validate Session index: %w", err)
+	}
+	store.indexReady.Store(indexExists)
+	if _, err := store.recoverTrashMoves(); err != nil {
 		return nil, err
 	}
 	if err := store.recoverExistingMutations(); err != nil {
 		return nil, err
 	}
-	if err := store.validateExistingSchema(); err != nil {
-		return nil, err
-	}
-	if recoveredMove {
-		if err := store.rebuildIndex(); err != nil {
-			return nil, fmt.Errorf(
-				"rebuild Session index after trash move recovery: %w", err,
-			)
+	if !store.indexReady.Load() {
+		exists, err := store.sessionsDirectoryExists()
+		if err != nil {
+			return nil, err
 		}
-		if err := store.completeAllTrashMoves(); err != nil {
-			return nil, fmt.Errorf(
-				"complete Session trash move recovery: %w", err,
-			)
+		if !exists {
+			return store, nil
+		}
+		if err := store.rebuildIndex(); err != nil {
+			return nil, fmt.Errorf("rebuild missing Session index: %w", err)
+		}
+		store.indexReady.Store(true)
+		// Committed Session mutations and trash moves intentionally retain
+		// their journals while the index is missing. Re-run recovery after
+		// reconstruction so each journal verifies its idempotent upsert/remove
+		// before cleanup.
+		if _, err := store.recoverTrashMoves(); err != nil {
+			return nil, err
+		}
+		if err := store.recoverExistingMutations(); err != nil {
+			return nil, err
 		}
 	}
 	return store, nil
+}
+
+func (store *Store) sessionsDirectoryExists() (bool, error) {
+	sessions, err := store.openSessionsDirectory()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, sessions.close()
 }
 
 func (store *Store) ensure() error {
@@ -149,97 +175,6 @@ func (store *Store) ensure() error {
 			return err
 		}
 		if err := child.close(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (store *Store) validateExistingSchema() error {
-	sessions, err := store.openSessionsDirectory()
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer sessions.close()
-	entries, err := sessions.entries()
-	if err != nil {
-		return err
-	}
-	if historyInfo, err := sessions.statEntry("_system"); err == nil {
-		if !historyInfo.isDirectory() {
-			return fmt.Errorf(
-				"session store history must be a directory, not a symlink",
-			)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	indexPath := filepath.Join(store.historyDir, "index.json")
-	history, historyErr := store.openPinnedDirectory(store.historyDir)
-	if historyErr == nil {
-		defer history.close()
-	}
-	if historyErr == nil {
-		if _, err := history.statEntry("index.json"); err == nil {
-			var index struct {
-				SchemaVersion int       `json:"schema_version"`
-				Sessions      []Session `json:"sessions"`
-			}
-			if err := history.readStrictJSON(
-				"index.json", maxFactLineBytes, &index,
-			); err != nil {
-				return err
-			}
-			if index.SchemaVersion != SchemaVersion {
-				return unsupportedFactSchema(indexPath, index.SchemaVersion)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	} else if !errors.Is(historyErr, os.ErrNotExist) {
-		return historyErr
-	}
-	for _, entry := range entries {
-		if entry.name == "_system" {
-			if !entry.isDirectory() {
-				return fmt.Errorf(
-					"session store history must be a directory, not a symlink",
-				)
-			}
-			continue
-		}
-		if !entry.isDirectory() {
-			return fmt.Errorf(
-				"session store contains unsupported entry %q",
-				entry.name,
-			)
-		}
-		if err := identity.Validate(entry.name, "session"); err != nil {
-			return fmt.Errorf(
-				"session store contains invalid directory %q: %w",
-				entry.name, err,
-			)
-		}
-		err := store.withSessionFileLock(entry.name, func() error {
-			root, err := store.openSessionRoot(entry.name)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			if err := root.close(); err != nil {
-				return err
-			}
-			if err := store.recoverMutationLocked(entry.name); err != nil {
-				return err
-			}
-			return store.validateSessionFacts(entry.name)
-		})
-		if err != nil {
 			return err
 		}
 	}
@@ -563,6 +498,9 @@ func isOwnedAtomicTempName(name string) bool {
 
 func (store *Store) withLock(sessionID string, fn func() error) error {
 	if err := identity.Validate(sessionID, "session"); err != nil {
+		return err
+	}
+	if err := store.ensureSessionIndex(); err != nil {
 		return err
 	}
 	if err := store.ensure(); err != nil {
@@ -991,108 +929,6 @@ func (store *Store) events(sessionID string) ([]EventRecord, error) {
 		},
 	)
 	return values, err
-}
-
-func (store *Store) list(filter ListFilter) ([]Session, error) {
-	if err := ValidateListFilter(filter); err != nil {
-		return nil, err
-	}
-	if err := store.ensure(); err != nil {
-		return nil, err
-	}
-	sessions, err := store.openSessionsDirectory()
-	if err != nil {
-		return nil, err
-	}
-	defer sessions.close()
-	entries, err := sessions.entries()
-	if err != nil {
-		return nil, err
-	}
-	values := make([]Session, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.isDirectory() {
-			continue
-		}
-		if err := identity.Validate(entry.name, "session"); err != nil {
-			continue
-		}
-		var value Session
-		err := store.withLock(entry.name, func() error {
-			var err error
-			value, err = store.loadSession(entry.name)
-			if errors.Is(err, os.ErrNotExist) {
-				value = Session{}
-				return nil
-			}
-			return err
-		})
-		if err != nil {
-			return nil, err
-		}
-		if value.ID == "" {
-			continue
-		}
-		if filter.State != "" && value.State != filter.State {
-			continue
-		}
-		values = append(values, value)
-	}
-	sort.Slice(values, func(left, right int) bool {
-		return values[left].UpdatedAt.After(values[right].UpdatedAt)
-	})
-	return values, nil
-}
-
-func (store *Store) rebuildIndex() (resultErr error) {
-	if err := store.ensure(); err != nil {
-		return err
-	}
-	lockDirectory, err := store.openPinnedDirectory(store.lockDir)
-	if err != nil {
-		return err
-	}
-	defer lockDirectory.close()
-	lock, err := lockDirectory.openRegularForLock("index.lock")
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := store.pinLockIdentity(
-		filepath.Join(store.lockDir, "index.lock"), lock,
-	); err != nil {
-		return err
-	}
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
-		return fmt.Errorf("lock session index: %w", err)
-	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck
-	store.hitMutationFailpoint("after_index_lock_acquired", "index.lock")
-	if err := lockDirectory.verifyVisibleRegular("index.lock", lock); err != nil {
-		return err
-	}
-	defer func() {
-		visibleErr := lockDirectory.verifyVisibleRegular(
-			"index.lock", lock,
-		)
-		if visibleErr != nil {
-			resultErr = errors.Join(resultErr, visibleErr)
-		}
-	}()
-	values, err := store.list(ListFilter{})
-	if err != nil {
-		return err
-	}
-	history, err := store.openPinnedDirectory(store.historyDir)
-	if err != nil {
-		return err
-	}
-	defer history.close()
-	return history.atomicJSON(
-		"index.json",
-		map[string]any{"schema_version": SchemaVersion, "sessions": values},
-		0o600,
-	)
 }
 
 func (store *Store) sessionDir(sessionID string) string {

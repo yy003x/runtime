@@ -86,7 +86,7 @@ func (service *Service) reconcileStaleSessions() error {
 			return err
 		}
 	}
-	return service.store.rebuildIndex()
+	return nil
 }
 
 func (service *Service) Reconcile(
@@ -231,13 +231,6 @@ func (service *Service) ReconcileAgent(
 	if runtimeErr != nil {
 		return result, runtimeErr
 	}
-	if err := service.store.rebuildIndex(); err != nil {
-		return result, sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session reconciliation was committed but index rebuild failed: "+
-				err.Error(),
-		)
-	}
 	return result, nil
 }
 
@@ -377,13 +370,6 @@ func (service *Service) reconcile(
 	}
 	if runtimeErr != nil {
 		return result, runtimeErr
-	}
-	if err := service.store.rebuildIndex(); err != nil {
-		return result, sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session reconciliation was committed but index rebuild failed: "+
-				err.Error(),
-		)
 	}
 	return result, nil
 }

@@ -534,9 +534,6 @@ func (service *Service) RestoreAgentPause(
 		}
 		return sessionRuntimeError(code, err.Error())
 	}
-	if err := service.store.rebuildIndex(); err != nil {
-		return sessionRuntimeError(contract.ErrorInternal, err.Error())
-	}
 	return nil
 }
 
@@ -782,15 +779,6 @@ func (service *Service) SettleAgent(
 		return result, runtimeErr
 	}
 	result.Error = outcomeErr
-	if err := service.store.rebuildIndex(); err != nil {
-		runtimeErr := sessionRuntimeError(
-			contract.ErrorInternal,
-			"Agent Session result was committed but index rebuild failed: "+
-				err.Error(),
-		)
-		result.Error = runtimeErr
-		return result, runtimeErr
-	}
 	return result, nil
 }
 

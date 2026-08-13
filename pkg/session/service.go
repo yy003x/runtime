@@ -430,16 +430,6 @@ func (service *Service) begin(
 		result.Error = runtimeErr
 		return startedExecution{ids: ids, result: result}, runtimeErr
 	}
-	if err := service.store.rebuildIndex(); err != nil {
-		runtimeErr := sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session turn was started but index rebuild failed: "+err.Error(),
-		)
-		result.Error = runtimeErr
-		return startedExecution{
-			ids: ids, projection: built, result: result,
-		}, runtimeErr
-	}
 	return startedExecution{ids: ids, projection: built, result: result}, nil
 }
 
@@ -763,15 +753,6 @@ func (service *Service) finishModelResult(
 		recovered := service.recoverFinalizationFailure(ids, err)
 		return recovered.result, recovered.runtimeErr
 	}
-	if err := service.store.rebuildIndex(); err != nil {
-		runtimeErr := sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session result was committed but index rebuild failed: "+
-				err.Error(),
-		)
-		result.Error = runtimeErr
-		return result, runtimeErr
-	}
 	return result, nil
 }
 
@@ -862,14 +843,6 @@ func (service *Service) recoverFinalizationFailure(
 			Error: recovery.runtimeErr,
 		}
 		return recovery
-	}
-	if err := service.store.rebuildIndex(); err != nil {
-		recovery.runtimeErr = sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session recovery was committed but index rebuild failed: "+
-				err.Error(),
-		)
-		recovery.result.Error = recovery.runtimeErr
 	}
 	return recovery
 }
@@ -1048,15 +1021,6 @@ func (service *Service) finishManagedCommand(
 		recovered := service.recoverFinalizationFailure(ids, err)
 		return recovered.result, recovered.runtimeErr
 	}
-	if err := service.store.rebuildIndex(); err != nil {
-		runtimeErr := sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session result was committed but index rebuild failed: "+
-				err.Error(),
-		)
-		result.Error = runtimeErr
-		return result, runtimeErr
-	}
 	return result, executionResult.runtimeErr
 }
 
@@ -1109,13 +1073,6 @@ func (service *Service) finishFailure(
 	})
 	if err != nil {
 		result = service.recoverFinalizationFailure(ids, err).result
-	}
-	if indexErr := service.store.rebuildIndex(); indexErr != nil {
-		result.Error = sessionRuntimeError(
-			contract.ErrorInternal,
-			"Session failure was committed but index rebuild failed: "+
-				indexErr.Error(),
-		)
 	}
 	return result
 }
