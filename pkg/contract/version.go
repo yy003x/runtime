@@ -6,5 +6,5 @@ package contract
 // every public interface and release gate reads the same canonical values.
 const (
 	MachineEnvelopeSchemaVersion = 1
-	RuntimeContractVersion       = 6
+	RuntimeContractVersion       = 7
 )

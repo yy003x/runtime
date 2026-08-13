@@ -71,7 +71,6 @@ release_server_pid=""
 local_source_home=""
 local_source_bin=""
 release_tmux_tmp=""
-tmux_id=""
 cleanup() {
   if [ -n "$release_server_pid" ]; then
     kill "$release_server_pid" >/dev/null 2>&1 || true
@@ -83,9 +82,6 @@ cleanup() {
   if [ -n "$release_tmux_tmp" ] && [ -x "$install_dir/sn-cli" ]; then
     SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
       "$install_dir/sn-cli" session close-all \
-      >/dev/null 2>&1 || true
-    SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
-      "$install_dir/sn-cli" tmux stop-all \
       >/dev/null 2>&1 || true
   fi
   if [ -n "$local_source_home" ] && [ -x "$local_source_bin/sn-cli" ]; then
@@ -332,13 +328,13 @@ printf '%s\n' "$doctor_output" |
 printf '%s\n' "$doctor_output" |
   grep -Eq "\"contract_version\"[[:space:]]*:[[:space:]]*$contract_version" ||
   die "doctor did not report contract_version=$contract_version"
-help_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" help tmux)"
+help_output="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" help session)"
 printf '%s\n' "$help_output" |
-  grep -Fq 'sn-cli tmux stop-all' ||
-  die "topic help did not document tmux stop-all"
+  grep -Fq 'sn-cli session close-all' ||
+  die "topic help did not document session close-all"
 printf '%s\n' "$help_output" |
-  grep -Fq 'run session close-all first' ||
-  die "topic help did not document Session binding safety"
+  grep -Fq 'The tmux carrier is private' ||
+  die "topic help did not document the private tmux carrier"
 help_json="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json help doctor)"
 printf '%s\n' "$help_json" |
   grep -Eq '"name"[[:space:]]*:[[:space:]]*"doctor"' ||
@@ -471,19 +467,27 @@ SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" server stop >/dev/null
 
 if PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
   TMUX_TMPDIR="$release_tmux_tmp" \
-  "$install_dir/sn-cli" tmux start cx >/dev/null 2>&1; then
-  die "removed tmux start action was accepted"
+  "$install_dir/sn-cli" tmux list >/dev/null 2>&1; then
+  die "removed tmux namespace was accepted"
 fi
-tmux_open="$(
-  PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+barrier_fixture_bin="$temp_root/barrier-fixture-bin"
+mkdir -p "$barrier_fixture_bin"
+"$GO_BIN" -C "$ROOT_DIR" build \
+  -o "$barrier_fixture_bin/codex" ./internal/testkit/nativetuitarget
+printf '{"type":"cli","command":"%s","model":"fixture"}\n' \
+  "$barrier_fixture_bin/codex" \
+  >"$runtime_home/configs/session-barrier-smoke.json"
+barrier_fixture_fact="$temp_root/session-barrier.fact"
+barrier_open="$(
+  SN_CLI_HOME="$runtime_home" SN_NATIVE_TUI_FACT="$barrier_fixture_fact" \
+    SN_NATIVE_TUI_IGNORE_TERM=1 \
     TMUX_TMPDIR="$release_tmux_tmp" \
-    "$install_dir/sn-cli" --json tmux open cx "tmux-smoke"
+    "$install_dir/sn-cli" --json session open session-barrier-smoke \
+      "session-barrier-smoke"
 )"
-tmux_id="$(
-  printf '%s\n' "$tmux_open" |
-    sed -n 's/.*"tmux_id":"\([^"]*\)".*/\1/p'
-)"
-[ -n "$tmux_id" ] || die "tmux open did not return tmux_id: $tmux_open"
+printf '%s\n' "$barrier_open" |
+  grep -Eq '"launch_accepted"[[:space:]]*:[[:space:]]*true' ||
+  die "session open did not launch the install barrier TUI: $barrier_open"
 TMUX_TMPDIR="$release_tmux_tmp" \
   tmux -L default list-sessions -F '#{session_name}' |
   grep -Fxq 'sn-session' ||
@@ -499,13 +503,12 @@ if TMUX_TMPDIR="$release_tmux_tmp" bash "$ROOT_DIR/install.sh" \
 fi
 [ "$(sha256_file "$runtime_home/bin/sn-cli")" = "$tmux_digest_before" ] ||
   die "blocked Tmux-live upgrade changed the active binary"
-tmux_stop_all="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
+barrier_close_all="$(PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
   TMUX_TMPDIR="$release_tmux_tmp" \
-  "$install_dir/sn-cli" --json tmux stop-all)"
-printf '%s\n' "$tmux_stop_all" |
-  grep -Eq '"stopped_count"[[:space:]]*:[[:space:]]*1' ||
-  die "tmux stop-all did not stop the raw window: $tmux_stop_all"
-tmux_id=""
+  "$install_dir/sn-cli" --json session close-all)"
+printf '%s\n' "$barrier_close_all" |
+  grep -Eq '"closed_count"[[:space:]]*:[[:space:]]*1' ||
+  die "session close-all did not stop the live carrier: $barrier_close_all"
 if TMUX_TMPDIR="$release_tmux_tmp" \
   tmux -L default list-sessions -F '#{session_name}' 2>/dev/null |
   grep -Fxq 'sn-session'; then
@@ -527,11 +530,13 @@ printf '{"type":"cli","command":"%s","model":"fixture"}\n' \
   >"$runtime_home/configs/session-control-smoke.json"
 session_fixture_fact="$temp_root/session-native-tui.fact"
 session_large_input="$(printf 'session-frame-%04d;' {1..128})"
+session_typed_prompt_file="$temp_root/session-typed-prompt.txt"
+printf '%s' 'typed-session-prompt' >"$session_typed_prompt_file"
 session_open="$(
   SN_CLI_HOME="$runtime_home" SN_NATIVE_TUI_FACT="$session_fixture_fact" \
     TMUX_TMPDIR="$release_tmux_tmp" \
     "$install_dir/sn-cli" --json session open session-control-smoke \
-      "$session_large_input"
+      --prompt="$session_typed_prompt_file" "$session_large_input"
 )"
 session_id="$(
   printf '%s\n' "$session_open" |
@@ -554,6 +559,7 @@ for _ in {1..100}; do
     session_fixture_output="$(cat "$session_fixture_fact")"
   fi
   if printf '%s\n' "$session_fixture_output" | grep -Fq 'tty:true' &&
+    printf '%s\n' "$session_fixture_output" | grep -Fq 'typed-session-prompt' &&
     printf '%s\n' "$session_fixture_output" | grep -Fq "$session_large_input"; then
     break
   fi
@@ -561,8 +567,28 @@ for _ in {1..100}; do
 done
 printf '%s\n' "$session_fixture_output" | grep -Fq 'tty:true' ||
   die "session open target did not receive a tmux PTY: $session_fixture_output"
+printf '%s\n' "$session_fixture_output" | grep -Fq 'typed-session-prompt' ||
+  die "session open --prompt did not reach the interactive argv"
 printf '%s\n' "$session_fixture_output" | grep -Fq "$session_large_input" ||
   die "native TUI initial input was not preserved in interactive argv"
+session_native_list="$(
+  SN_CLI_HOME="$runtime_home" \
+    "$install_dir/sn-cli" --json session list --interface native_tui
+)"
+printf '%s\n' "$session_native_list" | grep -Fq "$session_id" ||
+  die "session list --interface native_tui omitted the open Session"
+session_running_show="$(
+  SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
+    "$install_dir/sn-cli" --json session show --session-id "$session_id"
+)"
+printf '%s\n' "$session_running_show" |
+  grep -Eq '"kind"[[:space:]]*:[[:space:]]*"native_tui"' ||
+  die "session show omitted the native_tui lifecycle Run: $session_running_show"
+printf '%s\n' "$session_running_show" |
+  grep -Eq '"capture_quality"[[:space:]]*:[[:space:]]*"opaque"' ||
+  die "session show omitted the opaque lifecycle Execution: $session_running_show"
+printf '%s\n' "$session_running_show" | grep -Fq '"tmux_window"' ||
+  die "session show omitted the live private carrier: $session_running_show"
 session_messages="$(
   SN_CLI_HOME="$runtime_home" \
     "$install_dir/sn-cli" --json session messages --session-id "$session_id"
@@ -607,11 +633,6 @@ if SN_CLI_HOME="$runtime_home" \
 fi
 grep -Fq 'native_tui' "$temp_root/native-session-exec.err" ||
   die "session exec native_tui rejection was not explicit"
-if PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
-  TMUX_TMPDIR="$release_tmux_tmp" \
-  "$install_dir/sn-cli" tmux stop-all >/dev/null 2>&1; then
-  die "tmux stop-all accepted a Session-bound window"
-fi
 session_close_all="$(
   PATH="$direct_bin:$PATH" SN_CLI_HOME="$runtime_home" \
     TMUX_TMPDIR="$release_tmux_tmp" \
@@ -621,7 +642,7 @@ printf '%s\n' "$session_close_all" |
   grep -Eq '"closed_count"[[:space:]]*:[[:space:]]*1' ||
   die "session close-all did not close the native TUI window: $session_close_all"
 session_show="$(
-  SN_CLI_HOME="$runtime_home" \
+  SN_CLI_HOME="$runtime_home" TMUX_TMPDIR="$release_tmux_tmp" \
     "$install_dir/sn-cli" --json session show --session-id "$session_id"
 )"
 printf '%s\n' "$session_show" | grep -Fq "$session_id" ||
@@ -629,6 +650,12 @@ printf '%s\n' "$session_show" | grep -Fq "$session_id" ||
 printf '%s\n' "$session_show" |
   grep -Eq '"interface"[[:space:]]*:[[:space:]]*"native_tui"' ||
   die "closed Session lost its native_tui interface: $session_show"
+printf '%s\n' "$session_show" |
+  grep -Eq '"state"[[:space:]]*:[[:space:]]*"cancelled"' ||
+  die "closed Session show omitted the cancelled lifecycle Run: $session_show"
+if printf '%s\n' "$session_show" | grep -Fq '"tmux_window"'; then
+  die "closed Session show retained a live carrier: $session_show"
+fi
 if SN_CLI_HOME="$runtime_home" SN_NATIVE_TUI_FACT="$session_fixture_fact" \
   TMUX_TMPDIR="$release_tmux_tmp" \
   "$install_dir/sn-cli" session open session-control-smoke \
@@ -639,8 +666,6 @@ audit_file="$runtime_home/logs/$(date +%y%m%d)/audit.jsonl"
 [ -f "$audit_file" ] || die "control audit log was not created"
 grep -Fq '"namespace":"doctor"' "$audit_file" ||
   die "doctor audit record is missing"
-grep -Fq '"action":"stop-all"' "$audit_file" ||
-  die "tmux stop-all audit record is missing"
 grep -Fq '"action":"close-all"' "$audit_file" ||
   die "session close-all audit record is missing"
 

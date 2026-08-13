@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "activation_epoch": 4,
-  "contract_version": 6,
+  "contract_version": 7,
   "session_schema_version": 3,
   "run_schema_version": 6
 }

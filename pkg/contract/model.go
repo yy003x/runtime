@@ -50,7 +50,7 @@ const (
 // ErrorCode is the provider-neutral error classification used across the
 // Runtime contract. Provider drivers (provider/internal/httpx) map HTTP status
 // codes and transport/context errors into these codes; the canonical mapping
-// is documented on httpx.ProviderError and httpx.NetworkError.
+// is documented by the private Provider HTTP error mapper.
 type ErrorCode string
 
 const (
