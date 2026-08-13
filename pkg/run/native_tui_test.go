@@ -41,6 +41,21 @@ func TestNativeTUIFailedExecutionIsADurableOutcome(t *testing.T) {
 	if runtimeErr != nil {
 		t.Fatal(runtimeErr)
 	}
+	projected, err := runtime.NativeTUIExecutionForRecord(record, "tmux-running")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forSession, found, err := service.ForSession(
+		context.Background(), record.Request.SessionID,
+	)
+	if err != nil || !found || forSession.ID != record.ID ||
+		projected.State != runtime.NativeTUIExecutionRunning ||
+		projected.TmuxID != "tmux-running" {
+		t.Fatalf(
+			"projection=%#v run=%#v found=%t error=%v",
+			projected, forSession, found, err,
+		)
+	}
 	exitCode := 7
 	providerErr := &contract.RuntimeError{
 		Code: contract.ErrorProviderUnavailable, Phase: contract.PhaseRun,
@@ -70,5 +85,14 @@ func TestNativeTUIFailedExecutionIsADurableOutcome(t *testing.T) {
 		decoded.ExitCode == nil || *decoded.ExitCode != exitCode ||
 		decoded.Error == nil || decoded.Error.Message != providerErr.Message {
 		t.Fatalf("running=%#v decoded=%#v", running, decoded)
+	}
+	forSession, found, err = service.ForSession(
+		context.Background(), record.Request.SessionID,
+	)
+	if err != nil || !found || forSession.ID != settled.ID ||
+		forSession.State != runtime.StateFailed {
+		t.Fatalf(
+			"terminal run=%#v found=%t error=%v", forSession, found, err,
+		)
 	}
 }

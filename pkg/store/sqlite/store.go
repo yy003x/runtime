@@ -314,6 +314,36 @@ func (store *Store) OpenSessionRun(
 	return value, err == nil, err
 }
 
+func (store *Store) SessionRun(
+	ctx context.Context,
+	sessionID string,
+	kind runtime.Kind,
+) (runtime.Record, bool, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return runtime.Record{}, false, err
+	}
+	if kind != runtime.KindSession && kind != runtime.KindNativeTUI {
+		return runtime.Record{}, false, fmt.Errorf(
+			"Session Run kind must be session or native_tui",
+		)
+	}
+	value, err := scanRecord(store.db.QueryRowContext(
+		ctx,
+		`SELECT run_id, state, request_json, result_json, error_json,
+		        pause_json, resume_accepted_at, retry_of, cancel_requested,
+		        settled_sequence, created_at, updated_at
+		   FROM runs
+		  WHERE kind = ? AND session_id = ?
+		  ORDER BY created_at DESC, run_id DESC
+		  LIMIT 1`,
+		kind, sessionID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.Record{}, false, nil
+	}
+	return value, err == nil, err
+}
+
 func (store *Store) Get(
 	ctx context.Context,
 	runID string,

@@ -1146,18 +1146,27 @@ func startTestTarget(
 func waitTargetFact(t *testing.T, path string) targetFact {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	var lastData []byte
+	var lastErr error
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(path)
 		if err == nil {
 			var fact targetFact
-			if err := json.Unmarshal(data, &fact); err != nil {
-				t.Fatal(err)
+			if decodeErr := json.Unmarshal(data, &fact); decodeErr == nil {
+				return fact
+			} else {
+				lastData = data
+				lastErr = decodeErr
 			}
-			return fact
+		} else {
+			lastErr = err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("target fact %s was not written", path)
+	t.Fatalf(
+		"target fact %s was not completely written: data=%q error=%v",
+		path, lastData, lastErr,
+	)
 	return targetFact{}
 }
 

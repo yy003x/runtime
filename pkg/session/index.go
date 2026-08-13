@@ -88,9 +88,13 @@ func (store *Store) list(filter ListFilter) ([]Session, error) {
 	}
 	values := make([]Session, 0, len(index.Sessions))
 	for _, value := range index.Sessions {
-		if filter.State == "" || value.State == filter.State {
-			values = append(values, value)
+		if filter.State != "" && value.State != filter.State {
+			continue
 		}
+		if filter.Interface != "" && value.Interface != filter.Interface {
+			continue
+		}
+		values = append(values, value)
 	}
 	return values, nil
 }

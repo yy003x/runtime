@@ -27,6 +27,29 @@ func TestSessionListUsesCanonicalFilterValidation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("valid Session list filter failed: %v", err)
 	}
+	if _, err := service.List(ListFilter{
+		Interface: "future",
+	}); err == nil {
+		t.Fatal("Service accepted invalid Session interface filter")
+	}
+	managed, err := service.Create(RetentionStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeID := "session_11111111111111111111111111111111"
+	if _, err := service.CreateNativeTUIWithID(
+		nativeID, RetentionStandard,
+	); err != nil {
+		t.Fatal(err)
+	}
+	values, err := service.List(ListFilter{Interface: InterfaceNativeTUI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].ID != nativeID ||
+		values[0].ID == managed.ID {
+		t.Fatalf("native_tui filter values=%#v", values)
+	}
 }
 
 func TestCreateWithIDPublishesExactIdentityOnce(t *testing.T) {

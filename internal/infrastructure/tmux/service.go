@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -377,7 +379,12 @@ func (service *Service) Stop(
 	if err != nil {
 		return ActionResult{}, err
 	}
-	defer lock.Close()
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			lock.Close()
+		}
+	}()
 	windows, err := service.loadWindows(ctx, marker)
 	if err != nil {
 		return ActionResult{}, err
@@ -431,7 +438,86 @@ func (service *Service) Stop(
 			return ActionResult{}, err
 		}
 	}
+	if value.Record != nil {
+		service.requestHelperTermination(
+			value.Record.HelperPID, value.Record.ProcessStart,
+		)
+		// The supervisor auto-close path may race this explicit stop. Release
+		// the lifecycle lock before waiting so it can observe the absent exact
+		// binding, finish Run settlement, and exit.
+		lock.Close()
+		lockHeld = false
+		if err := service.waitForHelperExit(
+			ctx, tmuxID, value.Record.HelperPID,
+			value.Record.ProcessStart,
+		); err != nil {
+			return ActionResult{}, err
+		}
+	}
 	return ActionResult{TmuxID: tmuxID, Action: "stop", Accepted: true}, nil
+}
+
+func (service *Service) requestHelperTermination(pid int, processStart string) {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return
+	}
+	identity, err := service.lookupProcess(pid)
+	if err != nil || identity.StartToken != processStart {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+}
+
+func (service *Service) waitForHelperExit(
+	ctx context.Context,
+	tmuxID string,
+	pid int,
+	processStart string,
+) error {
+	deadline := time.Now().Add(service.gateTimeout)
+	var identityErr error
+	for {
+		aliveErr := syscall.Kill(pid, 0)
+		if errors.Is(aliveErr, syscall.ESRCH) {
+			return nil
+		}
+		if aliveErr != nil {
+			return tmuxTransportError(
+				contract.ErrorConflict,
+				"verify stopped Tmux helper pid=%d: %v", pid, aliveErr,
+			)
+		}
+		identity, err := service.lookupProcess(pid)
+		if err == nil {
+			identityErr = nil
+			if identity.StartToken != processStart {
+				return nil
+			}
+		} else {
+			// A zombie can still answer signal 0 while no longer exposing a
+			// complete executable identity. Wait for its parent to reap it.
+			identityErr = err
+		}
+		if time.Now().After(deadline) {
+			message := fmt.Sprintf(
+				"Tmux window %s helper process did not exit: pid=%d",
+				tmuxID, pid,
+			)
+			if identityErr != nil {
+				message += ": " + identityErr.Error()
+			}
+			return tmuxTransportError(
+				contract.ErrorConflict, "%s", message,
+			)
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // Attach connects the calling terminal to one registered window. The

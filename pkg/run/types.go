@@ -548,12 +548,14 @@ type Store interface {
 // NativeTUILifecycleStore is the narrow durable surface used by the
 // native_tui composition. CreateRunning publishes an externally supervised
 // Run without exposing it to the worker queue; OpenSessionRun resolves the
-// unique nonterminal lifecycle owner for session close/recovery.
+// unique nonterminal lifecycle owner for Session close/recovery, while
+// SessionRun reads the latest lifecycle record including terminal state.
 type NativeTUILifecycleStore interface {
 	RunReader
 	RunController
 	CreateRunning(context.Context, string, Request) (Record, error)
 	OpenSessionRun(context.Context, string, Kind) (Record, bool, error)
+	SessionRun(context.Context, string, Kind) (Record, bool, error)
 	Close() error
 }
 

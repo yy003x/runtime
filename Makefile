@@ -85,7 +85,8 @@ help:
 		"" \
 		"Install:" \
 		"  make install                  replace local binaries/configs and Runtime state" \
-		"                                stop sn-server; do not restart it" \
+		"                                close native TUI Sessions and stop sn-server" \
+		"                                do not restart sn-server" \
 		"" \
 		"Release:" \
 		"  make release-assets           build cross-platform archives and checksums" \
@@ -121,7 +122,7 @@ test-serial:
 
 test-race:
 	@$(MAKE_STEP) --stage test-race --meta scope=runtime-domains -- \
-		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./pkg/agent ./pkg/command ./pkg/model ./pkg/session ./pkg/run ./pkg/store/sqlite ./pkg/tmux ./pkg/transport/http -count=1
+		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./pkg/agent ./pkg/command ./pkg/model ./pkg/session ./pkg/run ./pkg/store/sqlite ./internal/infrastructure/tmux ./pkg/transport/http -count=1
 
 coverage:
 	@$(MAKE_STEP) --stage coverage --meta "minimum=$${COVERAGE_MIN}%" --meta "profile=$${COVERAGE_PROFILE}" -- \

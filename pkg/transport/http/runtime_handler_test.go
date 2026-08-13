@@ -337,6 +337,8 @@ func TestRuntimeHandlerValidatesFiltersAndAgentBudgets(t *testing.T) {
 	for _, path := range []string{
 		"/v1/sessions?state=future",
 		"/v1/sessions?state=",
+		"/v1/sessions?interface=future",
+		"/v1/sessions?interface=",
 		"/v1/sessions?unknown=value",
 		"/v1/sessions?state=idle&state=active",
 		"/v1/sessions?state=idle;unknown=value",

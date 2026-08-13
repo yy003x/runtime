@@ -14,6 +14,7 @@ import (
 	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/internal/infrastructure/runtimeconfig"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
 	"github.com/yy003x/runtime/internal/infrastructure/toolbuiltin"
 	"github.com/yy003x/runtime/internal/infrastructure/toolconfig"
 	"github.com/yy003x/runtime/internal/infrastructure/toolmcp"
@@ -25,7 +26,6 @@ import (
 	runtime "github.com/yy003x/runtime/pkg/run"
 	"github.com/yy003x/runtime/pkg/session"
 	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
 type ProfileServices struct {
@@ -277,6 +277,54 @@ func LoadNativeConsoleServicesWithTmux(
 	return &NativeConsoleServices{
 		ProfileServices: core, Console: console,
 	}, nil
+}
+
+// LoadNativeConsoleInspectionService composes the read-only native_tui
+// projection without loading Profiles, Providers, or Session execution
+// adapters. The returned Service owns the lifecycle Store and must be closed.
+func LoadNativeConsoleInspectionService(
+	paths layout.Paths,
+) (*nativeconsole.Service, error) {
+	sessionStore, err := session.NewStore(paths.SessionsDir, paths.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("build Session store: %w", err)
+	}
+	sessions, err := session.NewMaintenanceService(sessionStore)
+	if err != nil {
+		return nil, fmt.Errorf("build Session maintenance service: %w", err)
+	}
+	runStore, err := sqlitestore.Open(
+		paths.RunDBFile, sqlitestore.Options{SkipReconcile: true},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open native_tui Run store: %w", err)
+	}
+	lifecycles, err := runtime.NewNativeTUIService(
+		runtime.NativeTUIServiceOptions{Store: runStore},
+	)
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build native_tui Run service: %w", err)
+	}
+	tmuxService, err := LoadTmuxService(paths)
+	if err != nil {
+		_ = lifecycles.Close()
+		return nil, err
+	}
+	helper, err := os.Executable()
+	if err != nil {
+		_ = lifecycles.Close()
+		return nil, fmt.Errorf("resolve native_tui supervisor executable: %w", err)
+	}
+	console, err := nativeconsole.NewService(nativeconsole.ServiceOptions{
+		Paths: paths, Sessions: sessions, Lifecycles: lifecycles,
+		Tmux: tmuxService, Helper: helper,
+	})
+	if err != nil {
+		_ = lifecycles.Close()
+		return nil, fmt.Errorf("build native_tui inspection service: %w", err)
+	}
+	return console, nil
 }
 
 func LoadSessionMaintenanceServices(

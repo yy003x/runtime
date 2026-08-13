@@ -108,6 +108,16 @@ func (service *NativeTUIService) OpenForSession(
 	return service.store.OpenSessionRun(ctx, sessionID, KindNativeTUI)
 }
 
+func (service *NativeTUIService) ForSession(
+	ctx context.Context,
+	sessionID string,
+) (Record, bool, error) {
+	if err := identity.Validate(sessionID, "session"); err != nil {
+		return Record{}, false, err
+	}
+	return service.store.SessionRun(ctx, sessionID, KindNativeTUI)
+}
+
 func (service *NativeTUIService) Get(
 	ctx context.Context,
 	runID string,
@@ -206,6 +216,43 @@ func NativeTUIExecutionFromRecord(record Record) (NativeTUIExecution, error) {
 		return NativeTUIExecution{}, fmt.Errorf(
 			"native_tui execution does not match run %s", record.ID,
 		)
+	}
+	return value, nil
+}
+
+// NativeTUIExecutionForRecord projects the canonical opaque lifecycle
+// Execution from either a running or terminal native_tui Run. Running
+// executions have no terminal outcome; terminal executions are verified from
+// the Run result.
+func NativeTUIExecutionForRecord(
+	record Record,
+	tmuxID string,
+) (NativeTUIExecution, error) {
+	if record.Request.Kind != KindNativeTUI {
+		return NativeTUIExecution{}, fmt.Errorf(
+			"run %s is not native_tui", record.ID,
+		)
+	}
+	if record.State.Terminal() {
+		return NativeTUIExecutionFromRecord(record)
+	}
+	if record.State != StateRunning {
+		return NativeTUIExecution{}, fmt.Errorf(
+			"native_tui run %s has unsupported state %s", record.ID, record.State,
+		)
+	}
+	value := NativeTUIExecution{
+		SchemaVersion:  NativeTUIExecutionSchemaVersion,
+		ID:             record.Request.ExecutionID,
+		RunID:          record.ID,
+		SessionID:      record.Request.SessionID,
+		TmuxID:         tmuxID,
+		State:          NativeTUIExecutionRunning,
+		CaptureQuality: NativeTUICaptureOpaque,
+		StartedAt:      record.CreatedAt.UTC(),
+	}
+	if runtimeErr := validateNativeTUIExecution(value, false); runtimeErr != nil {
+		return NativeTUIExecution{}, runtimeErr
 	}
 	return value, nil
 }

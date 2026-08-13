@@ -273,7 +273,8 @@ type RunResult struct {
 }
 
 type ListFilter struct {
-	State SessionState
+	State     SessionState
+	Interface Interface
 }
 
 type GCOptions struct {

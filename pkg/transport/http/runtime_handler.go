@@ -815,7 +815,7 @@ func parseRunListFilter(request *nethttp.Request) (runtime.ListFilter, error) {
 func parseSessionListFilter(
 	request *nethttp.Request,
 ) (session.ListFilter, error) {
-	query, err := parseExactQuery(request, "state")
+	query, err := parseExactQuery(request, "state", "interface")
 	if err != nil {
 		return session.ListFilter{}, err
 	}
@@ -828,7 +828,16 @@ func parseSessionListFilter(
 		}
 		state = session.SessionState(values[0])
 	}
-	filter := session.ListFilter{State: state}
+	interfaceKind := session.Interface("")
+	if values, exists := query["interface"]; exists {
+		if values[0] == "" {
+			return session.ListFilter{}, fmt.Errorf(
+				"interface must be managed or native_tui",
+			)
+		}
+		interfaceKind = session.Interface(values[0])
+	}
+	filter := session.ListFilter{State: state, Interface: interfaceKind}
 	if err := session.ValidateListFilter(filter); err != nil {
 		return session.ListFilter{}, err
 	}

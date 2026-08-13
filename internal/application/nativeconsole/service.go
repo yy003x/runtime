@@ -14,11 +14,13 @@ import (
 
 	"github.com/yy003x/runtime/internal/domain/identity"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/runtime/internal/infrastructure/tmux"
 	"github.com/yy003x/runtime/pkg/contract"
 	runtime "github.com/yy003x/runtime/pkg/run"
 	"github.com/yy003x/runtime/pkg/session"
-	"github.com/yy003x/runtime/pkg/tmux"
 )
+
+const providerTerminationGrace = 2 * time.Second
 
 type TmuxManager interface {
 	Start(context.Context, tmux.StartRequest) (tmux.StartResult, error)
@@ -70,6 +72,16 @@ type CloseResult struct {
 	TmuxID    string `json:"tmux_id"`
 	Action    string `json:"action"`
 	Accepted  bool   `json:"accepted"`
+}
+
+// InspectResult is a read projection over the native_tui Session owner, its
+// canonical lifecycle Run/Execution, and the optional live tmux carrier.
+// Run remains the only durable lifecycle source.
+type InspectResult struct {
+	Session   session.Session             `json:"session"`
+	Run       *runtime.Record             `json:"run,omitempty"`
+	Execution *runtime.NativeTUIExecution `json:"execution,omitempty"`
+	Window    *tmux.Window                `json:"tmux_window,omitempty"`
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -276,13 +288,71 @@ func (service *Service) CloseSession(
 	return result, nil
 }
 
+func (service *Service) InspectSession(
+	ctx context.Context,
+	sessionID string,
+) (InspectResult, error) {
+	value, err := service.sessions.Get(sessionID)
+	if err != nil {
+		return InspectResult{}, err
+	}
+	if value.Interface != session.InterfaceNativeTUI {
+		return InspectResult{}, fmt.Errorf(
+			"Session %s is not native_tui", sessionID,
+		)
+	}
+	result := InspectResult{Session: value}
+	window, err := service.findWindowOptional(ctx, sessionID)
+	if err != nil {
+		return InspectResult{}, err
+	}
+	result.Window = window
+	record, found, err := service.lifecycles.ForSession(ctx, sessionID)
+	if err != nil {
+		return InspectResult{}, err
+	}
+	if !found {
+		return result, nil
+	}
+	result.Run = &record
+	tmuxID := ""
+	if window != nil {
+		tmuxID = window.TmuxID
+	}
+	execution, err := runtime.NativeTUIExecutionForRecord(record, tmuxID)
+	if err != nil {
+		return InspectResult{}, err
+	}
+	result.Execution = &execution
+	return result, nil
+}
+
 func (service *Service) findWindow(
 	ctx context.Context,
 	sessionID string,
 ) (tmux.Window, error) {
-	windows, err := service.tmux.List(ctx)
+	value, err := service.findWindowOptional(ctx, sessionID)
 	if err != nil {
 		return tmux.Window{}, err
+	}
+	if value == nil {
+		return tmux.Window{}, &contract.RuntimeError{
+			Code: contract.ErrorNotFound, Phase: contract.PhaseRequest,
+			Message: fmt.Sprintf(
+				"Session %s has no native TUI binding", sessionID,
+			),
+		}
+	}
+	return *value, nil
+}
+
+func (service *Service) findWindowOptional(
+	ctx context.Context,
+	sessionID string,
+) (*tmux.Window, error) {
+	windows, err := service.tmux.List(ctx)
+	if err != nil {
+		return nil, err
 	}
 	var found *tmux.Window
 	for index := range windows {
@@ -291,22 +361,14 @@ func (service *Service) findWindow(
 			continue
 		}
 		if found != nil {
-			return tmux.Window{}, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"Session %s has multiple native TUI bindings", sessionID,
 			)
 		}
 		current := windows[index]
 		found = &current
 	}
-	if found == nil {
-		return tmux.Window{}, &contract.RuntimeError{
-			Code: contract.ErrorNotFound, Phase: contract.PhaseRequest,
-			Message: fmt.Sprintf(
-				"Session %s has no native TUI binding", sessionID,
-			),
-		}
-	}
-	return *found, nil
+	return found, nil
 }
 
 func (service *Service) Supervise(
@@ -335,28 +397,32 @@ func (service *Service) Supervise(
 	signals := make(chan os.Signal, 8)
 	signal.Notify(signals, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	go func() {
-		for range signals {
-			// Provider and supervisor share the pane foreground process group,
-			// so the Provider receives terminal signals directly. Consuming the
-			// supervisor copy keeps it alive long enough to publish lifecycle facts.
-		}
-	}()
 	if err := command.Start(); err != nil {
 		return service.settleSupervisorLaunchFailure(manifest, err)
 	}
+	providerDone := make(chan struct{})
+	relayDone := make(chan struct{})
+	go relayProviderTermination(
+		command.Process, signals, providerDone, relayDone,
+	)
+	waitProvider := func() error {
+		waitErr := command.Wait()
+		close(providerDone)
+		<-relayDone
+		return waitErr
+	}
 	if err := tmux.AcknowledgeTargetReady(); err != nil {
 		_ = command.Process.Kill()
-		_ = command.Wait()
+		_ = waitProvider()
 		return service.settleSupervisorLaunchFailure(manifest, err)
 	}
 	window, err := service.waitForWindow(ctx, manifest.SessionID)
 	if err != nil {
 		_ = command.Process.Kill()
-		_ = command.Wait()
+		_ = waitProvider()
 		return service.settleSupervisorLaunchFailure(manifest, err)
 	}
-	waitErr := command.Wait()
+	waitErr := waitProvider()
 	exitCode, exitSignal := processOutcome(command.ProcessState)
 	record, getErr := service.lifecycles.Get(
 		context.WithoutCancel(ctx), manifest.RunID,
@@ -393,6 +459,53 @@ func (service *Service) Supervise(
 		context.Background(), manifest.SessionID, window.TmuxID,
 	)
 	return stopErr
+}
+
+func relayProviderTermination(
+	provider *os.Process,
+	signals <-chan os.Signal,
+	providerDone <-chan struct{},
+	relayDone chan<- struct{},
+) {
+	defer close(relayDone)
+	var forceTimer *time.Timer
+	var force <-chan time.Time
+	terminating := false
+	defer func() {
+		if forceTimer != nil {
+			forceTimer.Stop()
+		}
+	}()
+	for {
+		select {
+		case <-providerDone:
+			return
+		case current := <-signals:
+			if current == nil {
+				continue
+			}
+			if current == os.Interrupt {
+				// A terminal-generated Ctrl-C already reaches the Provider because
+				// it shares the pane foreground process group. Keep the supervisor
+				// alive without delivering a duplicate interrupt.
+				continue
+			}
+			if current != syscall.SIGHUP && current != syscall.SIGTERM {
+				continue
+			}
+			_ = provider.Signal(current)
+			if !terminating {
+				terminating = true
+				forceTimer = time.NewTimer(providerTerminationGrace)
+				force = forceTimer.C
+			}
+		case <-force:
+			// Provider shutdown is bounded: a TUI that ignores HUP/TERM must
+			// not keep the Runtime supervisor and active binary alive forever.
+			_ = provider.Kill()
+			force = nil
+		}
+	}
 }
 
 func (service *Service) stopBoundWindow(

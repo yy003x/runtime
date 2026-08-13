@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/tmux"
+	"github.com/yy003x/runtime/internal/infrastructure/tmux"
 )
 
 type absentAfterStopManager struct{}

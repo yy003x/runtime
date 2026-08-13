@@ -26,11 +26,16 @@ func (service *Service) List(filter ListFilter) ([]Session, error) {
 func ValidateListFilter(filter ListFilter) error {
 	switch filter.State {
 	case "", SessionIdle, SessionActive, SessionBlocked, SessionArchived:
-		return nil
 	default:
 		return fmt.Errorf(
 			"state must be idle, active, blocked, or archived",
 		)
+	}
+	switch filter.Interface {
+	case "", InterfaceManaged, InterfaceNativeTUI:
+		return nil
+	default:
+		return fmt.Errorf("interface must be managed or native_tui")
 	}
 }
 
