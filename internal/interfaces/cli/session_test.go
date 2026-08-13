@@ -380,6 +380,8 @@ func TestSessionManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"list", "--state", "idle"},
+		{"list", "--interface", "native_tui"},
+		{"list", "--state", "idle", "--interface", "managed"},
 		{
 			"gc", "--older-than-hours", "2562047",
 			"--limit", "1000", "--apply",
@@ -388,6 +390,11 @@ func TestSessionManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 		if err := validateSessionManagementInvocation(args); err != nil {
 			t.Fatalf("args=%#v error=%v", args, err)
 		}
+	}
+	if _, err := parseSessionListFilter([]string{
+		"--interface", "future",
+	}); err == nil {
+		t.Fatal("accepted invalid Session interface filter")
 	}
 }
 

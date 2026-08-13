@@ -9,10 +9,10 @@ import (
 	"github.com/yy003x/runtime/internal/domain/profileid"
 	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
 	"github.com/yy003x/runtime/internal/interfaces/cli/version"
 	runtimecommand "github.com/yy003x/runtime/pkg/command"
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
 var fixedNamespaces = profileid.ReservedNamespaces()
@@ -118,8 +118,6 @@ func Main(args []string) int {
 			err = runProfileNamespace(paths, args[1:], output)
 		case "session":
 			err = runSessionNamespace(paths, args[1:], output)
-		case "tmux":
-			err = runTmuxNamespace(paths, args[1:], output)
 		case "agent":
 			err = runAgentNamespace(paths, args[1:], output)
 		case "run":

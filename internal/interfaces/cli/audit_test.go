@@ -57,7 +57,10 @@ func TestAppendControlAuditWritesCanonicalFailureIdentity(t *testing.T) {
 	root := t.TempDir()
 	appendControlAudit(
 		root,
-		[]string{"tmux", "stop", "--tmux-id", "fixture"},
+		[]string{
+			"session", "close", "--session-id",
+			"session_11111111111111111111111111111111",
+		},
 		&contract.RuntimeError{
 			Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
 			Message: "sensitive detail is not persisted",

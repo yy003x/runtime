@@ -14,9 +14,9 @@ import (
 	"github.com/yy003x/runtime/internal/infrastructure/envref"
 	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
 	"github.com/yy003x/runtime/internal/interfaces/cli/version"
 	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
 type runtimeDoctorFailures struct {

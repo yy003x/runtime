@@ -81,11 +81,15 @@ make build sn-cli-build
 make install
 ```
 
+Source `make install` first closes every Session-bound native TUI, then stops
+the managed `sn-server`. It does not restart the server. Any remaining tmux
+carrier or live Runtime binary process blocks the install.
+
 Verify the install and the active profiles:
 
 ```bash
 sn-cli --version
-sn-cli help tmux         # detailed help for one public command topic
+sn-cli help session      # detailed help for one public command topic
 sn-cli doctor            # check profiles, tools, run store, logs, and tmux
 sn-cli profile list      # list active profiles and their types
 sn-cli profile check     # validate every profile's structure
@@ -151,21 +155,21 @@ immediate human attach. `session send` injects raw input into the TUI, so
 `session open` also creates one running `kind=native_tui` durable Run and one
 opaque lifecycle Execution. Provider exit settles that Run and automatically
 closes the tmux window; `session close` settles it as cancelled before stopping
-the window. TUI input/output remains provider-owned and creates no canonical
+the window, forwards termination to the Provider, forces exit after a bounded
+grace period, and waits for the supervisor to exit. TUI input/output remains provider-owned and creates no canonical
 Turn, Message, Event, or transcript.
 
-For the same native TUI without a Runtime Session identity, use the raw `tmux`
-namespace:
+Discover native TUI Sessions and inspect their lifecycle through the Session
+owner:
 
 ```bash
-sn-cli --json tmux open cx --cwd "$PWD" "Inspect this repository"
-sn-cli tmux stop --tmux-id <tmux_id>
-sn-cli tmux stop-all
+sn-cli --json session list --interface native_tui
+sn-cli --json session show --session-id <session_id>
 ```
 
-`tmux stop-all` is intentionally limited to raw windows. If any window is
-bound to a Session, it fails without stopping anything; run
-`session close-all` first.
+The tmux server/window registry is now a private PTY carrier. There is no
+public `sn-cli tmux` namespace or compatibility alias; all native TUI
+mutations use the owning Runtime Session ID.
 
 ### An autonomous agent loop
 
@@ -189,7 +193,6 @@ sn-cli req <api-id> ────> Model Core ─────> one HTTP/SSE reque
 
 sn-cli session exec|req ─> Session Service ─> command or model
 sn-cli session open ... ─> native_tui Session ─> provider TUI in tmux PTY
-sn-cli tmux ... ───────> Tmux Service ─────> raw interactive command window
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
 sn-cli run ... ────────> Run Harness ──────> SQLite WAL control plane
 ```
@@ -201,7 +204,6 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
 | `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | provider-native TUI with Runtime identity | `interface=native_tui` Session + opaque lifecycle Run/Execution and tmux binding; no canonical transcript |
-| `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | managed raw tmux interactive window | tmux registry and local CLI log (no transcript) |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
 | `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
 
@@ -211,8 +213,9 @@ Key boundaries worth remembering up front:
   selects the execution contract and `type` validates that the profile belongs there.
 - **Sessions never auto-execute tool calls** — a tool call from the model pauses
   the turn at `requires_action`. Autonomous tool loops belong to `agent`.
-- Raw **`tmux` never creates a session**. `session open` adds an opaque
-  `native_tui` Session identity, but tmux and the provider still own interaction.
+- The public owner of a provider-native TUI is always a **`native_tui`
+  Session**. tmux remains the private PTY carrier and the provider still owns
+  interaction semantics.
 - `managed` Sessions from `session exec|req` and `native_tui` Sessions from
   `session open` cannot share a Session ID.
 - **Submitting a run doesn't start the server** — enqueue and worker are decoupled.

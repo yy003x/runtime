@@ -73,11 +73,15 @@ make build sn-cli-build
 make install
 ```
 
+源码 `make install` 会先关闭全部 Session-bound native TUI，再停止受管
+`sn-server`；安装后不重启 server。任何剩余 tmux carrier 或仍在运行的 Runtime binary
+process 都会阻止安装。
+
 确认安装与生效的 Profile：
 
 ```bash
 sn-cli --version
-sn-cli help tmux         # 查看某个公开命令主题的详细帮助
+sn-cli help session      # 查看某个公开命令主题的详细帮助
 sn-cli doctor            # 检查 Profile、Tool、Run Store、日志和 tmux
 sn-cli profile list      # 列出 active profile 及其类型
 sn-cli profile check     # 校验每个 profile 的结构
@@ -136,19 +140,20 @@ sn-cli session close-all
 只表示 tmux 接受了传输操作。`session open` 同时创建一个 running 的
 `kind=native_tui` Durable Run 和一个 opaque lifecycle Execution；Provider 退出时先
 settle Run，再自动关闭 tmux window；`session close` 则先 settle 为 `cancelled`，再停止
-window。TUI 输入输出仍由 Provider 管理，不创建 canonical Turn、Message、Event 或
+window，向 Provider 转发终止信号，有限宽限期后强制退出，并等待 supervisor 退出后再
+返回。TUI 输入输出仍由 Provider 管理，不创建 canonical Turn、Message、Event 或
 transcript。
 
-只需要原生 TUI、不需要 Runtime Session identity 时，使用 raw `tmux` namespace：
+发现 native TUI Session 并查看 lifecycle：
 
 ```bash
-sn-cli --json tmux open cx "分析当前仓库"
-sn-cli tmux stop --tmux-id <tmux_id>
-sn-cli tmux stop-all
+sn-cli --json session list --interface native_tui
+sn-cli --json session show --session-id <session_id>
 ```
 
-`tmux stop-all` 只处理 raw window；只要存在 Session binding 就整体拒绝，需先执行
-`session close-all`。后者只关闭 Session-bound native TUI window，不删除 Session fact。
+tmux server/window registry 现在只作为私有 PTY carrier，不再提供 public
+`sn-cli tmux` namespace 或兼容 alias。所有 mutation 使用 Runtime Session ID；
+`session close-all` 只关闭 Session-bound native TUI window，不删除 Session fact。
 
 ### 一次自主 agent 循环
 
@@ -170,7 +175,6 @@ sn-cli req <api-id> ────> Model Core ─────> 一次 HTTP/SSE re
 
 sn-cli session exec|req ─> Session Service ─> command or model
 sn-cli session open ... ─> native_tui Session ─> tmux PTY 中的 Provider TUI
-sn-cli tmux ... ───────> Tmux Service ─────> interactive command window
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
 sn-cli run ... ────────> Run Harness ──────> SQLite WAL 控制面
 ```
@@ -182,7 +186,6 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
 | `sn-cli req <api-profile-id>` | 一次 API request | 本地 `api.jsonl`；无 Session/Run |
 | `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | 文件型 session；本地执行日志；可选 durable run |
 | `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | 带 Runtime identity 的 Provider 原生 TUI | `interface=native_tui` Session + opaque lifecycle Run/Execution 与 tmux binding；无 canonical transcript |
-| `sn-cli tmux open\|send\|attach\|interrupt\|stop\|stop-all` | raw tmux 交互窗口 | tmux registry 与本地 CLI 日志（不存 transcript） |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool 循环 | durable run；每轮本地 API 日志（session 可选） |
 | `sn-cli run ...` | 查询和控制已有 durable run | SQLite WAL |
 
@@ -192,8 +195,8 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
   选择执行契约，`type` 校验 Profile 是否属于该入口。
 - **session 永不自动执行 tool call**——模型返回 tool call 时 turn 停在 `requires_action`。
   自主工具循环属于 `agent`。
-- raw **tmux 不创建 session**；`session open` 只增加 opaque `native_tui` Session
-  identity，交互仍由 tmux 与 Provider 管理。
+- Provider 原生长期 TUI 的 public owner 固定为 **`native_tui` Session**；tmux 只作为
+  private PTY carrier，不单独创建或拥有 canonical Session lifecycle。
 - `session exec|req` 创建的 `managed` Session 与 `session open` 创建的 `native_tui`
   Session 不能共用同一个 Session ID。
 - **提交 run 不会自动启动 server**——入队与执行是解耦的。

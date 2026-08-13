@@ -13,14 +13,13 @@ import (
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/domain/identity"
 	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
 	runtimecommand "github.com/yy003x/runtime/pkg/command"
 	"github.com/yy003x/runtime/pkg/contract"
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
 	runtime "github.com/yy003x/runtime/pkg/run"
 	"github.com/yy003x/runtime/pkg/session"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
 type sessionNativeOpenOptions struct {
@@ -31,6 +30,7 @@ type sessionNativeOpenOptions struct {
 	model        string
 	effort       string
 	cwd          string
+	prompt       string
 	input        string
 	attach       bool
 	detach       bool
@@ -58,6 +58,47 @@ type sessionNativeCloseAllResult struct {
 	Accepted    bool                        `json:"accepted"`
 	ClosedCount int                         `json:"closed_count"`
 	Closed      []sessionNativeActionResult `json:"closed"`
+}
+
+func showSessionNativeTUI(
+	paths layout.Paths,
+	sessionID string,
+	output *cliOutput,
+) error {
+	console, err := runtimebootstrap.LoadNativeConsoleInspectionService(paths)
+	if err != nil {
+		return err
+	}
+	defer console.Close()
+	value, err := console.InspectSession(
+		context.Background(), sessionID,
+	)
+	if err != nil {
+		return canonicalSessionResourceError(err, "session", sessionID)
+	}
+	if output.JSON() {
+		return output.writeJSON(value)
+	}
+	if err := renderSessionSummary(output, value.Session); err != nil {
+		return err
+	}
+	if value.Run != nil && value.Execution != nil {
+		if err := output.line(
+			"Lifecycle: run=%s state=%s execution=%s capture=%s",
+			value.Run.ID, value.Run.State, value.Execution.ID,
+			value.Execution.CaptureQuality,
+		); err != nil {
+			return err
+		}
+	}
+	if value.Window != nil {
+		return output.line(
+			"Carrier: tmux=%s state=%s window=%s pane=%s",
+			value.Window.TmuxID, value.Window.State,
+			value.Window.WindowID, value.Window.PaneID,
+		)
+	}
+	return nil
 }
 
 func runNativeTUISupervisor(args []string) error {
@@ -109,7 +150,7 @@ func runSessionNativeAction(
 				"session open --attach is human-only",
 			))
 		}
-		piped, err := readOptionalTmuxInput(os.Stdin)
+		piped, err := readOptionalNativeTUIInput(os.Stdin)
 		if err != nil {
 			return err
 		}
@@ -145,7 +186,7 @@ func runSessionNativeAction(
 		if err != nil {
 			return sessionNativeRequestError(err)
 		}
-		piped, err := readOptionalTmuxInput(os.Stdin)
+		piped, err := readOptionalNativeTUIInput(os.Stdin)
 		if err != nil {
 			return err
 		}
@@ -273,19 +314,20 @@ func openSessionNativeTUI(
 	effort := optionalEffort(options.effort)
 	cwd := optionalString(options.cwd)
 	input := optionalString(options.input)
-	tmuxOptions := tmuxOpenOptions{
+	invocationOptions := nativeTUIInvocationOptions{
 		profileID: options.profileID, model: model,
-		effort: effort, cwd: cwd, input: input,
+		effort: effort, prompt: optionalString(options.prompt),
+		cwd: cwd, input: input,
 	}
-	invocation, err := resolveTmuxOpenInvocationWithNamespace(
-		services.Profiles, tmuxOptions, "", callerCWD,
-		os.Environ(), paths.LogsDir, executionlog.NamespaceSession,
+	invocation, requestInput, err := resolveNativeTUIInvocation(
+		services.Profiles, invocationOptions, "", callerCWD,
+		os.Environ(), paths.LogsDir,
 	)
 	if err != nil {
 		return sessionNativeOpenResult{}, err
 	}
 	opened, err := services.Console.Open(ctx, nativeConsoleOpenRequest(
-		options, invocation,
+		options, invocation, requestInput,
 	))
 	if err != nil {
 		_ = services.Console.Close()
@@ -328,12 +370,13 @@ func closeSessionNativeTUILifecycle(
 func nativeConsoleOpenRequest(
 	options sessionNativeOpenOptions,
 	invocation runtimetmux.Invocation,
+	requestInput string,
 ) nativeconsole.OpenRequest {
 	return nativeconsole.OpenRequest{
 		SessionID: options.sessionID, Retention: options.retention,
-		Target: invocation, Input: options.input,
+		Target: invocation, Input: requestInput,
 		Model: options.model, Effort: options.effort,
-		InitialInput: options.input != "",
+		InitialInput: requestInput != "",
 	}
 }
 
@@ -438,8 +481,8 @@ func parseSessionNativeOpenOptions(
 	result.profileID = args[0]
 	seen := make(map[string]bool)
 	for index := 1; index < len(args); index++ {
-		current := args[index]
-		if current == "--" {
+		argument := args[index]
+		if argument == "--" {
 			remaining := args[index+1:]
 			if result.input != "" || len(remaining) > 1 {
 				return result, fmt.Errorf(
@@ -451,55 +494,75 @@ func parseSessionNativeOpenOptions(
 			}
 			break
 		}
-		if !strings.HasPrefix(current, "-") {
+		if !strings.HasPrefix(argument, "-") {
 			if result.input != "" || index != len(args)-1 {
 				return result, fmt.Errorf(
 					"session open input must be the final argument",
 				)
 			}
-			result.input = current
+			result.input = argument
 			continue
 		}
-		if seen[current] {
+		name, value, attached := splitTypedOption(argument)
+		if seen[name] {
 			return result, fmt.Errorf(
-				"session open option %s may only be used once", current,
+				"session open option %s may only be used once", name,
 			)
 		}
-		seen[current] = true
-		switch current {
+		seen[name] = true
+		switch name {
 		case "--attach":
+			if attached {
+				return result, fmt.Errorf("--attach does not accept a value")
+			}
 			result.attach = true
 			continue
 		case "--detach":
+			if attached {
+				return result, fmt.Errorf("--detach does not accept a value")
+			}
 			result.detach = true
 			continue
 		}
-		index++
-		if index >= len(args) || args[index] == "" {
-			return result, fmt.Errorf("%s requires value", current)
+		switch name {
+		case "--session-id", "--retention", "--model", "--effort",
+			"--prompt", "--cwd":
+		default:
+			return result, fmt.Errorf(
+				"unknown session open option %s", argument,
+			)
 		}
-		switch current {
+		if !attached {
+			index++
+			if index >= len(args) || args[index] == "" ||
+				strings.HasPrefix(args[index], "--") {
+				return result, fmt.Errorf("%s requires value", name)
+			}
+			value = args[index]
+		}
+		if value == "" {
+			return result, fmt.Errorf("%s requires value", name)
+		}
+		switch name {
 		case "--session-id":
-			result.sessionID = args[index]
+			result.sessionID = value
 		case "--retention":
-			result.retention = session.Retention(args[index])
+			result.retention = session.Retention(value)
 			result.retentionSet = true
 			if err := validateSessionRetention(result.retention); err != nil {
 				return result, err
 			}
 		case "--model":
-			result.model = args[index]
+			result.model = value
 		case "--effort":
-			if _, err := runtimecommand.ParseEffort(args[index]); err != nil {
+			if _, err := runtimecommand.ParseEffort(value); err != nil {
 				return result, err
 			}
-			result.effort = args[index]
+			result.effort = value
+		case "--prompt":
+			result.prompt = value
 		case "--cwd":
-			result.cwd = args[index]
-		default:
-			return result, fmt.Errorf(
-				"unknown session open option %s", current,
-			)
+			result.cwd = value
 		}
 	}
 	if result.attach && result.detach {

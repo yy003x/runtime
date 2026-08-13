@@ -2,7 +2,6 @@ package cli
 
 import (
 	"errors"
-	"regexp"
 	"strings"
 	"time"
 
@@ -10,10 +9,6 @@ import (
 	"github.com/yy003x/runtime/internal/domain/profileid"
 	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/pkg/contract"
-)
-
-var auditTmuxIDPattern = regexp.MustCompile(
-	`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
 )
 
 type controlAuditIntent struct {
@@ -76,10 +71,6 @@ func controlAuditIntentFromArgs(args []string) (controlAuditIntent, bool) {
 			"close", "close-all",
 			"reconcile", "configure", "delete", "gc",
 		)
-	case "tmux":
-		allowed = auditActionAllowed(action,
-			"open", "send", "attach", "interrupt", "stop", "stop-all",
-		)
 	case "run":
 		allowed = auditActionAllowed(action,
 			"cancel", "resume", "retry", "reconcile", "gc",
@@ -94,7 +85,7 @@ func controlAuditIntentFromArgs(args []string) (controlAuditIntent, bool) {
 	}
 	targets := make(map[string]string)
 	for _, option := range []string{
-		"--session-id", "--tmux-id", "--run-id", "--execution-id",
+		"--session-id", "--run-id", "--execution-id",
 	} {
 		if value := auditOptionValue(args[2:], option); value != "" {
 			key, valid := auditTargetIdentity(option, value)
@@ -152,8 +143,6 @@ func auditTargetIdentity(option string, value string) (string, bool) {
 		return "run_id", identity.Validate(value, "run") == nil
 	case "--execution-id":
 		return "execution_id", identity.Validate(value, "execution") == nil
-	case "--tmux-id":
-		return "tmux_id", auditTmuxIDPattern.MatchString(value)
 	default:
 		return "", false
 	}

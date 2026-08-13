@@ -3,29 +3,36 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
 	"github.com/yy003x/runtime/internal/testkit/reporoot"
+	runtimecommand "github.com/yy003x/runtime/pkg/command"
+	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
 	runtime "github.com/yy003x/runtime/pkg/run"
 	"github.com/yy003x/runtime/pkg/session"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
 func TestSessionNativeOpenOptionsStayAtOneActionLevel(t *testing.T) {
 	sessionID := "session_11111111111111111111111111111111"
 	value, err := parseSessionNativeOpenOptions([]string{
-		"cx", "--session-id", sessionID, "--retention", "pinned",
-		"--model", "fixture", "--effort", "high", "--cwd", "work",
+		"cx", "--session-id=" + sessionID, "--retention", "pinned",
+		"--model", "fixture", "--effort=high", "--prompt", "prompt.txt",
+		"--cwd", "work",
 		"--detach", "continue",
 	})
 	if err != nil {
@@ -34,7 +41,8 @@ func TestSessionNativeOpenOptionsStayAtOneActionLevel(t *testing.T) {
 	if value.profileID != "cx" || value.sessionID != sessionID ||
 		value.retention != session.RetentionPinned || !value.retentionSet ||
 		value.model != "fixture" || value.effort != "high" ||
-		value.cwd != "work" || value.input != "continue" ||
+		value.prompt != "prompt.txt" || value.cwd != "work" ||
+		value.input != "continue" ||
 		!value.detach || value.attach {
 		t.Fatalf("options = %#v", value)
 	}
@@ -42,10 +50,80 @@ func TestSessionNativeOpenOptionsStayAtOneActionLevel(t *testing.T) {
 		{}, {"--session-id", sessionID}, {"cx", "--unknown", "value"},
 		{"cx", "--effort", "extreme"}, {"cx", "first", "second"},
 		{"cx", "--attach", "--detach"},
+		{"cx", "--prompt", "--model", "fixture"},
+		{"cx", "--attach=true"},
 	} {
 		if _, err := parseSessionNativeOpenOptions(args); err == nil {
 			t.Fatalf("accepted invalid args %#v", args)
 		}
+	}
+}
+
+func TestResolveNativeTUIInvocationPreservesPromptOrder(t *testing.T) {
+	root := t.TempDir()
+	commandPath := filepath.Join(root, "codex")
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"base.txt": "base", "typed.txt": "typed",
+	} {
+		if err := os.WriteFile(
+			filepath.Join(root, name), []byte(content), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "configs")
+	if err := os.Mkdir(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"type": "cli", "command": commandPath,
+		"model": "old", "effort": "low", "prompt": "base.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(configDir, "cx.json"), data, 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := runtimeprofile.Load(configDir, fixedNamespaces...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, typedPrompt, cwd, positional := "new", "typed.txt", "work", "positional"
+	effort := runtimecommand.EffortHigh
+	invocation, requestInput, err := resolveNativeTUIInvocation(
+		catalog, nativeTUIInvocationOptions{
+			profileID: "cx", model: &model, effort: &effort,
+			prompt: &typedPrompt, cwd: &cwd, input: &positional,
+		}, "stdin", root, []string{"PATH=" + root, "KEEP=value"},
+		filepath.Join(root, "logs"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgv := []string{
+		commandPath, "--model", "new",
+		"-c", "model_reasoning_effort=high",
+		"--", "base\ntyped\nstdin\npositional",
+	}
+	if !reflect.DeepEqual(invocation.Argv, wantArgv) {
+		t.Fatalf("argv = %#v, want %#v", invocation.Argv, wantArgv)
+	}
+	if requestInput != "typed\nstdin\npositional" {
+		t.Fatalf("request input = %q", requestInput)
+	}
+	if invocation.ProfileID != "cx" || invocation.Path != commandPath ||
+		invocation.CWD != work || len(invocation.ConfigDigest) != 64 {
+		t.Fatalf("invocation = %#v", invocation)
 	}
 }
 
@@ -315,6 +393,44 @@ func TestSessionNativeTUIMachineInputUsesTmuxPTYWithLifecycleRun(t *testing.T) {
 		runs[0].State != runtime.StateRunning {
 		t.Fatalf("native TUI lifecycle Runs: %#v", runs)
 	}
+	var showOutput bytes.Buffer
+	if err := runSessionNamespace(
+		paths, []string{"show", "--session-id", result.Session.ID},
+		newCLIOutput(true, &showOutput, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	var shown struct {
+		Session   session.Session            `json:"session"`
+		Run       runtime.Record             `json:"run"`
+		Execution runtime.NativeTUIExecution `json:"execution"`
+		Window    *runtimetmux.Window        `json:"tmux_window"`
+	}
+	if err := json.Unmarshal(showOutput.Bytes(), &shown); err != nil {
+		t.Fatal(err)
+	}
+	if shown.Session.ID != result.Session.ID || shown.Run.ID != result.Run.ID ||
+		shown.Execution.ID != result.Execution.ID ||
+		shown.Execution.State != runtime.NativeTUIExecutionRunning ||
+		shown.Window == nil || shown.Window.TmuxID != result.Window.TmuxID {
+		t.Fatalf("native TUI show projection = %#v", shown)
+	}
+	var listOutput bytes.Buffer
+	if err := runSessionNamespace(
+		paths, []string{"list", "--interface", "native_tui"},
+		newCLIOutput(true, &listOutput, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Sessions []session.Session `json:"sessions"`
+	}
+	if err := json.Unmarshal(listOutput.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Sessions) != 1 || listed.Sessions[0].ID != result.Session.ID {
+		t.Fatalf("native TUI Session list = %#v", listed.Sessions)
+	}
 
 	var closeOutput bytes.Buffer
 	if err := runSessionNativeAction(
@@ -348,6 +464,28 @@ func TestSessionNativeTUIMachineInputUsesTmuxPTYWithLifecycleRun(t *testing.T) {
 	if retained.Interface != session.InterfaceNativeTUI ||
 		retained.State != session.SessionIdle || retained.ActiveTurnID != "" {
 		t.Fatalf("retained Session = %#v", retained)
+	}
+	showOutput.Reset()
+	if err := runSessionNamespace(
+		paths, []string{"show", "--session-id", result.Session.ID},
+		newCLIOutput(true, &showOutput, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	shown = struct {
+		Session   session.Session            `json:"session"`
+		Run       runtime.Record             `json:"run"`
+		Execution runtime.NativeTUIExecution `json:"execution"`
+		Window    *runtimetmux.Window        `json:"tmux_window"`
+	}{}
+	if err := json.Unmarshal(showOutput.Bytes(), &shown); err != nil {
+		t.Fatal(err)
+	}
+	if shown.Run.State != runtime.StateCancelled ||
+		shown.Execution.State != runtime.NativeTUIExecutionSettled ||
+		shown.Execution.Outcome != runtime.NativeTUIOutcomeCancelled ||
+		shown.Window != nil {
+		t.Fatalf("settled native TUI show projection = %#v", shown)
 	}
 }
 
@@ -472,6 +610,82 @@ func TestSessionNativeTUIProcessExitSettlesRunAndClosesWindow(t *testing.T) {
 	}
 }
 
+func TestSessionNativeTUICloseForcesIgnoringProviderAndWaitsForSupervisorExit(
+	t *testing.T,
+) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := layout.FromHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(reporoot.Root(t), "release", "tmux.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.TmuxConfigFile, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile,
+		[]byte(`{"tmux":{"server_mode":"dedicated"}}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	factFile := filepath.Join(home, "native-tui-force-close.fact")
+	command := buildNativeTUITestTarget(t, home)
+	profileID := "native-force-close-test"
+	profileJSON := fmt.Sprintf(
+		`{"type":"cli","command":%q,"model":"fixture"}`,
+		command,
+	)
+	if err := os.WriteFile(
+		filepath.Join(paths.ConfigDir, profileID+".json"),
+		[]byte(profileJSON), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(layout.HomeEnv, home)
+	t.Setenv("SN_NATIVE_TUI_FACT", factFile)
+	t.Setenv("SN_NATIVE_TUI_IGNORE_TERM", "1")
+	manager, err := runtimebootstrap.LoadTmuxService(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openSessionNativeTUI(
+		context.Background(), paths, manager,
+		sessionNativeOpenOptions{
+			profileID: profileID, retention: session.RetentionStandard,
+			cwd: home,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = manager.Stop(context.Background(), opened.Window.TmuxID)
+	})
+	waitForNativeTUIFact(t, factFile, "ignore_termination:true")
+	providerPID := nativeTUIFactPID(t, factFile, "pid")
+	supervisorPID := nativeTUIFactPID(t, factFile, "parent_pid")
+
+	if _, err := closeSessionNativeTUILifecycle(
+		context.Background(), paths, opened.Session.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertProcessExited(t, providerPID)
+	assertProcessExited(t, supervisorPID)
+}
+
 func waitForNativeTUIFact(t *testing.T, path string, fragments ...string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -495,6 +709,35 @@ func waitForNativeTUIFact(t *testing.T, path string, fragments ...string) {
 			t.Fatalf("native TUI fact did not contain %q: value=%q error=%v", fragments, data, err)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func nativeTUIFactPID(t *testing.T, path string, key string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := key + ":"
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		pid, parseErr := strconv.Atoi(strings.TrimPrefix(line, prefix))
+		if parseErr != nil || pid <= 0 {
+			t.Fatalf("invalid %s in native TUI fact: %q", key, line)
+		}
+		return pid
+	}
+	t.Fatalf("native TUI fact lacks %s: %q", key, data)
+	return 0
+}
+
+func assertProcessExited(t *testing.T, pid int) {
+	t.Helper()
+	err := syscall.Kill(pid, 0)
+	if !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("process %d remains after session close: %v", pid, err)
 	}
 }
 

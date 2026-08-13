@@ -25,7 +25,7 @@ func TestMainLeadingJSONVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["contract_version"] != float64(6) {
+	if payload["contract_version"] != float64(7) {
 		t.Fatalf("payload=%#v", payload)
 	}
 }
@@ -46,15 +46,14 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		"sn-cli session open <cli-profile-id> [--attach|--detach] [options...] [input]",
 		"sn-cli session send|attach|interrupt|close --session-id <id>",
 		"sn-cli session close-all",
-		"sn-cli session list|show|messages|events|logs|executions|execution",
+		"sn-cli session list [--state <state>] [--interface managed|native_tui]",
+		"sn-cli session show|messages|events|logs|executions|execution",
 		"sn-cli session reconcile|configure|export|delete|gc",
-		"sn-cli tmux open <cli-profile-id> [options...] [input]",
-		"sn-cli tmux list|show|send|attach|interrupt|stop|stop-all",
 		"sn-cli agent <api-profile-id> [options...] [input]",
 		"sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc",
 		"sn-cli help <topic>",
 		"session close-all  close Session-bound native TUI windows",
-		"tmux stop-all      close raw windows only",
+		"session open       create a native_tui Session",
 		"Control audit      <runtime-home>/logs/YYMMDD/audit.jsonl",
 		"Server process     <runtime-home>/logs/sn-server.log",
 		"stable req/management output; must be first",
@@ -65,12 +64,15 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 			t.Fatalf("help missing %q:\n%s", expected, stdout)
 		}
 	}
+	if strings.Contains(stdout, "sn-cli tmux") {
+		t.Fatalf("help still exposes removed tmux namespace:\n%s", stdout)
+	}
 }
 
 func TestMainHelpTopicsHaveHumanAndMachineContracts(t *testing.T) {
 	topics := []string{
 		"direct", "exec", "req", "doctor", "profile",
-		"session", "tmux", "agent", "run", "server",
+		"session", "agent", "run", "server",
 	}
 	for _, topic := range topics {
 		t.Run(topic, func(t *testing.T) {
@@ -301,15 +303,9 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 			},
 		},
 		{
-			name: "tmux_parse",
+			name: "removed_tmux_namespace_is_profile_lookup",
 			args: []string{
-				"--json", "tmux", "list", "unexpected",
-			},
-		},
-		{
-			name: "tmux_profile_not_found",
-			args: []string{
-				"--json", "tmux", "open", "missing",
+				"--json", "tmux", "list",
 			},
 		},
 		{

@@ -84,6 +84,9 @@ func runSessionNamespace(
 		if err != nil {
 			return canonicalSessionResourceError(err, "session", sessionID)
 		}
+		if value.Interface == session.InterfaceNativeTUI {
+			return showSessionNativeTUI(paths, sessionID, output)
+		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"session": value})
 		}
@@ -456,7 +459,7 @@ func validateSessionManagementInvocation(args []string) error {
 
 func parseSessionListFilter(args []string) (session.ListFilter, error) {
 	if err := validateManagementArgs(
-		args, []string{"--state"}, nil,
+		args, []string{"--state", "--interface"}, nil,
 	); err != nil {
 		return session.ListFilter{}, err
 	}
@@ -469,7 +472,19 @@ func parseSessionListFilter(args []string) (session.ListFilter, error) {
 			"state must be idle, active, blocked, or archived",
 		)
 	}
-	filter := session.ListFilter{State: session.SessionState(state)}
+	interfaceKind, err := optionString(args, "--interface")
+	if err != nil {
+		return session.ListFilter{}, err
+	}
+	if interfaceKind == "" && optionProvided(args, "--interface") {
+		return session.ListFilter{}, fmt.Errorf(
+			"interface must be managed or native_tui",
+		)
+	}
+	filter := session.ListFilter{
+		State:     session.SessionState(state),
+		Interface: session.Interface(interfaceKind),
+	}
 	if err := session.ValidateListFilter(filter); err != nil {
 		return session.ListFilter{}, err
 	}

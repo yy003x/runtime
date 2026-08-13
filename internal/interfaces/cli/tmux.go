@@ -5,41 +5,31 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
 	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
 
-const tmuxInputLimit = 1 << 20
+const nativeTUIInputLimit = 1 << 20
 
+// tmuxManager is the private PTY carrier surface composed by native_tui
+// Sessions. tmux is not a public CLI namespace.
 type tmuxManager interface {
 	Start(context.Context, runtimetmux.StartRequest) (runtimetmux.StartResult, error)
 	List(context.Context) ([]runtimetmux.Window, error)
-	Show(context.Context, string) (runtimetmux.Window, error)
 	Send(context.Context, string, string) (runtimetmux.ActionResult, error)
 	Attach(context.Context, string, runtimetmux.TTYFiles) error
 	Interrupt(context.Context, string) (runtimetmux.ActionResult, error)
 	Stop(context.Context, string) (runtimetmux.ActionResult, error)
 }
 
-type tmuxOpenResolver func(
-	context.Context,
-	tmuxOpenOptions,
-	string,
-) (runtimetmux.Invocation, error)
-
-type tmuxOpenOptions struct {
+type nativeTUIInvocationOptions struct {
 	profileID string
 	model     *string
 	effort    *runtimecommand.Effort
@@ -48,325 +38,41 @@ type tmuxOpenOptions struct {
 	input     *string
 }
 
-type tmuxStopAllResult struct {
-	Action       string   `json:"action"`
-	Accepted     bool     `json:"accepted"`
-	StoppedCount int      `json:"stopped_count"`
-	TmuxIDs      []string `json:"tmux_ids"`
-}
-
-// runTmuxHelper is intentionally separate from namespace dispatch. root
-// must call it before layout or Profile loading when it sees the private helper
-// token.
+// runTmuxHelper is a private bootstrap protocol used by the tmux carrier.
+// Root calls it before layout or Profile loading; it is not part of the public
+// command tree.
 func runTmuxHelper(args []string) error {
 	return runtimetmux.RunHelper(args)
 }
 
-func runTmuxNamespace(
-	paths layout.Paths,
-	args []string,
-	output *cliOutput,
-) error {
-	if len(args) == 0 {
-		return tmuxRequestError(fmt.Errorf(
-			"usage: tmux open|list|show|send|attach|interrupt|stop|stop-all",
-		))
-	}
-	manager, err := runtimebootstrap.LoadTmuxService(paths)
-	if err != nil {
-		return err
-	}
-	var resolver tmuxOpenResolver
-	if args[0] == "open" {
-		if _, err := parseTmuxOpenOptions(args[1:]); err != nil {
-			return tmuxRequestError(err)
-		}
-		invocationBase, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("resolve invocation cwd: %w", err)
-		}
-		catalog, err := runtimeprofile.Load(
-			paths.ConfigDir, fixedNamespaces...,
-		)
-		if err != nil {
-			return err
-		}
-		inheritedEnvironment := os.Environ()
-		resolver = func(
-			_ context.Context,
-			options tmuxOpenOptions,
-			pipedInput string,
-		) (runtimetmux.Invocation, error) {
-			return resolveTmuxOpenInvocationWithNamespace(
-				catalog, options, pipedInput,
-				invocationBase, inheritedEnvironment, paths.LogsDir,
-				executionlog.NamespaceTmux,
-			)
-		}
-	}
-	return runTmuxNamespaceWith(
-		context.Background(), manager, resolver, args, output,
-		os.Stdin, os.Stdout, os.Stderr,
-	)
-}
-
-func runTmuxNamespaceWith(
-	ctx context.Context,
-	manager tmuxManager,
-	resolver tmuxOpenResolver,
-	args []string,
-	output *cliOutput,
-	stdin *os.File,
-	stdout *os.File,
-	stderr *os.File,
-) error {
-	if manager == nil {
-		return fmt.Errorf("Tmux manager is required")
-	}
-	switch args[0] {
-	case "open":
-		options, err := parseTmuxOpenOptions(args[1:])
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		if resolver == nil {
-			return fmt.Errorf("Tmux open resolver is required")
-		}
-		pipedInput, err := readOptionalPromptInput(stdin)
-		if err != nil {
-			return err
-		}
-		invocation, err := resolver(ctx, options, pipedInput)
-		if err != nil {
-			return err
-		}
-		result, err := manager.Start(
-			ctx, runtimetmux.StartRequest{Invocation: invocation},
-		)
-		if err != nil {
-			return err
-		}
-		if output.JSON() {
-			return output.writeJSON(map[string]any{
-				"tmux_window": result.Window, "launch_accepted": result.LaunchAccepted,
-			})
-		}
-		return output.line(
-			"Tmux %s: state=%s launch_accepted=%t window=%s",
-			result.Window.TmuxID, result.Window.State,
-			result.LaunchAccepted, result.Window.WindowID,
-		)
-	case "list":
-		if len(args) != 1 {
-			return tmuxRequestError(fmt.Errorf(
-				"tmux list does not accept arguments",
-			))
-		}
-		values, err := manager.List(ctx)
-		if err != nil {
-			return err
-		}
-		if output.JSON() {
-			return output.writeJSON(map[string]any{"tmux_windows": values})
-		}
-		if err := output.line("Tmux windows (%d)", len(values)); err != nil {
-			return err
-		}
-		for _, value := range values {
-			if err := output.line(
-				"  %s  %s  %s  %s",
-				value.TmuxID, value.State, value.ProfileID, value.WindowID,
-			); err != nil {
-				return err
-			}
-		}
-		return nil
-	case "show":
-		tmuxID, err := parseTmuxIDOnly(args[1:])
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		value, err := manager.Show(ctx, tmuxID)
-		if err != nil {
-			return err
-		}
-		if output.JSON() {
-			return output.writeJSON(map[string]any{"tmux_window": value})
-		}
-		return renderTmuxWindow(output, value)
-	case "send":
-		tmuxID, positional, err := parseTmuxIDAndInput(args[1:])
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		pipedInput, err := readOptionalTmuxInput(stdin)
-		if err != nil {
-			return err
-		}
-		input, err := mergeTmuxInput(pipedInput, positional)
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		result, err := manager.Send(ctx, tmuxID, input)
-		if err != nil {
-			return err
-		}
-		return renderTmuxAction(output, result)
-	case "attach":
-		if output.JSON() {
-			return tmuxRequestError(fmt.Errorf("tmux attach is human-only"))
-		}
-		tmuxID, err := parseTmuxIDOnly(args[1:])
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		return manager.Attach(ctx, tmuxID, runtimetmux.TTYFiles{
-			Stdin: stdin, Stdout: stdout, Stderr: stderr,
-		})
-	case "interrupt":
-		tmuxID, err := parseTmuxIDOnly(args[1:])
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		result, err := manager.Interrupt(ctx, tmuxID)
-		if err != nil {
-			return err
-		}
-		return renderTmuxAction(output, result)
-	case "stop":
-		tmuxID, err := parseTmuxIDOnly(args[1:])
-		if err != nil {
-			return tmuxRequestError(err)
-		}
-		result, err := manager.Stop(ctx, tmuxID)
-		if err != nil {
-			return err
-		}
-		return renderTmuxAction(output, result)
-	case "stop-all":
-		if len(args) != 1 {
-			return tmuxRequestError(fmt.Errorf(
-				"tmux stop-all does not accept arguments",
-			))
-		}
-		result, err := stopAllTmuxWindows(ctx, manager)
-		if err != nil {
-			return err
-		}
-		if output.JSON() {
-			return output.writeJSON(result)
-		}
-		return output.line(
-			"Tmux windows stopped: %d", result.StoppedCount,
-		)
-	default:
-		return tmuxRequestError(fmt.Errorf(
-			"unknown tmux command %q", args[0],
-		))
-	}
-}
-
-func stopAllTmuxWindows(
-	ctx context.Context,
-	manager tmuxManager,
-) (tmuxStopAllResult, error) {
-	result := tmuxStopAllResult{
-		Action: "stop-all", Accepted: true, TmuxIDs: []string{},
-	}
-	windows, err := manager.List(ctx)
-	if err != nil {
-		return result, err
-	}
-	for _, window := range windows {
-		if window.Binding != nil {
-			return result, &contract.RuntimeError{
-				Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
-				Message: fmt.Sprintf(
-					"Tmux window %s is bound to %s=%s; run session close-all before tmux stop-all",
-					window.TmuxID, window.Binding.Kind, window.Binding.ID,
-				),
-			}
-		}
-	}
-	for _, window := range windows {
-		stopped, stopErr := manager.Stop(ctx, window.TmuxID)
-		if stopErr != nil {
-			return result, fmt.Errorf(
-				"stop Tmux window %s after %d successful stop(s): %w",
-				window.TmuxID, result.StoppedCount, stopErr,
-			)
-		}
-		if !stopped.Accepted {
-			return result, &contract.RuntimeError{
-				Code: contract.ErrorConflict, Phase: contract.PhaseTransport,
-				Message: fmt.Sprintf(
-					"Tmux window %s stop was not accepted after %d successful stop(s)",
-					window.TmuxID, result.StoppedCount,
-				),
-			}
-		}
-		result.TmuxIDs = append(result.TmuxIDs, window.TmuxID)
-		result.StoppedCount++
-	}
-	return result, nil
-}
-
-func tmuxRequestError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var runtimeErr *contract.RuntimeError
-	if errors.As(err, &runtimeErr) {
-		return err
-	}
-	return &contract.RuntimeError{
-		Code: contract.ErrorInvalidRequest, Phase: contract.PhaseRequest,
-		Message: err.Error(),
-	}
-}
-
-func resolveTmuxOpenInvocation(
+func resolveNativeTUIInvocation(
 	catalog *runtimeprofile.Catalog,
-	options tmuxOpenOptions,
+	options nativeTUIInvocationOptions,
 	pipedInput string,
 	invocationBase string,
 	inheritedEnvironment []string,
 	logsDir string,
-) (runtimetmux.Invocation, error) {
-	return resolveTmuxOpenInvocationWithNamespace(
-		catalog, options, pipedInput, invocationBase,
-		inheritedEnvironment, logsDir, executionlog.NamespaceTmux,
-	)
-}
-
-func resolveTmuxOpenInvocationWithNamespace(
-	catalog *runtimeprofile.Catalog,
-	options tmuxOpenOptions,
-	pipedInput string,
-	invocationBase string,
-	inheritedEnvironment []string,
-	logsDir string,
-	namespace executionlog.Namespace,
-) (runtimetmux.Invocation, error) {
+) (runtimetmux.Invocation, string, error) {
 	if catalog == nil {
-		return runtimetmux.Invocation{}, fmt.Errorf("Profile catalog is required")
+		return runtimetmux.Invocation{}, "", fmt.Errorf("Profile catalog is required")
 	}
 	entry, exists := catalog.Resolve(options.profileID)
 	if !exists {
-		return runtimetmux.Invocation{}, cliValidationf(
+		return runtimetmux.Invocation{}, "", cliValidationf(
 			"unknown profile %q", options.profileID,
 		)
 	}
 	if entry.Kind != runtimeprofile.KindCommand || entry.Command == nil {
-		return runtimetmux.Invocation{}, cliValidationf(
-			"tmux open profile %q must be type=cli", options.profileID,
+		return runtimetmux.Invocation{}, "", cliValidationf(
+			"session open requires a CLI profile; %q is an API profile",
+			options.profileID,
 		)
 	}
 	basePrompt, err := runtimecommand.ResolvePrompt(
 		entry.Command.Prompt, invocationBase,
 	)
 	if err != nil {
-		return runtimetmux.Invocation{}, err
+		return runtimetmux.Invocation{}, "", err
 	}
 	typedPrompt := ""
 	if options.prompt != nil {
@@ -374,7 +80,7 @@ func resolveTmuxOpenInvocationWithNamespace(
 			*options.prompt, invocationBase,
 		)
 		if err != nil {
-			return runtimetmux.Invocation{}, err
+			return runtimetmux.Invocation{}, "", err
 		}
 	}
 	positional := ""
@@ -385,44 +91,58 @@ func resolveTmuxOpenInvocationWithNamespace(
 		basePrompt, typedPrompt, pipedInput, positional,
 	)
 	if err != nil {
-		return runtimetmux.Invocation{}, err
+		return runtimetmux.Invocation{}, "", err
+	}
+	requestInput, err := runtimecommand.MergePrompt(
+		typedPrompt, pipedInput, positional,
+	)
+	if err != nil {
+		return runtimetmux.Invocation{}, "", err
 	}
 	var argvPrompt *string
 	if prompt != "" {
 		argvPrompt = &prompt
 	}
 	invocation, err := runtimecommand.Build(runtimecommand.BuildRequest{
-		Mode: runtimecommand.ModeInteractive, OutputProtocol: runtimecommand.OutputNative,
-		Profile: *entry.Command,
+		Mode:           runtimecommand.ModeInteractive,
+		OutputProtocol: runtimecommand.OutputNative,
+		Profile:        *entry.Command,
 		Overrides: runtimecommand.Overrides{
 			Model: options.model, Effort: options.effort, CWD: options.cwd,
 		},
-		ArgvPrompt: argvPrompt, InheritedEnvironment: inheritedEnvironment,
-		InvocationBase: invocationBase,
+		ArgvPrompt:           argvPrompt,
+		InheritedEnvironment: inheritedEnvironment,
+		InvocationBase:       invocationBase,
 	})
 	if err != nil {
-		return runtimetmux.Invocation{}, err
+		return runtimetmux.Invocation{}, "", err
 	}
 	_ = executionlog.AppendCLI(logsDir, executionlog.CLIRecord{
-		Time: time.Now(), Namespace: namespace, Profile: options.profileID,
+		Time: time.Now(), Namespace: executionlog.NamespaceSession,
+		Profile: options.profileID,
 		Source:  executionlog.SourceFromArgs(os.Args),
-		Command: executionlog.FormatCommand(entry.Command.Env, invocation.CWD, invocation.Path, invocation.Argv),
+		Command: executionlog.FormatCommand(
+			entry.Command.Env, invocation.CWD,
+			invocation.Path, invocation.Argv,
+		),
 	})
-	digest, err := tmuxConfigDigest(options.profileID, *entry.Command, options)
+	digest, err := nativeTUIConfigDigest(
+		options.profileID, *entry.Command, options,
+	)
 	if err != nil {
-		return runtimetmux.Invocation{}, err
+		return runtimetmux.Invocation{}, "", err
 	}
 	return runtimetmux.Invocation{
 		ProfileID: options.profileID, Path: invocation.Path,
 		Argv: invocation.Argv, Environment: invocation.Environment,
 		CWD: invocation.CWD, ConfigDigest: digest,
-	}, nil
+	}, requestInput, nil
 }
 
-func tmuxConfigDigest(
+func nativeTUIConfigDigest(
 	profileID string,
 	profile runtimecommand.Profile,
-	options tmuxOpenOptions,
+	options nativeTUIInvocationOptions,
 ) (string, error) {
 	value := struct {
 		ProfileID string                   `json:"profile_id"`
@@ -438,212 +158,24 @@ func tmuxConfigDigest(
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return "", fmt.Errorf("encode Tmux effective config: %w", err)
+		return "", fmt.Errorf("encode native TUI effective config: %w", err)
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func parseTmuxOpenOptions(args []string) (tmuxOpenOptions, error) {
-	var result tmuxOpenOptions
-	if len(args) == 0 || args[0] == "" || strings.HasPrefix(args[0], "-") {
-		return tmuxOpenOptions{}, fmt.Errorf(
-			"tmux open requires profile ID immediately after open",
-		)
-	}
-	result.profileID = args[0]
-	seen := make(map[string]bool)
-	for index := 1; index < len(args); index++ {
-		argument := args[index]
-		if argument == "--" {
-			if result.input != nil || len(args[index+1:]) > 1 {
-				return tmuxOpenOptions{}, fmt.Errorf(
-					"tmux open accepts at most one quoted input",
-				)
-			}
-			if len(args[index+1:]) == 1 {
-				value := args[index+1]
-				result.input = &value
-			}
-			break
-		}
-		name, value, attached := splitTypedOption(argument)
-		switch name {
-		case "--model", "--effort", "--prompt", "--cwd":
-			if result.input != nil {
-				return tmuxOpenOptions{}, fmt.Errorf(
-					"Tmux typed options cannot follow positional input",
-				)
-			}
-			if seen[name] {
-				return tmuxOpenOptions{}, fmt.Errorf(
-					"%s may only be specified once", name,
-				)
-			}
-			seen[name] = true
-			if !attached {
-				index++
-				if index >= len(args) ||
-					isTmuxOpenTypedOption(args[index]) {
-					return tmuxOpenOptions{}, fmt.Errorf("%s requires value", name)
-				}
-				value = args[index]
-			}
-			if value == "" {
-				return tmuxOpenOptions{}, fmt.Errorf("%s requires value", name)
-			}
-			switch name {
-			case "--model":
-				result.model = &value
-			case "--effort":
-				effort, err := runtimecommand.ParseEffort(value)
-				if err != nil {
-					return tmuxOpenOptions{}, err
-				}
-				result.effort = &effort
-			case "--prompt":
-				result.prompt = &value
-			case "--cwd":
-				result.cwd = &value
-			}
-		default:
-			if strings.HasPrefix(argument, "-") {
-				return tmuxOpenOptions{}, fmt.Errorf(
-					"unknown Tmux open option: %s", argument,
-				)
-			}
-			if result.input != nil {
-				return tmuxOpenOptions{}, fmt.Errorf(
-					"tmux open input must be one quoted argument",
-				)
-			}
-			value := argument
-			result.input = &value
-		}
-	}
-	return result, nil
-}
-
-func isTmuxOpenTypedOption(value string) bool {
-	if strings.HasPrefix(value, "--") {
-		return true
-	}
-	name, _, _ := splitTypedOption(value)
-	switch name {
-	case "--model", "--effort", "--prompt", "--cwd":
-		return true
-	default:
-		return value == "--"
-	}
-}
-
-func parseTmuxIDOnly(args []string) (string, error) {
-	if len(args) == 1 && strings.HasPrefix(args[0], "--tmux-id=") {
-		value := strings.TrimPrefix(args[0], "--tmux-id=")
-		if value != "" {
-			return value, nil
-		}
-	}
-	if len(args) != 2 || args[0] != "--tmux-id" || args[1] == "" {
-		return "", fmt.Errorf("command requires exactly --tmux-id <id>")
-	}
-	return args[1], nil
-}
-
-func parseTmuxIDAndInput(args []string) (string, string, error) {
-	if len(args) < 2 || args[0] != "--tmux-id" || args[1] == "" {
-		return "", "", fmt.Errorf(
-			"tmux send requires --tmux-id <id> and non-empty input",
-		)
-	}
-	remaining := args[2:]
-	if len(remaining) > 0 && remaining[0] == "--" {
-		remaining = remaining[1:]
-	}
-	if len(remaining) > 1 {
-		return "", "", fmt.Errorf("tmux send input must be one quoted argument")
-	}
-	input := ""
-	if len(remaining) == 1 {
-		input = remaining[0]
-	}
-	return args[1], input, nil
-}
-
-func readOptionalPromptInput(file *os.File) (string, error) {
+func readOptionalNativeTUIInput(file *os.File) (string, error) {
 	if file == nil || runtimecommand.IsTerminal(file) {
 		return "", nil
 	}
-	return runtimecommand.ReadPrompt(file)
-}
-
-func readOptionalTmuxInput(file *os.File) (string, error) {
-	if file == nil || runtimecommand.IsTerminal(file) {
-		return "", nil
-	}
-	value, err := io.ReadAll(io.LimitReader(file, tmuxInputLimit+1))
+	value, err := io.ReadAll(io.LimitReader(file, nativeTUIInputLimit+1))
 	if err != nil {
-		return "", fmt.Errorf("read Tmux input: %w", err)
+		return "", fmt.Errorf("read native TUI input: %w", err)
 	}
-	if len(value) > tmuxInputLimit {
-		return "", cliValidationf("Tmux input exceeds %d bytes", tmuxInputLimit)
+	if len(value) > nativeTUIInputLimit {
+		return "", cliValidationf(
+			"native TUI input exceeds %d bytes", nativeTUIInputLimit,
+		)
 	}
 	return string(value), nil
-}
-
-func mergeTmuxInput(pipedInput, positional string) (string, error) {
-	fragments := make([]string, 0, 2)
-	if pipedInput != "" {
-		fragments = append(fragments, pipedInput)
-	}
-	if positional != "" {
-		fragments = append(fragments, positional)
-	}
-	value := strings.Join(fragments, "\n")
-	if value == "" {
-		return "", fmt.Errorf("tmux send requires non-empty input")
-	}
-	if len(value) > tmuxInputLimit {
-		return "", fmt.Errorf("Tmux input exceeds %d bytes", tmuxInputLimit)
-	}
-	return value, nil
-}
-
-func renderTmuxAction(output *cliOutput, result runtimetmux.ActionResult) error {
-	if output.JSON() {
-		return output.writeJSON(result)
-	}
-	return output.line(
-		"Tmux %s: %s accepted=%t",
-		result.TmuxID, result.Action, result.Accepted,
-	)
-}
-
-func renderTmuxWindow(output *cliOutput, value runtimetmux.Window) error {
-	if err := output.line(
-		"Tmux %s: state=%s window=%s pane=%s",
-		value.TmuxID, value.State, value.WindowID, value.PaneID,
-	); err != nil {
-		return err
-	}
-	if value.ProfileID != "" {
-		if err := output.line(
-			"Profile: %s, cwd: %s", value.ProfileID, value.CWD,
-		); err != nil {
-			return err
-		}
-	}
-	if value.Binding != nil {
-		if err := output.line(
-			"Binding: %s=%s", value.Binding.Kind, value.Binding.ID,
-		); err != nil {
-			return err
-		}
-	}
-	if value.ExitCode != nil {
-		return output.line(
-			"Exit: code=%d signal=%s", *value.ExitCode, value.Signal,
-		)
-	}
-	return nil
 }

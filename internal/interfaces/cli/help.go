@@ -83,37 +83,23 @@ var cliHelpTopics = []cliHelpTopic{
 		Usage: []string{
 			"sn-cli session exec <cli-profile-id> [options...] [input]",
 			"sn-cli session req <api-profile-id> [options...] [input]",
-			"sn-cli session open <cli-profile-id> [--attach|--detach] [options...] [input]",
+			"sn-cli session open <cli-profile-id> [--session-id <id>] [--retention ephemeral|standard|pinned] [--model M] [--effort E] [--prompt FILE_OR_TEXT] [--cwd DIR] [--attach|--detach] [input]",
 			"sn-cli session send|attach|interrupt|close --session-id <id>",
 			"sn-cli session close-all",
-			"sn-cli session list|show|messages|events|logs|executions|execution [options...]",
+			"sn-cli session list [--state <state>] [--interface managed|native_tui]",
+			"sn-cli session show|messages|events|logs|executions|execution [options...]",
 			"sn-cli session reconcile|configure|export|delete|gc [options...]",
 		},
 		Notes: []string{
 			"session exec/req use interface=managed and create canonical Turn/Execution facts; --queue creates a durable Run.",
-			"session open uses interface=native_tui and launches the CLI Profile's native interactive mode directly in a tmux PTY; it is detached unless --attach is supplied.",
+			"session open uses interface=native_tui and launches the CLI Profile's native interactive mode directly in a private tmux PTY; it supports --prompt and is detached unless --attach is supplied.",
 			"session send injects raw input into that TUI; accepted=true only means tmux accepted the transport operation.",
 			"Raw TUI input follows terminal and provider line-editor semantics; use session exec for structured non-interactive tasks.",
 			"session open creates one running kind=native_tui durable Run with opaque lifecycle Execution evidence; TUI input/output still create no canonical Turn, Message, Event, or transcript.",
-			"Provider exit settles the lifecycle Run and closes the window; session close settles it as cancelled before stopping the window while retaining the native_tui Session fact.",
+			"session show projects that lifecycle Run/Execution; terminal Run events remain queryable through run events without creating Session Event duplicates.",
+			"Provider exit settles the lifecycle Run and closes the window; session close settles it as cancelled, requests Provider termination, forces exit after a bounded grace period, and waits for the supervisor to exit while retaining the native_tui Session fact.",
 			"A native_tui Session ID cannot be used by session exec/req; provider-native resume identity is not inferred from a Runtime Session ID.",
-			"Use tmux for raw windows that must not create Runtime Session state.",
-		},
-	},
-	{
-		Name:    "tmux",
-		Summary: "Manage raw interactive windows in the dedicated sn-session tmux session.",
-		Usage: []string{
-			"sn-cli tmux open <cli-profile-id> [options...] [input]",
-			"sn-cli tmux list",
-			"sn-cli tmux show|attach|interrupt|stop --tmux-id <id>",
-			"sn-cli tmux send --tmux-id <id> [input]",
-			"sn-cli tmux stop-all",
-		},
-		Notes: []string{
-			"Raw tmux windows do not create a Runtime Session, Turn, or Run.",
-			"tmux stop-all is all-or-nothing before mutation when a Session-bound window exists; run session close-all first.",
-			"tmux open and session open share the open action and interactive adapter; only session open publishes an opaque native_tui Session binding.",
+			"The tmux carrier is private; all public discovery and control use Session IDs.",
 		},
 	},
 	{
@@ -260,10 +246,9 @@ Usage:
   sn-cli session open <cli-profile-id> [--attach|--detach] [options...] [input]
   sn-cli session send|attach|interrupt|close --session-id <id>
   sn-cli session close-all
-  sn-cli session list|show|messages|events|logs|executions|execution
+  sn-cli session list [--state <state>] [--interface managed|native_tui]
+  sn-cli session show|messages|events|logs|executions|execution
   sn-cli session reconcile|configure|export|delete|gc
-  sn-cli tmux open <cli-profile-id> [options...] [input]
-  sn-cli tmux list|show|send|attach|interrupt|stop|stop-all
   sn-cli agent <api-profile-id> [options...] [input]
   sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
   sn-cli server info|start|status|stop|update|upgrade-check
@@ -287,9 +272,8 @@ Detailed help:
   topics: %s
 
 Lifecycle safety:
-  open               shared creation action for session and tmux; it cannot be omitted
+  session open       create a native_tui Session and opaque lifecycle Run
   session close-all  close Session-bound native TUI windows; retain Session facts
-  tmux stop-all      close raw windows only; reject before mutation if a Session binding exists
 
 Global:
   -h, --help         show root help

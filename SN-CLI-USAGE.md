@@ -59,8 +59,8 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `session send` | 向原生 TUI 注入 raw input | audit + tmux | `sn-cli session send --session-id <id> "继续"` |
 | `session attach\|interrupt\|close` | attach、发送 C-c、关闭 native TUI window | audit + tmux | `sn-cli session close --session-id <id>` |
 | `session close-all` | 关闭全部 Session-bound native TUI window，保留 Session fact | audit + tmux | `sn-cli session close-all` |
-| `session list` | 列出或按状态过滤 Session | — | `sn-cli session list --state blocked` |
-| `session show` | 查看 Session 状态与事实 | — | `sn-cli session show --session-id <id>` |
+| `session list` | 按状态或 interface 过滤 Session | — | `sn-cli session list --interface native_tui` |
+| `session show` | 查看 Session；native_tui 同时投影 lifecycle Run/Execution 与 live carrier | — | `sn-cli session show --session-id <id>` |
 | `session messages` | 读取消息历史，支持增量 | — | `sn-cli session messages --session-id <id> --after-seq 10` |
 | `session events` | 读取生命周期与 Execution 事件 | — | `sn-cli session events --session-id <id>` |
 | `session logs` | 查看最近活动（默认 tail 120） | — | `sn-cli session logs --session-id <id>` |
@@ -71,19 +71,6 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `session export` | 导出 Session 到文件 | — | `sn-cli session export --session-id <id> --output ./out.json` |
 | `session delete` | 删除非活跃 Session（移入 trash） | audit | `sn-cli session delete --session-id <id>` |
 | `session gc` | 回收过期 ephemeral Session | audit | `sn-cli session gc --older-than-hours 72 --apply` |
-
-### tmux
-
-| 命令 | 作用 | 记录 | 示例 |
-|---|---|:---:|---|
-| `tmux open` | 创建一个 managed 交互窗口 | cli-log + audit | `sn-cli tmux open cx "打开长期任务"` |
-| `tmux list` | 列出 managed 窗口 | — | `sn-cli tmux list` |
-| `tmux show` | 查看窗口身份与状态 | — | `sn-cli tmux show --tmux-id <id>` |
-| `tmux send` | 向窗口发送输入 | audit | `sn-cli tmux send --tmux-id <id> "继续"` |
-| `tmux attach` | 进入 managed 窗口 | audit | `sn-cli tmux attach --tmux-id <id>` |
-| `tmux interrupt` | 对 running 窗口发送 C-c | audit | `sn-cli tmux interrupt --tmux-id <id>` |
-| `tmux stop` | 按身份停止窗口 | audit | `sn-cli tmux stop --tmux-id <id>` |
-| `tmux stop-all` | 停止全部 raw window | audit | `sn-cli tmux stop-all` |
 
 ### agent
 
@@ -126,7 +113,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 
 | 命令 | 作用 | 示例 |
 |---|---|---|
-| `help [topic]` / `-h` / `--help` | 显示根帮助或指定主题帮助 | `sn-cli help tmux` |
+| `help [topic]` / `-h` / `--help` | 显示根帮助或指定主题帮助 | `sn-cli help session` |
 | `version` / `--version` | 显示构建版本 | `sn-cli --version` |
 
 > 内部入口 `sn-cli __sn_tmux_helper` 与 `sn-cli server upgrade-activate` 不属于日常
@@ -144,7 +131,6 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | 保存一轮 API 会话历史 | `sn-cli session req <api-profile> ...` | session / api-log | 单次 API Turn |
 | 后台执行并保存会话 | `session exec\|req <profile> --queue ...` | durable / worker log | 提交 Durable Session Run |
 | 带 Runtime identity 的长期 TUI | `session open <cli-profile> ...` | session + lifecycle Run + tmux / cli-log | `interface=native_tui`，无 canonical transcript/Turn |
-| 不带 Session identity 的长期 TUI | `sn-cli tmux open ...` | tmux / cli-log | 独立 Tmux window manager |
 | 自动执行 model/tool 循环 | `sn-cli agent <api-profile> ...` | Durable Run / 每轮 api-log | 默认同步；`--queue` 只入队 |
 | 查询和控制后台任务 | `sn-cli run ...` | — | 不接受 fresh submission |
 | 启动 worker 和 HTTP 服务 | `sn-cli server start` | 服务状态 | 返回可供第三方托管的 PID |
@@ -162,10 +148,8 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 - `session open` 创建 `interface=native_tui` Session 和 running 的 `kind=native_tui`
   lifecycle Run/Execution；Provider 原生 TUI 的输入输出不进入 canonical transcript，
   也不创建 Turn/Message/Event。两种 interface 不共用 Session ID。
-- 原始 `tmux` 只管理交互窗口，不创建 Session/Run；`session open` 是增加 Runtime
-  Session identity 的显式组合入口。
-- `session open` 与 `tmux open` 统一使用 `open`；action 不可省略，旧 `tmux start`
-  不提供 alias。
+- Provider 原生长期 TUI 的 public owner 固定为 `native_tui` Session；tmux 只是私有
+  PTY carrier，不提供 public namespace、alias 或 compatibility shim。
 - Agent 只接受 API Profile，负责自动 model/tool/tool-result 循环。
 - `--queue` 只入队，不会自动启动 `sn-server`。
 
@@ -189,9 +173,6 @@ sn-cli
 │  ├─ list | show | messages | events | logs
 │  ├─ executions | execution | reconcile
 │  └─ configure | export | delete | gc
-├─ tmux
-│  ├─ open <cli-profile> [options] [input]
-│  └─ list | show | send | attach | interrupt | stop | stop-all
 ├─ agent <api-profile> [options] [input]
 ├─ run
 │  ├─ get | list | result | events | watch
@@ -199,14 +180,14 @@ sn-cli
 ├─ server
 │  ├─ info | start | status | stop | update | upgrade-check
 │  └─ upgrade-activate       # 内部 activation action
-├─ help [direct|exec|req|doctor|profile|session|tmux|agent|run|server]
+├─ help [direct|exec|req|doctor|profile|session|agent|run|server]
 ├─ -h | --help                         # 仅根帮助
 ├─ version | --version
 └─ __sn_tmux_helper          # 内部 Tmux bootstrap
 ```
 
-CLI 没有更多固定的三级 action。`profile-id`、`session-id`、`execution-id`、
-`tmux-id` 和 `run-id` 是参数，不是 namespace。执行入口统一把 Profile ID 放在
+CLI 没有更多固定的三级 action。`profile-id`、`session-id`、`execution-id` 和
+`run-id` 是参数，不是 namespace。执行入口统一把 Profile ID 放在
 namespace/action 之后，把 input 放在最后。
 
 ### ID 命名
@@ -217,7 +198,7 @@ Profile ID：
 - 首字符必须是 ASCII 字母或数字。
 - 后续字符可使用 ASCII 字母、数字、`-`、`_`、`.`。
 - `.` 不能是首字符。
-- 不能使用固定 namespace `doctor/exec/req/profile/session/tmux/agent/run/server/help/version`
+- 不能使用固定 namespace `doctor/exec/req/profile/session/agent/run/server/help/version`
   或管理 action `list/show/check`。
 
 Runtime 生成的 Session 系列 ID 使用前缀加 32 位小写十六进制：
@@ -241,8 +222,7 @@ sn-cli
 sn-cli help
 sn-cli help doctor
 sn-cli help session
-sn-cli help tmux
-sn-cli --json help tmux
+sn-cli --json help session
 sn-cli -h
 sn-cli --help
 
@@ -254,12 +234,12 @@ sn-cli --json version
 `sn-cli help <topic>` 是唯一 topic 级帮助入口。当前 topic 固定为：
 
 ```text
-direct exec req doctor profile session tmux agent run server
+direct exec req doctor profile session agent run server
 ```
 
 human 输出包含准确语法与关键状态边界；`sn-cli --json help [topic]` 返回同一份
-`name/summary/usage/notes` machine contract。根 help 还列出统一的 `open` 创建 action、
-`session close-all` / `tmux stop-all` 安全边界，以及 `${SN_CLI_HOME:-~/.sn}/logs`
+`name/summary/usage/notes` machine contract。根 help 还列出 `session open` /
+`session close-all` 生命周期边界，以及 `${SN_CLI_HOME:-~/.sn}/logs`
 下的 execution、audit 与 server log 路径。
 
 `-h`、`--help`、`version` 和 `--version` 不接受尾随参数。为避免每个 namespace
@@ -300,7 +280,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 6
+  "contract_version": 7
 }
 ```
 
@@ -336,10 +316,9 @@ HTTP 的流式格式是 SSE，和 CLI NDJSON 不同。
 | 范围 | `--name value` | `--name=value` |
 |---|---:|---:|
 | bare CLI / `exec` typed 参数 | 支持 | 支持 |
-| `tmux open` typed 参数 | 支持 | 支持 |
-| `tmux show/attach/interrupt/stop --tmux-id` | 支持 | 支持 |
+| `session open` typed 参数 | 支持 | 支持 |
 | `req` 参数 | 支持 | 通常不支持 |
-| Session 参数 | 支持 | 不支持 |
+| 其它 Session 参数 | 支持 | 通常不支持 |
 | Agent 参数 | 支持 | 不支持 |
 | Run 参数 | 支持 | 不支持 |
 | Server 参数 | 支持 | 不支持 |
@@ -362,10 +341,10 @@ sn-cli session req api-cx --queue -- "-这是Session输入"
 | 输入 | 最大值 |
 |---|---:|
 | CLI Profile prompt 合并结果 | 128,000 bytes |
-| `tmux open` prompt 合并结果 | 128,000 bytes |
+| `session open` prompt 合并结果 | 128,000 bytes |
 | API Profile prompt/request | 1 MiB |
 | Session input | 1 MiB |
-| `tmux send` input | 1 MiB |
+| `session send` input | 1 MiB |
 | Session tool result content | 1 MiB |
 | Run resume input file | 1 MiB |
 
@@ -1005,8 +984,7 @@ sn-cli exec cx-deep --effort high "分析当前仓库"
 
 `exec` namespace 只表示目标 CLI 的 non-interactive 执行模式，不表示后台运行，
 也不决定使用当前终端还是 Tmux。当前调用会等待目标 CLI 退出；需要后台队列时使用
-`session exec <profile> --queue`；需要带 canonical history 的长期窗口时使用
-`session open`，只需要 Provider 原生 TUI 时使用 `tmux open`。
+`session exec <profile> --queue`；需要 Provider 原生长期 TUI 时使用 `session open`。
 
 #### 动态 effort
 
@@ -1419,9 +1397,10 @@ sn-cli run result --run-id <run_id>
 ```text
 sn-cli session list
 sn-cli session list --state idle|active|blocked|archived
+sn-cli session list --interface managed|native_tui
 ```
 
-用途：查询全部 Session 或按状态过滤。该路径严格读取
+用途：查询全部 Session，或同时按状态和 interface 过滤。该路径严格读取
 `sessions/_system/index.json`，不会在普通 Runtime bootstrap 或每次 list 时扫描全部
 Session、Turn、Execution 和 JSONL，因此启动与 list 的工作量不再随 canonical fact
 总量做 O(N) 校验。index 缺失时会从 canonical `session.json` 重建；index 损坏、
@@ -1434,6 +1413,7 @@ schema 不匹配或事实冲突时 fail closed。`sn-cli doctor` 与 activation 
 sn-cli session list
 sn-cli session list --state blocked
 sn-cli --json session list --state idle
+sn-cli --json session list --interface native_tui
 ```
 
 ### 6.5 `session show`
@@ -1444,7 +1424,10 @@ sn-cli --json session list --state idle
 sn-cli session show --session-id <session_id>
 ```
 
-用途：查询一个 Session 的状态、retention、消息数和当前事实。
+用途：查询一个 Session 的状态、retention、消息数和当前事实。对于
+`interface=native_tui`，同一响应还从 SQLite 中唯一对应的 lifecycle Run 投影 `run`
+和 opaque `execution`；carrier 仍 live 时额外返回 `tmux_window`，终态 Session 不再
+返回该字段。该投影不创建 Session Message/Event/Execution 副本。
 
 示例：
 
@@ -1879,6 +1862,7 @@ sn-cli session open <cli-profile-id>
   [--retention ephemeral|standard|pinned]
   [--model M]
   [--effort low|medium|high|xhigh|max]
+  [--prompt FILE_OR_TEXT]
   [--cwd DIR]
   [--attach | --detach]
   [INPUT]
@@ -1890,8 +1874,8 @@ sn-cli session close --session-id <id>
 sn-cli session close-all
 ```
 
-`open` 只接受 CLI Profile，使用与 `tmux open` 相同的 interactive adapter，直接在
-tmux PTY 中启动 Codex/Claude 原生 TUI，并发布 `interface=native_tui` Session fact。
+`open` 只接受 CLI Profile，使用 interactive adapter，直接在私有 tmux PTY 中启动
+Codex/Claude 原生 TUI，并发布 `interface=native_tui` Session fact。
 默认 detached；`--attach` 会在创建成功后立即进入 window，且只支持 human TTY；
 `--attach` 与 `--detach` 互斥。
 
@@ -1900,11 +1884,16 @@ ID 推断 Provider native resume identity，因此已经存在或已经关闭的
 Session 不能重新 `open`。需要新 TUI 时创建新 Session；Provider 原生 resume 仍由 bare
 CLI Profile 的 `resume` 入口管理，不会自动绑定到旧 Runtime Session。
 
-初始 INPUT 合并后作为 interactive argv 的最终 prompt token；后续 `session send` 使用
+prompt 按 Profile base prompt、`--prompt`、非 TTY stdin、位置 INPUT 顺序合并，作为
+interactive argv 的最终 prompt token；后续 `session send` 使用
 tmux paste buffer 注入 raw input。Provider 直接拥有 TUI 状态、transcript、tool 行为与
 完成语义；Runtime 不解析 pane，也不为输入输出创建 Turn、Message、Event 或
 transcript。`open` 创建一个 running 的 `kind=native_tui` Durable Run 和唯一
-`execution_id`，Execution 只记录 opaque process/window lifecycle。
+`execution_id`，Execution 只记录 opaque process/window lifecycle。Session file Store
+与 SQLite Run Store 不共享 transaction，因此不复制第二套 Session Event/Execution；
+`session show` 从唯一 lifecycle Run 投影 Run、Execution 与可选 live carrier。
+terminal lifecycle Event 由 Run Store 随 settle transaction 写入，可使用
+`run events --run-id <run_id>` 查询，但不会复制为 Session Event。
 `session exec|req` 会拒绝 `native_tui` Session ID。
 
 `session send` 受 PTY line discipline 与 Provider line editor 语义约束，不承诺大块
@@ -1919,6 +1908,7 @@ sn-cli session send --session-id <session_id> "继续下一步"
 sn-cli session attach --session-id <session_id>
 
 sn-cli session show --session-id <session_id>
+sn-cli session list --interface native_tui
 sn-cli session close --session-id <session_id>
 sn-cli session close-all
 ```
@@ -1931,229 +1921,37 @@ Run settle：exit code 0 为 `completed`，其它 exit/signal 为 `failed`；随
 window。该 terminal receipt 只证明 opaque process lifecycle 收口，不是 canonical Turn
 completion。`interrupt` 对 running pane 发送 `C-c`；`close` 先把仍 open 的 Run settle
 为 `cancelled`，再按 opaque binding 停止精确 `tmux_id`，同时保留 `native_tui`
-Session fact。`run cancel|retry|resume` 不接管 native TUI，关闭使用 `session close`。
+Session fact。停止时 Runtime 向 supervisor 发送 `SIGTERM`；supervisor 将
+`SIGHUP|SIGTERM` 显式转发给 Provider，最多等待 2 秒后强制结束，并确认自身退出后才让
+close 成功返回。`C-c`/`SIGINT` 不触发这个强制退出计时。`run cancel|retry|resume` 不接管
+native TUI，关闭使用 `session close`。
 
 `close-all` 不接受参数。它对调用开始时所有 `binding.kind=session` 的 window 做
-快照并逐个先 settle lifecycle Run、再精确停止；不触碰 raw Tmux window，也不删除
+快照并逐个先 settle lifecycle Run、再精确停止；只处理 Session binding，也不删除
 `native_tui` Session fact。空集合成功返回 `closed_count=0`。中途失败时已完成的
 close 保留，剩余项可重跑。
 
-## 7. Tmux
-
-`sn-cli tmux` 是独立的原始 interactive process manager：
-
-- 只接受 `type=cli` Profile。
-- 固定使用 interactive adapter。
-- 固定使用 `sn-session`；`tmux.server_mode=default|dedicated` 选择普通或专用
-  Tmux server，缺省为 `default`。
-- 每次 `open` 创建一个 managed window。
-- 自身不创建 Runtime Session、Turn 或 Run；`session open` 在相同交互窗口能力上增加
-  `native_tui` Session identity、opaque lifecycle Run/Execution 与 binding。
-- 不保存 pane transcript 或 paste 内容。
-- 需要 `tmux >= 3.2`。
-
-默认模式下普通 `tmux list-sessions` 可见 `sn-session`，也可用
-`tmux attach-session -t sn-session` 进入并使用原生 window 导航；生命周期 mutation
-仍应使用带 `tmux_id` 的 `sn-cli tmux ...` 命令。`dedicated` 模式保留隔离 socket。
-
-native TUI Session 与 raw Tmux window 统一使用 `open` action，但不能省略 action：
-`sn-cli <cli-profile-id>` 已是 direct Profile 入口，省略会使路由语义冲突。旧
-`tmux start` 不提供 alias。
-
-### 7.1 `tmux open`
-
-语法：
-
-```text
-sn-cli tmux open
-  <cli-profile-id>
-  [--model M|--model=M]
-  [--effort E|--effort=E]
-  [--prompt FILE_OR_TEXT|--prompt=FILE_OR_TEXT]
-  [--cwd DIR|--cwd=DIR]
-  [INPUT]
-```
-
-四个 typed option：
-
-- 每个最多一次。
-- 必须位于 Profile ID 后、INPUT 前。
-- 支持分离和 `=` 形式。
-
-Prompt 合并：
-
-```text
-Profile prompt
-→ --prompt
-→ 非 TTY stdin
-→ positional INPUT
-```
-
-初始 prompt 可以为空。
-
-示例：
-
-```bash
-sn-cli tmux open cx
-sn-cli tmux open cx --effort high "继续处理"
-sn-cli tmux open cx --model gpt-5.6-sol --cwd "$PWD"
-sn-cli tmux open cx --prompt ./context.md "补充任务"
-sn-cli tmux open cx -- "-开头的初始输入"
-```
-
-返回一个 `tmux_id`，后续所有操作都使用这个 Runtime ID，而不是自己拼 Tmux
-window name。
-
-### 7.2 `tmux list`
-
-语法：
-
-```text
-sn-cli tmux list
-```
-
-不接受参数。当前模式的 managed `sn-session` 不存在时，成功返回空列表。
-
-```bash
-sn-cli tmux list
-sn-cli --json tmux list
-```
-
-### 7.3 `tmux show`
-
-语法：
-
-```text
-sn-cli tmux show --tmux-id <id>
-sn-cli tmux show --tmux-id=<id>
-```
-
-用途：查看 Profile、window、pane、状态、exit code 和身份信息。
-
-```bash
-sn-cli tmux show --tmux-id <tmux_id>
-```
-
-### 7.4 `tmux send`
-
-语法：
-
-```text
-sn-cli tmux send
-  --tmux-id <id>
-  [--]
-  [INPUT]
-```
-
-`send` 的 `--tmux-id` 只支持分离形式。
-
-输入来源：
-
-```text
-非 TTY stdin
-→ positional INPUT
-```
-
-最终内容必须非空，最大 1 MiB。Runtime 使用 Tmux paste-buffer 粘贴内容，然后
-单独发送 Enter。
-
-示例：
-
-```bash
-sn-cli tmux send --tmux-id <tmux_id> "继续"
-
-printf '%s' '补充上下文' |
-  sn-cli tmux send --tmux-id <tmux_id> "执行"
-
-sn-cli tmux send --tmux-id <tmux_id> -- "-开头的输入"
-```
-
-返回 accepted 只表示 Tmux 接受动作，不表示目标 TUI 已处理完成。
-
-### 7.5 `tmux attach`
-
-语法：
-
-```text
-sn-cli tmux attach --tmux-id <id>
-sn-cli tmux attach --tmux-id=<id>
-```
-
-用途：进入 managed Tmux window。
-
-要求：
-
-- stdin/stdout 必须是 TTY。
-- 不支持 `--json`。
-- nested Tmux attach 受到当前 managed server 身份限制。
-
-```bash
-sn-cli tmux attach --tmux-id <tmux_id>
-```
-
-### 7.6 `tmux interrupt`
-
-语法：
-
-```text
-sn-cli tmux interrupt --tmux-id <id>
-sn-cli tmux interrupt --tmux-id=<id>
-```
-
-仅对 `running` window 发送 `C-c`。
-
-```bash
-sn-cli tmux interrupt --tmux-id <tmux_id>
-```
-
-accepted 不表示目标已经完成中断处理。
-
-### 7.7 `tmux stop`
-
-语法：
-
-```text
-sn-cli tmux stop --tmux-id <id>
-sn-cli tmux stop --tmux-id=<id>
-```
-
-用途：按精确 window identity kill managed window。
-
-```bash
-sn-cli tmux stop --tmux-id <tmux_id>
-```
-
-最后一个 managed window 被停止时，`default` 只删除 `sn-session`，不影响普通
-server 中的其他 session；`dedicated` 清理隔离 server/socket。对于 `orphaned`
-window，只有能够证明身份时才会停止。
-
-### 7.8 `tmux stop-all`
-
-语法：
-
-```text
-sn-cli tmux stop-all
-```
-
-它对调用开始时所有无 binding 的 raw window 做快照并逐个精确 `stop`。只要快照中
-存在 Session binding，就在任何 mutation 前整体返回 conflict，并提示先执行
-`sn-cli session close-all`；Tmux namespace 不越过 Session owner 直接关闭绑定窗口。
-
-空集合成功返回 `stopped_count=0`。并发新建 window 不属于当前快照；中途失败可能
-留下尚未处理的 raw window，可安全重跑。
-
-### 7.9 Tmux 状态
-
-```text
-starting | running | exited | orphaned
-```
-
-| 状态 | 含义 |
-|---|---|
-| `starting` | helper 已登记，尚未完成 target exec |
-| `running` | 目标 executable 身份已确认 |
-| `exited` | pane 已退出，window 仍可因 remain-on-exit 保留 |
-| `orphaned` | provisional window 未形成完整 record |
+## 7. Private Tmux carrier
+
+Tmux 只作为 `native_tui` Session 的私有 PTY carrier：
+
+- `runtime.json` 的 `tmux.server_mode=default|dedicated` 选择普通或隔离 server；
+- Session 固定为 `sn-session`，需要 `tmux >= 3.2`；
+- private registry 保存 live window identity 与 `binding={kind:"session",id:<session_id>}`；
+- private helper 负责 ready/go launch gate、paste、interrupt、attach 与精确 stop；
+- Provider 退出后 supervisor 先收口 lifecycle Run，再自动停止绑定 window；
+- carrier stop 显式终止 supervisor；supervisor 转发终止信号并以 2 秒宽限期约束 Provider
+  退出，stop 等待 supervisor identity 消失。
+
+不存在 public `sn-cli tmux` namespace、alias 或 compatibility shim。所有 public 创建、
+发现与 mutation 分别使用 `session open`、`session list --interface native_tui`、
+`session show --session-id`、`session send|attach|interrupt|close|close-all`，身份参数固定为
+Runtime Session ID。`tmux` 不再是保留 Profile ID；如果 active config 中存在
+`configs/tmux.json`，根路由会把 `sn-cli tmux ...` 当作普通 direct CLI Profile 调用。
+
+carrier state 仍为 `starting|running|exited|orphaned`，但它不是独立 canonical lifecycle。
+`accepted=true` 只证明 transport mutation 被接受；Run/Execution 只证明 opaque process
+lifecycle，均不证明 Provider 消费输入或完成语义任务。
 
 ## 8. Agent
 
@@ -3074,8 +2872,11 @@ sn-cli server upgrade-activate
 - command link 在 activation mutation 前通过 durable owner sidecar、owner
   `flock` 和 no-clobber symlink 预留；失败时保留 exact owner/link，retry 仅在
   owner 内容、inode identity 与 target 均未变化时复用。
-- `--local-source-install` 自动启用 configs 覆盖并先停止 server。
+- `--local-source-install` 自动启用 configs 覆盖；candidate 验证后先按
+  `sn-cli session close-all` 语义关闭全部 Session-bound native TUI，再停止 server。
 - `--local-source-install` 不能与显式 `--overwrite-configs` 同时使用。
+- 任一剩余 tmux carrier 或目标 Runtime binary process 都会使 preflight 拒绝安装；不再
+  为旧版 supervisor 执行安装期进程组清理。
 - 成功后不自动重启 server。
 - 在创建 target state/lock/stage 或停止 server 前，candidate 先验证 payload 的完整
   Profile 语义、required `release/runtime.json`、`resources/tools/`、
@@ -3107,15 +2908,16 @@ make install
 
 - 构建完整 candidate。
 - 校验 binary、profiles、tools、runtime config 和 resources。
-- 自动停止受管 `sn-server`。
+- 自动按 `sn-cli session close-all` 语义关闭全部 Session-bound native TUI，再停止受管
+  `sn-server`。
 - 按 source→active 映射，用源码 `configs/`、`resources/{schema,tools}/` 和
   `release/` 覆盖 active home。
 - 丢弃现有 `sessions/`、`state/session-locks/`、
   `state/session-invocations/`、`state/session-mutations/`、
   `state/session-trash-moves/` 和 `state/runtime.db*`。
 - 成功后不自动启动 server。
-- 安装前必须先停止全部由 `sn-cli tmux` 管理的 live window；preflight 会拒绝
-  覆盖仍由 managed Tmux 使用的 active home，不会自动关闭交互窗口。
+- preflight 会拒绝任何未被关闭的 tmux carrier 或其它仍在运行的 Runtime binary；安装器不会
+  对旧版遗留进程执行额外的进程组清理。
 
 安装后：
 
@@ -3667,22 +3469,14 @@ sn-cli session interrupt --session-id <session_id>
 sn-cli session close --session-id <session_id>
 ```
 
-只需要 Provider 原生 TUI、不需要 Session/Run 时才使用原始 Tmux：
+发现与查看 lifecycle：
 
 ```bash
-sn-cli --json tmux open cx "打开长期任务"
+sn-cli --json session list --interface native_tui
+sn-cli --json session show --session-id <session_id>
 ```
 
-后续：
-
-```bash
-sn-cli tmux send --tmux-id <tmux_id> "继续"
-sn-cli tmux attach --tmux-id <tmux_id>
-sn-cli tmux interrupt --tmux-id <tmux_id>
-sn-cli tmux stop --tmux-id <tmux_id>
-```
-
-这套原始 Tmux 流程没有 Session history。
+不存在不带 Runtime Session identity 的 public raw Tmux 流程。
 
 ### 13.6 Agent 自动工具循环
 
@@ -3853,10 +3647,10 @@ sn-cli profile show <profile-id>
 sn-cli profile check <profile-id>
 ```
 
-`tmux open`：
+`session open`：
 
 - 需要 `tmux >= 3.2`。
-- 只接受 CLI Profile。
+- 只接受 CLI Profile，tmux 仅为私有 carrier。
 
 ### API Profile 认证失败
 
@@ -3886,9 +3680,10 @@ sn-cli __sn_tmux_helper --manifest ABS_PATH
 sn-cli __sn_native_tui_supervisor --manifest ABS_PATH --digest SHA256
 ```
 
-`__sn_tmux_helper` 由 Tmux Service 写入 launch manifest 后在 pane 中调用；
+`__sn_tmux_helper` 由 private tmux carrier 写入 launch manifest 后在 pane 中调用；
 `__sn_native_tui_supervisor` 在同一 pane 中启动 Profile 解析后的 Provider CLI、收口
-lifecycle Run 并自动停止 window。二者都是 private bootstrap protocol，不要手工构造。
+lifecycle Run 并自动停止 window；收到 `SIGHUP|SIGTERM` 时向 Provider 转发，2 秒后仍未
+退出则强制结束。二者都是 private bootstrap protocol，不要手工构造。
 
 ### 入口职责
 
@@ -3898,7 +3693,6 @@ lifecycle Run 并自动停止 window。二者都是 private bootstrap protocol�
 一次 API 请求 → req <api-profile>
 有记录的执行  → session exec|req <profile> [--queue]
 长期 Session   → session open|send|attach|interrupt|close|close-all
-原生 TUI 窗口 → tmux open|send|attach|interrupt|stop|stop-all
 自动工具循环  → agent <api-profile> [--queue]
 已有 Run 控制 → run ...
 ```

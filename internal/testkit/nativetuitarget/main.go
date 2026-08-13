@@ -5,6 +5,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -24,12 +27,25 @@ func main() {
 	tty := stdin != nil && stdout != nil &&
 		stdin.Mode()&os.ModeCharDevice != 0 &&
 		stdout.Mode()&os.ModeCharDevice != 0
-	_, _ = fmt.Fprintf(fact, "tty:%t\nargv:", tty)
+	ignoreTermination := os.Getenv("SN_NATIVE_TUI_IGNORE_TERM") == "1"
+	if ignoreTermination {
+		signal.Ignore(syscall.SIGHUP, syscall.SIGTERM)
+	}
+	_, _ = fmt.Fprintf(
+		fact,
+		"tty:%t\npid:%d\nparent_pid:%d\nignore_termination:%t\nargv:",
+		tty, os.Getpid(), os.Getppid(), ignoreTermination,
+	)
 	for _, argument := range os.Args[1:] {
 		_, _ = fmt.Fprintf(fact, "<%s>", argument)
 	}
 	_, _ = fmt.Fprintln(fact)
 	_ = fact.Sync()
+	if ignoreTermination {
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		_, _ = fmt.Fprintf(fact, "input:%s\n", scanner.Text())
