@@ -15,7 +15,12 @@
     "poll_interval": "250ms"
   },
   "run": {
-    "settled_retention": "168h"
+    "settled_retention": "168h",
+    "reaper": {
+      "interval": "5m",
+      "paused_ttl": "30m",
+      "needs_reconciliation_ttl": "24h"
+    }
   },
   "tmux": {
     "server_mode": "default"

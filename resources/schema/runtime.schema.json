@@ -104,6 +104,80 @@
             }
           ],
           "default": "168h"
+        },
+        "reaper": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interval": {
+              "type": "string",
+              "x-sn-duration-min": "0",
+              "x-sn-duration-max": "1h",
+              "anyOf": [
+                {
+                  "const": "0"
+                },
+                {
+                  "allOf": [
+                    {
+                      "pattern": "^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+                    },
+                    {
+                      "pattern": "[1-9]"
+                    }
+                  ]
+                }
+              ],
+              "default": "5m"
+            },
+            "paused_ttl": {
+              "type": "string",
+              "x-sn-duration-min": "0",
+              "x-sn-duration-max": "720h",
+              "anyOf": [
+                {
+                  "const": "0"
+                },
+                {
+                  "allOf": [
+                    {
+                      "pattern": "^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+                    },
+                    {
+                      "pattern": "[1-9]"
+                    }
+                  ]
+                }
+              ],
+              "default": "30m"
+            },
+            "needs_reconciliation_ttl": {
+              "type": "string",
+              "x-sn-duration-min": "0",
+              "x-sn-duration-max": "720h",
+              "anyOf": [
+                {
+                  "const": "0"
+                },
+                {
+                  "allOf": [
+                    {
+                      "pattern": "^\\+?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+$"
+                    },
+                    {
+                      "pattern": "[1-9]"
+                    }
+                  ]
+                }
+              ],
+              "default": "24h"
+            }
+          },
+          "default": {
+            "interval": "5m",
+            "paused_ttl": "30m",
+            "needs_reconciliation_ttl": "24h"
+          }
         }
       }
     },
