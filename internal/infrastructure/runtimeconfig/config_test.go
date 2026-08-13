@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -28,6 +29,22 @@ func TestDefaultIsValid(t *testing.T) {
 	}
 	if value.Tmux.ServerMode != TmuxServerModeDefault {
 		t.Fatalf("default tmux server mode=%q", value.Tmux.ServerMode)
+	}
+	if value.Run.Reaper.Interval != "5m" ||
+		value.Run.Reaper.PausedTTL != "30m" ||
+		value.Run.Reaper.NeedsReconciliationTTL != "24h" {
+		t.Fatalf("default run reaper=%#v", value.Run.Reaper)
+	}
+}
+
+func TestReleaseRuntimeMatchesLoaderDefaults(t *testing.T) {
+	path := filepath.Join(reporoot.Root(t), "release", "runtime.json")
+	value, err := LoadRequired(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(value, Default()) {
+		t.Fatalf("release runtime=%#v, want defaults=%#v", value, Default())
 	}
 }
 
@@ -130,7 +147,7 @@ func TestRuntimeSchemaIsStrictJSON(t *testing.T) {
 	}
 	if document["additionalProperties"] != false ||
 		!strings.Contains(string(data), `"settled_retention"`) {
-		t.Fatal("runtime schema does not match the strict vNext root")
+		t.Fatal("runtime schema does not match the strict Runtime root")
 	}
 }
 
@@ -169,9 +186,25 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 					"max_wall_time":"+1h30m"
 				},
 				"scheduler":{"workers":4,"poll_interval":".25s"},
-				"run":{"settled_retention":"168h"},
+				"run":{
+					"settled_retention":"168h",
+					"reaper":{
+						"interval":"5m",
+						"paused_ttl":"30m",
+						"needs_reconciliation_ttl":"24h"
+					}
+				},
 				"tmux":{"server_mode":"default"}
 			}`,
+			valid: true,
+		},
+		{
+			name: "reaper_disabled",
+			document: `{"run":{"reaper":{
+				"interval":"0",
+				"paused_ttl":"0",
+				"needs_reconciliation_ttl":"0"
+			}}}`,
 			valid: true,
 		},
 		{
@@ -181,6 +214,10 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		},
 		{name: "unknown_root", document: `{"unknown":true}`},
 		{name: "unknown_nested", document: `{"agent":{"unknown":true}}`},
+		{
+			name:     "unknown_reaper_property",
+			document: `{"run":{"reaper":{"unknown":true}}}`,
+		},
 		{name: "invalid_tmux_mode", document: `{"tmux":{"server_mode":"shared"}}`},
 		{name: "null_tools", document: `{"agent":{"tools":null}}`},
 		{
@@ -268,6 +305,29 @@ func TestRuntimeSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name:         "retention_above_runtime_bound",
 			document:     `{"run":{"settled_retention":"8761h"}}`,
+			semanticRule: "duration total is bounded by the Go loader",
+		},
+		{
+			name:     "noncanonical_zero_reaper_interval",
+			document: `{"run":{"reaper":{"interval":"0s"}}}`,
+		},
+		{
+			name:     "invalid_reaper_interval",
+			document: `{"run":{"reaper":{"interval":"later"}}}`,
+		},
+		{
+			name:         "reaper_interval_above_runtime_bound",
+			document:     `{"run":{"reaper":{"interval":"1h1ns"}}}`,
+			semanticRule: "duration total is bounded by the Go loader",
+		},
+		{
+			name:         "reaper_paused_ttl_above_runtime_bound",
+			document:     `{"run":{"reaper":{"paused_ttl":"721h"}}}`,
+			semanticRule: "duration total is bounded by the Go loader",
+		},
+		{
+			name:         "reaper_reconciliation_ttl_above_runtime_bound",
+			document:     `{"run":{"reaper":{"needs_reconciliation_ttl":"721h"}}}`,
 			semanticRule: "duration total is bounded by the Go loader",
 		},
 	}

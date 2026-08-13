@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	cliOutputSchemaVersion   = 1
-	cliOutputContractVersion = 6
+	cliOutputSchemaVersion   = contract.MachineEnvelopeSchemaVersion
+	cliOutputContractVersion = contract.RuntimeContractVersion
 )
 
 type cliOutput struct {

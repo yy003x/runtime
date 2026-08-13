@@ -94,8 +94,8 @@ var cliHelpTopics = []cliHelpTopic{
 			"session open uses interface=native_tui and launches the CLI Profile's native interactive mode directly in a tmux PTY; it is detached unless --attach is supplied.",
 			"session send injects raw input into that TUI; accepted=true only means tmux accepted the transport operation.",
 			"Raw TUI input follows terminal and provider line-editor semantics; use session exec for structured non-interactive tasks.",
-			"Native TUI input and output do not create canonical Turn, Message, Event, Execution, or Run facts.",
-			"session interrupt sends C-c; close and close-all stop bound windows while retaining their native_tui Session facts.",
+			"session open creates one running kind=native_tui durable Run with opaque lifecycle Execution evidence; TUI input/output still create no canonical Turn, Message, Event, or transcript.",
+			"Provider exit settles the lifecycle Run and closes the window; session close settles it as cancelled before stopping the window while retaining the native_tui Session fact.",
 			"A native_tui Session ID cannot be used by session exec/req; provider-native resume identity is not inferred from a Runtime Session ID.",
 			"Use tmux for raw windows that must not create Runtime Session state.",
 		},
@@ -138,6 +138,7 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 		Notes: []string{
 			"run is a control plane; new work enters through session or agent.",
+			"kind=native_tui Runs are query-only here; use session close or close-all to stop their windows.",
 			"Terminal Run state, result/error, terminal event, and run.settled share one SQLite transaction.",
 		},
 	},

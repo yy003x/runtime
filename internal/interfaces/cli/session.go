@@ -24,7 +24,7 @@ import (
 	"github.com/yy003x/runtime/pkg/session"
 )
 
-func runSessionNamespaceVNext(
+func runSessionNamespace(
 	paths layout.Paths,
 	args []string,
 	output *cliOutput,

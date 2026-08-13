@@ -9,13 +9,16 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/domain/identity"
+	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
 	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	runtimecommand "github.com/yy003x/runtime/pkg/command"
 	"github.com/yy003x/runtime/pkg/contract"
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
+	runtime "github.com/yy003x/runtime/pkg/run"
 	"github.com/yy003x/runtime/pkg/session"
 	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
 )
@@ -34,14 +37,17 @@ type sessionNativeOpenOptions struct {
 }
 
 type sessionNativeOpenResult struct {
-	Session              session.Session    `json:"session"`
-	Window               runtimetmux.Window `json:"tmux_window"`
-	LaunchAccepted       bool               `json:"launch_accepted"`
-	InitialInputSupplied bool               `json:"initial_input_supplied"`
+	Session              session.Session            `json:"session"`
+	Run                  runtime.Record             `json:"run"`
+	Execution            runtime.NativeTUIExecution `json:"execution"`
+	Window               runtimetmux.Window         `json:"tmux_window"`
+	LaunchAccepted       bool                       `json:"launch_accepted"`
+	InitialInputSupplied bool                       `json:"initial_input_supplied"`
 }
 
 type sessionNativeActionResult struct {
 	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id,omitempty"`
 	TmuxID    string `json:"tmux_id"`
 	Action    string `json:"action"`
 	Accepted  bool   `json:"accepted"`
@@ -52,6 +58,33 @@ type sessionNativeCloseAllResult struct {
 	Accepted    bool                        `json:"accepted"`
 	ClosedCount int                         `json:"closed_count"`
 	Closed      []sessionNativeActionResult `json:"closed"`
+}
+
+func runNativeTUISupervisor(args []string) error {
+	if len(args) != 4 || args[0] != "--manifest" || args[1] == "" ||
+		args[2] != "--digest" || args[3] == "" {
+		return fmt.Errorf(
+			"usage: %s --manifest <absolute-path> --digest <sha256>",
+			nativeconsole.SupervisorCommand,
+		)
+	}
+	paths, err := layout.Resolve()
+	if err != nil {
+		return err
+	}
+	if err := activationgate.RequireOpen(paths.StateDir); err != nil {
+		return err
+	}
+	services, err := runtimebootstrap.LoadNativeConsoleServices(
+		paths, fixedNamespaces...,
+	)
+	if err != nil {
+		return err
+	}
+	defer services.Console.Close()
+	return services.Console.Supervise(
+		context.Background(), args[1], args[3],
+	)
 }
 
 func runSessionNativeAction(
@@ -95,8 +128,9 @@ func runSessionNativeAction(
 			return output.writeJSON(result)
 		}
 		if err := output.line(
-			"Native TUI Session %s opened: tmux=%s state=%s",
-			result.Session.ID, result.Window.TmuxID, result.Window.State,
+			"Native TUI Session %s opened: tmux=%s run=%s execution=%s state=%s",
+			result.Session.ID, result.Window.TmuxID, result.Run.ID,
+			result.Execution.ID, result.Run.State,
 		); err != nil {
 			return err
 		}
@@ -172,7 +206,7 @@ func runSessionNativeAction(
 		if err != nil {
 			return sessionNativeRequestError(err)
 		}
-		result, err := closeSessionNativeTUI(ctx, manager, sessionID)
+		result, err := closeSessionNativeTUILifecycle(ctx, paths, sessionID)
 		if err != nil {
 			return err
 		}
@@ -183,7 +217,7 @@ func runSessionNativeAction(
 				"session close-all does not accept arguments",
 			))
 		}
-		result, err := closeAllSessionNativeTUIs(ctx, manager)
+		result, err := closeAllSessionNativeTUILifecycles(ctx, paths, manager)
 		if err != nil {
 			return err
 		}
@@ -211,8 +245,8 @@ func openSessionNativeTUI(
 	if options.cwd != "" && !filepath.IsAbs(options.cwd) {
 		options.cwd = filepath.Join(callerCWD, options.cwd)
 	}
-	services, err := runtimebootstrap.LoadSessionServices(
-		paths, fixedNamespaces...,
+	services, err := runtimebootstrap.LoadNativeConsoleServicesWithTmux(
+		paths, manager, fixedNamespaces...,
 	)
 	if err != nil {
 		return sessionNativeOpenResult{}, err
@@ -234,13 +268,6 @@ func openSessionNativeTUI(
 		if err != nil {
 			return sessionNativeOpenResult{}, err
 		}
-	} else if _, getErr := services.Sessions.Get(options.sessionID); getErr == nil {
-		return sessionNativeOpenResult{}, sessionNativeConflict(
-			"Session %s already exists; native TUI Sessions cannot be reopened without a provider-native resume identity",
-			options.sessionID,
-		)
-	} else if !errors.Is(getErr, os.ErrNotExist) {
-		return sessionNativeOpenResult{}, getErr
 	}
 	model := optionalString(options.model)
 	effort := optionalEffort(options.effort)
@@ -257,41 +284,89 @@ func openSessionNativeTUI(
 	if err != nil {
 		return sessionNativeOpenResult{}, err
 	}
-	invocation.Binding = &runtimetmux.Binding{
-		Kind: "session", ID: options.sessionID,
-	}
-	started, err := manager.Start(ctx, runtimetmux.StartRequest{
-		Invocation: invocation,
-	})
+	opened, err := services.Console.Open(ctx, nativeConsoleOpenRequest(
+		options, invocation,
+	))
 	if err != nil {
+		_ = services.Console.Close()
 		return sessionNativeOpenResult{}, err
 	}
-	if !started.LaunchAccepted {
-		_, _ = manager.Stop(context.Background(), started.Window.TmuxID)
-		message := "native TUI did not start"
-		if started.Window.LaunchError != nil {
-			message = started.Window.LaunchError.Message
-		}
-		return sessionNativeOpenResult{}, sessionNativeConflict("%s", message)
-	}
-	value, err := services.Sessions.CreateNativeTUIWithID(
-		options.sessionID, options.retention,
-	)
-	if err != nil {
-		_, stopErr := manager.Stop(context.Background(), started.Window.TmuxID)
-		if stopErr != nil {
-			return sessionNativeOpenResult{}, fmt.Errorf(
-				"publish native TUI Session failed and tmux cleanup failed: %v; original error: %w",
-				stopErr, err,
-			)
-		}
+	if err := services.Console.Close(); err != nil {
 		return sessionNativeOpenResult{}, err
 	}
 	return sessionNativeOpenResult{
-		Session: value, Window: started.Window,
-		LaunchAccepted:       started.LaunchAccepted,
-		InitialInputSupplied: options.input != "",
+		Session: opened.Session, Run: opened.Run,
+		Execution: opened.Execution, Window: opened.Window,
+		LaunchAccepted:       opened.LaunchAccepted,
+		InitialInputSupplied: opened.InitialInputSupplied,
 	}, nil
+}
+
+func closeSessionNativeTUILifecycle(
+	ctx context.Context,
+	paths layout.Paths,
+	sessionID string,
+) (sessionNativeActionResult, error) {
+	services, err := runtimebootstrap.LoadNativeConsoleServices(
+		paths, fixedNamespaces...,
+	)
+	if err != nil {
+		return sessionNativeActionResult{}, err
+	}
+	defer services.Console.Close()
+	closed, err := services.Console.CloseSession(ctx, sessionID)
+	if err != nil {
+		return sessionNativeActionResult{}, err
+	}
+	return sessionNativeActionResult{
+		SessionID: closed.SessionID, RunID: closed.RunID,
+		TmuxID: closed.TmuxID, Action: closed.Action,
+		Accepted: closed.Accepted,
+	}, nil
+}
+
+func nativeConsoleOpenRequest(
+	options sessionNativeOpenOptions,
+	invocation runtimetmux.Invocation,
+) nativeconsole.OpenRequest {
+	return nativeconsole.OpenRequest{
+		SessionID: options.sessionID, Retention: options.retention,
+		Target: invocation, Input: options.input,
+		Model: options.model, Effort: options.effort,
+		InitialInput: options.input != "",
+	}
+}
+
+func closeAllSessionNativeTUILifecycles(
+	ctx context.Context,
+	paths layout.Paths,
+	manager tmuxManager,
+) (sessionNativeCloseAllResult, error) {
+	result := sessionNativeCloseAllResult{
+		Action: "close-all", Accepted: true,
+		Closed: []sessionNativeActionResult{},
+	}
+	windows, err := manager.List(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, window := range windows {
+		if window.Binding == nil || window.Binding.Kind != "session" {
+			continue
+		}
+		closed, closeErr := closeSessionNativeTUILifecycle(
+			ctx, paths, window.Binding.ID,
+		)
+		if closeErr != nil {
+			return result, fmt.Errorf(
+				"close native TUI Session %s after %d successful close(s): %w",
+				window.Binding.ID, result.ClosedCount, closeErr,
+			)
+		}
+		result.Closed = append(result.Closed, closed)
+		result.ClosedCount++
+	}
+	return result, nil
 }
 
 func closeSessionNativeTUI(
@@ -552,9 +627,13 @@ func renderSessionNativeAction(
 	if output.JSON() {
 		return output.writeJSON(result)
 	}
+	run := ""
+	if result.RunID != "" {
+		run = " run=" + result.RunID
+	}
 	return output.line(
-		"Native TUI Session %s %s: accepted=%t tmux=%s",
-		result.SessionID, result.Action, result.Accepted, result.TmuxID,
+		"Native TUI Session %s %s: accepted=%t tmux=%s%s",
+		result.SessionID, result.Action, result.Accepted, result.TmuxID, run,
 	)
 }
 

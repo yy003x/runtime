@@ -18,6 +18,7 @@ import (
 	"github.com/yy003x/runtime/internal/application/activation"
 	"github.com/yy003x/runtime/internal/infrastructure/installbundle"
 	"github.com/yy003x/runtime/internal/interfaces/cli/config"
+	"github.com/yy003x/runtime/pkg/contract"
 )
 
 type Status struct {
@@ -221,7 +222,8 @@ var runCandidateActivation = func(
 			"candidate activation result has trailing JSON",
 		)
 	}
-	if response.SchemaVersion != 1 || response.ContractVersion != 6 ||
+	if response.SchemaVersion != contract.MachineEnvelopeSchemaVersion ||
+		response.ContractVersion != contract.RuntimeContractVersion ||
 		!response.Activated ||
 		filepath.Clean(response.Activation.TargetHome) !=
 			filepath.Clean(targetHome) {

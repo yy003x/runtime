@@ -45,7 +45,7 @@ type serverPIDRecord struct {
 	StartedAt         string `json:"started_at"`
 }
 
-func runServerNamespaceVNext(
+func runServerNamespace(
 	paths layout.Paths,
 	args []string,
 	output *cliOutput,
@@ -114,7 +114,7 @@ func runServerNamespaceVNext(
 		if err != nil {
 			return err
 		}
-		return executeUpdateVNext(cfg, options, output)
+		return executeUpdate(cfg, options, output)
 	case "upgrade-check":
 		return runUpgradeCheck(paths, args[1:], output)
 	case "upgrade-activate":
@@ -901,7 +901,7 @@ func parseUpdateOptions(args []string) (updateOptions, error) {
 	return options, nil
 }
 
-func executeUpdateVNext(
+func executeUpdate(
 	cfg *config.Config,
 	options updateOptions,
 	output *cliOutput,

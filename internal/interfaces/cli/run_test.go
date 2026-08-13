@@ -62,7 +62,7 @@ func TestRunWatchSuccessEndsWithUniqueFinal(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	output := newCLIOutput(false, &stdout, &stderr)
-	if err := runRunNamespaceVNext(
+	if err := runRunNamespace(
 		fixture.Paths,
 		[]string{
 			"watch", "--run-id", agentInspection.Run.ID,
@@ -102,7 +102,7 @@ func TestRunWatchFailureAfterEventHasNoFinal(t *testing.T) {
 	stdout := &failAfterWrites{remaining: 1}
 	var stderr bytes.Buffer
 	output := newCLIOutput(false, stdout, &stderr)
-	err := runRunNamespaceVNext(
+	err := runRunNamespace(
 		fixture.Paths,
 		[]string{
 			"watch", "--run-id", agentInspection.Run.ID,
@@ -134,8 +134,8 @@ func TestRunWatchFailureAfterEventHasNoFinal(t *testing.T) {
 }
 
 func TestRunSubmitIsRemovedBeforeStatefulBootstrap(t *testing.T) {
-	paths := prepareVNextHome(t)
-	err := runRunNamespaceVNext(
+	paths := prepareRuntimeHome(t)
+	err := runRunNamespace(
 		paths,
 		[]string{"submit", "--profile", "api", "hello"},
 		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
@@ -175,7 +175,7 @@ func TestRunManagementOptionsRejectUnknownDuplicateAndTrailingArgs(
 }
 
 func TestRunManagementPreflightRejectsBeforeStatefulBootstrap(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	for _, args := range [][]string{
 		{"unknown"},
 		{
@@ -202,7 +202,7 @@ func TestRunManagementPreflightRejectsBeforeStatefulBootstrap(t *testing.T) {
 		},
 	} {
 		output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-		if err := runRunNamespaceVNext(paths, args, output); err == nil {
+		if err := runRunNamespace(paths, args, output); err == nil {
 			t.Fatalf("accepted args=%#v", args)
 		}
 		if _, err := os.Stat(paths.SessionsDir); !os.IsNotExist(err) {
@@ -237,8 +237,8 @@ func TestRunManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-	if err := runRunNamespaceVNext(
-		prepareVNextHome(t),
+	if err := runRunNamespace(
+		prepareRuntimeHome(t),
 		[]string{"watch", "--run-id", "--unknown"},
 		output,
 	); err == nil {
@@ -310,8 +310,8 @@ func TestResumeInputClassifiesFileShapeBeforeRuntimeBootstrap(t *testing.T) {
 	}
 	assertMachineErrorCode(t, err, contract.ErrorInternal)
 
-	paths := prepareVNextHome(t)
-	err = runRunNamespaceVNext(
+	paths := prepareRuntimeHome(t)
+	err = runRunNamespace(
 		paths,
 		[]string{
 			"resume",
@@ -345,8 +345,8 @@ func TestRunManagementUsesCanonicalIDAndNotFoundErrors(t *testing.T) {
 	}
 
 	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
-	err := runRunNamespaceVNext(
-		prepareVNextHome(t),
+	err := runRunNamespace(
+		prepareRuntimeHome(t),
 		[]string{"get", "--run-id", missingRunID},
 		output,
 	)
@@ -372,8 +372,8 @@ func TestRunTraceIsAdmittedAndReachesDispatch(t *testing.T) {
 		t.Fatal("malformed run ID was accepted for trace")
 	}
 	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
-	err := runRunNamespaceVNext(
-		prepareVNextHome(t),
+	err := runRunNamespace(
+		prepareRuntimeHome(t),
 		[]string{"trace", "--run-id", missingRunID},
 		output,
 	)
@@ -386,8 +386,8 @@ func TestRunTraceIsAdmittedAndReachesDispatch(t *testing.T) {
 
 func TestRunCompositionIgnoresUnrelatedExecutionInputs(t *testing.T) {
 	ctx := context.Background()
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api",
 		"https://example.invalid/v1/chat/completions",
 	)
@@ -462,24 +462,24 @@ func TestRunCompositionIgnoresUnrelatedExecutionInputs(t *testing.T) {
 		output := newCLIOutput(
 			false, &bytes.Buffer{}, &bytes.Buffer{},
 		)
-		if err := runRunNamespaceVNext(paths, args, output); err != nil {
+		if err := runRunNamespace(paths, args, output); err != nil {
 			t.Fatalf("args=%#v error=%v", args, err)
 		}
 	}
-	if err := runRunNamespaceVNext(
+	if err := runRunNamespace(
 		paths, []string{"cancel", "--run-id", cancelID},
 		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
 	); err != nil {
 		t.Fatalf("cancel error=%v", err)
 	}
-	if err := runRunNamespaceVNext(
+	if err := runRunNamespace(
 		paths, []string{"reconcile", "--run-id", queryID},
 		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
 	); err != nil {
 		t.Fatalf("reconcile error=%v", err)
 	}
 
-	if err := runRunNamespaceVNext(
+	if err := runRunNamespace(
 		paths, []string{"gc"},
 		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
 	); err == nil || !strings.Contains(err.Error(), "load runtime config") {
@@ -490,7 +490,7 @@ func TestRunCompositionIgnoresUnrelatedExecutionInputs(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := runRunNamespaceVNext(
+	if err := runRunNamespace(
 		paths, []string{"gc"},
 		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
 	); err != nil {

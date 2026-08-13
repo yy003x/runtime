@@ -20,6 +20,7 @@ import (
 
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/pkg/session"
+	runstore "github.com/yy003x/runtime/pkg/store/sqlite"
 )
 
 type processTarget struct {
@@ -134,7 +135,11 @@ func preflightState(target string, manifest Manifest) error {
 	}
 	sessionsDir := filepath.Join(target, "sessions")
 	stateDir := filepath.Join(target, "state")
-	if _, err := session.NewStore(sessionsDir, stateDir); err != nil {
+	store, err := session.NewStore(sessionsDir, stateDir)
+	if err != nil {
+		return fmt.Errorf("Session schema preflight failed: %w", err)
+	}
+	if err := store.Validate(); err != nil {
 		return fmt.Errorf("Session schema preflight failed: %w", err)
 	}
 	if err := assertNoActiveSessionExecutions(sessionsDir); err != nil {
@@ -293,6 +298,11 @@ func preflightRunDatabase(path string, expectedVersion int) error {
 			"Run database uses unsupported schema %d; expected %d; move runtime.db and its sidecars to a recoverable backup before initializing current state",
 			version, expectedVersion,
 		)
+	}
+	if expectedVersion == runstore.SchemaVersion {
+		if err := runstore.ValidateSchema(database); err != nil {
+			return fmt.Errorf("Run database schema shape is invalid: %w", err)
+		}
 	}
 	var integrity string
 	if err := database.QueryRow("PRAGMA quick_check").Scan(&integrity); err != nil {

@@ -16,6 +16,116 @@ import (
 
 const modulePath = "github.com/yy003x/runtime"
 
+// allowedPublicModuleDependencies is the reviewed dependency surface of every
+// public Runtime package. Keeping this list explicit prevents a new dependency
+// on an internal adapter (or another Runtime domain) from silently weakening
+// the package boundaries documented in AGENTS.md and runtime-contract.md.
+var allowedPublicModuleDependencies = map[string][]string{
+	modulePath + "/pkg": {},
+	modulePath + "/pkg/agent": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+	},
+	modulePath + "/pkg/command": {
+		modulePath + "/internal/domain/profileid",
+		modulePath + "/internal/infrastructure/envref",
+		modulePath + "/pkg/contract",
+	},
+	modulePath + "/pkg/contract": {
+		modulePath + "/internal/domain/profileid",
+	},
+	modulePath + "/pkg/model": {
+		modulePath + "/internal/domain/profileid",
+		modulePath + "/internal/infrastructure/envref",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/provider",
+	},
+	modulePath + "/pkg/profile": {
+		modulePath + "/internal/domain/profileid",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/command",
+		modulePath + "/pkg/model",
+	},
+	modulePath + "/pkg/provider": {},
+	modulePath + "/pkg/provider/anthropic": {
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+		modulePath + "/pkg/provider",
+		modulePath + "/pkg/provider/internal/httpx",
+	},
+	modulePath + "/pkg/provider/internal/httpx": {
+		modulePath + "/pkg/contract",
+	},
+	modulePath + "/pkg/provider/openai": {
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+		modulePath + "/pkg/provider",
+		modulePath + "/pkg/provider/internal/httpx",
+	},
+	modulePath + "/pkg/run": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/agent",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+		modulePath + "/pkg/profile",
+		modulePath + "/pkg/session",
+	},
+	modulePath + "/pkg/session": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/infrastructure/executionlog",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/agent",
+		modulePath + "/pkg/command",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+		modulePath + "/pkg/profile",
+	},
+	modulePath + "/pkg/store/sqlite": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/run",
+	},
+	modulePath + "/pkg/tmux": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/domain/profileid",
+		modulePath + "/internal/infrastructure/activationgate",
+		modulePath + "/pkg/contract",
+	},
+	modulePath + "/pkg/transport/http": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/agent",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+		modulePath + "/pkg/run",
+		modulePath + "/pkg/session",
+	},
+}
+
+var allowedConcreteAdapterConsumers = map[string][]string{
+	modulePath + "/internal/infrastructure/toolbuiltin": {
+		modulePath + "/internal/application/activation",
+		modulePath + "/internal/application/runtimebootstrap",
+	},
+	modulePath + "/internal/infrastructure/toolmcp": {
+		modulePath + "/internal/application/runtimebootstrap",
+	},
+	modulePath + "/pkg/provider/anthropic": {
+		modulePath + "/internal/application/runtimebootstrap",
+	},
+	modulePath + "/pkg/provider/openai": {
+		modulePath + "/internal/application/runtimebootstrap",
+	},
+	modulePath + "/pkg/store/sqlite": {
+		modulePath + "/internal/application/activation",
+		modulePath + "/internal/application/runtimebootstrap",
+	},
+}
+
 type listedPackage struct {
 	ImportPath string
 	Imports    []string
@@ -40,6 +150,18 @@ func TestSourceLayoutAndLayerDependencies(t *testing.T) {
 		for _, dependency := range current.Imports {
 			if !strings.HasPrefix(dependency, modulePath+"/") {
 				continue
+			}
+			if inLayer(current.ImportPath, "pkg") &&
+				!publicModuleDependencyAllowed(current.ImportPath, dependency) {
+				violations = append(violations,
+					current.ImportPath+" has unreviewed public dependency "+dependency,
+				)
+			}
+			if consumers, concrete := allowedConcreteAdapterConsumers[dependency]; concrete && !stringAllowed(consumers, current.ImportPath) {
+				violations = append(violations,
+					current.ImportPath+" imports concrete adapter "+dependency+
+						" outside a reviewed composition root",
+				)
 			}
 			switch {
 			case inLayer(current.ImportPath, "internal/domain"):
@@ -76,6 +198,23 @@ func TestSourceLayoutAndLayerDependencies(t *testing.T) {
 	if len(violations) != 0 {
 		t.Fatalf("architecture violations:\n%s", strings.Join(violations, "\n"))
 	}
+}
+
+func publicModuleDependencyAllowed(importPath, dependency string) bool {
+	allowed, found := allowedPublicModuleDependencies[importPath]
+	if !found {
+		return false
+	}
+	return stringAllowed(allowed, dependency)
+}
+
+func stringAllowed(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func inLayer(importPath, layer string) bool {

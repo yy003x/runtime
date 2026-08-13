@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/domain/profileid"
 	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
@@ -18,7 +19,14 @@ var fixedNamespaces = profileid.ReservedNamespaces()
 
 func Main(args []string) int {
 	if len(args) > 0 && args[0] == runtimetmux.HelperCommandName {
-		if err := runTmuxHelperVNext(args[1:]); err != nil {
+		if err := runTmuxHelper(args[1:]); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) > 0 && args[0] == nativeconsole.SupervisorCommand {
+		if err := runNativeTUISupervisor(args[1:]); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -107,17 +115,17 @@ func Main(args []string) int {
 				"", "req", output,
 			)
 		case "profile":
-			err = runVNextProfileNamespace(paths, args[1:], output)
+			err = runProfileNamespace(paths, args[1:], output)
 		case "session":
-			err = runSessionNamespaceVNext(paths, args[1:], output)
+			err = runSessionNamespace(paths, args[1:], output)
 		case "tmux":
-			err = runTmuxNamespaceVNext(paths, args[1:], output)
+			err = runTmuxNamespace(paths, args[1:], output)
 		case "agent":
 			err = runAgentNamespace(paths, args[1:], output)
 		case "run":
-			err = runRunNamespaceVNext(paths, args[1:], output)
+			err = runRunNamespace(paths, args[1:], output)
 		case "server":
-			err = runServerNamespaceVNext(paths, args[1:], output)
+			err = runServerNamespace(paths, args[1:], output)
 		default:
 			runtime, loadErr := runtimebootstrap.LoadProfileServices(
 				paths, fixedNamespaces...,

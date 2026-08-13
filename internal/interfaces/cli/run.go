@@ -18,7 +18,7 @@ import (
 	"github.com/yy003x/runtime/pkg/session"
 )
 
-func runRunNamespaceVNext(
+func runRunNamespace(
 	paths layout.Paths,
 	args []string,
 	output *cliOutput,
@@ -485,7 +485,7 @@ func parseRunListFilter(args []string) (runtime.ListFilter, error) {
 	}
 	if kind == "" && optionProvided(args, "--kind") {
 		return runtime.ListFilter{}, fmt.Errorf(
-			"kind must be agent or session",
+			"kind must be agent, session, or native_tui",
 		)
 	}
 	limit, err := boundedIntOptionValue(

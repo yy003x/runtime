@@ -146,7 +146,7 @@ func TestMainHelpAndVersionRejectTrailingArguments(t *testing.T) {
 }
 
 func TestMainDoctorIsTopLevelAndWritesAudit(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestMainDoctorIsTopLevelAndWritesAudit(t *testing.T) {
 }
 
 func TestRuntimeDoctorDoesNotRequireCommandArgumentReferences(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
@@ -225,9 +225,9 @@ func TestRuntimeDoctorDoesNotRequireCommandArgumentReferences(t *testing.T) {
 }
 
 func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextCommand(t, paths.ConfigDir, "cx")
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeCommand(t, paths.ConfigDir, "cx")
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api",
 		"https://example.invalid/v1/chat/completions",
 	)
@@ -348,7 +348,7 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 }
 
 func TestMainMachineConfigurationFailureRemainsInternal(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := os.WriteFile(
 		paths.ConfigDir+"/broken.json", []byte(`{"type":"cli"`), 0o600,
 	); err != nil {
@@ -375,7 +375,7 @@ func TestMainMachineConfigurationFailureRemainsInternal(t *testing.T) {
 }
 
 func TestMainRejectsRemovedSystemNamespace(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	t.Setenv("SN_CLI_HOME", paths.Home)
 	stdout, stderr, exitCode := captureMainOutput(t, []string{"--json", "system", "status"})
 	if exitCode == 0 || stdout != "" {
@@ -397,7 +397,7 @@ func TestMainRejectsRemovedSystemNamespace(t *testing.T) {
 func TestTopLevelProfileManagementNamesAreUnknownProfiles(t *testing.T) {
 	for _, name := range []string{"list", "show", "check"} {
 		t.Run(name, func(t *testing.T) {
-			paths := prepareVNextHome(t)
+			paths := prepareRuntimeHome(t)
 			t.Setenv("SN_CLI_HOME", paths.Home)
 			stdout, stderr, exitCode := captureMainOutput(
 				t, []string{"--json", name},
@@ -438,8 +438,8 @@ func TestMainReqIsTheOnlyAPIProfileExecutionNamespace(t *testing.T) {
 		}`))
 	}))
 	defer server.Close()
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-cx",
 		server.URL+"/v1/chat/completions",
 	)
@@ -504,9 +504,9 @@ func TestMainReqIsTheOnlyAPIProfileExecutionNamespace(t *testing.T) {
 func TestFixedNamespacesAreReservedProfileIDs(t *testing.T) {
 	for _, id := range fixedNamespaces {
 		t.Run(id, func(t *testing.T) {
-			paths := prepareVNextHome(t)
-			writeVNextCommand(t, paths.ConfigDir, id)
-			_, err := runtimebootstrap.LoadVNext(paths, fixedNamespaces...)
+			paths := prepareRuntimeHome(t)
+			writeRuntimeCommand(t, paths.ConfigDir, id)
+			_, err := runtimebootstrap.LoadRuntime(paths, fixedNamespaces...)
 			if err == nil || !strings.Contains(
 				err.Error(), "reserved profile ID",
 			) {

@@ -35,6 +35,9 @@ func (failures runtimeDoctorFailures) ok() bool {
 }
 
 func runtimeDoctor(paths layout.Paths, output *cliOutput) error {
+	if err := runtimebootstrap.ValidateSessionStore(paths); err != nil {
+		return err
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err

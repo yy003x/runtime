@@ -84,8 +84,8 @@ func executeAgentStreamFixture(
 		_, _ = writer.Write([]byte(responseBody))
 	}))
 	defer server.Close()
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-agent",
 		server.URL+"/v1/chat/completions",
 	)

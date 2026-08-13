@@ -19,7 +19,7 @@ import (
 )
 
 func TestProfileUsageDocumentsSingleOptionalInput(t *testing.T) {
-	err := runVNextProfileNamespace(
+	err := runProfileNamespace(
 		layout.Paths{}, nil, newCLIOutput(false, &strings.Builder{}, &strings.Builder{}),
 	)
 	if err == nil || err.Error() !=
@@ -28,15 +28,15 @@ func TestProfileUsageDocumentsSingleOptionalInput(t *testing.T) {
 	}
 }
 
-func TestVNextProfileManagementAggregatesCatalogs(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextCommand(t, paths.ConfigDir, "cx")
-	writeVNextModel(t, paths.ConfigDir, "api-cx", "https://example.invalid/v1/chat/completions")
+func TestRuntimeProfileManagementAggregatesCatalogs(t *testing.T) {
+	paths := prepareRuntimeHome(t)
+	writeRuntimeCommand(t, paths.ConfigDir, "cx")
+	writeRuntimeModel(t, paths.ConfigDir, "api-cx", "https://example.invalid/v1/chat/completions")
 	for _, args := range [][]string{
 		{"list"}, {"show", "cx"}, {"show", "api-cx"}, {"check"}, {"check", "cx"},
 	} {
 		output := captureStdout(t, func() {
-			if err := runVNextProfileNamespace(
+			if err := runProfileNamespace(
 				paths, args, newCLIOutput(true, os.Stdout, os.Stderr),
 			); err != nil {
 				t.Fatalf("args=%q error=%v", args, err)
@@ -49,15 +49,15 @@ func TestVNextProfileManagementAggregatesCatalogs(t *testing.T) {
 }
 
 func TestProfileManagementDoesNotLoadRuntimeConfig(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextCommand(t, paths.ConfigDir, "cx")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeCommand(t, paths.ConfigDir, "cx")
 	if err := os.WriteFile(
 		paths.RuntimeConfigFile, []byte(`{"agent":{"max_rounds":0}}`), 0o600,
 	); err != nil {
 		t.Fatal(err)
 	}
 	var stdout strings.Builder
-	if err := runVNextProfileNamespace(
+	if err := runProfileNamespace(
 		paths, []string{"list"}, newCLIOutput(false, &stdout, os.Stderr),
 	); err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestProfileManagementDoesNotLoadRuntimeConfig(t *testing.T) {
 	}
 }
 
-func TestVNextDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
+func TestRuntimeDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path=%q", request.URL.Path)
@@ -82,8 +82,8 @@ func TestVNextDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
 	}))
 	defer server.Close()
 
-	paths := prepareVNextHome(t)
-	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
 	t.Setenv("MODEL_API_KEY", "secret")
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
@@ -110,7 +110,7 @@ func TestVNextDirectModelReturnsCompletedWithoutRuntimeRecords(t *testing.T) {
 	}
 }
 
-func TestVNextDirectModelHumanOutputPrintsAssistantText(t *testing.T) {
+func TestRuntimeDirectModelHumanOutputPrintsAssistantText(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
 		_ *http.Request,
@@ -123,8 +123,8 @@ func TestVNextDirectModelHumanOutputPrintsAssistantText(t *testing.T) {
 		}`))
 	}))
 	defer server.Close()
-	paths := prepareVNextHome(t)
-	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
 	t.Setenv("MODEL_API_KEY", "secret")
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
@@ -144,7 +144,7 @@ func TestVNextDirectModelHumanOutputPrintsAssistantText(t *testing.T) {
 	}
 }
 
-func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
+func TestRuntimeDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
 		_ *http.Request,
@@ -154,8 +154,8 @@ func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 		fmt.Fprintln(writer, "data: [DONE]")
 	}))
 	defer server.Close()
-	paths := prepareVNextHome(t)
-	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
 	t.Setenv("MODEL_API_KEY", "secret")
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
@@ -195,7 +195,7 @@ func TestVNextDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 func TestAPIProfileFixedValueDoesNotConsumeStreamFlag(t *testing.T) {
 	request, stream, err := parseDirectModelInput(
 		"api-cx",
-		vNextTestModelProfile("openai"),
+		testModelProfile("openai"),
 		[]string{"--system", "--stream", "hello"},
 	)
 	if err == nil || !strings.Contains(err.Error(), "--system requires value") {
@@ -214,8 +214,8 @@ func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
 		http.Error(writer, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
-	paths := prepareVNextHome(t)
-	writeVNextModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(t, paths.ConfigDir, "api-cx", server.URL+"/v1/chat/completions")
 	t.Setenv("MODEL_API_KEY", "secret")
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
@@ -238,7 +238,7 @@ func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
 }
 
 func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
-	openAIProfile := vNextTestModelProfile("openai")
+	openAIProfile := testModelProfile("openai")
 	if _, _, err := parseDirectModelInput(
 		"api", openAIProfile, []string{"--model", "other", "hello"},
 	); err == nil {
@@ -258,7 +258,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 		len(request.Input.Messages) != 1 {
 		t.Fatalf("request=%#v stream=%v error=%v", request, stream, err)
 	}
-	anthropicProfile := vNextTestModelProfile("anthropic")
+	anthropicProfile := testModelProfile("anthropic")
 	if _, _, err := parseDirectModelInput(
 		"api", anthropicProfile, []string{"--max-tokens", "128", "hello"},
 	); err != nil {
@@ -267,7 +267,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 }
 
 func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) {
-	profile := vNextTestModelProfile("openai")
+	profile := testModelProfile("openai")
 	request, stream, err := parseDirectModelInput(
 		"api",
 		profile,
@@ -313,7 +313,7 @@ func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) 
 }
 
 func TestParseDirectModelInputRejectsNonFiniteTemperature(t *testing.T) {
-	profile := vNextTestModelProfile("openai")
+	profile := testModelProfile("openai")
 	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
 		if _, _, err := parseDirectModelInput(
 			"api", profile,
@@ -608,7 +608,7 @@ func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 func TestDirectAPIProfileRejectsUnsupportedEffort(t *testing.T) {
 	_, _, err := parseDirectModelInput(
 		"api-cx",
-		vNextTestModelProfile("openai"),
+		testModelProfile("openai"),
 		[]string{"--effort", "high", "reply ok"},
 	)
 	if err == nil ||
@@ -620,7 +620,7 @@ func TestDirectAPIProfileRejectsUnsupportedEffort(t *testing.T) {
 	}
 }
 
-func vNextTestModelProfile(driver string) model.Profile {
+func testModelProfile(driver string) model.Profile {
 	return model.Profile{Driver: model.DriverName(driver)}
 }
 
@@ -634,7 +634,7 @@ func runTestReq(
 	)
 }
 
-func prepareVNextHome(t *testing.T) layout.Paths {
+func prepareRuntimeHome(t *testing.T) layout.Paths {
 	t.Helper()
 	paths, err := layout.FromHome(t.TempDir())
 	if err != nil {
@@ -657,7 +657,7 @@ func prepareVNextHome(t *testing.T) layout.Paths {
 	return paths
 }
 
-func writeVNextCommand(t *testing.T, dir, id string) {
+func writeRuntimeCommand(t *testing.T, dir, id string) {
 	t.Helper()
 	if err := os.WriteFile(
 		filepath.Join(dir, id+".json"),
@@ -668,7 +668,7 @@ func writeVNextCommand(t *testing.T, dir, id string) {
 	}
 }
 
-func writeVNextModel(t *testing.T, dir, id, endpoint string) {
+func writeRuntimeModel(t *testing.T, dir, id, endpoint string) {
 	t.Helper()
 	value := map[string]any{
 		"type":   "api",

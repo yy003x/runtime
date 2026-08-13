@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/application/toolruntime"
 	"github.com/yy003x/runtime/internal/domain/identity"
 	"github.com/yy003x/runtime/internal/infrastructure/envref"
@@ -32,7 +33,7 @@ type ProfileServices struct {
 	Models   model.Generator
 }
 
-type VNext struct {
+type Runtime struct {
 	*ProfileServices
 	Config runtimeconfig.Config
 }
@@ -79,7 +80,7 @@ func executionAttemptObserver(logsDir string) model.AttemptObserver {
 	}
 }
 
-func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error) {
+func LoadRuntime(paths layout.Paths, reservedProfileIDs ...string) (*Runtime, error) {
 	profiles, err := LoadProfileServices(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
@@ -88,11 +89,11 @@ func LoadVNext(paths layout.Paths, reservedProfileIDs ...string) (*VNext, error)
 	if err != nil {
 		return nil, fmt.Errorf("load runtime config: %w", err)
 	}
-	return &VNext{ProfileServices: profiles, Config: config}, nil
+	return &Runtime{ProfileServices: profiles, Config: config}, nil
 }
 
 type Services struct {
-	*VNext
+	*Runtime
 	Sessions                  *session.Service
 	Runs                      *runtime.Service
 	Tools                     agent.ToolExecutor
@@ -109,6 +110,11 @@ type SessionRunServices struct {
 	Runs     *runtime.Service
 }
 
+type NativeConsoleServices struct {
+	*ProfileServices
+	Console *nativeconsole.Service
+}
+
 type SessionMaintenanceServices struct {
 	Sessions *session.Service
 }
@@ -120,6 +126,20 @@ type RunQueryServices struct {
 type RunMaintenanceServices struct {
 	Sessions *session.Service
 	Runs     *runtime.Service
+}
+
+// ValidateSessionStore performs the explicit O(N) Session fact verification
+// used by health and activation gates. Ordinary Runtime composition relies on
+// NewStore's bounded startup checks and does not scan every Session.
+func ValidateSessionStore(paths layout.Paths) error {
+	store, err := session.NewStore(paths.SessionsDir, paths.StateDir)
+	if err != nil {
+		return fmt.Errorf("build Session store: %w", err)
+	}
+	if err := store.Validate(); err != nil {
+		return fmt.Errorf("validate Session store: %w", err)
+	}
+	return nil
 }
 
 // LoadTmuxService validates canonical runtime.json, consumes only the narrow
@@ -200,6 +220,63 @@ func LoadSessionRunServices(
 		return nil, fmt.Errorf("build Session Run service: %w", err)
 	}
 	return &SessionRunServices{Sessions: sessions, Runs: runs}, nil
+}
+
+func LoadNativeConsoleServices(
+	paths layout.Paths,
+	reservedProfileIDs ...string,
+) (*NativeConsoleServices, error) {
+	tmuxService, err := LoadTmuxService(paths)
+	if err != nil {
+		return nil, err
+	}
+	return LoadNativeConsoleServicesWithTmux(
+		paths, tmuxService, reservedProfileIDs...,
+	)
+}
+
+func LoadNativeConsoleServicesWithTmux(
+	paths layout.Paths,
+	tmuxService nativeconsole.TmuxManager,
+	reservedProfileIDs ...string,
+) (*NativeConsoleServices, error) {
+	core, err := LoadProfileServices(paths, reservedProfileIDs...)
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := loadSessionExecutionService(paths, core)
+	if err != nil {
+		return nil, err
+	}
+	runStore, err := sqlitestore.Open(
+		paths.RunDBFile, sqlitestore.Options{SkipReconcile: true},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open native_tui Run store: %w", err)
+	}
+	lifecycles, err := runtime.NewNativeTUIService(
+		runtime.NativeTUIServiceOptions{Store: runStore},
+	)
+	if err != nil {
+		_ = runStore.Close()
+		return nil, fmt.Errorf("build native_tui Run service: %w", err)
+	}
+	helper, err := os.Executable()
+	if err != nil {
+		_ = lifecycles.Close()
+		return nil, fmt.Errorf("resolve native_tui supervisor executable: %w", err)
+	}
+	console, err := nativeconsole.NewService(nativeconsole.ServiceOptions{
+		Paths: paths, Sessions: sessions, Lifecycles: lifecycles,
+		Tmux: tmuxService, Helper: helper,
+	})
+	if err != nil {
+		_ = lifecycles.Close()
+		return nil, fmt.Errorf("build native_tui console service: %w", err)
+	}
+	return &NativeConsoleServices{
+		ProfileServices: core, Console: console,
+	}, nil
 }
 
 func LoadSessionMaintenanceServices(
@@ -333,7 +410,7 @@ func loadServices(
 	skipRunRecovery bool,
 	reservedProfileIDs ...string,
 ) (*Services, error) {
-	core, err := LoadVNext(paths, reservedProfileIDs...)
+	core, err := LoadRuntime(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +455,7 @@ func loadServices(
 		}
 	}
 	return &Services{
-		VNext: core, Sessions: sessions, Runs: runs, Tools: tools,
+		Runtime: core, Sessions: sessions, Runs: runs, Tools: tools,
 		ToolEnvironmentReferences: toolEnvironmentReferences,
 	}, nil
 }

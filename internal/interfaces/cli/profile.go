@@ -20,7 +20,7 @@ import (
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
 )
 
-func runVNextProfileNamespace(
+func runProfileNamespace(
 	paths layout.Paths,
 	args []string,
 	output *cliOutput,
@@ -34,10 +34,10 @@ func runVNextProfileNamespace(
 	if err != nil {
 		return err
 	}
-	return runLoadedVNextProfile(runtime, args, output)
+	return runLoadedProfile(runtime, args, output)
 }
 
-func runLoadedVNextProfile(
+func runLoadedProfile(
 	runtime *runtimebootstrap.ProfileServices,
 	args []string,
 	output *cliOutput,

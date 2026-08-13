@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/pkg/profile"
 	runtimetmux "github.com/yy003x/runtime/pkg/tmux"
@@ -27,6 +28,8 @@ func TestMain(main *testing.M) {
 				os.Exit(1)
 			}
 			os.Exit(0)
+		case nativeconsole.SupervisorCommand:
+			os.Exit(Main(os.Args[1:]))
 		}
 	}
 	if os.Getenv("SN_CLI_TEST_SERVER_HOLD") == "1" {
@@ -231,9 +234,9 @@ func TestServerLockRejectsSymlink(t *testing.T) {
 }
 
 func TestServerInfoPublishesCurrentContract(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextCommand(t, paths.ConfigDir, "cx")
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeCommand(t, paths.ConfigDir, "cx")
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-cx",
 		"https://example.invalid/v1/chat/completions",
 	)
@@ -242,7 +245,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runServerNamespaceVNext(
+	if err := runServerNamespace(
 		paths, []string{"info"}, newCLIOutput(true, &stdout, &stderr),
 	); err != nil {
 		t.Fatal(err)
@@ -314,7 +317,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	}
 
 	stdout.Reset()
-	if err := runServerNamespaceVNext(
+	if err := runServerNamespace(
 		paths, []string{"info"}, newCLIOutput(false, &stdout, &stderr),
 	); err != nil {
 		t.Fatal(err)
@@ -329,7 +332,7 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 }
 
 func TestServerStatusDoesNotClaimConfiguredAddressAsRuntimeFact(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +381,7 @@ func TestServerStatefulActionsRejectTrailingArgumentsBeforeBootstrap(
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = runServerNamespaceVNext(
+			err = runServerNamespace(
 				paths,
 				[]string{action, "--unexpected"},
 				newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}),
@@ -552,11 +555,11 @@ func TestRuntimeDoctorDependencyErrorNamesMissingInputs(t *testing.T) {
 func TestRuntimeDoctorReportsSelectedToolEnvironmentWithoutRemoteCall(
 	t *testing.T,
 ) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	writeVNextModel(
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-tool",
 		"https://example.invalid/v1/chat/completions",
 	)

@@ -50,7 +50,7 @@ func TestRenderAgentRunPrintsAssistantTextAndIdentity(t *testing.T) {
 }
 
 func TestAgentStreamOptionValueDoesNotSelectStreamMode(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +72,8 @@ func TestAgentStreamOptionValueDoesNotSelectStreamMode(t *testing.T) {
 }
 
 func TestAgentRejectsCommandProfileBeforeStatefulBootstrap(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextCommand(t, paths.ConfigDir, "cx")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeCommand(t, paths.ConfigDir, "cx")
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	err := runAgentNamespace(
 		paths,
@@ -94,8 +94,8 @@ func TestAgentRejectsCommandProfileBeforeStatefulBootstrap(t *testing.T) {
 }
 
 func TestAgentRejectsRemovedRunProfileSyntax(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-agent",
 		"https://example.invalid/v1/chat/completions",
 	)
@@ -113,8 +113,8 @@ func TestAgentRejectsRemovedRunProfileSyntax(t *testing.T) {
 }
 
 func TestAgentQueueSubmitsWithoutCallingProvider(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-agent",
 		"https://example.invalid/v1/chat/completions",
 	)

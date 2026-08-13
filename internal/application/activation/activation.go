@@ -1,4 +1,5 @@
-// Package activation owns the contract-v5 staged-binary activation gate.
+// Package activation owns the staged-binary activation gate for the current
+// Runtime contract.
 package activation
 
 import (

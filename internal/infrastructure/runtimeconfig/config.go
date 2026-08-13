@@ -216,17 +216,17 @@ func (config Config) Validate() error {
 	); err != nil {
 		return fmt.Errorf("run.settled_retention: %w", err)
 	}
-	if _, err := parseBoundedDuration(
+	if _, err := parseReaperDuration(
 		config.Run.Reaper.Interval, 0, time.Hour,
 	); err != nil {
 		return fmt.Errorf("run.reaper.interval: %w", err)
 	}
-	if _, err := parseBoundedDuration(
+	if _, err := parseReaperDuration(
 		config.Run.Reaper.PausedTTL, 0, 720*time.Hour,
 	); err != nil {
 		return fmt.Errorf("run.reaper.paused_ttl: %w", err)
 	}
-	if _, err := parseBoundedDuration(
+	if _, err := parseReaperDuration(
 		config.Run.Reaper.NeedsReconciliationTTL, 0, 720*time.Hour,
 	); err != nil {
 		return fmt.Errorf("run.reaper.needs_reconciliation_ttl: %w", err)
@@ -313,6 +313,20 @@ func parseBoundedDuration(
 		return 0, fmt.Errorf(
 			"must be a duration between %s and %s", minimum, maximum,
 		)
+	}
+	return current, nil
+}
+
+func parseReaperDuration(
+	value string,
+	minimum, maximum time.Duration,
+) (time.Duration, error) {
+	current, err := parseBoundedDuration(value, minimum, maximum)
+	if err != nil {
+		return 0, err
+	}
+	if current == 0 && value != "0" {
+		return 0, fmt.Errorf("zero duration must use the canonical value 0")
 	}
 	return current, nil
 }

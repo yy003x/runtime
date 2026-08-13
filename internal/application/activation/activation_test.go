@@ -87,7 +87,7 @@ func TestLoadManifestRejectsDuplicateFields(t *testing.T) {
 		"activation_epoch":4,
 		"contract_version":6,
 		"session_schema_version":3,
-		"run_schema_version":4
+		"run_schema_version":6
 	}`
 	if err := os.WriteFile(
 		filepath.Join(resources, "release.json"),
@@ -172,7 +172,7 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	}
 	if result.ActivationEpoch != 4 || result.ContractVersion != 6 ||
 		result.SessionSchemaVersion != 3 ||
-		result.RunSchemaVersion != 4 {
+		result.RunSchemaVersion != 6 {
 		t.Fatalf("result=%#v", result)
 	}
 	if strings.Join(result.ResourceFiles, ",") !=
@@ -446,7 +446,7 @@ func TestUpgradeActivateRejectsUnsupportedRunSchemaManifestBeforeMutation(t *tes
 		t.Fatal(err)
 	}
 	manifest = []byte(strings.Replace(
-		string(manifest), `"run_schema_version":4`,
+		string(manifest), `"run_schema_version":6`,
 		`"run_schema_version":999`, 1,
 	))
 	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
@@ -859,6 +859,7 @@ func TestLocalSourceInstallReplacesConfigsAndResetsRuntimeState(
 		filepath.Join(target, "state", "session-invocations"),
 		filepath.Join(target, "state", "session-mutations"),
 		filepath.Join(target, "state", "session-trash-moves"),
+		filepath.Join(target, "state", "native-tui-invocations"),
 		filepath.Join(target, "state", "runtime.db"),
 		filepath.Join(target, "state", "runtime.db-wal"),
 		filepath.Join(target, "state", "runtime.db-shm"),
@@ -1771,7 +1772,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "release", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":6,\"session_schema_version\":3,\"run_schema_version\":4}\n",
+		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":6,\"session_schema_version\":3,\"run_schema_version\":6}\n",
 		0o600,
 	)
 	return payload, target, candidate
@@ -1842,6 +1843,7 @@ func seedRuntimeStateForReset(t *testing.T, target string) {
 		filepath.Join(target, "state", "session-invocations"),
 		filepath.Join(target, "state", "session-mutations"),
 		filepath.Join(target, "state", "session-trash-moves"),
+		filepath.Join(target, "state", "native-tui-invocations"),
 	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
@@ -1865,6 +1867,10 @@ func seedRuntimeStateForReset(t *testing.T, target string) {
 		filepath.Join(
 			target, "state", "session-trash-moves",
 			"session_fixture.json",
+		),
+		filepath.Join(
+			target, "state", "native-tui-invocations",
+			"execution_fixture.json",
 		),
 	} {
 		if err := os.WriteFile(path, []byte("runtime-state\n"), 0o600); err != nil {

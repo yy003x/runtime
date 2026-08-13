@@ -57,7 +57,7 @@ func TestTmuxOpenRejectsInvalidOptionsBeforeProfileLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-	err = runTmuxNamespaceVNext(
+	err = runTmuxNamespace(
 		paths, []string{"open", "--exec", "cx"}, output,
 	)
 	var runtimeErr *contract.RuntimeError
@@ -69,10 +69,10 @@ func TestTmuxOpenRejectsInvalidOptionsBeforeProfileLoad(t *testing.T) {
 }
 
 func TestTmuxOpenRejectsReservedProfileID(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextCommand(t, paths.ConfigDir, "profile")
+	paths := prepareRuntimeHome(t)
+	writeRuntimeCommand(t, paths.ConfigDir, "profile")
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-	err := runTmuxNamespaceVNext(
+	err := runTmuxNamespace(
 		paths, []string{"open", "profile"}, output,
 	)
 	if err == nil || !strings.Contains(err.Error(), "reserved profile ID") {

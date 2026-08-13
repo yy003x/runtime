@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/internal/testkit/reporoot"
@@ -147,18 +148,29 @@ func TestOpenSessionNativeTUILaunchesInteractiveProfile(t *testing.T) {
 	}
 	invocation := manager.startRequest.Invocation
 	if invocation.Binding == nil || invocation.Binding.Kind != "session" ||
-		invocation.Binding.ID != sessionID || invocation.Path != command ||
-		invocation.CWD != home {
-		t.Fatalf("invocation = %#v", invocation)
+		invocation.Binding.ID != sessionID || !invocation.CooperativeReady ||
+		invocation.CWD != home ||
+		len(invocation.Argv) != 6 ||
+		invocation.Argv[1] != nativeconsole.SupervisorCommand ||
+		invocation.Argv[2] != "--manifest" ||
+		invocation.Argv[4] != "--digest" {
+		t.Fatalf(
+			"supervisor invocation path=%q argv=%q cwd=%q binding=%#v cooperative=%t",
+			invocation.Path, invocation.Argv, invocation.CWD,
+			invocation.Binding, invocation.CooperativeReady,
+		)
 	}
-	if !reflect.DeepEqual(invocation.Argv, []string{
-		command, "--model", "fixture", "--", "initial prompt",
-	}) {
-		t.Fatalf("argv = %#v", invocation.Argv)
+	if result.Run.Request.Kind != runtime.KindNativeTUI ||
+		result.Run.Request.SessionID != sessionID ||
+		result.Run.Request.ExecutionID != result.Execution.ID ||
+		result.Execution.State != runtime.NativeTUIExecutionRunning ||
+		result.Execution.CaptureQuality != runtime.NativeTUICaptureOpaque {
+		t.Fatalf("lifecycle result=%#v", result)
 	}
-	if strings.Contains(strings.Join(invocation.Argv, "\x00"), "exec") ||
-		strings.Contains(strings.Join(invocation.Argv, "\x00"), "--json") {
-		t.Fatalf("native TUI invocation used exec argv: %#v", invocation.Argv)
+	for _, argument := range invocation.Argv {
+		if argument == "exec" || argument == "--json" {
+			t.Fatalf("native TUI invocation used managed argv token %q", argument)
+		}
 	}
 	maintenance, err := runtimebootstrap.LoadSessionMaintenanceServices(paths)
 	if err != nil {
@@ -188,7 +200,7 @@ func TestOpenSessionNativeTUILaunchesInteractiveProfile(t *testing.T) {
 	}
 }
 
-func TestSessionNativeTUIMachineInputUsesTmuxPTYWithoutCanonicalRun(t *testing.T) {
+func TestSessionNativeTUIMachineInputUsesTmuxPTYWithLifecycleRun(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
@@ -297,8 +309,11 @@ func TestSessionNativeTUIMachineInputUsesTmuxPTYWithoutCanonicalRun(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runs) != 0 {
-		t.Fatalf("native TUI created durable Runs: %#v", runs)
+	if len(runs) != 1 || runs[0].Request.Kind != runtime.KindNativeTUI ||
+		runs[0].ID != result.Run.ID ||
+		runs[0].Request.ExecutionID != result.Execution.ID ||
+		runs[0].State != runtime.StateRunning {
+		t.Fatalf("native TUI lifecycle Runs: %#v", runs)
 	}
 
 	var closeOutput bytes.Buffer
@@ -318,6 +333,14 @@ func TestSessionNativeTUIMachineInputUsesTmuxPTYWithoutCanonicalRun(t *testing.T
 	if len(windows) != 0 {
 		t.Fatalf("windows after close = %#v", windows)
 	}
+	settled, err := queries.Runs.Get(context.Background(), result.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.State != runtime.StateCancelled ||
+		settled.SettledSequence == 0 {
+		t.Fatalf("lifecycle Run after close = %#v", settled)
+	}
 	retained, err := maintenance.Sessions.Get(result.Session.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +348,127 @@ func TestSessionNativeTUIMachineInputUsesTmuxPTYWithoutCanonicalRun(t *testing.T
 	if retained.Interface != session.InterfaceNativeTUI ||
 		retained.State != session.SessionIdle || retained.ActiveTurnID != "" {
 		t.Fatalf("retained Session = %#v", retained)
+	}
+}
+
+func TestSessionNativeTUIProcessExitSettlesRunAndClosesWindow(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := layout.FromHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(reporoot.Root(t), "release", "tmux.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.TmuxConfigFile, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		paths.RuntimeConfigFile,
+		[]byte(`{"tmux":{"server_mode":"dedicated"}}`), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(home, "codex")
+	if err := os.WriteFile(
+		command, []byte("#!/bin/sh\nsleep 0.2\nexit 0\n"), 0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	profileID := "native-exit-test"
+	profileJSON := fmt.Sprintf(
+		`{"type":"cli","command":%q,"model":"fixture"}`,
+		command,
+	)
+	if err := os.WriteFile(
+		filepath.Join(paths.ConfigDir, profileID+".json"),
+		[]byte(profileJSON), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(layout.HomeEnv, home)
+	manager, err := runtimebootstrap.LoadTmuxService(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openSessionNativeTUI(
+		context.Background(), paths, manager,
+		sessionNativeOpenOptions{
+			profileID: profileID, retention: session.RetentionStandard,
+			cwd: home,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queries, err := runtimebootstrap.LoadRunQueryServices(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queries.Runs.Close()
+	var settled runtime.Record
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		settled, err = queries.Runs.Get(context.Background(), opened.Run.ID)
+		if err == nil && settled.State.Terminal() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("native_tui Run did not settle: record=%#v error=%v", settled, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if settled.State != runtime.StateCompleted || settled.SettledSequence == 0 {
+		t.Fatalf("native_tui terminal Run = %#v", settled)
+	}
+	execution, err := runtime.NativeTUIExecutionFromRecord(settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.ID != opened.Execution.ID ||
+		execution.SessionID != opened.Session.ID ||
+		execution.State != runtime.NativeTUIExecutionSettled ||
+		execution.Outcome != runtime.NativeTUIOutcomeCompleted ||
+		execution.ExitCode == nil || *execution.ExitCode != 0 ||
+		execution.CompletionReason != "process_exited" ||
+		execution.CaptureQuality != runtime.NativeTUICaptureOpaque {
+		t.Fatalf("native_tui execution = %#v", execution)
+	}
+	for {
+		windows, listErr := manager.List(context.Background())
+		if listErr == nil && len(windows) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("native_tui window was not auto-closed: windows=%#v error=%v", windows, listErr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	maintenance, err := runtimebootstrap.LoadSessionMaintenanceServices(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := maintenance.Sessions.Messages(opened.Session.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := maintenance.Sessions.Events(opened.Session.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 0 || len(events) != 0 {
+		t.Fatalf("native TUI exit created canonical Turn facts: messages=%#v events=%#v", messages, events)
 	}
 }
 

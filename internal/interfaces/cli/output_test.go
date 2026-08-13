@@ -169,7 +169,7 @@ func TestCLIOutputStreamFailureBeforeFirstEventIsJSON(t *testing.T) {
 
 func TestRunWatchSelectsMachineErrorsBeforeServiceValidation(t *testing.T) {
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-	if err := runRunNamespaceVNext(
+	if err := runRunNamespace(
 		layout.Paths{}, []string{"watch"}, output,
 	); err == nil {
 		t.Fatal("expected validation failure")
@@ -200,8 +200,8 @@ func TestAgentStreamBeginsAfterSuccessfulParseBeforeServiceFailure(t *testing.T)
 }
 
 func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api",
 		"https://example.invalid/v1/chat/completions",
 	)
@@ -256,7 +256,7 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 func TestCLIProfileNativeStreamArgumentDoesNotSelectRuntimeStreamErrors(
 	t *testing.T,
 ) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := os.WriteFile(
 		filepath.Join(paths.ConfigDir, "cx.json"),
 		[]byte(`{

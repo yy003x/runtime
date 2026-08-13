@@ -127,8 +127,8 @@ func TestCanonicalSessionDeleteConflict(t *testing.T) {
 }
 
 func TestSessionUnknownActionDoesNotCreateState(t *testing.T) {
-	paths := prepareVNextHome(t)
-	err := runSessionNamespaceVNext(
+	paths := prepareRuntimeHome(t)
+	err := runSessionNamespace(
 		paths,
 		[]string{
 			"unknown-action",
@@ -149,14 +149,14 @@ func TestSessionUnknownActionDoesNotCreateState(t *testing.T) {
 }
 
 func TestSessionReqQueueSubmitsDurableSessionRun(t *testing.T) {
-	paths := prepareVNextHome(t)
-	writeVNextModel(
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(
 		t, paths.ConfigDir, "api-cx",
 		"https://example.invalid/v1/chat/completions",
 	)
 	t.Setenv("MODEL_API_KEY", "secret")
 	var stdout bytes.Buffer
-	err := runSessionNamespaceVNext(
+	err := runSessionNamespace(
 		paths,
 		[]string{"req", "api-cx", "--queue", "queued turn"},
 		newCLIOutput(true, &stdout, &bytes.Buffer{}),
@@ -181,7 +181,7 @@ func TestSessionReqQueueSubmitsDurableSessionRun(t *testing.T) {
 }
 
 func TestSessionManagementDoesNotLoadProfileOrRuntimeConfig(t *testing.T) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	if err := os.WriteFile(
 		paths.RuntimeConfigFile, []byte(`{"agent":{"max_rounds":0}}`), 0o600,
 	); err != nil {
@@ -193,7 +193,7 @@ func TestSessionManagementDoesNotLoadProfileOrRuntimeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout strings.Builder
-	if err := runSessionNamespaceVNext(
+	if err := runSessionNamespace(
 		paths, []string{"list"}, newCLIOutput(false, &stdout, os.Stderr),
 	); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestSessionManagementOptionsRejectUnknownDuplicateAndTrailingArgs(
 func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
 	t *testing.T,
 ) {
-	paths := prepareVNextHome(t)
+	paths := prepareRuntimeHome(t)
 	for _, args := range [][]string{
 		{"unknown"},
 		{"run", "cx", "input"},
@@ -361,7 +361,7 @@ func TestSessionManagementPreflightRejectsBeforeStatefulBootstrap(
 		{"show", "--session-id", "session_1", "trailing"},
 	} {
 		output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
-		if err := runSessionNamespaceVNext(paths, args, output); err == nil {
+		if err := runSessionNamespace(paths, args, output); err == nil {
 			t.Fatalf("accepted args=%#v", args)
 		}
 		if _, err := os.Stat(paths.SessionsDir); !os.IsNotExist(err) {
@@ -405,8 +405,8 @@ func TestSessionManagementUsesCanonicalIDAndNotFoundErrors(t *testing.T) {
 	}
 
 	output := newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{})
-	err := runSessionNamespaceVNext(
-		prepareVNextHome(t),
+	err := runSessionNamespace(
+		prepareRuntimeHome(t),
 		[]string{"show", "--session-id", missingSessionID},
 		output,
 	)

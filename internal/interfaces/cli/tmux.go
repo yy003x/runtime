@@ -55,14 +55,14 @@ type tmuxStopAllResult struct {
 	TmuxIDs      []string `json:"tmux_ids"`
 }
 
-// runTmuxHelperVNext is intentionally separate from namespace dispatch. root
+// runTmuxHelper is intentionally separate from namespace dispatch. root
 // must call it before layout or Profile loading when it sees the private helper
 // token.
-func runTmuxHelperVNext(args []string) error {
+func runTmuxHelper(args []string) error {
 	return runtimetmux.RunHelper(args)
 }
 
-func runTmuxNamespaceVNext(
+func runTmuxNamespace(
 	paths layout.Paths,
 	args []string,
 	output *cliOutput,
