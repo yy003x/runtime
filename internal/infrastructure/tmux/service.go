@@ -536,8 +536,12 @@ func (service *Service) Attach(
 	if err != nil {
 		return err
 	}
+	// lock is held for the duration of Attach and released on every return
+	// path by this defer. The explicit Close before the unbounded attach drain
+	// in the acknowledgement-success branch releases it earlier on purpose; it
+	// is an idempotent no-op when the defer runs. fileLock.Close is nil-safe.
+	defer lock.Close()
 	if value.Record == nil || value.State == StateOrphaned {
-		lock.Close()
 		return tmuxTransportError(
 			contract.ErrorConflict,
 			"Tmux window %s is orphaned and cannot be attached", tmuxID,
@@ -547,7 +551,6 @@ func (service *Service) Attach(
 	currentSocket, insideTmux := currentTmuxSocket(os.Getenv("TMUX"))
 	targetSocket, err := service.targetSocket(ctx)
 	if err != nil {
-		lock.Close()
 		return err
 	}
 	action := fmt.Sprintf(
@@ -555,7 +558,6 @@ func (service *Service) Attach(
 	)
 	if insideTmux {
 		if filepath.Clean(currentSocket) != filepath.Clean(targetSocket) {
-			lock.Close()
 			return tmuxTransportError(
 				contract.ErrorConflict,
 				"cannot attach from a different tmux server",
@@ -567,7 +569,6 @@ func (service *Service) Attach(
 	}
 	nonce, err := randomHex(service.random, 16)
 	if err != nil {
-		lock.Close()
 		return err
 	}
 	ackChannel := "sn-attach-" + nonce
@@ -605,13 +606,11 @@ func (service *Service) Attach(
 	select {
 	case outcome = <-attachDone:
 		cancelAck()
-		lock.Close()
 	case ack := <-ackDone:
 		cancelAck()
 		if ack.err != nil || ack.result.ExitCode != 0 {
 			cancelAttach()
 			outcome = <-attachDone
-			lock.Close()
 			if ack.err != nil {
 				return ack.err
 			}
@@ -620,13 +619,16 @@ func (service *Service) Attach(
 				"Tmux window %s attach acknowledgement failed", tmuxID,
 			)
 		}
+		// Release the lifecycle lock before waiting for the interactive attach
+		// client to exit: the client stays connected for as long as the user
+		// remains attached (an unbounded wait), and other window operations
+		// must not block on it. The function-level defer is an idempotent no-op.
 		lock.Close()
 		outcome = <-attachDone
 	case <-ctx.Done():
 		cancelAck()
 		cancelAttach()
 		outcome = <-attachDone
-		lock.Close()
 		if outcome.err != nil {
 			return tmuxTransportError(
 				contract.ErrorProviderUnavailable,
