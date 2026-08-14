@@ -318,6 +318,25 @@ non-retryable error 与 reconcile 路径抑制的 error 不重试。每次重试
 event 在内部捕获，仅成功 attempt 的事件重放到 sink，失败 attempt 不泄漏部分
 事件。
 
+重试判定与边界固定为：
+
+| 来源 | Retryable | 说明 |
+| --- | --- | --- |
+| HTTP 401 / 403 | 否 | `authentication_failed` / `permission_denied` |
+| HTTP 429 | 是 | `rate_limited`，携带 `Retry-After` 换算的 `retry_after_ms` |
+| HTTP 5xx | 是 | `provider_unavailable` |
+| 其它 HTTP `>=300` | 否 | `protocol_error` |
+| `context.DeadlineExceeded` / 传输超时 | 是 | `timeout` |
+| `context.Canceled` | 否 | `cancelled`，不重试 |
+| 其它传输错误 | 是 | `provider_unavailable` |
+
+`RetryPolicy` 默认：`MaxAttempts=3`（含首次）、`BaseDelay=200ms`、按
+`BaseDelay * 2^attempt` 指数退避、`MaxDelay=5s`、`Jitter=0.2`。Provider 返回的
+`Retry-After`（换算为 `retry_after_ms`）优先于指数退避，但被 `MaxDelay` 封顶，
+单次模型调用的退避不会超过 `MaxDelay`，避免单点 Provider 卡死整个 Run。每次重试
+仍是 Driver 的一次全新 HTTP attempt，`SingleAttemptClient` 禁止自动 redirect，
+单次 attempt 不产生多个 HTTP 请求。
+
 ## 5. Session
 
 canonical 文件布局固定为：
