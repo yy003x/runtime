@@ -103,8 +103,8 @@ API Profile 只接受以下字段：
 | `timeout` | 必填 Go duration，范围 `(0,24h]` |
 | `context.window_tokens` | Session 本地上下文窗口；`0`/省略为 `32768` |
 | `context.reserved_output_tokens` | 本地输出预留；`0`/省略基础值为 `8192` |
-| `context.keep_recent_turns` | 预留；当前只校验、冻结、参与 digest |
-| `context.summary_enabled` | 预留；当前不触发摘要 |
+| `context.keep_recent_turns` | `summary_enabled` 压缩时保留的最近 turn 下限；`0`/省略为 `1`；冻结进 snapshot |
+| `context.summary_enabled` | `true` 时投影对溢出历史做压缩（见 §4），否则溢出 fail-closed；冻结进 snapshot |
 
 `runtime.json` 缺失时普通 bootstrap 使用默认值；存在时必须是 no-follow regular
 file、严格 JSON 且无未知字段。当前 shape 与默认语义为：
@@ -309,6 +309,26 @@ Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作
 `context.reserved_output_tokens`、Profile 默认输出上限和请求级输出上限的最大值，
 都未声明时默认 `8192`。输入预算是窗口减去有效输出预留，必须至少为 `2`；较低的
 请求级输出上限不能扩大 Profile 输入预算，较高值必须收紧输入预算。
+
+当估算输入超过 input budget 时，默认 fail-closed（`context_overflow`）。Profile
+`context.summary_enabled=true` 时，Session 投影改为**确定性压缩**：丢弃整数个最旧
+turn，保留 `context.keep_recent_turns`（下限 1）个最近 turn 的逐字内容，使投影落入
+预算；即便压到下限仍超限则仍 fail-closed。当前增量是纯截断（不插入摘要消息、不保留
+被丢弃内容的语义信息；模型生成摘要是后续增量）。压缩事实记录在 append-only
+`sessions/<id>/summaries.jsonl`（每行 `SummaryRecord`，自带 `summary_version=1`）：
+`range_start_seq/range_end_seq` 标记被丢弃的 canonical 区间（`range_end_seq` 为首个
+保留消息序号），`compacted_range_digest` 是被丢弃消息 canonical JSON 的 sha256。该
+`summary_id` 写入当 turn `ContextManifest.CheckpointRef`，`CheckpointDigest` 写入
+summary 整体 digest。`summary_enabled` 与 `keep_recent_turns` 均进 `config_digest`，
+Run 中途翻转触发 drift fail-closed。
+
+压缩把"发给模型的消息 = canonical 历史的逐字前缀"推广为 **grounded 投影** =
+`canonical[range_end_seq:]`。Agent 的 `BaseMessageCount` 前缀校验据此偏移：`SettleAgent`
+与 `findAgentTurn` 读取 manifest 的 `CheckpointRef`，重算被丢弃前缀的 digest 与
+`compacted_range_digest` 比对，匹配则按偏移比较尾部而非逐字前缀；篡改 `messages.jsonl`
+被丢弃前缀使 digest 不匹配即 fail-closed。`messages.jsonl` 仍严格 append-only，`summaries.jsonl`
+复用 append-kind mutation journal 的 PrefixDigest 回滚。Session `schema_version` 保持 3
+（复用已预留的 `CheckpointRef/CheckpointDigest`，未改 shape）。
 
 Provider transient error（`RuntimeError.retryable=true`，含 `rate_limited`、
 `provider_unavailable`、`timeout`）由 `model.Service` 外层的 `ResilientModel`

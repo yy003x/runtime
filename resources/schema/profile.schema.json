@@ -227,13 +227,13 @@
               "maximum": 9223372036854775807
             },
             "keep_recent_turns": {
-              "description": "Accepted, validated and frozen into snapshots, but current Session projection does not yet trim history with it.",
+              "description": "Minimum recent turns retained verbatim when summary_enabled compacts overflowing history. Zero or omission floors to 1. Frozen into snapshots.",
               "type": "integer",
               "minimum": 0,
               "maximum": 9223372036854775807
             },
             "summary_enabled": {
-              "description": "Accepted and frozen into snapshots, but current Session does not yet perform history summarization.",
+              "description": "When true, the Session projection compacts overflowing history by dropping leading turns (keeping keep_recent_turns recent turns) instead of failing with context_overflow. The first increment is deterministic truncation; the dropped range is grounded by a per-session summaries.jsonl digest. Frozen into execution snapshots, so changing it mid-run fails closed.",
               "type": [
                 "boolean",
                 "null"
