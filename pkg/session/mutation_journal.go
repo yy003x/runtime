@@ -1483,7 +1483,8 @@ func (store *Store) mutationRelativePath(
 	case len(parts) == 1 &&
 		(parts[0] == "session.json" ||
 			parts[0] == "messages.jsonl" ||
-			parts[0] == "events.jsonl"):
+			parts[0] == "events.jsonl" ||
+			parts[0] == "summaries.jsonl"):
 		valid = true
 	case len(parts) == 3 && parts[0] == "turns" &&
 		(parts[2] == "turn.json" ||
@@ -1505,14 +1506,16 @@ func (store *Store) mutationRelativePath(
 	}
 	if kind == mutationAppend &&
 		relativePath != "messages.jsonl" &&
-		relativePath != "events.jsonl" {
+		relativePath != "events.jsonl" &&
+		relativePath != "summaries.jsonl" {
 		return "", fmt.Errorf(
 			"Session append target %q is unsupported", relativePath,
 		)
 	}
 	if kind == mutationReplace &&
 		(relativePath == "messages.jsonl" ||
-			relativePath == "events.jsonl") {
+			relativePath == "events.jsonl" ||
+			relativePath == "summaries.jsonl") {
 		return "", fmt.Errorf(
 			"Session replace target %q is unsupported", relativePath,
 		)

@@ -240,6 +240,33 @@ func (store *Store) validateSessionFacts(sessionID string) error {
 			sessionID, sessionValue.EventCount, len(events),
 		)
 	}
+	if err := store.validateSummaryFacts(sessionID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSummaryFacts decodes and semantically validates every summary line.
+// summaries.jsonl is optional; a session that never compacted has none and the
+// read returns no records.
+func (store *Store) validateSummaryFacts(sessionID string) error {
+	records, err := store.summaries(sessionID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if err := validateSummaryRecord(record); err != nil {
+			return fmt.Errorf("session %s summaries.jsonl: %w", sessionID, err)
+		}
+		if _, duplicate := seen[record.SummaryID]; duplicate {
+			return fmt.Errorf(
+				"session %s summaries.jsonl: duplicate summary_id %q",
+				sessionID, record.SummaryID,
+			)
+		}
+		seen[record.SummaryID] = struct{}{}
+	}
 	return nil
 }
 
@@ -256,6 +283,7 @@ func (store *Store) validateSessionRootLayout(sessionID string) error {
 	}
 	files := map[string]bool{
 		"session.json": true, "messages.jsonl": true, "events.jsonl": true,
+		"summaries.jsonl": true,
 	}
 	directories := map[string]bool{
 		"turns": true, "executions": true, "context": true,
@@ -855,6 +883,29 @@ func (store *Store) writeManifest(value ContextManifest) error {
 	return nil
 }
 
+func (store *Store) loadManifest(sessionID, turnID string) (ContextManifest, error) {
+	if err := identity.Validate(turnID, "turn"); err != nil {
+		return ContextManifest{}, err
+	}
+	var value ContextManifest
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return ContextManifest{}, err
+	}
+	defer root.close()
+	relativePath := filepath.Join("turns", turnID, "context-manifest.json")
+	if err := root.readStrictJSON(relativePath, maxFactLineBytes, &value); err != nil {
+		return ContextManifest{}, err
+	}
+	if value.SchemaVersion != SchemaVersion {
+		return ContextManifest{}, unsupportedFactSchema(
+			filepath.Join(store.sessionDir(sessionID), relativePath),
+			value.SchemaVersion,
+		)
+	}
+	return value, nil
+}
+
 func (store *Store) appendMessage(session *Session, value MessageRecord) error {
 	session.MessageCount++
 	value.Sequence = session.MessageCount
@@ -929,6 +980,76 @@ func (store *Store) events(sessionID string) ([]EventRecord, error) {
 		},
 	)
 	return values, err
+}
+
+func (store *Store) summaries(sessionID string) ([]SummaryRecord, error) {
+	var values []SummaryRecord
+	root, err := store.openSessionRoot(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer root.close()
+	err = root.readJSONLines(
+		"summaries.jsonl", maxFactFileBytes, maxFactLineBytes,
+		func(data []byte) error {
+			var value SummaryRecord
+			if err := decodeStrict(data, &value); err != nil {
+				return err
+			}
+			values = append(values, value)
+			return nil
+		},
+	)
+	return values, err
+}
+
+// summaryByID returns the most recent summary matching summaryID. A session may
+// carry a supersession chain of compactions over time, so the last match wins.
+func (store *Store) summaryByID(sessionID, summaryID string) (*SummaryRecord, error) {
+	records, err := store.summaries(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for index := len(records) - 1; index >= 0; index-- {
+		if records[index].SummaryID == summaryID {
+			return &records[index], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: summary %s not found in session %s", ErrConflict, summaryID, sessionID)
+}
+
+// appendSummary appends one compaction record to summaries.jsonl. It must be
+// called within store.withLock, like appendMessage/appendEvent.
+func (store *Store) appendSummary(sessionID string, value SummaryRecord) error {
+	if err := validateSummaryRecord(value); err != nil {
+		return fmt.Errorf("session %s append summary: %w", sessionID, err)
+	}
+	path := filepath.Join(store.sessionDir(sessionID), "summaries.jsonl")
+	relativePath, err := store.prepareAppend(sessionID, path)
+	if err != nil {
+		return err
+	}
+	if err := store.appendMutationJSONLine(sessionID, relativePath, value); err != nil {
+		return err
+	}
+	store.hitMutationFailpoint("after_target_write", relativePath)
+	return nil
+}
+
+func validateSummaryRecord(value SummaryRecord) error {
+	if value.SummaryVersion != SummaryRecordVersion {
+		return fmt.Errorf("summary_version=%d, want %d", value.SummaryVersion, SummaryRecordVersion)
+	}
+	if value.SummaryID == "" || value.SessionID == "" {
+		return fmt.Errorf("summary_id and session_id are required")
+	}
+	if value.RangeEndSeq == 0 || value.RangeEndSeq < value.RangeStartSeq {
+		return fmt.Errorf("invalid summary range %d..%d", value.RangeStartSeq, value.RangeEndSeq)
+	}
+	if value.CompactedRangeDigest == "" {
+		return fmt.Errorf("compacted_range_digest is required")
+	}
+	return nil
 }
 
 func (store *Store) sessionDir(sessionID string) string {

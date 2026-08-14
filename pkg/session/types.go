@@ -15,6 +15,12 @@ import (
 
 const SchemaVersion = 3
 
+// SummaryRecordVersion is the self-contained schema version carried by each
+// SummaryRecord line in summaries.jsonl. It versions the summary fact
+// independently of the Session schema; bumping it does not invalidate existing
+// sessions because summaries.jsonl is an optional, append-only artifact.
+const SummaryRecordVersion = 1
+
 // ErrConflict marks a Session state conflict that callers may safely map to a
 // public conflict response without treating Store failures as user errors.
 var ErrConflict = errors.New("session state conflict")
@@ -137,6 +143,29 @@ type EventRecord struct {
 	State       string                 `json:"state,omitempty"`
 	Error       *contract.RuntimeError `json:"error,omitempty"`
 	Detail      json.RawMessage        `json:"detail,omitempty"`
+}
+
+// SummaryRecord is one append-only context-compaction entry in summaries.jsonl.
+// When the Session projection compacts history (context.summary_enabled), a
+// leading range of old canonical messages is dropped and the recent tail is
+// kept verbatim. This record proves the grounding: the verbatim tail stays in
+// messages.jsonl, and the dropped range can be re-verified by recomputing
+// CompactedRangeDigest over canonical[RangeStartSeq..RangeEndSeq). The first
+// increment is pure deterministic truncation (no inserted summary message); a
+// later increment may add a model-generated summary message and re-version
+// summary_version. summaries.jsonl is optional; a session without compaction
+// never creates it.
+type SummaryRecord struct {
+	SummaryVersion        int       `json:"summary_version"`
+	SummaryID             string    `json:"summary_id"`
+	SessionID             string    `json:"session_id"`
+	TurnID                string    `json:"turn_id"`
+	RunID                 string    `json:"run_id"`
+	RangeStartSeq         uint64    `json:"range_start_seq"`
+	RangeEndSeq           uint64    `json:"range_end_seq"`
+	CompactedRangeDigest  string    `json:"compacted_range_digest"`
+	PolicyKeepRecentTurns int       `json:"policy_keep_recent_turns,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type Execution struct {
