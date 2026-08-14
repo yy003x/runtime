@@ -438,3 +438,30 @@ func assertSessionHeaders(t *testing.T, request *http.Request) {
 		t.Errorf("unexpected MCP headers: %v", request.Header)
 	}
 }
+
+func TestClassifyFailureUsesStructuredErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"timeout sentinel", errMCPTimeout, "timeout"},
+		{"timeout wrapped by call", fmt.Errorf("initialize MCP session: %w", errMCPTimeout), "timeout"},
+		{"too large sentinel", errMCPTooLarge, "response_too_large"},
+		{"too large wrapped by read", fmt.Errorf("%w: 2048 bytes", errMCPTooLarge), "response_too_large"},
+		{"http status sentinel", errMCPHTTPStatus, "http_error"},
+		{"http status wrapped", fmt.Errorf("%w: HTTP status 503", errMCPHTTPStatus), "http_error"},
+		{"transport sentinel", errMCPTransport, "transport_error"},
+		{"transport wrapped by call", fmt.Errorf("call MCP tool: %w", errMCPTransport), "transport_error"},
+		{"rpc error direct", &mcpRPCError{code: -32000, message: "failed"}, "remote_error"},
+		{"rpc error wrapped by call", fmt.Errorf("call MCP tool: %w", &mcpRPCError{code: -32602, message: "params"}), "remote_error"},
+		{"unknown remains protocol error", fmt.Errorf("decode initialize result: bad json"), "protocol_error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyFailure(test.err); got != test.want {
+				t.Fatalf("classifyFailure(%v) = %q, want %q", test.err, got, test.want)
+			}
+		})
+	}
+}

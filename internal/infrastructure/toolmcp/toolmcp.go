@@ -335,9 +335,9 @@ func (client *sessionClient) exchange(
 	response, err := client.client.Do(request)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return rpcResponse{}, fmt.Errorf("MCP request cancelled or timed out")
+			return rpcResponse{}, errMCPTimeout
 		}
-		return rpcResponse{}, fmt.Errorf("MCP transport failed")
+		return rpcResponse{}, errMCPTransport
 	}
 	defer response.Body.Close()
 	if err := client.acceptSessionID(response.Header.Get("Mcp-Session-Id")); err != nil {
@@ -352,7 +352,7 @@ func (client *sessionClient) exchange(
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return rpcResponse{}, fmt.Errorf(
-			"MCP endpoint returned HTTP status %d", response.StatusCode,
+			"%w: HTTP status %d", errMCPHTTPStatus, response.StatusCode,
 		)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -374,10 +374,10 @@ func (client *sessionClient) exchange(
 				return rpcResponse{}, fmt.Errorf("invalid JSON-RPC version")
 			}
 			if value.Error != nil {
-				return rpcResponse{}, fmt.Errorf(
-					"JSON-RPC error %d: %s", value.Error.Code,
-					value.Error.Message,
-				)
+				return rpcResponse{}, &mcpRPCError{
+					code:    value.Error.Code,
+					message: value.Error.Message,
+				}
 			}
 			if len(value.Result) == 0 || bytes.Equal(value.Result, []byte("null")) {
 				return rpcResponse{}, fmt.Errorf("JSON-RPC response has no result")
@@ -415,7 +415,7 @@ func readBounded(reader io.Reader, maximum int64) ([]byte, error) {
 		return nil, fmt.Errorf("read MCP response: %w", err)
 	}
 	if int64(len(data)) > maximum {
-		return nil, fmt.Errorf("MCP response exceeds %d bytes", maximum)
+		return nil, fmt.Errorf("%w: %d bytes", errMCPTooLarge, maximum)
 	}
 	return data, nil
 }
@@ -553,18 +553,40 @@ func idMatches(raw json.RawMessage, expected int) bool {
 	return json.Unmarshal(raw, &number) == nil && number == expected
 }
 
+// MCP failure sentinels decouple classifyFailure from error message wording.
+// exchange returns these directly or wraps them with fmt.Errorf("...: %w"), so
+// errors.Is reaches them through the method wrapping applied in call.
+var (
+	errMCPTimeout    = errors.New("MCP request cancelled or timed out")
+	errMCPTransport  = errors.New("MCP transport failed")
+	errMCPHTTPStatus = errors.New("MCP endpoint returned an unsuccessful HTTP status")
+	errMCPTooLarge   = errors.New("MCP response exceeds the byte limit")
+)
+
+// mcpRPCError carries a structured JSON-RPC error code so classification no
+// longer depends on the "JSON-RPC error" message substring. Its Error text
+// keeps the previous format so redacted failure messages stay stable.
+type mcpRPCError struct {
+	code    int64
+	message string
+}
+
+func (e *mcpRPCError) Error() string {
+	return fmt.Sprintf("JSON-RPC error %d: %s", e.code, e.message)
+}
+
 func classifyFailure(err error) string {
-	message := err.Error()
+	var remote *mcpRPCError
 	switch {
-	case strings.Contains(message, "timed out"), strings.Contains(message, "cancelled"):
+	case errors.Is(err, errMCPTimeout):
 		return "timeout"
-	case strings.Contains(message, "exceeds"):
+	case errors.Is(err, errMCPTooLarge):
 		return "response_too_large"
-	case strings.Contains(message, "HTTP status"):
+	case errors.Is(err, errMCPHTTPStatus):
 		return "http_error"
-	case strings.Contains(message, "JSON-RPC error"):
+	case errors.As(err, &remote):
 		return "remote_error"
-	case strings.Contains(message, "transport failed"):
+	case errors.Is(err, errMCPTransport):
 		return "transport_error"
 	default:
 		return "protocol_error"
