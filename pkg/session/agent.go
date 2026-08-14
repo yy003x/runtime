@@ -226,6 +226,15 @@ func (service *Service) findAgentTurn(
 					lastAssistant = &current
 				}
 			}
+			if offset, err := compactionOffset(service, sessionID, turn.ID, records); err != nil {
+				return err
+			} else if offset > 0 {
+				// The turn was prepared from a compacted projection; reconstruct
+				// the same compacted message set so recovery matches the frozen
+				// checkpoint. currentTurnMessages is unaffected because the
+				// current turn always lives in the kept tail.
+				messages = messages[offset:]
+			}
 			result = AgentTurn{
 				SessionID: sessionID, TurnID: turn.ID, RunID: runID,
 				ExecutionID: turn.ExecutionID, ProfileID: turn.ProfileID,
@@ -537,6 +546,34 @@ func (service *Service) RestoreAgentPause(
 	return nil
 }
 
+// compactionOffset returns the number of leading canonical messages a turn's
+// context compaction dropped. 0 means no compaction: the prepared prefix is a
+// verbatim canonical prefix and callers use the legacy comparison. When the
+// turn manifest carries a CheckpointRef it loads the grounding summary and
+// re-verifies the dropped-prefix digest, fail-closing on any drift.
+func compactionOffset(
+	service *Service,
+	sessionID, turnID string,
+	records []MessageRecord,
+) (int, error) {
+	manifest, err := service.store.loadManifest(sessionID, turnID)
+	if err != nil {
+		return 0, err
+	}
+	if manifest.CheckpointRef == "" {
+		return 0, nil
+	}
+	summary, err := service.store.summaryByID(sessionID, manifest.CheckpointRef)
+	if err != nil {
+		return 0, err
+	}
+	offset, err := verifyCompaction(records, *summary)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrConflict, err)
+	}
+	return offset, nil
+}
+
 func (service *Service) SettleAgent(
 	turn AgentTurn,
 	messages []contract.Message,
@@ -641,7 +678,11 @@ func (service *Service) SettleAgent(
 				)
 			}
 		}
-		if turn.BaseMessageCount > len(canonicalMessages) {
+		offset, compactionErr := compactionOffset(service, turn.SessionID, turn.TurnID, records)
+		if compactionErr != nil {
+			return compactionErr
+		}
+		if turn.BaseMessageCount+offset > len(canonicalMessages) {
 			return fmt.Errorf(
 				"%w: agent Session canonical prefix is shorter than its prepared boundary",
 				ErrConflict,
@@ -649,8 +690,8 @@ func (service *Service) SettleAgent(
 		}
 		for index := 0; index < turn.BaseMessageCount; index++ {
 			if !messagesEqual(
-				canonicalMessages[index], turn.Messages[index],
-			) || !messagesEqual(canonicalMessages[index], messages[index]) {
+				canonicalMessages[offset+index], turn.Messages[index],
+			) || !messagesEqual(canonicalMessages[offset+index], messages[index]) {
 				return fmt.Errorf(
 					"%w: agent Session canonical prefix does not match",
 					ErrConflict,

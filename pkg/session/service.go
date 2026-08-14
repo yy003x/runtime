@@ -409,6 +409,11 @@ func (service *Service) begin(
 		if beginError != nil {
 			return service.failStarted(&sessionValue, &turn, beginError, now)
 		}
+		if built.summary != nil {
+			if err := service.store.appendSummary(ids.session, *built.summary); err != nil {
+				return err
+			}
+		}
 		if err := service.store.writeManifest(built.manifest); err != nil {
 			return err
 		}
