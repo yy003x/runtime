@@ -20,6 +20,7 @@ type Service struct {
 	executors          map[Kind]Executor
 	now                func() time.Time
 	cancelPollInterval time.Duration
+	onStoreError       func(runID string, err error)
 
 	activeMu sync.Mutex
 	active   map[string]context.CancelFunc
@@ -30,6 +31,13 @@ type ServiceOptions struct {
 	Executors          map[Kind]Executor
 	Now                func() time.Time
 	CancelPollInterval time.Duration
+	// OnStoreError, when set, is invoked when the cancellation monitor fails
+	// to read the Run store. It is purely diagnostic: control flow is
+	// unchanged (the monitor keeps polling and execute performs a mandatory
+	// durable recheck before publishing any outcome). The callback may fire
+	// from a monitor goroutine and must be safe for concurrent use. Defaults
+	// to nil, which preserves the previous silent behaviour.
+	OnStoreError func(runID string, err error)
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -55,6 +63,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	return &Service{
 		store: options.Store, executors: executors, now: options.Now,
 		cancelPollInterval: options.CancelPollInterval,
+		onStoreError:       options.OnStoreError,
 		active:             make(map[string]context.CancelFunc),
 	}, nil
 }
@@ -372,7 +381,12 @@ func (service *Service) monitorCancellation(
 			if err != nil {
 				// A transient SQLite read failure does not make execution
 				// outcome knowable. Keep polling; execute performs a mandatory
-				// durable recheck before publishing any outcome.
+				// durable recheck before publishing any outcome. Surface the
+				// failure to the optional diagnostic sink so persistent store
+				// trouble is observable instead of fully silent.
+				if service.onStoreError != nil {
+					service.onStoreError(runID, err)
+				}
 				continue
 			}
 			if current.CancelRequested {

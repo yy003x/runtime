@@ -80,6 +80,23 @@ func executionAttemptObserver(logsDir string) model.AttemptObserver {
 	}
 }
 
+// cancelPollStoreErrorSink returns a diagnostic sink for the Run cancellation
+// monitor. When the monitor cannot read the Run store it records a redacted,
+// best-effort audit entry so persistent store trouble is observable instead of
+// fully silent. It never affects execution control flow.
+func cancelPollStoreErrorSink(logsDir string) func(string, error) {
+	return func(runID string, err error) {
+		_ = executionlog.AppendAudit(logsDir, executionlog.AuditRecord{
+			Time:      time.Now(),
+			Source:    "sn-runtime",
+			Namespace: "run",
+			Action:    "cancel-poll",
+			Outcome:   "store-read-error",
+			Targets:   map[string]string{"run_id": runID, "error": err.Error()},
+		})
+	}
+}
+
 func LoadRuntime(paths layout.Paths, reservedProfileIDs ...string) (*Runtime, error) {
 	profiles, err := LoadProfileServices(paths, reservedProfileIDs...)
 	if err != nil {
@@ -214,6 +231,7 @@ func LoadSessionRunServices(
 				Profiles: core.Profiles, Sessions: sessions,
 			},
 		},
+		OnStoreError: cancelPollStoreErrorSink(paths.LogsDir),
 	})
 	if err != nil {
 		_ = runStore.Close()
@@ -406,6 +424,7 @@ func LoadRunMaintenanceServices(
 				Sessions: sessions,
 			},
 		},
+		OnStoreError: cancelPollStoreErrorSink(paths.LogsDir),
 	})
 	if err != nil {
 		_ = runStore.Close()
@@ -491,6 +510,7 @@ func loadServices(
 		Executors: map[runtime.Kind]runtime.Executor{
 			runtime.KindAgent: agentExecutor, runtime.KindSession: sessionExecutor,
 		},
+		OnStoreError: cancelPollStoreErrorSink(paths.LogsDir),
 	})
 	if err != nil {
 		runStore.Close()
