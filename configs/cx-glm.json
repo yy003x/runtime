@@ -1,0 +1,27 @@
+{
+  "type": "cli",
+  "command": "codex",
+  "model": "glm-5.3",
+  "effort": "max",
+  "args": [
+    "-c",
+    "sandbox_mode=danger-full-access",
+    "-c",
+    "approval_policy=never",
+    "-c",
+    "model_provider=ZAI",
+    "-c",
+    "model_providers.ZAI.name=ZAI",
+    "-c",
+    "model_providers.ZAI.base_url=https://open.bigmodel.cn/api/v1",
+    "-c",
+    "model_providers.ZAI.env_key=Z_AI_API_KEY",
+    "-c",
+    "model_providers.ZAI.wire_api=responses",
+    "-c",
+    "features.apps=false"
+  ],
+  "env": {
+    "CODEX_HOME": "${HOME}/.codex-ait"
+  }
+}
