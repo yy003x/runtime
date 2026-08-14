@@ -219,6 +219,68 @@ func TestAppendConcurrentRecordsRemainValidJSONLines(t *testing.T) {
 	}
 }
 
+func TestAppendConcurrentAcrossDistinctFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "logs")
+	when := time.Date(2026, 8, 4, 11, 0, 0, 0, time.UTC)
+	const perTarget = 32
+	var group sync.WaitGroup
+	for index := 0; index < perTarget; index++ {
+		group.Add(3)
+		go func() {
+			defer group.Done()
+			if err := AppendCLI(root, CLIRecord{
+				Time: when, Namespace: NamespaceExec, Profile: "cx",
+				Source: "sn-cli exec cx", Command: "cx",
+			}); err != nil {
+				t.Errorf("append cli: %v", err)
+			}
+		}()
+		go func() {
+			defer group.Done()
+			if err := AppendAPI(root, APIRecord{
+				Time: when, Namespace: NamespaceAgent, Profile: "api",
+				Source: "agent run", CallID: "call",
+				Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)},
+			}); err != nil {
+				t.Errorf("append api: %v", err)
+			}
+		}()
+		go func() {
+			defer group.Done()
+			if err := AppendAudit(root, AuditRecord{
+				Time: when, Source: "sn-cli", Namespace: "run",
+				Action: "cancel", Outcome: "ok",
+			}); err != nil {
+				t.Errorf("append audit: %v", err)
+			}
+		}()
+	}
+	group.Wait()
+
+	dayDir := filepath.Join(root, "260804")
+	for _, name := range []string{"cli.jsonl", "api.jsonl", "audit.jsonl"} {
+		file, err := os.Open(filepath.Join(dayDir, name))
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		scanner := bufio.NewScanner(file)
+		got := 0
+		for scanner.Scan() {
+			got++
+			if !json.Valid(scanner.Bytes()) {
+				t.Fatalf("%s invalid JSON line %d: %q", name, got, scanner.Bytes())
+			}
+		}
+		file.Close()
+		if err := scanner.Err(); err != nil {
+			t.Fatalf("scan %s: %v", name, err)
+		}
+		if got != perTarget {
+			t.Fatalf("%s lines=%d want=%d", name, got, perTarget)
+		}
+	}
+}
+
 func TestAppendLeavesLegacyFlatLogUntouchedAndEncodesNetworkFailure(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "logs")
 	if err := os.Mkdir(root, 0o700); err != nil {

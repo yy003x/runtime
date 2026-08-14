@@ -95,7 +95,19 @@ type auditRecordJSON struct {
 	HTTPStatus    int                 `json:"http_status,omitempty"`
 }
 
-var appendMu sync.Mutex
+// appendLocks shards the in-process append lock by log file target so that
+// concurrent writes to distinct files (a different day or a different name)
+// no longer serialize each other. The shard lock only orders the
+// Seek/Write/Truncate within a single process and a single file; cross-process
+// exclusion still comes from the per-file Flock acquired in appendLine. The
+// keyspace is bounded by active days times the fixed {cli,api,audit}.jsonl
+// name set, so the map cannot grow unbounded during a process lifetime.
+var appendLocks sync.Map
+
+func appendLockFor(day, name string) *sync.Mutex {
+	actual, _ := appendLocks.LoadOrStore(day+"\x00"+name, &sync.Mutex{})
+	return actual.(*sync.Mutex)
+}
 
 func AppendCLI(logDir string, record CLIRecord) error {
 	payload := cliRecordJSON{
@@ -205,9 +217,11 @@ func appendRecord(logDir string, when time.Time, name string, payload any) error
 		return fmt.Errorf("executionlog: encode record: %w", err)
 	}
 	line = append(line, '\n')
-	appendMu.Lock()
-	defer appendMu.Unlock()
-	return appendLine(logDir, when.Format("060102"), name, line)
+	day := when.Format("060102")
+	mu := appendLockFor(day, name)
+	mu.Lock()
+	defer mu.Unlock()
+	return appendLine(logDir, day, name, line)
 }
 
 func appendLine(logDir, day, name string, line []byte) error {
