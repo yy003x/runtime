@@ -3,7 +3,8 @@
   "command": "claude",
   "model": "claude-fable-5",
   "args": [
-    "--dangerously-skip-permissions"
+    "--dangerously-skip-permissions",
+    "--no-session-persistence"
   ],
   "env": {
     "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip",

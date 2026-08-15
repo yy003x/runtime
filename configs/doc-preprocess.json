@@ -6,8 +6,7 @@
   "args": [
     "--dangerously-skip-permissions",
     "--setting-sources",
-    "project,local",
-    "--no-session-persistence"
+    "project,local"
   ],
   "env": {
     "NO_COLOR": "1",
