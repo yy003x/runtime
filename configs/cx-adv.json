@@ -12,7 +12,6 @@
     "approval_policy=never",
     "--skip-git-repo-check",
     "--ignore-user-config",
-    "--ephemeral",
     "--color",
     "never"
   ],
