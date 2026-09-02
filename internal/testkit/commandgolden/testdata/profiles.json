@@ -53,6 +53,18 @@
       }
     },
     {
+      "id": "gk",
+      "argv": [
+        "--model",
+        "grok-4.6",
+        "--effort",
+        "high"
+      ],
+      "env": {
+        "GROK_HOME": "${HOME}/.grok"
+      }
+    },
+    {
       "id": "cx-adv",
       "argv": [
         "-c",

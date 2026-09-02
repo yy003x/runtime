@@ -30,10 +30,10 @@ func runSessionNamespace(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: session exec|req|open|send|attach|interrupt|close|close-all|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
+		return cliValidationf("usage: session exec|call|open|send|attach|interrupt|close|close-all|list|show|messages|events|logs|executions|execution|reconcile|configure|export|delete|gc")
 	}
 	switch args[0] {
-	case "exec", "req":
+	case "exec", "call":
 		return runSessionExecution(paths, args[0], args[1:], output)
 	case "open", "send", "attach", "interrupt", "close", "close-all":
 		return runSessionNativeAction(paths, args[0], args[1:], output)
@@ -688,7 +688,7 @@ func parseSessionInvocation(args []string) (sessionInvocation, error) {
 	value := sessionInvocation{retention: session.RetentionStandard}
 	if len(args) == 0 || args[0] == "" || strings.HasPrefix(args[0], "-") {
 		return value, cliValidationf(
-			"session execution requires profile ID immediately after exec or req",
+			"session execution requires profile ID immediately after exec or call",
 		)
 	}
 	value.profileID = args[0]
@@ -840,7 +840,7 @@ func validateSessionProfileOptions(
 		return cliValidationf("unknown profile %q", invocation.profileID)
 	}
 	expectedKind := runtimeprofile.KindCommand
-	if action == "req" {
+	if action == "call" {
 		expectedKind = runtimeprofile.KindModel
 	} else if action != "exec" {
 		return cliValidationf("unknown session execution mode %q", action)
@@ -853,7 +853,7 @@ func validateSessionProfileOptions(
 			)
 		}
 		return cliValidationf(
-			"session req requires an API profile; %q is a CLI profile",
+			"session call requires an API profile; %q is a CLI profile",
 			invocation.profileID,
 		)
 	}

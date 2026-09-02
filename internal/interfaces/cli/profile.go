@@ -440,25 +440,27 @@ func parseCommandProfileOptions(args []string) (commandProfileOptions, error) {
 				"Profile input must be one quoted argument",
 			)
 		}
-		if argument == "resume" {
+		name, value, attached := splitTypedOption(argument)
+		if argument == "resume" || name == "--resume" {
 			if result.resume != nil {
 				return commandProfileOptions{}, fmt.Errorf(
 					"resume is configured multiple times",
 				)
 			}
 			id := ""
-			// resume 后下一个非 typed option、非 `--` 的 bare token 当作底层
-			// CLI 的原生 session id 透传；缺省为 bare resume（恢复最近/picker）。
-			if index+1 < len(args) &&
+			if attached {
+				id = value
+			} else if index+1 < len(args) &&
 				!isCommandProfileTypedOption(args[index+1]) &&
 				args[index+1] != "--" {
+				// resume/--resume 后下一个非 typed option、非 `--` 的 bare
+				// token 当作底层 CLI 的原生 session id；缺省为 bare resume。
 				index++
 				id = args[index]
 			}
 			result.resume = &id
 			continue
 		}
-		name, value, attached := splitTypedOption(argument)
 		switch name {
 		case "--model", "--effort", "--prompt", "--cwd":
 			if seen[name] {

@@ -140,7 +140,7 @@ func TestRunSubmitIsRemovedBeforeStatefulBootstrap(t *testing.T) {
 		[]string{"submit", "--profile", "api", "hello"},
 		newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}),
 	)
-	if err == nil || !strings.Contains(err.Error(), `unknown run action "submit"`) {
+	if err == nil || !strings.Contains(err.Error(), `unknown job action "submit"`) {
 		t.Fatalf("error=%v", err)
 	}
 	if _, statErr := os.Stat(paths.RunDBFile); !os.IsNotExist(statErr) {
@@ -197,7 +197,7 @@ func TestRunManagementPreflightRejectsBeforeStatefulBootstrap(t *testing.T) {
 		{"get", "--run-id", "run_1", "trailing"},
 		{"reconcile", "--run-id", ""},
 		{
-			"resume", "--run-id", "run_1",
+			"continue", "--run-id", "run_1",
 			"--input-json", "", "--input-file", "resume.json",
 		},
 	} {
@@ -314,7 +314,7 @@ func TestResumeInputClassifiesFileShapeBeforeRuntimeBootstrap(t *testing.T) {
 	err = runRunNamespace(
 		paths,
 		[]string{
-			"resume",
+			"continue",
 			"--run-id", "run_00000000000000000000000000000000",
 			"--input-file", symlink,
 		},
@@ -360,7 +360,7 @@ func TestRunManagementUsesCanonicalIDAndNotFoundErrors(t *testing.T) {
 func TestRunTraceIsAdmittedAndReachesDispatch(t *testing.T) {
 	const missingRunID = "run_00000000000000000000000000000000"
 	// trace 的校验语义与 get 一致（仅 --run-id）；白名单漏项会让它在这里就返回
-	// "unknown run action \"trace\""，根本到不了 dispatch。
+	// "unknown job action \"trace\""，根本到不了 dispatch。
 	if err := validateRunManagementInvocation([]string{
 		"trace", "--run-id", missingRunID,
 	}); err != nil {

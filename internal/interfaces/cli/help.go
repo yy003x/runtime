@@ -16,15 +16,16 @@ type cliHelpTopic struct {
 
 var cliHelpTopics = []cliHelpTopic{
 	{
-		Name:    "direct",
+		Name:    "tui",
 		Summary: "Run a CLI Profile interactively without creating a Runtime Session or Run.",
 		Usage: []string{
 			"sn-cli <cli-profile-id> [options...] [input]",
 			"sn-cli <cli-profile-id> resume [session-id]",
+			"sn-cli <cli-profile-id> --resume [session-id]",
 		},
 		Notes: []string{
 			"The target CLI owns the terminal and keeps its native stdout, stderr, and exit status.",
-			"resume continues a Codex/Claude native session; it does not create a Runtime Session.",
+			"resume and --resume are equivalent; they continue a Codex/Claude/Grok native session and do not create a Runtime Session.",
 			"A best-effort execution record is written to logs/YYMMDD/cli.jsonl.",
 		},
 	},
@@ -35,19 +36,19 @@ var cliHelpTopics = []cliHelpTopic{
 			"sn-cli exec <cli-profile-id> [options...] [input]",
 		},
 		Notes: []string{
-			"The target process receives null stdin and keeps its native stdout, stderr, and exit status.",
+			"exec accepts CLI Profiles only and keeps the target process native stdout, stderr, and exit status.",
 			"Use session exec when the call must create canonical Session facts.",
 		},
 	},
 	{
-		Name:    "req",
+		Name:    "call",
 		Summary: "Send one request through an API Profile without creating a Runtime Session or Run.",
 		Usage: []string{
-			"sn-cli req <api-profile-id> [options...] [input]",
-			"sn-cli --json req <api-profile-id> [options...] [input]",
+			"sn-cli call <api-profile-id> [options...] [input]",
+			"sn-cli --json call <api-profile-id> [options...] [input]",
 		},
 		Notes: []string{
-			"req performs one Provider call and never executes a returned tool call.",
+			"call accepts API Profiles only, performs one Provider call, and never executes a returned tool call.",
 			"A best-effort execution record is written to logs/YYMMDD/api.jsonl.",
 		},
 	},
@@ -60,6 +61,7 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 		Notes: []string{
 			"Checks Profile structure, CLI executables, API/Tool auth environment, SQLite, audit logs, and tmux.",
+			"profile check is symbolic schema only; doctor checks live local dependencies.",
 			"CLI Profile args environment references are invocation inputs and are not required by doctor.",
 			"Returns non-zero when a configured local dependency is unavailable.",
 		},
@@ -82,7 +84,7 @@ var cliHelpTopics = []cliHelpTopic{
 		Summary: "Run canonical managed Sessions or provider-native TUI Sessions backed by tmux.",
 		Usage: []string{
 			"sn-cli session exec <cli-profile-id> [options...] [input]",
-			"sn-cli session req <api-profile-id> [options...] [input]",
+			"sn-cli session call <api-profile-id> [options...] [input]",
 			"sn-cli session open <cli-profile-id> [--session-id <id>] [--retention ephemeral|standard|pinned] [--model M] [--effort E] [--prompt FILE_OR_TEXT] [--cwd DIR] [--attach|--detach] [input]",
 			"sn-cli session send|attach|interrupt|close --session-id <id>",
 			"sn-cli session close-all",
@@ -91,14 +93,14 @@ var cliHelpTopics = []cliHelpTopic{
 			"sn-cli session reconcile|configure|export|delete|gc [options...]",
 		},
 		Notes: []string{
-			"session exec/req use interface=managed and create canonical Turn/Execution facts; --queue creates a durable Run.",
-			"session open uses interface=native_tui and launches the CLI Profile's native interactive mode directly in a private tmux PTY; it supports --prompt and is detached unless --attach is supplied.",
+			"Managed: session exec/call use interface=managed and create canonical Turn/Execution facts; --queue creates a durable Run.",
+			"Native TUI: session open/send/attach/interrupt/close/close-all use interface=native_tui in a private tmux PTY; open supports --prompt and is detached unless --attach is supplied.",
 			"session send injects raw input into that TUI; accepted=true only means tmux accepted the transport operation.",
 			"Raw TUI input follows terminal and provider line-editor semantics; use session exec for structured non-interactive tasks.",
 			"session open creates one running kind=native_tui durable Run with opaque lifecycle Execution evidence; TUI input/output still create no canonical Turn, Message, Event, or transcript.",
-			"session show projects that lifecycle Run/Execution; terminal Run events remain queryable through run events without creating Session Event duplicates.",
+			"session show projects that lifecycle Run/Execution; terminal Run events remain queryable through job events without creating Session Event duplicates.",
 			"Provider exit settles the lifecycle Run and closes the window; session close settles it as cancelled, requests Provider termination, forces exit after a bounded grace period, and waits for the supervisor to exit while retaining the native_tui Session fact.",
-			"A native_tui Session ID cannot be used by session exec/req; provider-native resume identity is not inferred from a Runtime Session ID.",
+			"A native_tui Session ID cannot be used by session exec/call; provider-native resume identity is not inferred from a Runtime Session ID.",
 			"The tmux carrier is private; all public discovery and control use Session IDs.",
 		},
 	},
@@ -109,21 +111,23 @@ var cliHelpTopics = []cliHelpTopic{
 			"sn-cli agent <api-profile-id> [options...] [input]",
 		},
 		Notes: []string{
+			"agent is the API-only Kernel; it does not wrap CLI Profiles such as gk/cx/cc.",
 			"agent accepts API Profiles only; --queue submits work without starting sn-server.",
 			"Tool execution follows the active Tool Catalog effect and risk contract.",
 		},
 	},
 	{
-		Name:    "run",
+		Name:    "job",
 		Summary: "Query and control existing durable Runs without submitting fresh work.",
 		Usage: []string{
-			"sn-cli run get|result|trace|events|watch --run-id <id>",
-			"sn-cli run list [options...]",
-			"sn-cli run cancel|resume|retry|reconcile --run-id <id> [options...]",
-			"sn-cli run gc [options...]",
+			"sn-cli job get|result|trace|events|watch --run-id <id>",
+			"sn-cli job list [options...]",
+			"sn-cli job cancel|continue|retry|reconcile --run-id <id> [options...]",
+			"sn-cli job gc [options...]",
 		},
 		Notes: []string{
-			"run is a control plane; new work enters through session or agent.",
+			"job is a control plane over Run records (run_id); new work enters through session or agent.",
+			"job continue resumes a paused Run; it is not the same as <cli-profile> resume.",
 			"kind=native_tui Runs are query-only here; use session close or close-all to stop their windows.",
 			"Terminal Run state, result/error, terminal event, and run.settled share one SQLite transaction.",
 		},
@@ -133,12 +137,22 @@ var cliHelpTopics = []cliHelpTopic{
 		Summary: "Manage the HTTP server and durable Run scheduler/worker lifecycle.",
 		Usage: []string{
 			"sn-cli server info|start|status|stop",
-			"sn-cli server update [options...]",
-			"sn-cli server upgrade-check [options...]",
 		},
 		Notes: []string{
 			"server process output is written to logs/sn-server.log.",
-			"server update and activation follow the installed release contract.",
+			"Release install uses sn-cli update; server upgrade-activate remains an internal activation action.",
+		},
+	},
+	{
+		Name:    "update",
+		Summary: "Check, download, or activate a Runtime release without starting a Profile.",
+		Usage: []string{
+			"sn-cli update [options...]",
+			"sn-cli update upgrade-check [options...]",
+		},
+		Notes: []string{
+			"update follows the installed release contract.",
+			"upgrade-check is the pre-activation preflight; upgrade-activate stays under server as an internal action.",
 		},
 	},
 }
@@ -235,14 +249,15 @@ func renderRootHelp(output *cliOutput) error {
 Usage:
   sn-cli <cli-profile-id> [options...] [input]
   sn-cli <cli-profile-id> resume [session-id]
+  sn-cli <cli-profile-id> --resume [session-id]
   sn-cli exec <cli-profile-id> [options...] [input]
-  sn-cli req <api-profile-id> [options...] [input]
-  sn-cli --json req <api-profile-id> [options...] [input]
+  sn-cli call <api-profile-id> [options...] [input]
+  sn-cli --json call <api-profile-id> [options...] [input]
   sn-cli --json <management-command> [args...]
   sn-cli doctor
   sn-cli profile list|show|check
   sn-cli session exec <cli-profile-id> [options...] [input]
-  sn-cli session req <api-profile-id> [options...] [input]
+  sn-cli session call <api-profile-id> [options...] [input]
   sn-cli session open <cli-profile-id> [--attach|--detach] [options...] [input]
   sn-cli session send|attach|interrupt|close --session-id <id>
   sn-cli session close-all
@@ -250,8 +265,9 @@ Usage:
   sn-cli session show|messages|events|logs|executions|execution
   sn-cli session reconcile|configure|export|delete|gc
   sn-cli agent <api-profile-id> [options...] [input]
-  sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
-  sn-cli server info|start|status|stop|update|upgrade-check
+  sn-cli job get|list|result|trace|events|watch|cancel|continue|retry|reconcile|gc
+  sn-cli server info|start|status|stop
+  sn-cli update [options...]
   sn-cli help <topic>`); err != nil {
 		return err
 	}
@@ -279,7 +295,7 @@ Global:
   -h, --help         show root help
   --version          show build version
   --json             stable req/management output; must be first
-                     direct/exec CLI output remains target-native
+                     interactive/exec CLI output remains target-native
 
 Runtime home:        ${SN_CLI_HOME:-~/.sn}
 Profiles:            <runtime-home>/configs

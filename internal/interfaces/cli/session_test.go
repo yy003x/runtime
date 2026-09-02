@@ -81,9 +81,9 @@ func TestSessionInvocationAndProfileMismatchAreCLIValidation(t *testing.T) {
 		invocation sessionInvocation
 	}{
 		{action: "exec", invocation: sessionInvocation{profileID: "missing"}},
-		{action: "req", invocation: sessionInvocation{profileID: "api-cx", model: "override"}},
+		{action: "call", invocation: sessionInvocation{profileID: "api-cx", model: "override"}},
 		{action: "exec", invocation: sessionInvocation{profileID: "api-cx"}},
-		{action: "req", invocation: sessionInvocation{profileID: "cx"}},
+		{action: "call", invocation: sessionInvocation{profileID: "cx"}},
 	} {
 		err := validateSessionProfileOptions(
 			test.action, test.invocation, profiles,
@@ -158,7 +158,7 @@ func TestSessionReqQueueSubmitsDurableSessionRun(t *testing.T) {
 	var stdout bytes.Buffer
 	err := runSessionNamespace(
 		paths,
-		[]string{"req", "api-cx", "--queue", "queued turn"},
+		[]string{"call", "api-cx", "--queue", "queued turn"},
 		newCLIOutput(true, &stdout, &bytes.Buffer{}),
 	)
 	if err != nil {
@@ -277,7 +277,7 @@ func TestSessionTokenLimitFlagIsProviderNeutral(t *testing.T) {
 		Timeout: "1m",
 	})
 	if err := validateSessionProfileOptions(
-		"req", openAIInvocation, openAIProfiles,
+		"call", openAIInvocation, openAIProfiles,
 	); err != nil {
 		t.Fatal(err)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/yy003x/runtime/internal/domain/profileid"
 	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/runtime/pkg/contract"
 	"github.com/yy003x/runtime/pkg/profile"
 	"github.com/yy003x/runtime/pkg/session"
 )
@@ -170,7 +171,7 @@ func TestUpgradeActivateCommitsCompletePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ActivationEpoch != 4 || result.ContractVersion != 7 ||
+	if result.ActivationEpoch != 4 || result.ContractVersion != contract.RuntimeContractVersion ||
 		result.SessionSchemaVersion != 3 ||
 		result.RunSchemaVersion != 6 {
 		t.Fatalf("result=%#v", result)
@@ -1808,7 +1809,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "release", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":7,\"session_schema_version\":3,\"run_schema_version\":6}\n",
+		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":8,\"session_schema_version\":3,\"run_schema_version\":6}\n",
 		0o600,
 	)
 	return payload, target, candidate

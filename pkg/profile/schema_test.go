@@ -54,6 +54,11 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			valid:    true,
 		},
 		{
+			name:     "minimal_cli_grok",
+			document: `{"type":"cli","command":"grok"}`,
+			valid:    true,
+		},
+		{
 			name: "complete_cli",
 			document: `{
 				"type":"cli",

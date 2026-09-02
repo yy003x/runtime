@@ -19,7 +19,7 @@ calls. Instead of bolting session state, retry, cancellation, and tool loops
 onto ad-hoc scripts, it gives you a small set of strict, composable entry
 points:
 
-- Wrap **Codex / Claude** CLIs behind a typed profile, or call a **model API**
+- Wrap **Codex / Claude / Grok** CLIs behind a typed profile, or call a **model API**
   directly (OpenAI-compatible and Anthropic-compatible drivers).
 - Record multi-turn **sessions** to a crash-consistent, file-based store.
 - Keep a long-lived interactive **tmux** window you can attach to later.
@@ -33,7 +33,7 @@ rejected rather than silently papered over.
 
 ### Who it's for
 
-- Developers who wrap Codex/Claude CLIs and want real session/run management
+- Developers who wrap Codex/Claude/Grok CLIs and want real session/run management
   instead of shell one-liners.
 - Teams that want a scriptable, durable, self-hosted alternative to hosted
   agent platforms.
@@ -107,10 +107,11 @@ sn-cli profile check     # validate every profile's structure
 
 ```bash
 # One model API call (needs the profile's referenced env var set)
-sn-cli req api-cx "Reply OK"
+sn-cli call api-cx "Reply OK"
 
-# Open the Codex/Claude interactive TUI
+# Open the Codex/Claude/Grok interactive TUI
 sn-cli cx
+sn-cli gk
 
 # Run a CLI one-shot and wait for it to exit
 sn-cli exec cx "Summarize this repo"
@@ -120,8 +121,8 @@ sn-cli exec cx "Summarize this repo"
 
 ```bash
 # Run one recorded request, then reuse the same session across API profiles
-sn-cli --json session req api-cx "First turn"     # grab session_id from JSON
-sn-cli session req api-cc --session-id <session_id> "Second turn"
+sn-cli --json session call api-cx "First turn"     # grab session_id from JSON
+sn-cli session call api-cc --session-id <session_id> "Second turn"
 sn-cli session messages --session-id <session_id> # read the history
 ```
 
@@ -133,7 +134,7 @@ first:
 ```bash
 sn-cli --json server start
 sn-cli --json session exec cx-deep --queue --task-id analysis --cwd "$PWD" "Run in background"
-sn-cli run watch --run-id <run_id>     # stream events until it settles
+sn-cli job watch --run-id <run_id>     # stream events until it settles
 ```
 
 ### A tmux-backed native TUI Session
@@ -189,23 +190,23 @@ and persistence target:
 ```text
 sn-cli <cli-id> ────────> Command Bridge ─> interactive CLI process
 sn-cli exec <cli-id> ───> Command Bridge ─> one-shot CLI process
-sn-cli req <api-id> ────> Model Core ─────> one HTTP/SSE request
+sn-cli call <api-id> ────> Model Core ─────> one HTTP/SSE request
 
-sn-cli session exec|req ─> Session Service ─> command or model
+sn-cli session exec|call ─> Session Service ─> command or model
 sn-cli session open ... ─> native_tui Session ─> provider TUI in tmux PTY
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
-sn-cli run ... ────────> Run Harness ──────> SQLite WAL control plane
+sn-cli job ... ────────> Run Harness ──────> SQLite WAL control plane
 ```
 
 | Entry | Purpose | Persisted |
 |---|---|---|
 | `sn-cli <cli-profile-id>` | interactive CLI direct call | local `cli.jsonl`; no Session/Run |
 | `sn-cli exec <cli-profile-id>` | non-interactive CLI one-shot | local `cli.jsonl`; no Session/Run |
-| `sn-cli req <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
-| `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
+| `sn-cli call <api-profile-id>` | one API request | local `api.jsonl`; no Session/Run |
+| `sn-cli session exec\|call <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | file-based session; local execution log; optionally durable run |
 | `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | provider-native TUI with Runtime identity | `interface=native_tui` Session + opaque lifecycle Run/Execution and tmux binding; no canonical transcript |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
-| `sn-cli run ...` | query and control existing durable runs | SQLite WAL |
+| `sn-cli job ...` | query and control existing durable runs | SQLite WAL |
 
 Key boundaries worth remembering up front:
 
@@ -216,7 +217,7 @@ Key boundaries worth remembering up front:
 - The public owner of a provider-native TUI is always a **`native_tui`
   Session**. tmux remains the private PTY carrier and the provider still owns
   interaction semantics.
-- `managed` Sessions from `session exec|req` and `native_tui` Sessions from
+- `managed` Sessions from `session exec|call` and `native_tui` Sessions from
   `session open` cannot share a Session ID.
 - **Submitting a run doesn't start the server** — enqueue and worker are decoupled.
 - **Readiness follows the execution plane** — an unexpected worker or reaper

@@ -25,7 +25,7 @@ func TestMainLeadingJSONVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["contract_version"] != float64(7) {
+	if payload["contract_version"] != float64(cliOutputContractVersion) {
 		t.Fatalf("payload=%#v", payload)
 	}
 }
@@ -38,11 +38,12 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 	for _, expected := range []string{
 		"sn-cli <cli-profile-id> [options...] [input]",
 		"sn-cli <cli-profile-id> resume [session-id]",
+		"sn-cli <cli-profile-id> --resume [session-id]",
 		"sn-cli exec <cli-profile-id> [options...] [input]",
-		"sn-cli req <api-profile-id> [options...] [input]",
+		"sn-cli call <api-profile-id> [options...] [input]",
 		"sn-cli doctor",
 		"sn-cli session exec <cli-profile-id> [options...] [input]",
-		"sn-cli session req <api-profile-id> [options...] [input]",
+		"sn-cli session call <api-profile-id> [options...] [input]",
 		"sn-cli session open <cli-profile-id> [--attach|--detach] [options...] [input]",
 		"sn-cli session send|attach|interrupt|close --session-id <id>",
 		"sn-cli session close-all",
@@ -50,14 +51,14 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		"sn-cli session show|messages|events|logs|executions|execution",
 		"sn-cli session reconcile|configure|export|delete|gc",
 		"sn-cli agent <api-profile-id> [options...] [input]",
-		"sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc",
+		"sn-cli job get|list|result|trace|events|watch|cancel|continue|retry|reconcile|gc",
 		"sn-cli help <topic>",
 		"session close-all  close Session-bound native TUI windows",
 		"session open       create a native_tui Session",
 		"Control audit      <runtime-home>/logs/YYMMDD/audit.jsonl",
 		"Server process     <runtime-home>/logs/sn-server.log",
 		"stable req/management output; must be first",
-		"direct/exec CLI output remains target-native",
+		"interactive/exec CLI output remains target-native",
 		"Tools:               <runtime-home>/tools",
 	} {
 		if !strings.Contains(stdout, expected) {
@@ -71,8 +72,8 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 
 func TestMainHelpTopicsHaveHumanAndMachineContracts(t *testing.T) {
 	topics := []string{
-		"direct", "exec", "req", "doctor", "profile",
-		"session", "agent", "run", "server",
+		"tui", "exec", "call", "doctor", "profile",
+		"session", "agent", "job", "server", "update",
 	}
 	for _, topic := range topics {
 		t.Run(topic, func(t *testing.T) {
@@ -247,7 +248,7 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 		{
 			name: "run_id",
 			args: []string{
-				"--json", "run", "get", "--run-id", "bad",
+				"--json", "job", "get", "--run-id", "bad",
 			},
 		},
 		{
@@ -269,13 +270,13 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 		{
 			name: "api_profile_unknown_option",
 			args: []string{
-				"--json", "req", "api", "--unknown",
+				"--json", "call", "api", "--unknown",
 			},
 		},
 		{
 			name: "profile_not_found",
 			args: []string{
-				"--json", "req", "missing", "input",
+				"--json", "call", "missing", "input",
 			},
 		},
 		{
@@ -299,7 +300,7 @@ func TestMainMachineArgumentErrorsAreCanonicalInvalidRequests(t *testing.T) {
 		{
 			name: "removed_run_submit",
 			args: []string{
-				"--json", "run", "submit", "input",
+				"--json", "job", "submit", "input",
 			},
 		},
 		{
@@ -446,7 +447,7 @@ func TestMainReqIsTheOnlyAPIProfileExecutionNamespace(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
 	reqOut, reqErr, reqExit := captureMainOutput(
-		t, []string{"req", "api-cx", "reply OK"},
+		t, []string{"call", "api-cx", "reply OK"},
 	)
 	if reqExit != 0 || reqErr != "" || reqOut != "OK\n" {
 		t.Fatalf(
@@ -455,7 +456,7 @@ func TestMainReqIsTheOnlyAPIProfileExecutionNamespace(t *testing.T) {
 	}
 
 	reqJSON, reqJSONErr, reqJSONExit := captureMainOutput(
-		t, []string{"--json", "req", "api-cx", "reply OK"},
+		t, []string{"--json", "call", "api-cx", "reply OK"},
 	)
 	if reqJSONExit != 0 || reqJSONErr != "" {
 		t.Fatalf(

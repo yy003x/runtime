@@ -18,7 +18,7 @@ durable 会话、长期 tmux 窗口、自主 agent 循环和后台队列统一�
 SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与其把会话状态、重试、
 取消和工具循环硬塞进临时脚本，它提供了一组边界清晰、可组合的入口：
 
-- 用 typed Profile 包裹 **Codex / Claude** CLI，或直接调用**模型 API**
+- 用 typed Profile 包裹 **Codex / Claude / Grok** CLI，或直接调用**模型 API**
   （OpenAI-compatible 与 Anthropic-compatible driver）。
 - 把多轮**会话**记录到 crash-consistent 的文件型存储。
 - 保留一个长期可 attach 的交互式 **tmux** 窗口。
@@ -31,7 +31,7 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
 
 ### 给谁用
 
-- 想包裹 Codex/Claude CLI、并需要真正的 session/run 管理而非 shell 一行命令的开发者。
+- 想包裹 Codex/Claude/Grok CLI、并需要真正的 session/run 管理而非 shell 一行命令的开发者。
 - 想要可脚本化、可持久化、可自托管、替代托管式 Agent 平台的团队。
 - 任何在搭建 agent 工作流、需要可恢复 run、取消和干净 HTTP 控制面的人。
 
@@ -96,10 +96,11 @@ sn-cli profile check     # 校验每个 profile 的结构
 
 ```bash
 # 一次模型 API 调用（需先设置该 profile 引用的环境变量）
-sn-cli req api-cx "回复OK"
+sn-cli call api-cx "回复OK"
 
-# 打开 Codex/Claude 交互 TUI
+# 打开 Codex/Claude/Grok 交互 TUI
 sn-cli cx
+sn-cli gk
 
 # 一次性执行 CLI 并等待退出
 sn-cli exec cx "总结当前仓库"
@@ -109,8 +110,8 @@ sn-cli exec cx "总结当前仓库"
 
 ```bash
 # 执行一个有记录的 request，之后跨轮次/API profile 复用同一会话
-sn-cli --json session req api-cx "第一轮"      # 从 JSON 取 session_id
-sn-cli session req api-cc --session-id <session_id> "第二轮"
+sn-cli --json session call api-cx "第一轮"      # 从 JSON 取 session_id
+sn-cli session call api-cc --session-id <session_id> "第二轮"
 sn-cli session messages --session-id <session_id> # 读取历史
 ```
 
@@ -121,7 +122,7 @@ sn-cli session messages --session-id <session_id> # 读取历史
 ```bash
 sn-cli --json server start
 sn-cli --json session exec cx-deep --queue --task-id analysis --cwd "$PWD" "后台执行"
-sn-cli run watch --run-id <run_id>     # 流式追踪事件直到 settled
+sn-cli job watch --run-id <run_id>     # 流式追踪事件直到 settled
 ```
 
 ### 一个 tmux-backed Provider 原生 TUI Session
@@ -171,23 +172,23 @@ sn-cli agent api-cc \
 ```text
 sn-cli <cli-id> ────────> Command Bridge ─> 交互 CLI process
 sn-cli exec <cli-id> ───> Command Bridge ─> 一次性 CLI process
-sn-cli req <api-id> ────> Model Core ─────> 一次 HTTP/SSE request
+sn-cli call <api-id> ────> Model Core ─────> 一次 HTTP/SSE request
 
-sn-cli session exec|req ─> Session Service ─> command or model
+sn-cli session exec|call ─> Session Service ─> command or model
 sn-cli session open ... ─> native_tui Session ─> tmux PTY 中的 Provider TUI
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
-sn-cli run ... ────────> Run Harness ──────> SQLite WAL 控制面
+sn-cli job ... ────────> Run Harness ──────> SQLite WAL 控制面
 ```
 
 | 入口 | 作用 | 持久化 |
 |---|---|---|
 | `sn-cli <cli-profile-id>` | CLI 交互 direct 调用 | 本地 `cli.jsonl`；无 Session/Run |
 | `sn-cli exec <cli-profile-id>` | CLI 非交互一次执行 | 本地 `cli.jsonl`；无 Session/Run |
-| `sn-cli req <api-profile-id>` | 一次 API request | 本地 `api.jsonl`；无 Session/Run |
-| `sn-cli session exec\|req <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | 文件型 session；本地执行日志；可选 durable run |
+| `sn-cli call <api-profile-id>` | 一次 API request | 本地 `api.jsonl`；无 Session/Run |
+| `sn-cli session exec\|call <profile-id> [--queue]` | Session / Turn / Message / Event / Execution | 文件型 session；本地执行日志；可选 durable run |
 | `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | 带 Runtime identity 的 Provider 原生 TUI | `interface=native_tui` Session + opaque lifecycle Run/Execution 与 tmux binding；无 canonical transcript |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool 循环 | durable run；每轮本地 API 日志（session 可选） |
-| `sn-cli run ...` | 查询和控制已有 durable run | SQLite WAL |
+| `sn-cli job ...` | 查询和控制已有 durable run | SQLite WAL |
 
 几条最重要的边界：
 
@@ -197,7 +198,7 @@ sn-cli run ... ────────> Run Harness ──────> SQLite 
   自主工具循环属于 `agent`。
 - Provider 原生长期 TUI 的 public owner 固定为 **`native_tui` Session**；tmux 只作为
   private PTY carrier，不单独创建或拥有 canonical Session lifecycle。
-- `session exec|req` 创建的 `managed` Session 与 `session open` 创建的 `native_tui`
+- `session exec|call` 创建的 `managed` Session 与 `session open` 创建的 `native_tui`
   Session 不能共用同一个 Session ID。
 - **提交 run 不会自动启动 server**——入队与执行是解耦的。
 - **readiness 跟随执行面**——worker 或 reaper 意外退出会让 server 立即 unready 并

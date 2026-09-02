@@ -82,7 +82,7 @@ passthrough。`resources/schema/{profile,runtime,tool}.schema.json` 与严格 Go
 共同构成规范：Schema 负责文档 shape，loader 负责 adapter grammar、环境引用、
 duration、跨字段约束与文件系统事实；loader-valid 必须 schema-valid。
 
-CLI Profile 的 `command` 不经过 shell，只按 basename 选择已登记的 Codex/Claude
+CLI Profile 的 `command` 不经过 shell，只按 basename 选择已登记的 Codex/Claude/Grok
 adapter；`args` 一字符串一 argv token；`env` 在 inherited environment 上覆盖，
 `null` 删除变量；`${NAME}` 是唯一插值语法。`model`、`effort`、`prompt`、`cwd`
 可省略，执行 mode 只由 CLI namespace 决定。旧 `exec` 字段和所有未知字段均拒绝。
@@ -149,9 +149,9 @@ file、严格 JSON 且无未知字段。当前 shape 与默认语义为：
 | --- | --- | --- | --- |
 | `sn-cli <cli-id>` | interactive direct | process replacement | `cli.jsonl`；无 Session/Run |
 | `sn-cli exec <cli-id>` | non-interactive exec | process replacement | `cli.jsonl`；无 Session/Run |
-| `sn-cli req <api-id>` | API request | Model Core | `api.jsonl`；无 Session/Run |
+| `sn-cli call <api-id>` | API request | Model Core | `api.jsonl`；无 Session/Run |
 | `sn-cli session exec <cli-id> [--queue]` | non-interactive managed exec | Session child | `cli.jsonl` + Turn/Execution；queue 时另有 Run |
-| `sn-cli session req <api-id> [--queue]` | API request | Session executor | `api.jsonl` + Turn/Execution；queue 时另有 Run |
+| `sn-cli session call <api-id> [--queue]` | API request | Session executor | `api.jsonl` + Turn/Execution；queue 时另有 Run |
 | `sn-cli session open <cli-id>` | Provider-native interactive TUI | Tmux PTY + native_tui Session identity | opaque lifecycle Run/Execution；无 canonical transcript/Turn |
 | `sn-cli agent <api-id> [--queue]` | API model/tool loop | Agent Kernel | 每轮 `api.jsonl` + Durable Run |
 
@@ -180,7 +180,7 @@ terminal lifecycle event 仍由 Run Store 在 settle transaction 中写入，并
 `--attach` 与 `--detach` 互斥。`--prompt` 接受 text 或相对 invocation cwd 的 regular
 file，并按 Profile base prompt、typed prompt、stdin、位置 input 的顺序合并。未给
 `--session-id` 时生成新 ID；显式 ID 也必须尚不存在。
-当前不从 Runtime Session ID 推断 Codex/Claude native resume identity，因此已存在或已
+当前不从 Runtime Session ID 推断 Codex/Claude/Grok native resume identity，因此已存在或已
 关闭的 `native_tui` Session 不能用 `session open` 重开。`send` 只对 running binding
 注入 raw input，`interrupt` 发送 `C-c`。Provider process 自然退出时，supervisor 先在
 同一 SQLite transaction 中提交 terminal Run、result/error、terminal event 与
@@ -190,7 +190,7 @@ window；carrier stop 会向 supervisor 发送 `SIGTERM`，supervisor 显式向 
 `SIGHUP|SIGTERM`，最多等待 2 秒后发送 `SIGKILL`，并在确认 supervisor identity 已消失后
 才返回成功。`C-c`/`SIGINT` 只中断 Provider 当前交互，不启动强制退出计时。关闭保留
 Session fact。`run cancel|retry|resume` 不接管 `native_tui` lifecycle；
-关闭必须使用 `session close|close-all`。上述 Session ID 不能传给 `session exec|req`。
+关闭必须使用 `session close|close-all`。上述 Session ID 不能传给 `session exec|call`。
 
 Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Claude。adapter
 用显式 option grammar：
@@ -207,10 +207,10 @@ Profile `prompt`、typed `--prompt`、piped stdin、位置 input 按顺序合并
 prompt 必须非空；bare interactive direct 可为空。两种 mode 都 process replacement，
 leading global `--json` 不包装其原生输出。
 
-bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`req` 只接受 API
+bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`call` 只接受 API
 Profile。Profile ID 必须紧跟拥有它的 namespace/action，option 位于其后，input
 必须最后。固定根 namespace
-`doctor|exec|req|profile|session|agent|run|server|help|version`，以及 Profile 管理
+`doctor|exec|call|profile|session|agent|job|server|help|version|update`，以及 Profile 管理
 action `list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。
 
 `profile` 只提供 `list|show|check` 管理动作，不执行 Profile。`profile check` 是纯
@@ -414,6 +414,8 @@ CLI executor 固定 command adapter exec/canonical：
   `agent_message` 可成为 assistant；
 - Claude：`-p --output-format json`，不允许 `--verbose` 改写 stdout shape，只接受
   唯一、成功、`is_error=false` 的 `type=result` document；
+- Grok：`--output-format json --single=<prompt>`，prompt 必须用 `=` 附着（`--` 会被
+  当成 prompt 本身），只接受唯一成功 JSON object 的 `text`；`type=error` 拒绝；
 - OS exit=0 与 protocol success terminal 都必须满足；
 - stdout 只承载机器协议，stderr 只承载诊断；partial output 不伪造成 assistant。
 
@@ -454,7 +456,7 @@ digest 写成 Session 自己的 profile-only digest。
 
 Session fact 必须显式声明 `schema_version=3` 和
 `interface=managed|native_tui`；缺失或不相等都拒绝，不推断、不补齐。
-`session exec|req` 只创建或复用 `managed` Session；`session open` 只创建
+`session exec|call` 只创建或复用 `managed` Session；`session open` 只创建
 `native_tui` Session。两种 interface 不能共用 Session ID，schema v2 不自动迁移。
 
 API Session 返回 canonical tool call 后，Turn 进入 `requires_action`、Session 进入
@@ -667,7 +669,7 @@ manifest 的 canonical definition、endpoint、remote tool、header 环境
 引用、timeout 和 response limit 冻结进 child tool snapshot，resolved secret 不
 进入 snapshot、digest、event 或错误。网络、HTTP、JSON-RPC、协议与远端 tool
 错误用有界、脱敏的 `ToolResult{IsError:true}` 闭合只读 effect，使模型可在下一轮
-解释失败；Session 和 `req` 不执行该 handler。
+解释失败；Session 和 `call` 不执行该 handler。
 
 builtin 工具新增 `shell`（`effect=write_external`、`risk=high`），以 argv 形式
 （不经 shell 插值）在独立进程组内执行子进程，有界捕获 stdout/stderr，并在 ctx
@@ -675,7 +677,7 @@ deadline 或输出超限时向整个进程组 `SIGTERM`→`SIGKILL`。它是进�
 工具，靠风险分级与人工确认兜底，默认不在 `runtime.json` 的 `agent.tools` 中启用。
 high-risk 写副作用在真正执行前必须经过 UserConfirmation：handler 首次返回
 `Pause{Kind:"user_confirmation"}`，Kernel 据此**不闭合** durable effect（保持
-`started`），Run 进入 `paused`；`run resume` 携带 `{approved:bool}` 后 Kernel 把
+`started`），Run 进入 `paused`；`job continue` 携带 `{approved:bool}` 后 Kernel 把
 approval 附进 `ToolRequest` **重跑** handler 才触发真正副作用，再用真实结果
 `Completed`。期间崩溃则 effect 仍是 `started`，按既有不变量进入
 `needs_reconciliation`（副作用未发生，fail-closed）。这是 stock builtin 工具首次
@@ -697,8 +699,8 @@ Run 结案为 failed。Agent 绑定 Session 时，Session 在 reconciliation 前
 Session projection，再提交 Run terminal barrier。重复调用返回同一 terminal
 record。Agent 在执行 tool 前在 Turn 上原子持久化 `agent_owned=true` owner
 marker；若进程在 unknown projection 前退出，Execution 可以仍是 `running`，
-`run reconcile` 仍按精确 `run_id` 收口。`paused` 不走 reconciliation，只能通过
-`run resume` 恢复。pause/resume 是 Kernel extension：底层 CLI/API/Store 和
+`job reconcile` 仍按精确 `run_id` 收口。`paused` 不走 reconciliation，只能通过
+`job continue` 恢复。pause/resume 是 Kernel extension：底层 CLI/API/Store 和
 validator 保留，`shell` 等 high-risk 写工具经 `user_confirmation` pause 产生
 暂停态。
 
@@ -738,7 +740,7 @@ list limit 影响。`running` Run 的 owner worker 轮询同一 SQLite durable f
 kind-specific finalizer 收口。普通 terminal/reconciliation publish 必须拒绝已有
 reservation，只有 cancellation-owned publish 可以消费它。
 
-`run reconcile` 本身是操作者对 unknown outcome 的显式确认。Session Run 从已经
+`job reconcile` 本身是操作者对 unknown outcome 的显式确认。Session Run 从已经
 人工 reconciliation 的 Session evidence 收口；Agent Run 由 Agent executor
 收口。两种 kind 均不得 replay 原执行。已经 reconciliation 的 Agent terminal
 result 带显式 acknowledgement marker，重复调用幂等返回该 record；普通 terminal
@@ -778,10 +780,10 @@ unique/partial 属性和列序；对象缺失、定义变化、未知对象、�
 固定 CLI namespace：
 
 ```text
-doctor exec req profile session agent run server help version
+doctor exec call profile session agent job server help version update
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=7`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=8`。
 bare CLI direct、`exec` 和 `session attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -792,7 +794,7 @@ namespace；active CLI Profile；否则失败。namespace/Profile 后出现的 `
 help 使用单一 topic grammar：
 
 ```text
-sn-cli help [direct|exec|req|doctor|profile|session|agent|run|server]
+sn-cli help [tui|exec|call|doctor|profile|session|agent|job|server|update]
 sn-cli --json help [topic]
 ```
 
@@ -806,14 +808,15 @@ Runtime Home，也不写 execution/audit log。
 ```text
 sn-cli <cli-profile-id> [options] [input]
 sn-cli <cli-profile-id> resume [native-session-id] [--model M] [--effort E]
+sn-cli <cli-profile-id> --resume [native-session-id] [--model M] [--effort E]
 sn-cli exec <cli-profile-id> [options] [input]
-sn-cli req <api-profile-id> [options] [input]
+sn-cli call <api-profile-id> [options] [input]
 sn-cli doctor
 sn-cli help [topic]
 sn-cli profile list|show|check
 
 sn-cli session exec <cli-profile-id> [options] [input]
-sn-cli session req <api-profile-id> [options] [input]
+sn-cli session call <api-profile-id> [options] [input]
 sn-cli session open <cli-profile-id> [--attach|--detach] [options] [input]
 sn-cli session send|attach|interrupt|close --session-id <id>
 sn-cli session close-all
@@ -822,8 +825,10 @@ sn-cli session show|messages|events|logs|executions|execution
 sn-cli session reconcile|configure|export|delete|gc
 
 sn-cli agent <api-profile-id> [options] [input]
-sn-cli run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc
-sn-cli server info|start|status|stop|update|upgrade-check
+sn-cli job get|list|result|trace|events|watch|cancel|continue|retry|reconcile|gc
+sn-cli server info|start|status|stop
+sn-cli update [options]
+sn-cli update upgrade-check [options]
 ```
 
 `session open` 是唯一 public native TUI creation action；不支持省略 action，因为
@@ -838,10 +843,11 @@ identity；不调用 Provider/MCP 远端。machine result
 成功时报告各缺失项、`tmux_window_count`、`tmux_error`、`audit_log_error` 和 log
 root；失败时返回单一 canonical error envelope，并在 message 中列出失败项。
 
-bare Profile/`exec` 只接受 CLI Profile，`req`/`agent` 只接受 API Profile；Profile ID
+bare Profile/`exec` 只接受 CLI Profile，`call`/`agent` 只接受 API Profile；Profile ID
 必须紧跟拥有它的 namespace/action，option 位于其后，input 至多一个并且最后。
-`<cli-profile-id> resume` 只续接 Codex/Claude 自己的 native session，不创建 Runtime
-Session/Run；adapter 分别映射为 Codex `resume` 与 Claude `--resume`。`profile check`
+`<cli-profile-id> resume` 与 `--resume` 等价，只续接 Codex/Claude/Grok 自己的 native
+session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`、Claude `--resume`
+与 Grok `--resume`。`profile check`
 只做符号化静态校验，不解析真实 env/PATH/cwd、不读 prompt file、不调用 Provider。
 
 执行入口与事实边界：
@@ -850,14 +856,14 @@ Session/Run；adapter 分别映射为 Codex `resume` 与 Claude `--resume`。`pr
 | --- | --- | --- |
 | bare CLI Profile | interactive process replacement | 无 Session/Run |
 | `exec` | non-interactive process replacement | 无 Session/Run |
-| `req` | 单次 API request | 无 Session/Run |
-| `session exec|req` | 一个 recorded Turn；`--queue` 时入队 | Session；可选 Run |
+| `call` | 单次 API request | 无 Session/Run |
+| `session exec|call` | 一个 recorded Turn；`--queue` 时入队 | Session；可选 Run |
 | `session open` | tmux PTY 中的 Provider 原生 TUI | `native_tui` Session + opaque lifecycle Run/Execution；无 Turn/transcript |
 | `agent` | durable model/tool loop；`--queue` 只入队 | Run；可选 Session |
-| `run` | 查询/控制已有 Run | 不提交 fresh work |
+| `job` | 查询/控制已有 Run | 不提交 fresh work |
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=7` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=8` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`
 只支持 human TTY。
@@ -871,8 +877,8 @@ Run application composition 按 action 分层：query/watch/trace 只加载 Run 
 cancel/reconcile 只加载 Run Store 和 Session maintenance service；GC 仅在未显式
 提供 cutoff 时读取 retention 配置。上述 maintenance 路径必须能只用 private
 snapshot 和 durable evidence 工作，不加载 current Profile、Provider 或 tool。
-带 `--queue` 的 `session exec|req`、`agent [--queue]`、resume/retry 和 worker execution 才
-加载完整执行依赖。`run` namespace 不接受 fresh submission，只查询或控制已有
+带 `--queue` 的 `session exec|call`、`agent [--queue]`、resume/retry 和 worker execution 才
+加载完整执行依赖。`job` namespace 不接受 fresh submission，只查询或控制已有
 Durable Run；`retry` 仍是基于已有终态 Run 的控制动作。
 
 HTTP route 固定为：
@@ -978,9 +984,9 @@ lifecycle lock 内安全停止 server。任何剩余 Tmux carrier、目标 binar
 `sessions/`、`state/session-locks/`、`state/session-invocations/`、
 `state/session-mutations/`、`state/session-trash-moves/` 和
 `state/runtime.db*`，然后解除 journal。安装终态固定为 server stopped，且这项
-reset 授权不能由 archive installer 或 `server update` 获得。
+reset 授权不能由 archive installer 或 `sn-cli update` 获得。
 
 所有公开配置、Session/Run fact、SDK request 和 machine output 都必须完整符合当前
 schema。CLI Profile 只进入 bare direct、`exec`、`session exec` 或 `session open`；
-API Profile 只进入 `req`、`session req` 或 `agent`。类型不匹配 fail closed，不提供
+API Profile 只进入 `call`、`session call` 或 `agent`。类型不匹配 fail closed，不提供
 alias、自动迁移或 legacy ingress。

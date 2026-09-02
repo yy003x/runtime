@@ -110,9 +110,11 @@ func Main(args []string) int {
 				runtimecommand.ModeExec, "exec", output,
 			)
 		case "req":
+			err = cliValidationf("unknown namespace %q; use call", args[0])
+		case "call":
 			err = runProfileExecutionNamespace(
 				paths, args[1:], runtimeprofile.KindModel,
-				"", "req", output,
+				"", "call", output,
 			)
 		case "profile":
 			err = runProfileNamespace(paths, args[1:], output)
@@ -121,7 +123,11 @@ func Main(args []string) int {
 		case "agent":
 			err = runAgentNamespace(paths, args[1:], output)
 		case "run":
+			err = cliValidationf("unknown namespace %q; use job", args[0])
+		case "job":
 			err = runRunNamespace(paths, args[1:], output)
+		case "update":
+			err = runUpdateNamespace(paths, args[1:], output)
 		case "server":
 			err = runServerNamespace(paths, args[1:], output)
 		default:

@@ -283,18 +283,18 @@ func TestServerInfoPublishesCurrentContract(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 7 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != cliOutputContractVersion ||
 		strings.Join(payload.Namespaces, ",") != strings.Join(fixedNamespaces, ",") ||
 		len(payload.Capabilities["agent"]) == 0 ||
 		payload.ConfiguredAddr != "127.0.0.1:8080" ||
 		len(payload.Profiles) != 2 {
 		t.Fatalf("payload=%#v", payload)
 	}
-	for _, capability := range payload.Capabilities["run"] {
-		if capability == "resume" {
+	for _, capability := range payload.Capabilities["job"] {
+		if capability == "resume" || capability == "continue" {
 			t.Fatalf(
 				"stock server must not advertise Kernel-extension resume: %#v",
-				payload.Capabilities["run"],
+				payload.Capabilities["job"],
 			)
 		}
 	}

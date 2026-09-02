@@ -8,11 +8,11 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 
 执行面固定为：
 
-- `sn-cli <cli-profile-id>`：CLI Profile 的 direct 交互调用，不创建 Session/Run；
+- `sn-cli <cli-profile-id>`：CLI Profile 的交互 TUI 调用，不创建 Session/Run；
 - `sn-cli exec <cli-profile-id>`：CLI Profile 的非交互任务调用，不创建 Session/Run；
-- `sn-cli req <api-profile-id>`：API Profile 的单次请求，不创建 Session/Run；
+- `sn-cli call <api-profile-id>`：API Profile 的单次请求，不创建 Session/Run；
 - `sn-cli profile list|show|check`：Profile 只读管理面，不执行 Profile；
-- `sn-cli session exec|req ...`：`interface=managed` 的文件型本地执行会话，
+- `sn-cli session exec|call ...`：`interface=managed` 的文件型本地执行会话，
   `--queue` 时进入 durable Run；Session 不自动执行 tool；
 - `sn-cli session open|send|attach|interrupt|close|close-all ...`：`interface=native_tui`，
   在 tmux PTY 中直接运行 Provider 原生交互 TUI；`open` 创建 opaque lifecycle
@@ -20,7 +20,8 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
   Turn/Message/Event 或 transcript；公开发现和控制只使用 Session ID，tmux 仅是私有
   PTY carrier；
 - `sn-cli agent <api-profile-id>`：唯一 API-only Agent Kernel，`--queue` 时排队；
-- `sn-cli run ...`：SQLite durable Run 查询与控制面，不负责提交新 Run。
+- `sn-cli job ...`：SQLite durable Run 查询与控制面，不负责提交新 Run；
+- `sn-cli update ...`：检查/下载/激活 Runtime release，不执行 Profile。
 
 所有有效 CLI/API Profile 都通过同一 Profile ID 路由，并由 `type=cli|api` 选择
 执行 adapter。公开入口、配置、持久化事实和 machine output 只认当前 contract 的
@@ -97,7 +98,7 @@ source/payload `resources/tools/*.json` 经 activation 映射到 active
 `tools/*.json`，后者是 Agent 外部工具的唯一运行配置面；文件 basename 必须等于
 tool `name`。`effect` 为 `read_only`/`write_local`/`write_external` 三档之一
 （写副作用必须显式声明 `risk`），`executor.type=mcp`，secret 只保留
-`${VAR}` 引用并在实际 tool call 时解析。`req` 和 Session 不自动执行这里的工具。
+`${VAR}` 引用并在实际 tool call 时解析。`call` 和 Session 不自动执行这里的工具。
 
 只有携带 Profile ID 并进入真实 CLI launch/API Provider call 的执行才写本地日志；
 查询、校验和 queue submit 不写。API key 只保留 `${VAR}` 引用，resolved secret 必须

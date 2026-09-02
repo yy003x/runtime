@@ -46,7 +46,7 @@ func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr is not one JSON document: %v: %q", err, stderr.String())
 	}
-	if payload.SchemaVersion != 1 || payload.ContractVersion != 7 ||
+	if payload.SchemaVersion != 1 || payload.ContractVersion != cliOutputContractVersion ||
 		payload.Error.Code != string(contract.ErrorRateLimited) ||
 		payload.Error.Phase != string(contract.PhaseTransport) ||
 		!payload.Error.Retryable || payload.Error.RetryAfterMS != 250 ||
@@ -161,7 +161,7 @@ func TestCLIOutputStreamFailureBeforeFirstEventIsJSON(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
 		t.Fatalf("stderr=%q error=%v", stderr.String(), err)
 	}
-	if payload.ContractVersion != 7 ||
+	if payload.ContractVersion != cliOutputContractVersion ||
 		payload.Error.Message != "failed before first event" {
 		t.Fatalf("payload=%#v", payload)
 	}
@@ -213,7 +213,7 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 		{
 			name: "profile",
 			args: []string{
-				"req", "api", "--stream", "--unknown-option",
+				"call", "api", "--stream", "--unknown-option",
 			},
 		},
 		{
@@ -244,7 +244,7 @@ func TestSelectedStreamSyntaxErrorsUseMachineErrorWithoutFinal(t *testing.T) {
 			if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.ContractVersion != 7 ||
+			if payload.ContractVersion != cliOutputContractVersion ||
 				!strings.Contains(payload.Error.Message, "unknown") ||
 				strings.Contains(stderr, `"final"`) {
 				t.Fatalf("payload=%#v stderr=%q", payload, stderr)

@@ -7,7 +7,7 @@ import "fmt"
 const maxLength = 128
 
 var reservedNamespaces = [...]string{
-	"exec", "req", "profile", "session", "agent", "run", "server", "doctor", "help", "version",
+	"exec", "call", "profile", "session", "agent", "job", "server", "doctor", "help", "version", "update",
 }
 
 // ReservedNamespaces returns the canonical public namespaces that every

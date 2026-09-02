@@ -44,11 +44,9 @@ func (profile Profile) Validate() error {
 	}
 	base, exact := adapterBase(profile.Command)
 	if !exact {
-		return fmt.Errorf(
-			"command must end with an exact codex or claude basename",
-		)
+		return fmt.Errorf("%s", adapterBasenameMessage)
 	}
-	if base != "codex" && base != "claude" {
+	if base != "codex" && base != "claude" && base != "grok" {
 		return fmt.Errorf("no command adapter for %q", base)
 	}
 	if err := validateTextToken("command", profile.Command, 4096, false); err != nil {

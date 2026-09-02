@@ -24,7 +24,7 @@ type Namespace string
 const (
 	NamespaceDirect  Namespace = "direct"
 	NamespaceExec    Namespace = "exec"
-	NamespaceRequest Namespace = "req"
+	NamespaceRequest Namespace = "call"
 	NamespaceSession Namespace = "session"
 	NamespaceAgent   Namespace = "agent"
 )

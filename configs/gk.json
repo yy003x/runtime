@@ -1,0 +1,9 @@
+{
+  "type": "cli",
+  "command": "grok",
+  "model": "grok-4.6",
+  "effort": "xhigh",
+  "env": {
+    "GROK_HOME": "${HOME}/.grok-aip"
+  }
+}

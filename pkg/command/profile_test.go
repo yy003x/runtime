@@ -33,6 +33,9 @@ func TestProfileUsesTypedCommandProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := CheckProfile(Profile{Command: "grok"}); err != nil {
+		t.Fatalf("grok adapter rejected: %v", err)
+	}
 	if profile.Command != "codex" || profile.Model != "gpt-5.6-sol" ||
 		profile.Effort != EffortHigh ||
 		profile.Env["REMOVE_ME"] != nil {

@@ -42,6 +42,13 @@ func controlAuditIntentFromArgs(args []string) (controlAuditIntent, bool) {
 	if len(args) == 1 && args[0] == "doctor" {
 		return controlAuditIntent{namespace: "doctor", action: "check"}, true
 	}
+	if len(args) >= 1 && args[0] == "update" {
+		action := "update"
+		if len(args) > 1 && args[1] == "upgrade-check" {
+			action = "upgrade-check"
+		}
+		return controlAuditIntent{namespace: "update", action: action}, true
+	}
 	if len(args) < 2 {
 		return controlAuditIntent{}, false
 	}
@@ -67,17 +74,17 @@ func controlAuditIntentFromArgs(args []string) (controlAuditIntent, bool) {
 	switch namespace {
 	case "session":
 		allowed = auditActionAllowed(action,
-			"exec", "req", "open", "send", "attach", "interrupt",
+			"exec", "call", "open", "send", "attach", "interrupt",
 			"close", "close-all",
 			"reconcile", "configure", "delete", "gc",
 		)
-	case "run":
+	case "job":
 		allowed = auditActionAllowed(action,
-			"cancel", "resume", "retry", "reconcile", "gc",
+			"cancel", "continue", "retry", "reconcile", "gc",
 		)
 	case "server":
 		allowed = auditActionAllowed(action,
-			"start", "stop", "update", "upgrade-check", "upgrade-activate",
+			"start", "stop", "upgrade-activate",
 		)
 	}
 	if !allowed {
@@ -94,7 +101,7 @@ func controlAuditIntentFromArgs(args []string) (controlAuditIntent, bool) {
 			}
 		}
 	}
-	if auditActionAllowed(action, "exec", "req", "open") && len(args) > 2 &&
+	if auditActionAllowed(action, "exec", "call", "open") && len(args) > 2 &&
 		args[2] != "" && !strings.HasPrefix(args[2], "-") &&
 		profileid.Validate(args[2]) == nil {
 		targets["profile_id"] = args[2]

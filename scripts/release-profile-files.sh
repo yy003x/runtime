@@ -13,4 +13,5 @@ SN_CLI_RELEASE_PROFILE_FILES=(
   cx-deep.json
   cx-spark.json
   cx.json
+  gk.json
 )

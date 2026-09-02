@@ -26,7 +26,7 @@
               "pattern": "^[^\\x00]+$"
             },
             {
-              "pattern": "(?:^|/)(?:codex|claude)$"
+              "pattern": "(?:^|/)(?:codex|claude|grok)$"
             }
           ]
         },

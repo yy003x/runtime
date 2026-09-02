@@ -169,7 +169,7 @@ func assertSingleV5StreamError(
 	if err := json.Unmarshal([]byte(lines[0]), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.ContractVersion != 7 || payload.Error.Message == "" {
+	if payload.ContractVersion != cliOutputContractVersion || payload.Error.Message == "" {
 		t.Fatalf("payload=%#v", payload)
 	}
 }

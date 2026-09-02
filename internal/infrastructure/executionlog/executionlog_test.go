@@ -30,7 +30,7 @@ func TestAppendSeparatesDailyCLIAndAPIRecords(t *testing.T) {
 	}
 	if err := AppendAPI(root, APIRecord{
 		Time: when, Namespace: NamespaceRequest, Profile: "api-cc",
-		Source: "sn-cli req api-cc 简单介绍下自己", CallID: "call_fixture",
+		Source: "sn-cli call api-cc 简单介绍下自己", CallID: "call_fixture",
 		Request: provider.Request{
 			Method: "POST", URL: "https://example.invalid/v1/messages",
 			Headers: map[string]string{
@@ -64,7 +64,7 @@ func TestAppendSeparatesDailyCLIAndAPIRecords(t *testing.T) {
 	}) {
 		t.Fatalf("API keys=%v", got)
 	}
-	if api["time"] != "2026-08-04 10:40:23" || api["namespace"] != "req" ||
+	if api["time"] != "2026-08-04 10:40:23" || api["namespace"] != "call" ||
 		api["profile"] != "api-cc" || api["call_id"] != "call_fixture" {
 		t.Fatalf("API record=%#v", api)
 	}
@@ -293,7 +293,7 @@ func TestAppendLeavesLegacyFlatLogUntouchedAndEncodesNetworkFailure(t *testing.T
 	when := time.Date(2026, 8, 4, 13, 0, 0, 0, time.UTC)
 	if err := AppendAPI(root, APIRecord{
 		Time: when, Namespace: NamespaceRequest, Profile: "api",
-		Source: "sn-cli req api hello", CallID: "call_fixture",
+		Source: "sn-cli call api hello", CallID: "call_fixture",
 		Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)},
 		Error: &contract.RuntimeError{
 			Code: contract.ErrorProviderUnavailable, Phase: contract.PhaseProvider,
@@ -446,7 +446,7 @@ func TestFormatCommandAndSourcePreserveReferences(t *testing.T) {
 	if got != want {
 		t.Fatalf("command=%q want=%q", got, want)
 	}
-	if got := SourceFromArgs([]string{"/tmp/sn-cli", "req", "api", "hello"}); got != "sn-cli req api hello" {
+	if got := SourceFromArgs([]string{"/tmp/sn-cli", "call", "api", "hello"}); got != "sn-cli call api hello" {
 		t.Fatalf("source=%q", got)
 	}
 }

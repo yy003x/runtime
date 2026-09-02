@@ -495,13 +495,25 @@ func TestParseCommandProfileOptionsRejectsExecAndSupportsTerminator(t *testing.T
 }
 
 func TestParseCommandProfileOptionsRecognizesResume(t *testing.T) {
-	withID, err := parseCommandProfileOptions([]string{"resume", "session-1"})
-	if err != nil || withID.resume == nil || *withID.resume != "session-1" {
-		t.Fatalf("resume <id>: options=%#v err=%v", withID, err)
+	for _, args := range [][]string{
+		{"resume", "session-1"},
+		{"--resume", "session-1"},
+		{"--resume=session-1"},
+	} {
+		got, err := parseCommandProfileOptions(args)
+		if err != nil || got.resume == nil || *got.resume != "session-1" {
+			t.Fatalf("args=%q options=%#v err=%v", args, got, err)
+		}
 	}
-	bare, err := parseCommandProfileOptions([]string{"resume"})
-	if err != nil || bare.resume == nil || *bare.resume != "" {
-		t.Fatalf("bare resume: options=%#v err=%v", bare, err)
+	for _, args := range [][]string{
+		{"resume"},
+		{"--resume"},
+		{"--resume="},
+	} {
+		got, err := parseCommandProfileOptions(args)
+		if err != nil || got.resume == nil || *got.resume != "" {
+			t.Fatalf("bare args=%q options=%#v err=%v", args, got, err)
+		}
 	}
 	// resume 之后允许 typed option（--model 等）。
 	withModel, err := parseCommandProfileOptions(
@@ -511,6 +523,20 @@ func TestParseCommandProfileOptionsRecognizesResume(t *testing.T) {
 		withModel.model == nil || *withModel.model != "gpt-5" {
 		t.Fatalf("resume + --model: options=%#v err=%v", withModel, err)
 	}
+	flagThenModel, err := parseCommandProfileOptions(
+		[]string{"--resume", "session-1", "--model", "gpt-5"},
+	)
+	if err != nil || flagThenModel.resume == nil || *flagThenModel.resume != "session-1" ||
+		flagThenModel.model == nil || *flagThenModel.model != "gpt-5" {
+		t.Fatalf("--resume + --model: options=%#v err=%v", flagThenModel, err)
+	}
+	modelThenFlag, err := parseCommandProfileOptions(
+		[]string{"--model", "gpt-5", "--resume", "session-1"},
+	)
+	if err != nil || modelThenFlag.resume == nil || *modelThenFlag.resume != "session-1" ||
+		modelThenFlag.model == nil || *modelThenFlag.model != "gpt-5" {
+		t.Fatalf("--model + --resume: options=%#v err=%v", modelThenFlag, err)
+	}
 	// resume 后紧跟 typed option（--model）→ 不当作 id 消费，resume 为 bare。
 	bareThenModel, err := parseCommandProfileOptions(
 		[]string{"resume", "--model", "x"},
@@ -519,9 +545,20 @@ func TestParseCommandProfileOptionsRecognizesResume(t *testing.T) {
 		bareThenModel.model == nil {
 		t.Fatalf("bare resume + --model: options=%#v err=%v", bareThenModel, err)
 	}
+	flagBareThenModel, err := parseCommandProfileOptions(
+		[]string{"--resume", "--model", "x"},
+	)
+	if err != nil || flagBareThenModel.resume == nil || *flagBareThenModel.resume != "" ||
+		flagBareThenModel.model == nil {
+		t.Fatalf("bare --resume + --model: options=%#v err=%v", flagBareThenModel, err)
+	}
 	for _, args := range [][]string{
 		{"resume", "a", "positional"}, // resume + id + bare positional
-		{"input", "resume"},           // positional 后再 resume
+		{"--resume", "a", "positional"},
+		{"input", "resume"}, // positional 后再 resume
+		{"input", "--resume"},
+		{"resume", "--resume"},
+		{"--resume", "resume", "session-1"},
 	} {
 		if _, err := parseCommandProfileOptions(args); err == nil {
 			t.Fatalf("args=%q returned nil error", args)
@@ -538,7 +575,11 @@ func TestBuildCommandProfileInvocationResumeTranslates(t *testing.T) {
 		fragment string
 	}{
 		{name: "claude", command: "claude", argv: []string{"resume", "s-1"}, fragment: "--resume\x00s-1"},
+		{name: "claude-flag", command: "claude", argv: []string{"--resume", "s-1"}, fragment: "--resume\x00s-1"},
 		{name: "codex", command: "codex", argv: []string{"resume", "s-1"}, fragment: "resume\x00s-1"},
+		{name: "codex-flag", command: "codex", argv: []string{"--resume=s-1"}, fragment: "resume\x00s-1"},
+		{name: "grok", command: "grok", argv: []string{"resume", "s-1"}, fragment: "--resume\x00s-1"},
+		{name: "grok-flag", command: "grok", argv: []string{"--resume", "s-1"}, fragment: "--resume\x00s-1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			commandPath := filepath.Join(root, test.command)
@@ -568,13 +609,18 @@ func TestBuildCommandProfileInvocationResumeTranslates(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	_, err := buildCommandProfileInvocation(
-		runtimecommand.Profile{Command: commandPath},
-		[]string{"resume", "s-1", "--prompt", "x"}, "", root,
-		[]string{"PATH=" + root}, runtimecommand.ModeExec,
-	)
-	if err == nil || !strings.Contains(err.Error(), "interactive") {
-		t.Fatalf("expected interactive-only error, got %v", err)
+	for _, argv := range [][]string{
+		{"resume", "s-1", "--prompt", "x"},
+		{"--resume", "s-1", "--prompt", "x"},
+	} {
+		_, err := buildCommandProfileInvocation(
+			runtimecommand.Profile{Command: commandPath},
+			argv, "", root,
+			[]string{"PATH=" + root}, runtimecommand.ModeExec,
+		)
+		if err == nil || !strings.Contains(err.Error(), "interactive") {
+			t.Fatalf("argv=%q expected interactive-only error, got %v", argv, err)
+		}
 	}
 }
 
@@ -630,7 +676,7 @@ func runTestReq(
 	output *cliOutput,
 ) error {
 	return runProfileExecutionNamespace(
-		paths, args, runtimeprofile.KindModel, "", "req", output,
+		paths, args, runtimeprofile.KindModel, "", "call", output,
 	)
 }
 

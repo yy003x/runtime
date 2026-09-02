@@ -24,7 +24,7 @@ func runRunNamespace(
 	output *cliOutput,
 ) error {
 	if len(args) == 0 {
-		return cliValidationf("usage: run get|list|result|trace|events|watch|cancel|resume|retry|reconcile|gc")
+		return cliValidationf("usage: job get|list|result|trace|events|watch|cancel|continue|retry|reconcile|gc")
 	}
 	if args[0] == "watch" {
 		output.beginStream()
@@ -34,7 +34,7 @@ func runRunNamespace(
 	if err := validateRunManagementInvocation(args); err != nil {
 		return cliValidation(err)
 	}
-	if args[0] == "resume" {
+	if args[0] == "continue" {
 		resumeInput, err = readResumeInput(args[1:])
 		if err != nil {
 			return err
@@ -85,7 +85,7 @@ func runRunNamespace(
 			return err
 		}
 		defer queryServices.Runs.Close()
-	case "resume", "retry":
+	case "continue", "retry":
 		cwd, err = os.Getwd()
 		if err != nil {
 			return err
@@ -98,7 +98,7 @@ func runRunNamespace(
 		}
 		defer executionServices.Runs.Close()
 	default:
-		return fmt.Errorf("unknown run action %q", args[0])
+		return fmt.Errorf("unknown job action %q", args[0])
 	}
 	switch args[0] {
 	case "get":
@@ -262,7 +262,7 @@ func runRunNamespace(
 			return output.writeJSON(map[string]any{"run": record})
 		}
 		return output.line("Run %s: cancellation requested", record.ID)
-	case "resume":
+	case "continue":
 		if err := validateManagementArgs(
 			args[1:],
 			[]string{"--run-id", "--input-json", "--input-file"}, nil,
@@ -282,7 +282,7 @@ func runRunNamespace(
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"run": record})
 		}
-		return output.line("Run %s resumed (state=%s)", record.ID, record.State)
+		return output.line("Run %s continued (state=%s)", record.ID, record.State)
 	case "retry":
 		if err := validateManagementArgs(
 			args[1:], []string{"--run-id"}, nil,
@@ -309,7 +309,7 @@ func runRunNamespace(
 		if len(args) != 3 || args[1] != "--run-id" ||
 			strings.HasPrefix(args[2], "-") {
 			return fmt.Errorf(
-				"run reconcile requires exactly --run-id <run-id>",
+				"job reconcile requires exactly --run-id <run-id>",
 			)
 		}
 		runID := args[2]
@@ -356,7 +356,7 @@ func runRunNamespace(
 			len(result.Candidates), len(result.Deleted), result.Applied,
 		)
 	default:
-		return fmt.Errorf("unknown run action %q", args[0])
+		return fmt.Errorf("unknown job action %q", args[0])
 	}
 }
 
@@ -393,7 +393,7 @@ func validateRunManagementInvocation(args []string) error {
 		}
 		_, err = uintOption(actionArgs, "--after-seq", 0)
 		return err
-	case "resume":
+	case "continue":
 		if err := validateManagementArgs(
 			actionArgs,
 			[]string{"--run-id", "--input-json", "--input-file"}, nil,
@@ -410,7 +410,7 @@ func validateRunManagementInvocation(args []string) error {
 			actionArgs[1] == "" ||
 			strings.HasPrefix(actionArgs[1], "-") {
 			return fmt.Errorf(
-				"run reconcile requires exactly --run-id <run-id>",
+				"job reconcile requires exactly --run-id <run-id>",
 			)
 		}
 		return identity.Validate(actionArgs[1], "run")
@@ -444,7 +444,7 @@ func validateRunManagementInvocation(args []string) error {
 		)
 		return err
 	default:
-		return fmt.Errorf("unknown run action %q", action)
+		return fmt.Errorf("unknown job action %q", action)
 	}
 }
 

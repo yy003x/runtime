@@ -23,6 +23,8 @@ const (
 	OutputCanonical OutputProtocol = "canonical"
 )
 
+const adapterBasenameMessage = "command must end with an exact codex, claude, or grok basename"
+
 type Overrides struct {
 	Model  *string
 	Effort *Effort
@@ -40,7 +42,8 @@ type BuildRequest struct {
 	Symbolic             bool
 	// Resume 续接底层 CLI 的既有会话。nil 不续接；&"" 恢复最近会话；
 	// &"<id>" 续接指定 session。由各 adapter 翻译为底层 CLI 的 resume 形式
-	// （claude→--resume、codex→resume 子命令）。仅 interactive 模式支持。
+	// （claude/grok→--resume、codex→resume 子命令）。仅 interactive 模式支持。
+	// CLI 入口接受 resume 子命令或 --resume 旗标，两者语义相同。
 	Resume *string
 }
 
@@ -64,15 +67,15 @@ type Adapter interface {
 func Resolve(command string) (Adapter, error) {
 	base, exact := adapterBase(command)
 	if !exact {
-		return nil, fmt.Errorf(
-			"command must end with an exact codex or claude basename",
-		)
+		return nil, fmt.Errorf("%s", adapterBasenameMessage)
 	}
 	switch base {
 	case "codex":
 		return codexAdapter{}, nil
 	case "claude":
 		return claudeAdapter{}, nil
+	case "grok":
+		return grokAdapter{}, nil
 	default:
 		return nil, fmt.Errorf("no command adapter for %q", base)
 	}

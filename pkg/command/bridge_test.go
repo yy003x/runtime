@@ -135,7 +135,21 @@ func TestBuildResumeTranslatesPerAdapter(t *testing.T) {
 			want:   []string{"resume"},
 		},
 		{
+			name: "grok resume with id", command: "grok",
+			resume: stringPointer("grok-session-1"),
+			want:   []string{"--resume", "grok-session-1"},
+		},
+		{
+			name: "grok bare resume", command: "grok",
+			resume: stringPointer(""),
+			want:   []string{"--resume"},
+		},
+		{
 			name: "claude resume rejected in exec", command: "claude",
+			resume: stringPointer("id"), exec: true, wantErr: true,
+		},
+		{
+			name: "grok resume rejected in exec", command: "grok",
 			resume: stringPointer("id"), exec: true, wantErr: true,
 		},
 	} {
@@ -203,6 +217,147 @@ func TestBuildCodexResumeArgvShape(t *testing.T) {
 	want := []string{commandPath, "resume", resumeID}
 	if !reflect.DeepEqual(invocation.Argv, want) {
 		t.Fatalf("argv=%q want=%q", invocation.Argv, want)
+	}
+}
+
+func TestBuildGrokResumeArgvShape(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "grok")
+	resumeID := "grok-session-1"
+	invocation, err := Build(BuildRequest{
+		Mode: ModeInteractive, OutputProtocol: OutputNative,
+		Profile:              Profile{Command: commandPath},
+		Resume:               &resumeID,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{commandPath, "--resume", resumeID}
+	if !reflect.DeepEqual(invocation.Argv, want) {
+		t.Fatalf("argv=%q want=%q", invocation.Argv, want)
+	}
+}
+
+func TestBuildGrokInteractiveRemovesExecOnlyAndAppendsPrompt(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "grok")
+	invocation, err := Build(BuildRequest{
+		Mode: ModeInteractive, OutputProtocol: OutputNative,
+		Profile: Profile{
+			Command: commandPath,
+			Args: []string{
+				"--always-approve", "-p",
+				"--output-format", "json", "--max-turns", "3",
+			},
+		},
+		ArgvPrompt:           stringPointer("typed prompt"),
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		commandPath, "--always-approve",
+		"--", "typed prompt",
+	}
+	if !reflect.DeepEqual(invocation.Argv, want) {
+		t.Fatalf("argv=%q want=%q", invocation.Argv, want)
+	}
+}
+
+func TestBuildGrokCanonicalAttachesSinglePrompt(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "grok")
+	invocation, err := Build(BuildRequest{
+		Mode: ModeExec, OutputProtocol: OutputCanonical,
+		Profile: Profile{
+			Command: commandPath,
+			Args: []string{
+				"--always-approve",
+				"--model", "old", "--effort", "low",
+				"-p", "--output-format", "streaming-json",
+			},
+			Model: "grok-4.6", Effort: EffortHigh,
+		},
+		ArgvPrompt:           stringPointer("-leading prompt"),
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		commandPath,
+		"--always-approve",
+		"--model", "grok-4.6", "--effort", "high",
+		"--output-format", "json",
+		"--single=-leading prompt",
+	}
+	if !reflect.DeepEqual(invocation.Argv, want) {
+		t.Fatalf("argv=%q want=%q", invocation.Argv, want)
+	}
+}
+
+func TestBuildGrokCanonicalRejectsJSONSchemaButNativePreservesIt(t *testing.T) {
+	root := t.TempDir()
+	commandPath := writeCommandFixture(t, root, "grok")
+	prompt := "typed prompt"
+	schema := `{"type":"object"}`
+	profile := Profile{
+		Command: commandPath,
+		Args:    []string{"--json-schema", schema},
+	}
+	native, err := Build(BuildRequest{
+		Mode: ModeExec, OutputProtocol: OutputNative,
+		Profile:              profile,
+		ArgvPrompt:           &prompt,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(
+		native.Argv,
+		[]string{commandPath, "--json-schema", schema, "--single=" + prompt},
+	) {
+		t.Fatalf("argv=%q", native.Argv)
+	}
+
+	_, err = Build(BuildRequest{
+		Mode: ModeExec, OutputProtocol: OutputCanonical,
+		Profile:              profile,
+		ArgvPrompt:           &prompt,
+		InheritedEnvironment: []string{"PATH=" + root},
+		InvocationBase:       root,
+	})
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorInvalidRequest ||
+		runtimeErr.Phase != contract.PhaseProfile ||
+		!strings.Contains(runtimeErr.Message, "--json-schema is incompatible with canonical output") {
+		t.Fatalf("canonical error=%v", err)
+	}
+
+	runtimeErr = nil
+	err = CheckProfile(profile)
+	if !errors.As(err, &runtimeErr) ||
+		runtimeErr.Code != contract.ErrorInvalidRequest ||
+		runtimeErr.Phase != contract.PhaseProfile ||
+		!strings.Contains(runtimeErr.Message, "--json-schema is incompatible with canonical output") {
+		t.Fatalf("profile check error=%v", err)
+	}
+}
+
+func TestBuildGrokRejectsTypedCWDFlag(t *testing.T) {
+	if err := CheckProfile(Profile{
+		Command: "grok",
+		Args:    []string{"--cwd", "/tmp"},
+	}); err == nil || !strings.Contains(err.Error(), "use the typed cwd field") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -399,6 +554,17 @@ func TestCanonicalDecodersRejectAmbiguousResults(t *testing.T) {
 	}
 	if _, err := Decode("claude", append(claude, claude...)); err == nil {
 		t.Fatal("multiple Claude documents were accepted")
+	}
+	grok := []byte(`{"text":"OK","stopReason":"end_turn"}`)
+	result, err = Decode("grok", grok)
+	if err != nil || result.Assistant != "OK" {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	if _, err := Decode("grok", append(grok, grok...)); err == nil {
+		t.Fatal("multiple Grok documents were accepted")
+	}
+	if _, err := Decode("grok", []byte(`{"type":"error","message":"Couldn't start session"}`)); err == nil {
+		t.Fatal("Grok error document was accepted")
 	}
 }
 

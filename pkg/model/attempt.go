@@ -10,7 +10,7 @@ import (
 type AttemptNamespace string
 
 const (
-	AttemptNamespaceRequest AttemptNamespace = "req"
+	AttemptNamespaceRequest AttemptNamespace = "call"
 	AttemptNamespaceSession AttemptNamespace = "session"
 	AttemptNamespaceAgent   AttemptNamespace = "agent"
 )

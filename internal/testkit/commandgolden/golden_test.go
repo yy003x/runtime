@@ -19,7 +19,7 @@ import (
 	"github.com/yy003x/runtime/internal/testkit/reporoot"
 )
 
-const capturedEnvKeys = "CODEX_HOME,CLAUDE_CONFIG_DIR,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,RUNTIME_GOLDEN_REMOVE_ME"
+const capturedEnvKeys = "CODEX_HOME,CLAUDE_CONFIG_DIR,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,GROK_HOME,RUNTIME_GOLDEN_REMOVE_ME"
 
 type testHarness struct {
 	repoRoot string
@@ -423,7 +423,7 @@ func newHarness(t *testing.T) testHarness {
 		t.Fatal(err)
 	}
 	fakeBin := filepath.Join(root, "bin")
-	for _, name := range []string{"codex", "claude"} {
+	for _, name := range []string{"codex", "claude", "grok"} {
 		if err := CopyFile(fakeTarget, filepath.Join(fakeBin, name), 0o755); err != nil {
 			t.Fatal(err)
 		}

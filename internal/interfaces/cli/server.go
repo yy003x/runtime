@@ -53,7 +53,7 @@ func runServerNamespace(
 ) error {
 	if len(args) == 0 {
 		return cliValidationf(
-			"usage: server info|start|status|stop|update|upgrade-check",
+			"usage: server info|start|status|stop",
 		)
 	}
 	switch args[0] {
@@ -106,23 +106,30 @@ func runServerNamespace(
 		return serverStatus(paths, output)
 	case "stop":
 		return stopServer(paths, output)
-	case "update":
-		options, err := parseUpdateOptions(args[1:])
-		if err != nil {
-			return cliValidation(err)
-		}
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-		return executeUpdate(cfg, options, output)
-	case "upgrade-check":
-		return runUpgradeCheck(paths, args[1:], output)
 	case "upgrade-activate":
 		return runUpgradeActivate(paths, args[1:], output)
 	default:
 		return cliValidationf("unknown server action %q", args[0])
 	}
+}
+
+func runUpdateNamespace(
+	paths layout.Paths,
+	args []string,
+	output *cliOutput,
+) error {
+	if len(args) > 0 && args[0] == "upgrade-check" {
+		return runUpgradeCheck(paths, args[1:], output)
+	}
+	options, err := parseUpdateOptions(args)
+	if err != nil {
+		return cliValidation(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	return executeUpdate(cfg, options, output)
 }
 
 func runUpgradeCheck(
@@ -865,13 +872,13 @@ func serverCapabilities() map[string][]string {
 			"reconcile", "native_tui", "paste", "attach", "close_all",
 		},
 		"agent": {"api_harness", "tool_loop", "stream"},
-		"run": {
+		"job": {
 			"durable_queue", "events", "watch", "cancel",
 			"retry", "reconcile", "gc",
 		},
+		"update": {"release", "upgrade_preflight"},
 		"server": {
-			"http", "workers", "lifecycle", "update", "upgrade_preflight",
-			"atomic_activation",
+			"http", "workers", "lifecycle", "atomic_activation",
 		},
 	}
 }
