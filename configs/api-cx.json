@@ -1,8 +1,8 @@
 {
   "type": "api",
   "driver": "openai",
-  "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode",
-  "model": "qwen3.7-max",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode",
+  "model": "qwen3.8-max",
   "headers": {
     "Authorization": "${ALIYUN_API_KEY}"
   },

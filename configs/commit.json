@@ -1,8 +1,8 @@
 {
   "type": "cli",
   "command": "codex",
-  "model": "gpt-5.3-codex-spark",
-  "effort": "xhigh",
+  "model": "gpt-5.6-luna",
+  "effort": "medium",
   "args": [
     "--sandbox",
     "read-only",
