@@ -128,7 +128,7 @@ func runRunNamespace(
 			context.Background(), filter,
 		)
 		if err != nil {
-			return err
+			return canonicalRunManagementError(err)
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{"runs": records})
@@ -466,7 +466,10 @@ func canonicalRunManagementError(err error) error {
 
 func parseRunListFilter(args []string) (runtime.ListFilter, error) {
 	if err := validateManagementArgs(
-		args, []string{"--state", "--kind", "--limit"}, nil,
+		args, []string{
+			"--state", "--kind", "--limit", "--session-id",
+			"--task-id", "--profile-id", "--before-run-id",
+		}, nil,
 	); err != nil {
 		return runtime.ListFilter{}, err
 	}
@@ -494,9 +497,28 @@ func parseRunListFilter(args []string) (runtime.ListFilter, error) {
 	if err != nil {
 		return runtime.ListFilter{}, err
 	}
-	return runtime.NormalizeListFilter(runtime.ListFilter{
+	filter := runtime.ListFilter{
 		State: runtime.State(state), Kind: runtime.Kind(kind), Limit: limit,
-	})
+	}
+	for _, option := range []struct {
+		name   string
+		target *string
+	}{
+		{"--session-id", &filter.SessionID},
+		{"--task-id", &filter.TaskID},
+		{"--profile-id", &filter.ProfileID},
+		{"--before-run-id", &filter.BeforeRunID},
+	} {
+		value, err := optionString(args, option.name)
+		if err != nil {
+			return runtime.ListFilter{}, err
+		}
+		if value == "" && optionProvided(args, option.name) {
+			return runtime.ListFilter{}, fmt.Errorf("%s must not be empty", option.name)
+		}
+		*option.target = value
+	}
+	return runtime.NormalizeListFilter(filter)
 }
 
 func renderRunTrace(output *cliOutput, trace runtime.Trace) error {

@@ -355,6 +355,19 @@ func TestRuntimeHandlerValidatesFiltersAndAgentBudgets(t *testing.T) {
 		"/v1/runs?kind=agent&kind=session",
 		"/v1/runs?limit=1&limit=2",
 		"/v1/runs?state=queued;kind=agent",
+		"/v1/runs?session_id=",
+		"/v1/runs?session_id=session_bad",
+		"/v1/runs?session_id=a&session_id=b",
+		"/v1/runs?task_id=",
+		"/v1/runs?task_id=bad%00task",
+		"/v1/runs?task_id=%FF",
+		"/v1/runs?task_id=a&task_id=b",
+		"/v1/runs?profile_id=",
+		"/v1/runs?profile_id=../api",
+		"/v1/runs?profile_id=api&profile_id=other",
+		"/v1/runs?before_run_id=",
+		"/v1/runs?before_run_id=run_bad",
+		"/v1/runs?before_run_id=a&before_run_id=b",
 	} {
 		response := performJSON(t, handler, http.MethodGet, path, "")
 		if response.Code != http.StatusBadRequest {
@@ -409,6 +422,58 @@ func TestRuntimeHandlerValidatesFiltersAndAgentBudgets(t *testing.T) {
 	values, err := services.List(context.Background(), runtime.ListFilter{})
 	if err != nil || len(values) != 1 {
 		t.Fatalf("runs=%#v error=%v", values, err)
+	}
+}
+
+func TestRuntimeHandlerListsCorrelatedRunPages(t *testing.T) {
+	handler, _ := newRuntimeHandlerTest(t)
+	var created []runtime.Record
+	for _, body := range []string{
+		`{"kind":"agent","profile_id":"api","input":"one","task_id":"wanted"}`,
+		`{"kind":"agent","profile_id":"api","input":"other","task_id":"other"}`,
+		`{"kind":"agent","profile_id":"api","input":"two","task_id":"wanted"}`,
+	} {
+		response := performJSON(t, handler, http.MethodPost, "/v1/runs", body)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("submit status=%d body=%s", response.Code, response.Body.String())
+		}
+		var record runtime.Record
+		if err := json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, record)
+	}
+	assertPage := func(query string, want ...string) {
+		t.Helper()
+		response := performJSON(t, handler, http.MethodGet, "/v1/runs?"+query, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+		}
+		var page struct {
+			Runs []runtime.Record `json:"runs"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		if page.Runs == nil || len(page.Runs) != len(want) {
+			t.Fatalf("runs=%#v want=%v", page.Runs, want)
+		}
+		for index, record := range page.Runs {
+			if record.ID != want[index] {
+				t.Fatalf("runs=%#v want=%v", page.Runs, want)
+			}
+		}
+	}
+	query := "profile_id=api&task_id=wanted&kind=agent&state=queued&limit=1"
+	assertPage(query, created[2].ID)
+	assertPage(query+"&before_run_id="+created[2].ID, created[0].ID)
+	assertPage(query + "&before_run_id=" + created[0].ID)
+	assertPage("profile_id=absent")
+	assertPage("session_id=session_11111111111111111111111111111111")
+	missing := performJSON(t, handler, http.MethodGet,
+		"/v1/runs?before_run_id=run_11111111111111111111111111111111", "")
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), "not_found") {
+		t.Fatalf("missing cursor status=%d body=%s", missing.Code, missing.Body.String())
 	}
 }
 

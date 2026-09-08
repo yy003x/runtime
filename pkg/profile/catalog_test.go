@@ -105,9 +105,12 @@ func TestSourceProfilesUseCurrentUnifiedProtocol(t *testing.T) {
 
 func TestSourceAPIProfilesResolveDriverDefaultEndpoints(t *testing.T) {
 	repositoryRoot := reporoot.Root(t)
-	for name, want := range map[string]string{
-		"api-cc.json": "https://open.bigmodel.cn/api/anthropic/v1/messages",
-		"api-cx.json": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+	for name, expected := range map[string]struct {
+		driver model.DriverName
+		path   string
+	}{
+		"api-cc.json": {model.DriverAnthropic, "/v1/messages"},
+		"api-cx.json": {model.DriverOpenAI, "/v1/chat/completions"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kind, _, apiProfile, err := loadFile(filepath.Join(
@@ -116,9 +119,10 @@ func TestSourceAPIProfilesResolveDriverDefaultEndpoints(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if kind != KindModel {
-				t.Fatalf("kind=%q", kind)
+			if kind != KindModel || apiProfile.Driver != expected.driver || apiProfile.BaseURL == "" || apiProfile.Endpoint != "" {
+				t.Fatalf("source profile must use %s base_url with its default endpoint", expected.driver)
 			}
+			want := strings.TrimRight(apiProfile.BaseURL, "/") + expected.path
 			got, err := apiProfile.ResolvedEndpoint()
 			if err != nil || got != want {
 				t.Fatalf("endpoint=%q want=%q error=%v", got, want, err)

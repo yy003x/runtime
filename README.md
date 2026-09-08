@@ -297,16 +297,18 @@ examples: [sn-cli reference](SN-CLI-USAGE.md) and
 ```text
 cmd/             sn-cli and sn-server entry points
 pkg/             public Go API: agent, command, contract, model, profile,
-                 provider, run, session, store, tmux, and HTTP transport
+                 provider, run, session, store, and HTTP transport
 internal/
   domain/        private Runtime values and invariants
   application/   activation, bootstrap, and tool/use-case orchestration
-  infrastructure/config, filesystem, log, process, and MCP adapters
+  infrastructure/ config, filesystem, log, process, private tmux, and MCP adapters
   interfaces/    inbound CLI adapter
   testkit/       reusable test-only assets
 configs/         source CLI/API profiles
 resources/       schemas and source tools
 release/         runtime.json, tmux.conf, and release.json payload templates
+docs/            canonical Runtime contract
+scripts/         delivery and verification scripts
 ```
 
 External Go consumers import `github.com/yy003x/runtime/pkg/...`; legacy root
@@ -315,6 +317,26 @@ is the composition root, and the four internal layers are adapted to a CLI
 Runtime + Agent rather than an HTTP-service template. An architecture test
 allowlists every direct module dependency of public `pkg/` packages so new
 cross-domain or internal-adapter coupling requires an explicit review.
+
+### Workbench integration boundary
+
+`sn-runtime` owns execution, CLI/HTTP contracts, Sessions and durable Runs.
+`sn-workbench` owns the application API, Web UI and business modules. Runtime
+does not host a second product UI; callers use public CLI/HTTP entry points and
+never read or write the active Runtime home directly.
+
+Run lists support exact `session_id`, `task_id` and `profile_id` filters in
+addition to state/kind. Use `sn-cli --json job list --task-id <task-id> --limit 50`
+or `GET /v1/runs?task_id=<task-id>&limit=50`. Pass the last returned Run ID as
+`--before-run-id` / `before_run_id` to continue in `(created_at, run_id)` descending
+order. This is a live query, not a snapshot; a garbage-collected cursor returns
+`not_found` and requires restarting pagination. Empty Run lists are `[]`.
+
+Session watch and Run event SSE flush immediately and send comment heartbeats
+every five seconds without changing event IDs. Resume with `Last-Event-ID`, or
+an explicit `after_seq` query (including `0`, which takes precedence). Malformed,
+unknown, repeated or empty sequence query parameters are rejected. See the
+[Runtime contract](docs/runtime-contract.md) for the full version 9 contract.
 
 ## Documentation
 

@@ -57,7 +57,7 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		"session open       create a native_tui Session",
 		"Control audit      <runtime-home>/logs/YYMMDD/audit.jsonl",
 		"Server process     <runtime-home>/logs/sn-server.log",
-		"stable req/management output; must be first",
+		"stable call/management output; must be first",
 		"interactive/exec CLI output remains target-native",
 		"Tools:               <runtime-home>/tools",
 	} {
@@ -127,6 +127,23 @@ func TestMainHelpTopicsHaveHumanAndMachineContracts(t *testing.T) {
 	if len(rootPayload.Topics) != len(topics) ||
 		len(rootPayload.Commands) != len(topics) {
 		t.Fatalf("payload=%#v", rootPayload)
+	}
+}
+
+func TestJobHelpDocumentsRunCorrelationAndPagination(t *testing.T) {
+	for _, args := range [][]string{{"help", "job"}, {"--json", "help", "job"}} {
+		stdout, stderr, exitCode := captureMainOutput(t, args)
+		if exitCode != 0 || stderr != "" {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+		}
+		for _, expected := range []string{
+			"--session-id", "--task-id", "--profile-id", "--before-run-id",
+			"created_at DESC, run_id DESC", "not_found",
+		} {
+			if !strings.Contains(stdout, expected) {
+				t.Fatalf("missing %q in %s", expected, stdout)
+			}
+		}
 	}
 }
 

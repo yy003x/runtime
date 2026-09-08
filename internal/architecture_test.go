@@ -63,6 +63,7 @@ var allowedPublicModuleDependencies = map[string][]string{
 	},
 	modulePath + "/pkg/run": {
 		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/domain/profileid",
 		modulePath + "/internal/infrastructure/strictjson",
 		modulePath + "/pkg/agent",
 		modulePath + "/pkg/contract",

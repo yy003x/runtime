@@ -5,12 +5,9 @@
   "effort": "medium",
   "args": [
     "--sandbox",
-    "read-only",
+    "danger-full-access",
     "--ask-for-approval",
     "never",
-    "-c",
-    "model_verbosity=high",
-    "--skip-git-repo-check",
     "--ignore-user-config",
     "--ephemeral",
     "--color",

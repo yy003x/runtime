@@ -171,7 +171,7 @@ Store 与 SQLite Run Store 不共享 transaction；因此不再复制一套 Sess
 Execution fact，而由 `session show` 只读投影唯一 lifecycle Run/Execution，避免两个
 canonical owner 产生 partial consistency。
 terminal lifecycle event 仍由 Run Store 在 settle transaction 中写入，并通过
-`run events --run-id <run_id>` 查询；它不是 Session Event。
+`job events --run-id <run_id>` 查询；它不是 Session Event。
 
 `send` 是终端输入，受 PTY line discipline 与 Provider line editor 语义约束，不承诺
 大块结构化 payload 的完整消费；这类 machine task 应使用 `session exec`。
@@ -189,7 +189,7 @@ file，并按 Profile base prompt、typed prompt、stdin、位置 input 的顺�
 window；carrier stop 会向 supervisor 发送 `SIGTERM`，supervisor 显式向 Provider 转发
 `SIGHUP|SIGTERM`，最多等待 2 秒后发送 `SIGKILL`，并在确认 supervisor identity 已消失后
 才返回成功。`C-c`/`SIGINT` 只中断 Provider 当前交互，不启动强制退出计时。关闭保留
-Session fact。`run cancel|retry|resume` 不接管 `native_tui` lifecycle；
+Session fact。`job cancel|retry|continue` 不接管 `native_tui` lifecycle；
 关闭必须使用 `session close|close-all`。上述 Session ID 不能传给 `session exec|call`。
 
 Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Claude。adapter
@@ -635,8 +635,8 @@ trailing data、`null` root 与 `null pause_id`；`input` 自身可为任意单�
 Run Record 不序列化最新 resume input。
 
 默认 tool 只读。`write_file` 必须在 `runtime.json` 显式启用，且受 workspace
-roots、symlink 和大小门禁。builtin 集合不提供任意 subprocess 执行能力；
-root/path 检查不是 OS sandbox，未知 tool 名称一律 fail closed。
+roots、symlink 和大小门禁。子进程执行由下述显式启用、需确认的高风险 `shell`
+builtin 提供；文件工具的 root/path 检查不是 OS sandbox，未知 tool 名称一律 fail closed。
 `read_file`、`list_directory` 在参数 schema 验证通过后的无副作用文件系统拒绝，
 以尺寸受限的稳定 JSON `ToolResult{IsError:true}` 闭合 effect 并允许下一轮模型继续；
 内部结果编码失败或正常输出超限仍按未知 effect 安全收口。
@@ -671,7 +671,7 @@ manifest 的 canonical definition、endpoint、remote tool、header 环境
 错误用有界、脱敏的 `ToolResult{IsError:true}` 闭合只读 effect，使模型可在下一轮
 解释失败；Session 和 `call` 不执行该 handler。
 
-builtin 工具新增 `shell`（`effect=write_external`、`risk=high`），以 argv 形式
+builtin 工具 `shell`（`effect=write_external`、`risk=high`）以 argv 形式
 （不经 shell 插值）在独立进程组内执行子进程，有界捕获 stdout/stderr，并在 ctx
 deadline 或输出超限时向整个进程组 `SIGTERM`→`SIGKILL`。它是进程级、无容器隔离的
 工具，靠风险分级与人工确认兜底，默认不在 `runtime.json` 的 `agent.tools` 中启用。
@@ -680,8 +680,8 @@ high-risk 写副作用在真正执行前必须经过 UserConfirmation：handler 
 `started`），Run 进入 `paused`；`job continue` 携带 `{approved:bool}` 后 Kernel 把
 approval 附进 `ToolRequest` **重跑** handler 才触发真正副作用，再用真实结果
 `Completed`。期间崩溃则 effect 仍是 `started`，按既有不变量进入
-`needs_reconciliation`（副作用未发生，fail-closed）。这是 stock builtin 工具首次
-产生 Pause：`shell` 默认不在 `agent.tools` 中启用，需显式配置后才会出现在
+`needs_reconciliation`（副作用未发生，fail-closed）。`shell` 默认不在 `agent.tools`
+中启用，需显式配置后才会出现在
 tool loop 中。`server info` 的 capability map 是静态声明，仍不列举 `resume`；
 pause/resume 仍是 Kernel-level extension，由 Agent Run 的 paused 事实驱动。
 
@@ -754,7 +754,7 @@ settle 为 `failed` 并保留产物；验证器自身报错（无法判定）则
 `needs_reconciliation`。未声明 criteria 或 executor 不实现该接口时，沿用
 既有「信任 executor 终态」语义。`completion_criteria` 属公开 Run request 字段。
 
-`run trace` 聚合单个 Run 的 record 与 event/model_call/tool_effect journal 为
+`job trace` 聚合单个 Run 的 record 与 event/model_call/tool_effect journal 为
 只读 Trace，复用四张表已有的 `run_id` 关联，不引入独立 `trace_id` 列或并行 trace
 存储；`model_calls.provider_request_id` 作为单次模型调用的 span 标识。Trace 属
 query 路径，只加载 Run Store。
@@ -783,7 +783,7 @@ unique/partial 属性和列序；对象缺失、定义变化、未知对象、�
 doctor exec call profile session agent job server help version update
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=8`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=9`。
 bare CLI direct、`exec` 和 `session attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -863,7 +863,7 @@ session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`
 | `job` | 查询/控制已有 Run | 不提交 fresh work |
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=8` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=9` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`
 只支持 human TTY。
@@ -908,6 +908,47 @@ route，也不能上传 command、env、raw Provider payload 或 tool handler。
 `POST /v1/runs` fresh submission 只接受 `kind=agent|session`；`GET /v1/runs` 的查询
 filter 另接受 `kind=native_tui`。native TUI lifecycle Run 的 HTTP/CLI cancel、resume、
 retry 均拒绝，关闭由 `session close|close-all` owner 执行。
+
+`sn-runtime` 是执行与 canonical state owner，不承载另一套产品 Web UI。
+`sn-workbench` 的应用 API、UI 和业务模块只通过这里的公开 CLI/HTTP 集成，不直接读写
+active Runtime home，也不复制 Session/Run 状态机。
+
+Run collection 的唯一查询 contract 是 `pkg/run.ListFilter`，CLI `job list` 与
+`GET /v1/runs` 使用相同语义：
+
+| 字段 | CLI option | 语义 |
+| --- | --- | --- |
+| `state` / `kind` | `--state` / `--kind` | 当前枚举，省略时不限 |
+| `session_id` | `--session-id` | Runtime Session ID 精确匹配 |
+| `task_id` | `--task-id` | UTF-8、无 NUL 的 Task ID 精确匹配，不 trim |
+| `profile_id` | `--profile-id` | 当前 Profile ID 语法，精确匹配，不加载 Profile 配置 |
+| `before_run_id` | `--before-run-id` | 上一页末条 Run ID，作为排他的双键分页游标 |
+| `limit` | `--limit` | `1..1000`，省略时 `100` |
+
+筛选项组合为 AND，结果按 `created_at DESC, run_id DESC` 排序；相同创建时间由
+Run ID 打破平局。下一页固定原筛选条件，传入上页末条 Run ID，返回严格小于该条
+`(created_at, run_id)` 的记录。游标 Run 无需匹配筛选条件，但必须在查询时存在；
+缺失或已被 GC 的游标返回 `not_found`（HTTP `404`），调用方应重新从首页查询。
+不足 limit 的页表示本次查询已到末尾；空 Run 列表固定为 `[]`。这是实时视图而非
+跨页快照，期间 state 变化仍会影响筛选；不提供 offset、隐藏迁移或第二套 reader。
+关联筛选命中为空不代表该 Session、Task 或 Profile 资源本身不存在。
+
+Session messages/events、Run events 和两个 watch route 的 query 只接受一个
+`after_seq`，值为十进制 `uint64`，只返回 `sequence > after_seq` 的记录。省略为
+`0`；未知、重复、非法编码、显式空值、负数、溢出或非十进制值都返回
+`invalid_request/400`。SQLite journal 的序号受 signed int64 存储范围限制，合法但
+超出该范围的查询游标返回空事件，不隐藏父资源不存在或 Store 故障。
+
+Session watch 与 Run event SSE 在资源和续读参数校验后立即发送并 flush
+`: keep-alive` 注释，随后每 5 秒发送注释心跳；设置 `X-Accel-Buffering: no`。
+注释不含 `id`，不创建 canonical Event，也不推进续读序号。显式 `after_seq`（包括
+`0`）优先于 `Last-Event-ID`；只有省略 query 时才使用单个 header，空 header 视为
+`0`，重复或非法 header 拒绝。恢复后从指定序号之后重放，事件的 `id` 使用持久化
+sequence。Session watch 持续到断连或错误；Run watch 在 terminal barrier 已发布且
+其事件已读完后结束。客户端断连取消订阅，不取消 Run，不产生控制副作用。
+使用浏览器 EventSource 自动重连时，不要在固定 URL 上保留 `after_seq=0`，否则其
+显式重放语义会覆盖浏览器发送的 `Last-Event-ID`。Run 客户端收到 `run.settled` 后应
+主动关闭 EventSource，避免终态连接结束后再次自动订阅。
 
 HTTP 使用同一 application service。所有 JSON body 共同限制 request size、合法
 UTF-8、单一完整 JSON value，并拒绝重复 key 和 trailing data；固定 Runtime DTO
@@ -977,8 +1018,7 @@ queued/running/paused/needs-reconciliation Run、目标 home binary process 或
 其它 managed resource 按 source→active 映射覆盖 active home。candidate 完整验证后，
 该模式先按 `sn-cli session close-all` 语义关闭全部 Session-bound native TUI，再在
 lifecycle lock 内安全停止 server。任何剩余 Tmux carrier、目标 binary process、identity
-漂移或其它运行态 blocker 都继续 fail closed，不再为旧版 supervisor 提供安装期进程组
-清理例外。该模式显式授权在不
+漂移或其它运行态 blocker 都继续 fail closed，不执行额外进程组清理。该模式显式授权在不
 解析现有 Session/Run state 的情况下重置本地运行态；只有 staged artifact 全部提交
 并验证后，才在 guard 下幂等删除
 `sessions/`、`state/session-locks/`、`state/session-invocations/`、

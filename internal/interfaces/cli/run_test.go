@@ -192,6 +192,15 @@ func TestRunManagementPreflightRejectsBeforeStatefulBootstrap(t *testing.T) {
 		{"list", "--limit", "1001"},
 		{"list", "--limit", ""},
 		{"list", "--limit", "1", "--limit", "2"},
+		{"list", "--session-id", "session_bad"},
+		{"list", "--session-id", ""},
+		{"list", "--task-id", ""},
+		{"list", "--task-id", "bad\x00task"},
+		{"list", "--task-id", "a", "--task-id", "b"},
+		{"list", "--profile-id", ""},
+		{"list", "--profile-id", "../api"},
+		{"list", "--before-run-id", ""},
+		{"list", "--before-run-id", "run_bad"},
 		{"gc", "--older-than", ""},
 		{"gc", "--limit", "0"},
 		{"get", "--run-id", "run_1", "trailing"},
@@ -236,6 +245,19 @@ func TestRunManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	filter, err := parseRunListFilter([]string{
+		"--session-id", "session_11111111111111111111111111111111",
+		"--task-id", "百工/任务 1", "--profile-id", "api",
+		"--before-run-id", "run_22222222222222222222222222222222",
+		"--limit", "2",
+	})
+	if err != nil || filter != (runtime.ListFilter{
+		SessionID: "session_11111111111111111111111111111111",
+		TaskID:    "百工/任务 1", ProfileID: "api",
+		BeforeRunID: "run_22222222222222222222222222222222", Limit: 2,
+	}) {
+		t.Fatalf("filter=%#v err=%v", filter, err)
+	}
 	output := newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := runRunNamespace(
 		prepareRuntimeHome(t),
@@ -246,6 +268,16 @@ func TestRunManagementPreflightAcceptsBoundedFilters(t *testing.T) {
 	}
 	if !output.streamMode || output.streamStarted {
 		t.Fatal("invalid watch did not select machine stream errors")
+	}
+}
+
+func TestRunListMissingCursorUsesCanonicalError(t *testing.T) {
+	err := runRunNamespace(prepareRuntimeHome(t), []string{
+		"list", "--before-run-id", "run_11111111111111111111111111111111",
+	}, newCLIOutput(true, &bytes.Buffer{}, &bytes.Buffer{}))
+	var runtimeErr *contract.RuntimeError
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != contract.ErrorNotFound {
+		t.Fatalf("error=%v", err)
 	}
 }
 

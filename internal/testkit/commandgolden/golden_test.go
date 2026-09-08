@@ -31,6 +31,9 @@ type testHarness struct {
 }
 
 func TestCommandProfileGolden(t *testing.T) {
+	// Captured provider-home variables must not leak from the developer host
+	// into Profiles that do not explicitly configure them.
+	t.Setenv("GROK_HOME", filepath.Join(t.TempDir(), "host-grok-home"))
 	harness := newHarness(t)
 	baseline, err := LoadBaseline(filepath.Join(harness.repoRoot, "internal", "testkit", "commandgolden", "testdata", "profiles.json"))
 	if err != nil {
@@ -107,7 +110,7 @@ func TestCommandProfileGolden(t *testing.T) {
 					capture.Stdin != "hello from pty\n" {
 					t.Fatalf("stdin=%q", capture.Stdin)
 				}
-				if golden.ID == "commit" || golden.ID == "cx-deep" || golden.ID == "cx-spark" {
+				if contains(golden.Argv, "--skip-git-repo-check") {
 					if !containsAdjacent(capture.Argv, "exec", "--skip-git-repo-check") {
 						t.Fatalf("%s missing adjacent exec --skip-git-repo-check: %q", golden.ID, capture.Argv)
 					}
@@ -457,7 +460,7 @@ func newHarness(t *testing.T) testHarness {
 	baseEnv := removeEnvironment(
 		os.Environ(),
 		"SN_CLI_HOME", "HOME", "PATH", "KMM_API_KEY", "Z_AI_API_KEY",
-		"CODEX_HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
+		"CODEX_HOME", "GROK_HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "RUNTIME_GOLDEN_CAPTURE",
 		"RUNTIME_GOLDEN_ENV_KEYS", "RUNTIME_GOLDEN_READ_STDIN", "RUNTIME_GOLDEN_EXIT_CODE",
 		"RUNTIME_GOLDEN_WAIT_SIGNAL", "RUNTIME_GOLDEN_READY", "RUNTIME_GOLDEN_REMOVE_ME",

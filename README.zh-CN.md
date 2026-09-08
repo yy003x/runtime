@@ -264,16 +264,18 @@ driver 对裸 `Authorization` 自动补 `Bearer` scheme，anthropic 不补。`ru
 ```text
 cmd/             sn-cli、sn-server 入口
 pkg/             公开 Go API：agent、command、contract、model、profile、
-                 provider、run、session、store、tmux 与 HTTP transport
+                 provider、run、session、store 与 HTTP transport
 internal/
   domain/        私有 Runtime 值对象与不变量
   application/   activation、bootstrap、tool/use-case 编排
-  infrastructure/配置、文件、日志、进程与 MCP adapter
+  infrastructure/ 配置、文件、日志、进程、私有 tmux 与 MCP adapter
   interfaces/    入站 CLI adapter
   testkit/       仅测试复用资产
 configs/         source CLI/API profile
 resources/       schema 与 source tool
 release/         runtime.json、tmux.conf 与 release.json payload 模板
+docs/            canonical Runtime 契约
+scripts/         交付与验证脚本
 ```
 
 外部 Go 调用方统一 import `github.com/yy003x/runtime/pkg/...`，不提供旧根 package
@@ -281,6 +283,24 @@ release/         runtime.json、tmux.conf 与 release.json payload 模板
 层按 CLI Runtime + Agent 场景适配，不套用固定 HTTP 服务模板。架构测试对每个公开
 `pkg/` package 的直接 module dependency 做 allowlist；新增跨域或 internal adapter
 依赖必须显式评审。
+
+### Workbench 集成边界
+
+`sn-runtime` 拥有执行、CLI/HTTP 契约、Session 与 durable Run；`sn-workbench`
+拥有应用 API、Web UI 和业务模块。Runtime 不另建产品 UI，调用方只经公开 CLI/HTTP
+集成，不直接读写 active Runtime home。
+
+Run 列表在 state/kind 外支持 `session_id`、`task_id`、`profile_id` 精确筛选，例如
+`sn-cli --json job list --task-id <task-id> --limit 50`，或
+`GET /v1/runs?task_id=<task-id>&limit=50`。下一页传上一页末条 Run ID：CLI 为
+`--before-run-id`，HTTP 为 `before_run_id`，顺序固定为 `(created_at, run_id)` 降序。
+这是实时查询而非快照；游标被 GC 后返回 `not_found`，调用方应重新从首页查询。
+空 Run 列表为 `[]`。
+
+Session watch 与 Run event SSE 立即 flush，并每 5 秒发送不改变事件 ID 的注释心跳。
+续读使用 `Last-Event-ID`，或显式 query `after_seq`；后者包括 `0` 都优先。
+非法、未知、重复或显式空序号 query 均拒绝。完整 version 9 语义见
+[Runtime 契约](docs/runtime-contract.md)。
 
 ## 文档
 

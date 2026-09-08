@@ -45,6 +45,13 @@ func TestQueryServiceUsesCanonicalListFilterValidationAndDefault(t *testing.T) {
 		{Kind: "future"},
 		{Limit: -1},
 		{Limit: runtime.MaxListLimit + 1},
+		{SessionID: "session_bad"},
+		{SessionID: "run_11111111111111111111111111111111"},
+		{TaskID: "bad\x00task"},
+		{TaskID: string([]byte{0xff})},
+		{ProfileID: "../api"},
+		{BeforeRunID: "run_bad"},
+		{BeforeRunID: "session_11111111111111111111111111111111"},
 	} {
 		if _, err := service.List(context.Background(), filter); err == nil {
 			t.Fatalf("accepted invalid filter=%#v", filter)
@@ -57,9 +64,13 @@ func TestQueryServiceUsesCanonicalListFilterValidationAndDefault(t *testing.T) {
 		}
 	}
 	valid := runtime.ListFilter{
-		State: runtime.StateNeedsReconciliation,
-		Kind:  runtime.KindAgent,
-		Limit: runtime.MaxListLimit,
+		State:       runtime.StateNeedsReconciliation,
+		Kind:        runtime.KindAgent,
+		Limit:       runtime.MaxListLimit,
+		SessionID:   "session_11111111111111111111111111111111",
+		TaskID:      "百工/任务 1",
+		ProfileID:   "api",
+		BeforeRunID: "run_22222222222222222222222222222222",
 	}
 	if _, err := service.List(context.Background(), valid); err != nil {
 		t.Fatal(err)

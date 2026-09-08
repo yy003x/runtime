@@ -21,11 +21,12 @@ import (
 )
 
 type RuntimeHandler struct {
-	model            *Handler
-	sessions         *session.Service
-	runs             *runtime.Service
-	agentBudget      agent.Budget
-	settledRetention time.Duration
+	model                  *Handler
+	sessions               *session.Service
+	runs                   *runtime.Service
+	agentBudget            agent.Budget
+	settledRetention       time.Duration
+	watchHeartbeatInterval time.Duration
 }
 
 type RuntimeServices struct {
@@ -50,8 +51,9 @@ func NewRuntimeHandler(services RuntimeServices) (*RuntimeHandler, error) {
 	}
 	return &RuntimeHandler{
 		model: services.Model, sessions: services.Sessions, runs: services.Runs,
-		agentBudget:      services.AgentBudget,
-		settledRetention: services.SettledRetention,
+		agentBudget:            services.AgentBudget,
+		settledRetention:       services.SettledRetention,
+		watchHeartbeatInterval: 5 * time.Second,
 	}, nil
 }
 
@@ -374,6 +376,13 @@ func (handler *RuntimeHandler) watchSession(
 	if !ok {
 		return
 	}
+	if err := writeSSEHeartbeat(writer, flusher); err != nil {
+		return
+	}
+	heartbeat := time.NewTicker(handler.watchHeartbeatInterval)
+	defer heartbeat.Stop()
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		events, err := handler.sessions.Events(sessionID, after)
 		if err != nil {
@@ -383,22 +392,19 @@ func (handler *RuntimeHandler) watchSession(
 			return
 		}
 		for _, event := range events {
-			data, _ := json.Marshal(event)
-			if _, err := fmt.Fprintf(
-				writer, "id: %d\nevent: %s\ndata: %s\n\n",
-				event.Sequence, event.Type, data,
-			); err != nil {
+			if err := writeSSEData(writer, flusher, event.Sequence, event.Type, event); err != nil {
 				return
 			}
-			flusher.Flush()
 			after = event.Sequence
 		}
-		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case <-request.Context().Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-heartbeat.C:
+			if err := writeSSEHeartbeat(writer, flusher); err != nil {
+				return
+			}
+		case <-poll.C:
 		}
 	}
 }
@@ -495,7 +501,11 @@ func (handler *RuntimeHandler) serveRuns(
 			}
 			values, err := handler.runs.List(request.Context(), filter)
 			if err != nil {
-				writeInternalError(writer, err)
+				if filter.BeforeRunID != "" {
+					writeRunLookupError(writer, filter.BeforeRunID, err)
+				} else {
+					writeInternalError(writer, err)
+				}
 				return
 			}
 			writeJSON(writer, nethttp.StatusOK, map[string]any{"runs": values})
@@ -758,19 +768,57 @@ func (handler *RuntimeHandler) watchRun(
 	if !ok {
 		return
 	}
-	_, err := handler.runs.Watch(
-		request.Context(), runID, after,
-		func(event contract.Event) error {
-			return writeSSEEvent(writer, flusher, event)
-		},
-	)
-	if err != nil && request.Context().Err() == nil {
-		writeSSEError(writer, flusher, runWatchError(runID, err))
+	if err := writeSSEHeartbeat(writer, flusher); err != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(request.Context())
+	events := make(chan contract.Event)
+	done := make(chan struct{})
+	var watchErr error
+	go func() {
+		defer close(done)
+		_, watchErr = handler.runs.Watch(ctx, runID, after, func(event contract.Event) error {
+			select {
+			case events <- event:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	heartbeat := time.NewTicker(handler.watchHeartbeatInterval)
+	defer heartbeat.Stop()
+	// This handler is the sole HTTP writer. The unbuffered handoff preserves
+	// event order and cancellation always joins the underlying durable Watch.
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			if watchErr != nil && request.Context().Err() == nil {
+				writeSSEError(writer, flusher, runWatchError(runID, watchErr))
+			}
+			return
+		case event := <-events:
+			if err := writeSSEEvent(writer, flusher, event); err != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if err := writeSSEHeartbeat(writer, flusher); err != nil {
+				return
+			}
+		}
 	}
 }
 
 func parseRunListFilter(request *nethttp.Request) (runtime.ListFilter, error) {
-	query, err := parseExactQuery(request, "state", "kind", "limit")
+	query, err := parseExactQuery(
+		request, "state", "kind", "limit", "session_id", "task_id", "profile_id", "before_run_id",
+	)
 	if err != nil {
 		return runtime.ListFilter{}, err
 	}
@@ -807,9 +855,26 @@ func parseRunListFilter(request *nethttp.Request) (runtime.ListFilter, error) {
 		}
 		limit = parsed
 	}
-	return runtime.NormalizeListFilter(runtime.ListFilter{
+	filter := runtime.ListFilter{
 		State: state, Kind: kind, Limit: limit,
-	})
+	}
+	for _, field := range []struct {
+		name   string
+		target *string
+	}{
+		{"session_id", &filter.SessionID},
+		{"task_id", &filter.TaskID},
+		{"profile_id", &filter.ProfileID},
+		{"before_run_id", &filter.BeforeRunID},
+	} {
+		if values, exists := query[field.name]; exists {
+			if values[0] == "" {
+				return runtime.ListFilter{}, fmt.Errorf("%s must not be empty", field.name)
+			}
+			*field.target = values[0]
+		}
+	}
+	return runtime.NormalizeListFilter(filter)
 }
 
 func parseSessionListFilter(
@@ -1125,7 +1190,17 @@ func prepareSSE(writer nethttp.ResponseWriter) (nethttp.Flusher, bool) {
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.Header().Set("X-Accel-Buffering", "no")
 	return flusher, true
+}
+
+// Heartbeats are transport comments, never canonical events or resume IDs.
+func writeSSEHeartbeat(writer nethttp.ResponseWriter, flusher nethttp.Flusher) error {
+	if _, err := fmt.Fprint(writer, ": keep-alive\n\n"); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 func writeSSEEvent(
@@ -1133,13 +1208,23 @@ func writeSSEEvent(
 	flusher nethttp.Flusher,
 	event contract.Event,
 ) error {
-	data, err := json.Marshal(event)
+	return writeSSEData(writer, flusher, event.Sequence, string(event.Type), event)
+}
+
+func writeSSEData(
+	writer nethttp.ResponseWriter,
+	flusher nethttp.Flusher,
+	sequence uint64,
+	eventType string,
+	payload any,
+) error {
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(
 		writer, "id: %d\nevent: %s\ndata: %s\n\n",
-		event.Sequence, event.Type, data,
+		sequence, eventType, data,
 	); err != nil {
 		return err
 	}
@@ -1162,11 +1247,16 @@ func querySequence(
 	request *nethttp.Request,
 	name string,
 ) (uint64, bool) {
-	value := request.URL.Query().Get(name)
-	if value == "" {
+	query, err := parseExactQuery(request, name)
+	if err != nil {
+		writeBadRequest(writer, err)
+		return 0, false
+	}
+	values, exists := query[name]
+	if !exists {
 		return 0, true
 	}
-	current, err := strconv.ParseUint(value, 10, 64)
+	current, err := parseSequence(values[0])
 	if err != nil {
 		writeError(writer, nethttp.StatusBadRequest, requestError(err))
 		return 0, false
@@ -1179,19 +1269,30 @@ func resumeSequence(
 	request *nethttp.Request,
 ) (uint64, bool) {
 	after, ok := querySequence(writer, request, "after_seq")
-	if !ok || after != 0 {
+	if !ok || request.URL.Query().Has("after_seq") {
 		return after, ok
+	}
+	if len(request.Header.Values("Last-Event-ID")) > 1 {
+		writeBadRequest(writer, fmt.Errorf("Last-Event-ID must appear at most once"))
+		return 0, false
 	}
 	value := strings.TrimSpace(request.Header.Get("Last-Event-ID"))
 	if value == "" {
 		return 0, true
 	}
-	current, err := strconv.ParseUint(value, 10, 64)
+	current, err := parseSequence(value)
 	if err != nil {
 		writeError(writer, nethttp.StatusBadRequest, requestError(err))
 		return 0, false
 	}
 	return current, true
+}
+
+func parseSequence(value string) (uint64, error) {
+	if value == "" || strings.Trim(value, "0123456789") != "" {
+		return 0, fmt.Errorf("event sequence must be an unsigned decimal uint64")
+	}
+	return strconv.ParseUint(value, 10, 64)
 }
 
 func methodNotAllowed(writer nethttp.ResponseWriter, allow string) {

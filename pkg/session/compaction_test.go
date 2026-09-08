@@ -202,7 +202,7 @@ func TestVerifyCompactionMatchesOffsetAndRejectsTamperedPrefix(t *testing.T) {
 // TestCompactedAgentTurnSettlesViaOffsetGrounding exercises the full Agent path:
 // two session-exec turns build non-overflowing history, a third Agent turn
 // overflows the input budget and is compacted at PrepareAgent, then SettleAgent
-// must accept the compacted prefix via offset grounding (not the legacy verbatim
+// must accept the compacted prefix via offset grounding (not the uncompacted
 // prefix check). Budget is tuned so the first two turns fit and the third
 // overflows.
 func TestCompactedAgentTurnSettlesViaOffsetGrounding(t *testing.T) {

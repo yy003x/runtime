@@ -87,7 +87,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
 | `job get` | 获取完整 Run Record | — | `sn-cli job get --run-id <id>` |
-| `job list` | 列出或按状态/kind 过滤 Run | — | `sn-cli job list --state failed` |
+| `job list` | 按状态/kind/关联 ID 筛选并分页查询 Run | — | `sn-cli job list --state failed` |
 | `job result` | 读取当前 result/error/state | — | `sn-cli job result --run-id <id>` |
 | `job events` | 读取持久化事件 | — | `sn-cli job events --run-id <id>` |
 | `job watch` | 流式追踪事件直到终态 | — | `sn-cli job watch --run-id <id>` |
@@ -238,7 +238,7 @@ sn-cli --json version
 `sn-cli help <topic>` 是唯一 topic 级帮助入口。当前 topic 固定为：
 
 ```text
-direct exec req doctor profile session agent run server
+tui exec call doctor profile session agent job server update
 ```
 
 human 输出包含准确语法与关键状态边界；`sn-cli --json help [topic]` 返回同一份
@@ -265,7 +265,7 @@ sn-cli job --help
 ```bash
 sn-cli --json profile list
 sn-cli --json session show --session-id <session_id>
-sn-cli --json run get --run-id <run_id>
+sn-cli --json job get --run-id <run_id>
 sn-cli --json server status
 ```
 
@@ -284,7 +284,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 8
+  "contract_version": 9
 }
 ```
 
@@ -303,9 +303,9 @@ Runtime JSON；只有启动目标进程前发生的错误会使用 machine error
 以下入口输出逐行 JSON event：
 
 ```text
-req <api-profile> --stream
+call <api-profile> --stream
 agent <api-profile> --stream
-run watch
+job watch
 ```
 
 CLI 的流式格式是 NDJSON。`call` 和 `agent` 成功时最后输出 final
@@ -461,7 +461,7 @@ canonical Session `schema_version` 为 3，并要求
 固定 namespace：
 
 ```text
-doctor exec req profile session tmux agent run server help version
+doctor exec call profile session agent job server help version update
 ```
 
 Profile 管理 action：
@@ -1045,7 +1045,7 @@ stdin内容
 完整语法：
 
 ```text
-sn-cli [--json] req <api-profile-id>
+sn-cli [--json] call <api-profile-id>
   [--stream]
   [--request-file PATH|-]
   [--system TEXT]
@@ -1168,22 +1168,24 @@ tool call 时输出 `requires_action`，但不会执行工具。
 `configs/*.json`，因此可以保留不属于正式 release 的本地 Profile。安装后的实际
 Profile 应使用 `profile list/show` 查询。
 
-| ID | Adapter | Model | 配置重点 | 推荐入口 |
-|---|---|---|---|---|
-| `api-cc` | anthropic | `glm-5.2` | `max_tokens=16384`、timeout 50m | `req api-cc` |
-| `api-cx` | openai | `qwen3.7-max` | `max_tokens=16384`、timeout 5m | `req api-cx` |
-| `cc` | Claude CLI | `glm-5.2` | max | `cc` 或 `exec cc` |
-| `cc-glm` | Claude CLI | `glm-5.2` | permission bypass | `exec cc-glm` |
-| `cc-kmm` | Claude CLI | `claude-fable-5` | permission bypass | `cc-kmm` 或 `exec cc-kmm` |
-| `cx` | Codex CLI | `gpt-5.6-sol` | xhigh | `cx` 或 `exec cx` |
-| `commit` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、read-only | `exec commit` |
-| `cx-adv` | Codex CLI | `gpt-5.6-terra` | max、danger-full-access | `exec cx-adv` |
-| `cx-deep` | Codex CLI | `gpt-5.6-sol` | max、search、danger-full-access | `exec cx-deep` |
-| `cx-spark` | Codex CLI | `gpt-5.3-codex-spark` | xhigh、read-only | `exec cx-spark` |
+| ID | Adapter | 推荐入口 |
+|---|---|---|
+| `api-cc` | anthropic | `call api-cc` |
+| `api-cx` | openai | `call api-cx` |
+| `cc` | Claude CLI | `cc` 或 `exec cc` |
+| `cc-glm` | Claude CLI | `exec cc-glm` |
+| `cc-kmm` | Claude CLI | `cc-kmm` 或 `exec cc-kmm` |
+| `cx` | Codex CLI | `cx` 或 `exec cx` |
+| `commit` | Codex CLI | `exec commit` |
+| `cx-adv` | Codex CLI | `exec cx-adv` |
+| `cx-deep` | Codex CLI | `exec cx-deep` |
+| `cx-spark` | Codex CLI | `exec cx-spark` |
+| `gk` | Grok CLI | `gk` 或 `exec gk` |
 
-`cc-glm` 和 `cc-kmm` 的源码配置包含 permission bypass 选项；
-`cx-adv`、`cx-deep` 允许 danger-full-access。使用这些 Profile 等于接受对应目标
-CLI 的权限配置，调用前应通过 `profile show` 确认 active 配置。
+模型、effort、timeout、sandbox/approval 和 env 以 `configs/<id>.json` 为唯一 source，
+本文不复制易漂移的配置快照。Profile 可能启用 permission bypass 或
+danger-full-access；名称不代表只读或权限边界，调用前应通过 `profile show` 确认
+active 配置。
 
 ## 6. Session
 
@@ -1904,7 +1906,7 @@ transcript。`open` 创建一个 running 的 `kind=native_tui` Durable Run 和�
 与 SQLite Run Store 不共享 transaction，因此不复制第二套 Session Event/Execution；
 `session show` 从唯一 lifecycle Run 投影 Run、Execution 与可选 live carrier。
 terminal lifecycle Event 由 Run Store 随 settle transaction 写入，可使用
-`run events --run-id <run_id>` 查询，但不会复制为 Session Event。
+`job events --run-id <run_id>` 查询，但不会复制为 Session Event。
 `session exec|call` 会拒绝 `native_tui` Session ID。
 
 `session send` 受 PTY line discipline 与 Provider line editor 语义约束，不承诺大块
@@ -1934,7 +1936,7 @@ completion。`interrupt` 对 running pane 发送 `C-c`；`close` 先把仍 open 
 为 `cancelled`，再按 opaque binding 停止精确 `tmux_id`，同时保留 `native_tui`
 Session fact。停止时 Runtime 向 supervisor 发送 `SIGTERM`；supervisor 将
 `SIGHUP|SIGTERM` 显式转发给 Provider，最多等待 2 秒后强制结束，并确认自身退出后才让
-close 成功返回。`C-c`/`SIGINT` 不触发这个强制退出计时。`run cancel|retry|resume` 不接管
+close 成功返回。`C-c`/`SIGINT` 不触发这个强制退出计时。`job cancel|retry|continue` 不接管
 native TUI，关闭使用 `session close`。
 
 `close-all` 不接受参数。它对调用开始时所有 `binding.kind=session` 的 window 做
@@ -2181,7 +2183,7 @@ implementation/version、canonical roots/cwd configuration。Run 的
 再绑定 immutable Agent request。绑定 Session 时，Session Turn/Execution 继续使用
 独立的 profile-only digest；不要把它们与 Run combined digest 比较。
 
-private snapshot 位于 SQLite `private_request_json`，不会通过 `run get/list/result`、
+private snapshot 位于 SQLite `private_request_json`，不会通过 `job get/list/result`、
 event、watch、Session export、日志或错误输出；公共 Run Record 只返回 digest。
 private 表示不公开，不表示加密，其中仍包含 endpoint、model、non-secret literal
 header、tool schema、workspace root/cwd identity 等元数据。
@@ -2295,12 +2297,12 @@ sn-cli agent api-cx --queue --label task=analysis "分析当前问题"
 ```
 
 另有 `session open` 直接创建 running 的 `kind=native_tui` lifecycle Run；它不进入队列，
-也不接受 `run cancel|resume|retry`，由 Provider exit 或 `session close|close-all` 收口。
+也不接受 `job cancel|continue|retry`，由 Provider exit 或 `session close|close-all` 收口。
 
 这些创建入口都要求 Profile ID 紧跟 execution namespace/action，option 位于其后，
-input 最后。`--queue` 只入队且不自动启动 `sn-server`；`run` 只接收创建后返回的
+input 最后。`--queue` 只入队且不自动启动 `sn-server`；`job` 只接收创建后返回的
 `run_id` 做查询、观察和适用的 lifecycle control/GC。`kind=native_tui` 只支持查询，
-不接受 `run cancel|resume|retry`；其它 kind 的 `retry` 会从已有终态 Run 创建一个关联的
+不接受 `job cancel|continue|retry`；其它 kind 的 `retry` 会从已有终态 Run 创建一个关联的
 新 Run，但不接受新的 Profile/input。
 
 ### 9.3 `job get`
@@ -2315,7 +2317,7 @@ sn-cli job get --run-id <run_id>
 
 ```bash
 sn-cli job get --run-id <run_id>
-sn-cli --json run get --run-id <run_id>
+sn-cli --json job get --run-id <run_id>
 ```
 
 ### 9.4 `job list`
@@ -2326,10 +2328,20 @@ sn-cli --json run get --run-id <run_id>
 sn-cli job list
   [--state queued|running|paused|needs_reconciliation|completed|failed|cancelled]
   [--kind agent|session|native_tui]
+  [--session-id <session_id>]
+  [--task-id <task_id>]
+  [--profile-id <profile_id>]
+  [--before-run-id <run_id>]
   [--limit N]
 ```
 
-默认 `--limit 100`，最大 `1000`。结果按创建时间从新到旧。
+默认 `--limit 100`，最大 `1000`。关联 ID 精确匹配，多个筛选项取 AND，所有显式
+空值、重复或非法 option 拒绝。`--profile-id` 只查询已存 Run，不加载 Profile 配置。
+结果按 `created_at DESC, run_id DESC` 排序；同时间戳由 Run ID 打破平局。
+下一页固定原筛选条件，`--before-run-id` 传上一页末条 Run ID，不包含游标本身。
+不足 limit 的页表示本次查询到达末尾，空结果为 `{"runs":[]}`（另含 machine envelope）。
+游标必须存在但不必匹配筛选项，被 GC 后返回 `not_found`，应从首页重新查询。
+分页是实时视图而非快照，Run state 变化仍可能改变筛选结果。
 
 示例：
 
@@ -2338,7 +2350,9 @@ sn-cli job list
 sn-cli job list --state queued
 sn-cli job list --kind session --limit 50
 sn-cli job list --kind native_tui
-sn-cli --json run list --state failed --kind agent
+sn-cli --json job list --state failed --kind agent
+sn-cli --json job list --task-id <task_id> --profile-id api-cx --limit 50
+sn-cli --json job list --task-id <task_id> --profile-id api-cx --limit 50 --before-run-id <last_run_id>
 ```
 
 ### 9.5 `job result`
@@ -2353,7 +2367,7 @@ sn-cli job result --run-id <run_id>
 
 ```bash
 sn-cli job result --run-id <run_id>
-sn-cli --json run result --run-id <run_id>
+sn-cli --json job result --run-id <run_id>
 ```
 
 Human 输出会尽量提取 Session 或 Agent 的 assistant text，然后打印最终 state。
@@ -2372,7 +2386,7 @@ sn-cli job events
 
 ```bash
 sn-cli job events --run-id <run_id>
-sn-cli --json run events --run-id <run_id> --after-seq 10
+sn-cli --json job events --run-id <run_id> --after-seq 10
 ```
 
 ### 9.7 `job watch`
@@ -2805,7 +2819,7 @@ sn-cli update --version VERSION
 
 ```bash
 sn-cli update --check
-sn-cli --json sn-cli update --dry-run
+sn-cli --json update --dry-run
 sn-cli update --dry-run --version v1.2.3
 sn-cli update --version v1.2.3
 ```
@@ -2886,8 +2900,8 @@ sn-cli server upgrade-activate
 - `--local-source-install` 自动启用 configs 覆盖；candidate 验证后先按
   `sn-cli session close-all` 语义关闭全部 Session-bound native TUI，再停止 server。
 - `--local-source-install` 不能与显式 `--overwrite-configs` 同时使用。
-- 任一剩余 tmux carrier 或目标 Runtime binary process 都会使 preflight 拒绝安装；不再
-  为旧版 supervisor 执行安装期进程组清理。
+- 任一剩余 tmux carrier 或目标 Runtime binary process 都会使 preflight 拒绝安装，
+  不执行额外进程组清理。
 - 成功后不自动重启 server。
 - 在创建 target state/lock/stage 或停止 server 前，candidate 先验证 payload 的完整
   Profile 语义、required `release/runtime.json`、`resources/tools/`、
@@ -2927,8 +2941,8 @@ make install
   `state/session-invocations/`、`state/session-mutations/`、
   `state/session-trash-moves/` 和 `state/runtime.db*`。
 - 成功后不自动启动 server。
-- preflight 会拒绝任何未被关闭的 tmux carrier 或其它仍在运行的 Runtime binary；安装器不会
-  对旧版遗留进程执行额外的进程组清理。
+- preflight 会拒绝任何未被关闭的 tmux carrier 或其它仍在运行的 Runtime binary，
+  不执行额外进程组清理。
 
 安装后：
 
@@ -3193,7 +3207,8 @@ Message、Event 和 Execution 查询：
 | `GET /v1/sessions/{id}/executions` | 无 | `200 {"executions":[Execution...]}` |
 | `GET /v1/sessions/{id}/executions/{execution_id}` | 无 | `200 Execution` |
 
-`after_seq=N` 只返回 `sequence > N` 的记录，必须是 `uint64`。
+`after_seq=N` 只返回 `sequence > N` 的记录，必须是十进制 `uint64`。序号 query
+只允许 `after_seq` 一次；未知、重复、非法编码、显式空值、负数或溢出均返回 `400`。
 
 #### 创建 Session Turn
 
@@ -3245,8 +3260,10 @@ Accept: text/event-stream
 ```
 
 持续输出 Session EventRecord SSE，直到客户端断开。支持 query `after_seq` 和 header
-`Last-Event-ID`；非零 `after_seq` 优先，否则使用 `Last-Event-ID`，两者都省略时从
-`0` 开始。
+`Last-Event-ID`；显式 `after_seq`（包括 `0`）优先，只有省略 query 才使用 header，
+两者都省略或 header 为空时从 `0` 开始。被使用的 header 必须是单个合法十进制
+`uint64`。资源和参数校验后立即 flush 注释 `: keep-alive`，以后每 5 秒发送一次；
+心跳不携带 `id`，不创建持久化事件，不改变续读序号。
 
 ### 12.4 Agent route
 
@@ -3350,11 +3367,15 @@ Record 只返回 `request_digest/config_digest`，不会返回 private payload�
 
 | Route | Query | 默认 | 成功响应 |
 |---|---|---|---|
-| `GET /v1/runs` | `state`、`kind=agent|session|native_tui`、`limit=1..1000` | 全部 state/kind，`limit=100` | `200 {"runs":[Run Record...]}` |
+| `GET /v1/runs` | `state`、`kind=agent|session|native_tui`、`session_id`、`task_id`、`profile_id`、`before_run_id`、`limit=1..1000` | 无筛选，`limit=100` | `200 {"runs":[Run Record...]}` |
 | `GET /v1/runs/{run_id}` | 无 | 无 | `200 Run Record` |
 | `GET /v1/runs/{run_id}/events` | `after_seq` | `0` | `200 {"events":[Event...]}`，单次最多 1000 条 |
 
 `state` 可为 `queued|running|paused|needs_reconciliation|completed|failed|cancelled`。
+筛选项精确匹配并取 AND，排序和游标规则与 `job list` 相同：`before_run_id` 取
+上页末条 Run ID，缺失游标返回 `404`，空列表为 `[]`，不采用 offset 分页。
+`session_id` 使用 Runtime ID，`task_id` 必须是无 NUL 的 UTF-8，`profile_id` 必须
+满足当前 Profile ID 语法；未知、重复、显式空或非法 query 返回 `400`。
 
 #### Run event watch
 
@@ -3364,7 +3385,10 @@ Accept: text/event-stream
 ```
 
 有 `Accept: text/event-stream` 时持续 watch，支持 `after_seq` 和
-`Last-Event-ID`；非零 `after_seq` 优先。Run terminal barrier 发布完成后结束。
+`Last-Event-ID`；显式 `after_seq`（包括 `0`）优先。续读校验、立即 flush 和每 5 秒
+注释心跳与 Session watch 相同，事件 `id` 始终使用持久化 sequence。Run terminal
+barrier 发布且对应事件已读完后结束；断连只结束订阅，不取消 Run。合法但超过 SQLite
+signed int64 范围的游标返回空事件，不触发整数绑定错误。
 
 #### Run control
 
@@ -3589,7 +3613,7 @@ Profile 来自 active home，不是自动读取当前仓库 `configs/`。
 确保它位于第一个参数：
 
 ```bash
-sn-cli --json run list
+sn-cli --json job list
 ```
 
 ### `--model ... cannot be used multiple times`
@@ -3701,11 +3725,11 @@ lifecycle Run 并自动停止 window；收到 `SIGHUP|SIGTERM` 时向 Provider �
 ```text
 直接交互 TUI  → <cli-profile>
 直接一次执行  → exec <cli-profile>
-一次 API 请求 → req <api-profile>
+一次 API 请求 → call <api-profile>
 有记录的执行  → session exec|call <profile> [--queue]
 长期 Session   → session open|send|attach|interrupt|close|close-all
 自动工具循环  → agent <api-profile> [--queue]
-已有 Run 控制 → run ...
+已有 Run 控制 → job ...
 ```
 
 ## 16. 契约文档

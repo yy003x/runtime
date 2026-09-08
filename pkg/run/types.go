@@ -8,8 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/yy003x/runtime/internal/domain/identity"
+	"github.com/yy003x/runtime/internal/domain/profileid"
 	"github.com/yy003x/runtime/pkg/agent"
 	"github.com/yy003x/runtime/pkg/contract"
 )
@@ -193,9 +197,15 @@ type ResumeConstraint struct {
 }
 
 type ListFilter struct {
-	State State
-	Kind  Kind
-	Limit int
+	State     State
+	Kind      Kind
+	SessionID string
+	TaskID    string
+	ProfileID string
+	// BeforeRunID is an exclusive cursor in (created_at, run_id) descending
+	// order. The referenced Run must still exist, but need not match the filter.
+	BeforeRunID string
+	Limit       int
 }
 
 // ExpiredRunCursor is the stable keyset position used while scanning Runs for
@@ -237,6 +247,24 @@ func NormalizeListFilter(filter ListFilter) (ListFilter, error) {
 		return ListFilter{}, fmt.Errorf(
 			"kind must be agent, session, or native_tui",
 		)
+	}
+	if filter.SessionID != "" {
+		if err := identity.Validate(filter.SessionID, "session"); err != nil {
+			return ListFilter{}, err
+		}
+	}
+	if !utf8.ValidString(filter.TaskID) || strings.ContainsRune(filter.TaskID, '\x00') {
+		return ListFilter{}, fmt.Errorf("task_id must be UTF-8 without NUL")
+	}
+	if filter.ProfileID != "" {
+		if err := profileid.Validate(filter.ProfileID); err != nil {
+			return ListFilter{}, err
+		}
+	}
+	if filter.BeforeRunID != "" {
+		if err := identity.Validate(filter.BeforeRunID, "run"); err != nil {
+			return ListFilter{}, err
+		}
 	}
 	switch {
 	case filter.Limit == 0:

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,14 +410,40 @@ func (store *Store) List(
 		query += " AND kind = ?"
 		arguments = append(arguments, filter.Kind)
 	}
-	query += " ORDER BY created_at DESC LIMIT ?"
+	if filter.SessionID != "" {
+		query += " AND session_id = ?"
+		arguments = append(arguments, filter.SessionID)
+	}
+	if filter.TaskID != "" {
+		query += " AND json_extract(CAST(request_json AS TEXT), '$.task_id') = ?"
+		arguments = append(arguments, filter.TaskID)
+	}
+	if filter.ProfileID != "" {
+		query += " AND json_extract(CAST(request_json AS TEXT), '$.profile_id') = ?"
+		arguments = append(arguments, filter.ProfileID)
+	}
+	if filter.BeforeRunID != "" {
+		var createdAt string
+		err := store.db.QueryRowContext(
+			ctx, "SELECT created_at FROM runs WHERE run_id = ?", filter.BeforeRunID,
+		).Scan(&createdAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: cursor %s", runtime.ErrNotFound, filter.BeforeRunID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		query += " AND (created_at < ? OR (created_at = ? AND run_id < ?))"
+		arguments = append(arguments, createdAt, createdAt, filter.BeforeRunID)
+	}
+	query += " ORDER BY created_at DESC, run_id DESC LIMIT ?"
 	arguments = append(arguments, filter.Limit)
 	rows, err := store.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var values []runtime.Record
+	values := make([]runtime.Record, 0)
 	for rows.Next() {
 		value, err := scanRecord(rows)
 		if err != nil {
@@ -642,12 +669,17 @@ func (store *Store) Events(
 	if limit <= 0 || limit > 1000 {
 		limit = 256
 	}
+	// Event sequences are SQLite INTEGERs. Larger public uint64 cursors are
+	// necessarily past the journal tail; still query so Store errors propagate.
+	if afterSequence > math.MaxInt64 {
+		afterSequence = math.MaxInt64
+	}
 	rows, err := store.db.QueryContext(
 		ctx,
 		`SELECT run_id, sequence, event_json FROM events
 		  WHERE run_id = ? AND sequence > ?
 		  ORDER BY sequence LIMIT ?`,
-		runID, afterSequence, limit,
+		runID, int64(afterSequence), limit,
 	)
 	if err != nil {
 		return nil, err

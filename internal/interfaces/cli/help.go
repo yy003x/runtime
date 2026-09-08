@@ -127,6 +127,8 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 		Notes: []string{
 			"job is a control plane over Run records (run_id); new work enters through session or agent.",
+			"job list accepts --state, --kind, --session-id, --task-id, --profile-id, and --limit (default 100, maximum 1000).",
+			"Results use created_at DESC, run_id DESC; --before-run-id <last-id> reads the next page. A missing cursor is not_found.",
 			"job continue resumes a paused Run; it is not the same as <cli-profile> resume.",
 			"kind=native_tui Runs are query-only here; use session close or close-all to stop their windows.",
 			"Terminal Run state, result/error, terminal event, and run.settled share one SQLite transaction.",
@@ -294,7 +296,7 @@ Lifecycle safety:
 Global:
   -h, --help         show root help
   --version          show build version
-  --json             stable req/management output; must be first
+  --json             stable call/management output; must be first
                      interactive/exec CLI output remains target-native
 
 Runtime home:        ${SN_CLI_HOME:-~/.sn}

@@ -1,23 +1,20 @@
 {
-  "captured_at": "2026-07-31",
-  "source_head": "3613b252ed265a4afcab2518b5f9dd631808bc08+worktree",
+  "captured_at": "2026-09-08",
+  "source_head": "8b93bf8df847fa2acaff689d8135462f6e63cebf+worktree",
   "installed_build": "current source build",
   "profiles": [
     {
       "id": "commit",
       "argv": [
         "--sandbox",
-        "read-only",
+        "danger-full-access",
         "--ask-for-approval",
         "never",
-        "-c",
-        "model_verbosity=high",
         "--model",
-        "gpt-5.3-codex-spark",
+        "gpt-5.6-luna",
         "-c",
-        "model_reasoning_effort=xhigh",
+        "model_reasoning_effort=medium",
         "exec",
-        "--skip-git-repo-check",
         "--ignore-user-config",
         "--color",
         "never",
@@ -41,14 +38,10 @@
     },
     {
       "id": "cc",
-      "argv": [
-        "--model",
-        "glm-5.2[1m]",
-        "--effort",
-        "max"
-      ],
+      "argv": [],
       "env": {
         "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+        "ANTHROPIC_MODEL": "glm-5.3",
         "CLAUDE_CONFIG_DIR": "${HOME}/.claude-aip"
       }
     },
@@ -58,10 +51,10 @@
         "--model",
         "grok-4.6",
         "--effort",
-        "high"
+        "xhigh"
       ],
       "env": {
-        "GROK_HOME": "${HOME}/.grok"
+        "GROK_HOME": "${HOME}/.grok-aip"
       }
     },
     {
@@ -81,8 +74,7 @@
         "--skip-git-repo-check",
         "--ignore-user-config",
         "--color",
-        "never",
-        "--ephemeral"
+        "never"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-ait"

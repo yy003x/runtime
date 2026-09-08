@@ -216,7 +216,7 @@ release_address="$(tr -d '[:space:]' <"$release_address_file")"
 current_update_output="$(
   SN_CLI_HOME="$runtime_home" \
     SN_CLI_RELEASE_BASE_URL="http://$release_address" \
-    "$install_dir/sn-cli" --json server update \
+    "$install_dir/sn-cli" --json update \
       --version "$RELEASE_VERSION"
 )"
 printf '%s\n' "$current_update_output" |

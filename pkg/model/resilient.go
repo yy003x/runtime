@@ -78,9 +78,7 @@ type resilientInner interface {
 // partial event stream (which would violate the single model.started invariant
 // the downstream Agent kernel and event journal rely on).
 //
-// TODO(fallback): FallbackChain across multiple drivers/profiles is intentionally
-// out of scope here; it requires profile schema changes to express a driver
-// preference list. The retry boundary is single-profile only for now.
+// The retry boundary is one Profile. It never switches drivers or Profiles.
 type ResilientModel struct {
 	inner   resilientInner
 	policy  RetryPolicy

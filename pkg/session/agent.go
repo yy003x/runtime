@@ -548,7 +548,7 @@ func (service *Service) RestoreAgentPause(
 
 // compactionOffset returns the number of leading canonical messages a turn's
 // context compaction dropped. 0 means no compaction: the prepared prefix is a
-// verbatim canonical prefix and callers use the legacy comparison. When the
+// verbatim canonical prefix and callers compare it directly. When the
 // turn manifest carries a CheckpointRef it loads the grounding summary and
 // re-verifies the dropped-prefix digest, fail-closing on any drift.
 func compactionOffset(

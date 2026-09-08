@@ -11,7 +11,7 @@
     "CLAUDE_CONFIG_DIR": "${HOME}/.claude-ait",
     "ANTHROPIC_BASE_URL": "https://tokenhub.tencentmaas.com",
     "ANTHROPIC_API_KEY": "${TENCENT_API_KEY}",
-    "ANTHROPIC_MODEL": "kimi-k3",
+    "ANTHROPIC_MODEL": "glm-5.3",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "minimax-m3",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-pro-202606",
