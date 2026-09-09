@@ -106,24 +106,25 @@
         "driver": {
           "description": "Selects the Provider wire protocol adapter.",
           "enum": [
-            "openai",
+            "openai-chat-completions",
             "openai-responses",
-            "anthropic"
+            "openai-codex-responses",
+            "anthropic-messages"
           ]
         },
         "endpoint": {
-          "description": "Optional complete Provider HTTPS endpoint; mutually exclusive with base_url.",
+          "description": "Complete Provider endpoint used unchanged, including a root path. Generic OpenAI drivers allow HTTP only on loopback; all other destinations require HTTPS. Mutually exclusive with base_url.",
           "type": "string",
           "format": "uri",
-          "x-sn-url-semantics": "absolute HTTPS URL with host, explicit non-root path, no userinfo, no fragment",
-          "pattern": "^https://[^/?#@]+/[^?#]+(?:\\?[^#]*)?$"
+          "x-sn-url-semantics": "absolute HTTPS URL with host, or generic OpenAI HTTP loopback; no userinfo or fragment; loopback and URL syntax checked by Go loader",
+          "pattern": "^https?://[^/?#@]+(?:/[^?#]*)?(?:\\?[^#]*)?$"
         },
         "base_url": {
-          "description": "Complete Provider HTTPS API prefix, including any version path. Runtime appends only chat/completions (openai), responses (openai-responses), or messages (anthropic); it never inserts or detects a version.",
+          "description": "Complete Provider API prefix including any version path. HTTPS is required except HTTP loopback for the generic OpenAI drivers. Runtime appends only chat/completions, responses, or messages; it never inserts or detects a version.",
           "type": "string",
           "format": "uri",
-          "x-sn-url-semantics": "absolute HTTPS URL with host, optional path prefix, no userinfo, query, or fragment",
-          "pattern": "^https://[^/?#@]+(?:/[^?#]*)?$"
+          "x-sn-url-semantics": "absolute HTTPS URL with host, or generic OpenAI HTTP loopback; optional path prefix, no userinfo, query or fragment; loopback checked by Go loader",
+          "pattern": "^https?://[^/?#@]+(?:/[^?#]*)?$"
         },
         "model": {
           "description": "Provider model identifier sent in each request.",
@@ -134,7 +135,7 @@
           "pattern": "\\S"
         },
         "headers": {
-          "description": "HTTP headers applied to every Provider request. Values may use ${VAR} references that the runtime expands from the environment; openai and openai-responses prefix a bare Authorization value with the Bearer scheme.",
+          "description": "HTTP headers applied to every Provider request. Values may use ${VAR} references that the runtime expands from the environment; openai-chat-completions and openai-responses prefix a bare Authorization value with the Bearer scheme.",
           "type": "object",
           "maxProperties": 128,
           "propertyNames": {
@@ -153,7 +154,7 @@
           "additionalProperties": false,
           "properties": {
             "stream": {
-              "description": "Upstream response mode: true requests SSE; false requests a regular JSON response. Omission defaults to true. Independent of CLI --stream and downstream HTTP event delivery.",
+              "description": "Upstream response mode: true requests SSE; false requests JSON. Omission defaults to true. Independent of CLI --stream output framing.",
               "type": "boolean",
               "default": true
             },
@@ -216,7 +217,7 @@
           "description": "Local Session projection policy; these fields are not sent to the Provider.",
           "type": "object",
           "additionalProperties": false,
-          "x-sn-input-budget-minimum": 2,
+          "x-sn-managed-input-budget-minimum": 2,
           "properties": {
             "window_tokens": {
               "description": "Local Session context window; zero or omission uses the conservative default.",
@@ -272,6 +273,22 @@
       ],
       "allOf": [
         {
+          "if": {"properties": {"driver": {"const": "openai-codex-responses"}}, "required": ["driver"]},
+          "then": {
+            "properties": {
+              "endpoint": {"const": "https://chatgpt.com/backend-api/codex/responses"},
+              "base_url": {"const": "https://chatgpt.com/backend-api"},
+              "headers": {"maxProperties": 0},
+              "parameters": {"properties": {
+                "stream": {"const": true},
+                "max_tokens": {"type": "null"},
+                "top_p": {"type": "null"},
+                "stop_sequences": {"maxItems": 0}
+              }}
+            }
+          }
+        },
+        {
           "if": {"properties": {"driver": {"const": "openai-responses"}}, "required": ["driver"]},
           "then": {"properties": {"parameters": {"properties": {"stop_sequences": {"maxItems": 0}}}}}
         },
@@ -279,7 +296,7 @@
           "if": {
             "properties": {
               "driver": {
-                "const": "anthropic"
+                "const": "anthropic-messages"
               }
             },
             "required": [
@@ -291,6 +308,8 @@
               "parameters"
             ],
             "properties": {
+              "endpoint": {"pattern": "^https://[^/?#@]+/[^?#]+(?:\\?[^#]*)?$"},
+              "base_url": {"pattern": "^https://[^/?#@]+(?:/[^?#]*)?$"},
               "parameters": {
                 "required": [
                   "max_tokens"

@@ -21,7 +21,7 @@ import (
 )
 
 const rawFixtureSecret = "fixture-raw-secret"
-const rawResponsesJSON = `{"id":"raw-fixture","model":"fixture","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"raw answer"}]}],"provider_extra":{"debug":"fixture-raw-secret"}}`
+const rawResponsesJSON = `{"id":"raw-fixture","model":"fixture","status":"completed","output":[{"type":"reasoning","id":"reasoning-fixture","summary":[{"type":"summary_text","text":"UPSTREAM_ONLY_REASONING"}]},{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"raw answer"}]}],"metadata":{"source":"upstream"},"usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14,"output_tokens_details":{"reasoning_tokens":3}},"provider_extra":{"debug":"fixture-raw-secret","exact_integer":9007199254740993}}`
 const rawResponsesToolJSON = `{"id":"fixture-id","model":"fixture","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"weather","arguments":"{}"}],"usage":{"input_tokens":8,"output_tokens":5,"total_tokens":13}}`
 
 func TestCallRawWireOutput(t *testing.T) {
@@ -37,23 +37,23 @@ func TestCallRawWireOutput(t *testing.T) {
 		attempts    int
 		failed      bool
 	}{
-		{"openai_json", "openai", "application/json", openAIJSON, 200, false, 1, 1, false},
+		{"openai_json", "openai-chat-completions", "application/json", openAIJSON, 200, false, 1, 1, false},
 		{"responses_json", "openai-responses", "application/json", rawResponsesJSON, 200, false, 1, 1, false},
 		{"responses_sse", "openai-responses", "text/event-stream", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"raw answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":" + rawResponsesJSON + "}\n\n", 200, false, 2, 1, false},
 		{"responses_retry", "openai-responses", "application/json", rawResponsesJSON, 200, true, 1, 2, false},
 		{"responses_error", "openai-responses", "application/json", `{"error":{"code":"invalid_api_key","message":"fixture-raw-secret rejected"}}`, 401, false, 1, 1, true},
 		{"responses_sse_error", "openai-responses", "text/event-stream", "data: {\"type\":\"error\",\"code\":\"invalid_request\",\"message\":\"fixture-raw-secret rejected\"}\n\n", 200, false, 1, 1, true},
 		{"responses_sse_truncated", "openai-responses", "text/event-stream", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n", 200, false, 1, 1, true},
-		{"openai_sse", "openai", "text/event-stream", "data: {\"id\":\"raw-fixture\",\"model\":\"fixture\",\"choices\":[{\"delta\":{\"content\":\"raw answer\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", 200, false, 2, 1, false},
-		{"anthropic_json", "anthropic", "application/json", `{"id":"raw-fixture","type":"message","role":"assistant","model":"fixture","content":[{"type":"text","text":"raw answer"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`, 200, false, 1, 1, false},
-		{"anthropic_sse", "anthropic", "text/event-stream", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"raw-fixture\",\"model\":\"fixture\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"raw answer\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n", 200, false, 3, 1, false},
-		{"tool_call", "openai", "application/json", `{"id":"raw-fixture","model":"fixture","choices":[{"message":{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, 200, false, 1, 1, false},
-		{"retry_success", "openai", "application/json", openAIJSON, 200, true, 1, 2, false},
-		{"retry_exhausted", "openai", "application/json", `{"error":{"message":"fixture-raw-secret unavailable"}}`, 503, false, 1, 3, true},
-		{"auth_error", "anthropic", "application/json", `{"error":{"type":"authentication_error","message":"fixture-raw-secret rejected"}}`, 401, false, 1, 1, true},
-		{"flat_error", "openai", "application/json", `{"code":"invalid_key","message":"fixture-raw-secret rejected"}`, 401, false, 1, 1, true},
-		{"non_json_error", "openai", "text/html", "<html>fixture-raw-secret rejected</html>", 400, false, 0, 1, true},
-		{"invalid_provider_json", "openai", "application/json", `{"unexpected":"fixture-raw-secret"}`, 200, false, 1, 1, true},
+		{"openai_sse", "openai-chat-completions", "text/event-stream", "data: {\"id\":\"raw-fixture\",\"model\":\"fixture\",\"choices\":[{\"delta\":{\"content\":\"raw answer\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", 200, false, 2, 1, false},
+		{"anthropic_json", "anthropic-messages", "application/json", `{"id":"raw-fixture","type":"message","role":"assistant","model":"fixture","content":[{"type":"text","text":"raw answer"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`, 200, false, 1, 1, false},
+		{"anthropic_sse", "anthropic-messages", "text/event-stream", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"raw-fixture\",\"model\":\"fixture\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"raw answer\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n", 200, false, 3, 1, false},
+		{"tool_call", "openai-chat-completions", "application/json", `{"id":"raw-fixture","model":"fixture","choices":[{"message":{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, 200, false, 1, 1, false},
+		{"retry_success", "openai-chat-completions", "application/json", openAIJSON, 200, true, 1, 2, false},
+		{"retry_exhausted", "openai-chat-completions", "application/json", `{"error":{"message":"fixture-raw-secret unavailable"}}`, 503, false, 1, 3, true},
+		{"auth_error", "anthropic-messages", "application/json", `{"error":{"type":"authentication_error","message":"fixture-raw-secret rejected"}}`, 401, false, 1, 1, true},
+		{"flat_error", "openai-chat-completions", "application/json", `{"code":"invalid_key","message":"fixture-raw-secret rejected"}`, 401, false, 1, 1, true},
+		{"non_json_error", "openai-chat-completions", "text/html", "<html>fixture-raw-secret rejected</html>", 400, false, 0, 1, true},
+		{"invalid_provider_json", "openai-chat-completions", "application/json", `{"unexpected":"fixture-raw-secret"}`, 200, false, 1, 1, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			wireBodies := make(chan []byte, 4)
@@ -101,7 +101,7 @@ func TestCallRawWireOutput(t *testing.T) {
 					t.Fatal(err)
 				}
 				tokenField := "max_completion_tokens"
-				if test.driver == "anthropic" {
+				if test.driver == "anthropic-messages" {
 					tokenField = "max_tokens"
 				}
 				if test.driver == "openai-responses" {
@@ -168,7 +168,7 @@ func prepareRawModel(t *testing.T, driver, endpoint string, transport http.Round
 		"headers":    map[string]string{"Authorization": "${MODEL_API_KEY}"},
 		"parameters": parameters, "timeout": "1m",
 	}
-	if driver == "anthropic" {
+	if driver == "anthropic-messages" {
 		value["headers"] = map[string]string{"x-api-key": "${MODEL_API_KEY}"}
 	}
 	data, err := json.Marshal(value)
@@ -256,7 +256,7 @@ func (roundTrip rawRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 }
 
 func TestCallRawNetworkFailure(t *testing.T) {
-	paths := prepareRawModel(t, "openai", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
+	paths := prepareRawModel(t, "openai-chat-completions", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("fixture-raw-secret connection failed")
 	}))
 	var stdout, stderr bytes.Buffer
@@ -301,7 +301,7 @@ func TestCallRawRejectsInvalidOptionsBeforeNetwork(t *testing.T) {
 		{"unknown_profile", []string{"missing-api", "--raw", "hello"}, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			paths := prepareRawModel(t, "openai", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
+			paths := prepareRawModel(t, "openai-chat-completions", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
 				t.Error("invalid raw input performed an HTTP attempt")
 				return nil, errors.New("unexpected network call")
 			}))
@@ -353,7 +353,7 @@ func TestParseCallRawInputSources(t *testing.T) {
 			previous := os.Stdin
 			os.Stdin = file
 			t.Cleanup(func() { os.Stdin = previous; file.Close() })
-			request, options, err := parseDirectModelInput("cc-api", testModelProfile("openai"), test.args)
+			request, options, err := parseDirectModelInput("cc-api", testModelProfile("openai-chat-completions"), test.args)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -382,7 +382,7 @@ func TestCallRawOutputFailureDoesNotRetryProvider(t *testing.T) {
 	for _, failAt := range []int{1, 2} {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
 			calls := 0
-			paths := prepareRawModel(t, "openai", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
+			paths := prepareRawModel(t, "openai-chat-completions", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
 				calls++
 				return &http.Response{
 					StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
@@ -400,7 +400,7 @@ func TestCallRawOutputFailureDoesNotRetryProvider(t *testing.T) {
 }
 
 func TestCallRawIgnoresLogWriteFailure(t *testing.T) {
-	paths := prepareRawModel(t, "openai", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
+	paths := prepareRawModel(t, "openai-chat-completions", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
 			Body: io.NopCloser(strings.NewReader(`{"model":"fixture","choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}`)),
@@ -459,7 +459,7 @@ func TestCallAttemptsAreLoggedWithoutRaw(t *testing.T) {
 	for _, mode := range []string{"text", "json", "stream"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := 0
-			paths := prepareRawModel(t, "openai", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
+			paths := prepareRawModel(t, "openai-chat-completions", "https://example.invalid/raw", rawRoundTripper(func(*http.Request) (*http.Response, error) {
 				calls++
 				status, body := 200, `{"model":"fixture","choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}`
 				if calls == 1 {
@@ -509,11 +509,11 @@ func TestCallProfileStreamAndResponseModes(t *testing.T) {
 			json: rawResponsesToolJSON,
 			sse:  "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\ndata: {\"type\":\"response.completed\",\"response\":" + rawResponsesToolJSON + "}\n\n",
 		},
-		"openai": {
+		"openai-chat-completions": {
 			json: `{"id":"fixture-id","model":"fixture","choices":[{"message":{"content":"OK","tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13}}`,
 			sse:  "data: {\"id\":\"fixture-id\",\"model\":\"fixture\",\"choices\":[{\"delta\":{\"content\":\"OK\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"weather\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":5,\"total_tokens\":13}}\n\ndata: [DONE]\n\n",
 		},
-		"anthropic": {
+		"anthropic-messages": {
 			json: `{"id":"fixture-id","model":"fixture","content":[{"type":"text","text":"OK"},{"type":"tool_use","id":"call-1","name":"weather","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":5}}`,
 			sse:  "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture-id\",\"model\":\"fixture\",\"usage\":{\"input_tokens\":8}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"OK\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"weather\",\"input\":{}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n",
 		},
@@ -550,7 +550,7 @@ func TestCallProfileStreamAndResponseModes(t *testing.T) {
 								t.Errorf("method=%s Accept=%s", r.Method, r.Header.Get("Accept"))
 							}
 							_, hasStreamOptions := fields["stream_options"]
-							if hasStreamOptions != (driver == "openai" && upstreamStream) {
+							if hasStreamOptions != (driver == "openai-chat-completions" && upstreamStream) {
 								t.Errorf("stream_options=%s", fields["stream_options"])
 							}
 							w.Header().Set("Content-Type", contentType)
@@ -610,7 +610,7 @@ func TestCallProfileStreamAndResponseModes(t *testing.T) {
 }
 
 func TestCallNonStreamingRawProviderError(t *testing.T) {
-	for _, driver := range []string{"openai", "anthropic", "openai-responses"} {
+	for _, driver := range []string{"openai-chat-completions", "anthropic-messages", "openai-responses"} {
 		t.Run(driver, func(t *testing.T) {
 			body := `{"code":"invalid_key","message":"fixture-raw-secret rejected"}`
 			paths := prepareRawModel(t, driver, "https://example.invalid/fixture", rawRoundTripper(func(*http.Request) (*http.Response, error) {

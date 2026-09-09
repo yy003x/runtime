@@ -35,6 +35,10 @@ build_and_validate_release_assets() {
     [ "$actual_profile_entries" = "$expected_profile_entries" ] ||
       die "release asset Profile set does not match the formal release list: $asset"
 
+    if tar -tzf "$DIST_DIR/$asset" | grep -E '(^|/)auth\.(json|lock)$' >/dev/null; then
+      die "release asset contains local OAuth credentials: $asset"
+    fi
+
     expected_tool_entries="$(
       printf 'resources/tools/%s\n' "${SN_CLI_RELEASE_TOOL_FILES[@]}" |
         LC_ALL=C sort

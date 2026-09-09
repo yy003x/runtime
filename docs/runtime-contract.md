@@ -92,11 +92,11 @@ API Profile 只接受以下字段：
 | 字段 | 契约 |
 | --- | --- |
 | `type` | 必须为 `api` |
-| `driver` | `openai|anthropic|openai-responses`；Responses 仅支持无状态单次调用 |
+| `driver` | `openai-chat-completions|openai-responses|openai-codex-responses|anthropic-messages`；两种 Responses driver 仅支持无状态单次调用；旧 `openai|anthropic` 不兼容 |
 | `endpoint` / `base_url` | 必须且只能配置一个；HTTPS；`base_url` 不接受 query/fragment |
 | `model` | 必填 Provider 模型名 |
 | `headers` | 可选；secret 使用 `${VAR}`；resolved value 不持久化 |
-| `parameters.max_tokens` | canonical 默认输出上限；Anthropic 必填 |
+| `parameters.max_tokens` | canonical 默认输出上限；`anthropic-messages` 必填 |
 | `parameters.temperature` | 可选，`0..2` |
 | `parameters.top_p` | 可选，`0..1` |
 | `parameters.stop_sequences` | 可选，最多四个非空字符串 |
@@ -255,7 +255,7 @@ API 行固定字段为
 - 每个 attempt 的 `request={method,url,headers,body}` 是 driver protocol encoding 后交给
   `http.Client` 的 application-level request；不保存 curl 字符串；
 - `response={status,headers,data}`；普通 JSON response 的 `data` 是单元素数组，
-  SSE 按顺序收集所有有效 JSON `data:` frame，OpenAI `[DONE]` 不属于 JSON；
+  SSE 按顺序收集所有有效 JSON `data:` frame，Chat Completions 的 `[DONE]` 不属于 JSON；
 - network error 使用 `response:null`；`error` 是 Provider-neutral RuntimeError；
 - `${VAR}` header 按 driver 的 auth shaping 保留引用，例如
   `Bearer ${MODEL_API_KEY}`；字面量敏感 header、cookie、URL query 和 response/error
@@ -295,51 +295,60 @@ directory/file mode、no-follow、single-link regular-file 校验和非阻塞文
 - finish reason、usage、request ID；
 - auth、HTTP 和协议错误归一化。
 
-Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。secret 通过
-headers 的 `${VAR}` 引用从执行环境展开，不进入 Profile output、event 或数据库。
+Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。API key 通过
+headers 的 `${VAR}` 引用从执行环境展开；Codex OAuth 由 Model Service 的
+`CredentialResolver` 在每次 attempt 前解析并注入。resolved secret 不进入
+Profile output、event 或数据库。
 Driver 禁止 `http.Client` 自动跟随 redirect；每次 `Stream` 只调用一次 request，3xx
 作为该次 Provider response 进入 typed protocol error 和同一条 API 日志。
 
 Profile 默认输出上限统一配置为 `parameters.max_tokens`，CLI override 统一为
-`--max-tokens`。Canonical request 使用 `max_output_tokens`；openai driver
-将它映射为 wire `max_completion_tokens`，anthropic driver 映射为
-wire `max_tokens`，openai-responses 映射为 `max_output_tokens`。
+`--max-tokens`。Canonical request 使用 `max_output_tokens`；
+`openai-chat-completions` driver 将它映射为 wire `max_completion_tokens`，
+`anthropic-messages` driver 映射为 wire `max_tokens`，`openai-responses`
+映射为 `max_output_tokens`。
 可选 `temperature`、`top_p`、`stop_sequences` 同样先进入
-canonical request，其中 OpenAI 将停止序列映射为 `stop`；未配置时 adapter 不发送，
+canonical request，其中 `openai-chat-completions` 将停止序列映射为 `stop`；未配置时
+adapter 不发送，
 目标模型不保证支持每个可选参数；Responses 不支持非空 `stop_sequences`，配置和
 请求级值均在发起 HTTP 前拒绝，不静默丢弃。Canonical tool Message 的
-`is_error` 必须保存在 canonical tool Message；anthropic driver 将其映射到
+`is_error` 必须保存在 canonical tool Message；`anthropic-messages` driver 将其映射到
 `tool_result.is_error`，不能只保留在 lifecycle event 中。
 
-`parameters.stream` 是 Profile-only 的上游响应模式，不属于 canonical
+canonical 模式的 `parameters.stream` 是 Profile-only 的上游响应模式，不属于 canonical
 `GenerateOptions`，也不被 CLI `--stream`、`--json`、`--raw` 或下游 HTTP 的 SSE
 选择覆盖。所有 adapter 都发送明确的 wire `stream:true|false`；省略配置时使用
-`true`，显式 `false` 不得因 `omitempty` 丢失。所有模式都使用同一个 HTTPS POST endpoint，
-不放宽 URL 校验。默认 `Accept` 在 true 时为 `text/event-stream, application/json`，
+`true`，显式 `false` 不得因 `omitempty` 丢失。所有模式使用同一个 POST endpoint；
+通用 OpenAI 允许 loopback HTTP，其余目标仍要求 HTTPS。默认 `Accept` 在 true 时为 `text/event-stream, application/json`，
 false 时为 `application/json`；显式 Profile headers 保持原有覆盖优先级。
 Chat Completions 的 `stream_options={include_usage:true}` 只在 stream=true 时发送，false 时
-完全省略；Anthropic 和 Responses 不发送这个字段。
+完全省略；`anthropic-messages` 和 `openai-responses` 不发送这个字段。
 
-响应始终按实际 `Content-Type` 分流：SSE 逐帧解析，普通 JSON 整体解析，归一为
+API-key driver 响应按实际 `Content-Type` 分流：SSE 逐帧解析，普通 JSON 整体解析，归一为
 相同的 ModelResult/events/usage/tool calls。服务端返回与请求偏好不同的格式时，
 解析实际响应，不切换模式重发；HTTP/协议/认证错误仍按既有 contract 处理。
 raw 和 API attempts 日志记录实际请求参数及实际收到的响应。
+Codex OAuth 固定使用 SSE，成功响应不依赖 `Content-Type`，详见下文。
 Stream 指针必须与 caller/catalog/snapshot 隔离；配置进入现有 Profile snapshot/digest，
 配置切换使冻结执行的身份发生变化。不增加 schema migration。
 
 API Profile 必须在完整 `endpoint` 与 `base_url` 中二选一。`endpoint` 原样请求；
-`base_url` 是包含供应商要求的版本段在内的完整 API 前缀。openai driver 仅追加
-`/chat/completions`，anthropic 仅追加 `/messages`，openai-responses 仅追加
-`/responses`。不自动插入、猜测或删除 `v1/v3/v4`，不探测、不 fallback 重发。
+`base_url` 是包含供应商要求的版本段在内的完整 API 前缀。
+`openai-chat-completions` 仅追加 `/chat/completions`，`openai-responses` 仅追加
+`/responses`，`anthropic-messages` 仅追加 `/messages`。不自动插入、猜测或删除
+`v1/v3/v4`，不探测、不 fallback 重发。
 例如 `/compatible-mode/v1`、`/api/v3`、`/api/paas/v4` 都原样保留；没有版本的
 前缀也原样保留。`base_url` 不接受 query 或 fragment；非默认路径使用显式 `endpoint`。
 原先依赖自动追加 `/v1` 的配置需要显式补全前缀，不自动迁移 active home。
-这项 URL 语义变化使已有 openai/anthropic driver implementation version 升为 `3`；
-冻结的 Agent execution snapshot 因实现身份不一致而 fail closed，不兼容重放。
+协议命名统一后，Chat Completions 与 Messages 的 implementation identity 分别为
+`runtime.provider.openai-chat-completions@1` 与
+`runtime.provider.anthropic-messages@1`。旧 `openai|anthropic` Profile 不提供 alias、
+migration 或兼容 reader；冻结的旧 Agent execution snapshot 因 driver/implementation
+identity 不一致而 fail closed，不兼容重放。
 Session API 的配置摘要也纳入 `resolved_endpoint`，防止旧队列在 URL 解析语义改变后
 沿用同一配置摘要执行；旧摘要不兼容重放，不改写历史记录。
 
-### Responses 单次调用
+### Responses canonical 单次调用
 
 公开 adapter owner 是 `pkg/provider/openairesponses/`，driver 为 `openai-responses`，
 implementation identity 为 `runtime.provider.openai-responses@1`。仅支持 `call` 与
@@ -349,6 +358,7 @@ Model Service/ResilientModel 通过 `ManagedExecutionValidator` 暴露同一限�
 Agent Kernel 时也在 Run/Resume 的 model/tool effect 前检查。Generator wrapper 必须保留
 该能力限制；Kernel 不因此读取 Profile/config。
 不扩展 canonical message schema，不保存或猜测 Responses opaque reasoning context。
+以下限制属于 Runtime canonical 输入与投影，不是上游原生协议的能力定义。
 
 - 请求使用 `instructions`、仅含 user 文本 Message 的 `input`、平铺 function `tools`，
   始终 `store:false`。function schema 设置 `strict:false` 保持 canonical 可选字段语义。
@@ -370,6 +380,116 @@ Agent Kernel 时也在 Run/Resume 的 model/tool effect 前检查。Generator wr
 
 协议依据：[OpenAI Responses 迁移指南](https://developers.openai.com/api/docs/guides/migrate-to-responses)
 与 [Streaming Responses](https://developers.openai.com/api/docs/guides/streaming-responses)。
+
+### Codex OAuth 单次调用
+
+`openai-codex-responses` 的 implementation identity 为
+`runtime.provider.openai-codex-responses@1`，由 `pkg/provider/openairesponses.NewCodex`
+构造独立 driver，共享 Responses 解码器。只支持 `call` 与等价无状态 model generation；
+Session/Agent、队列与 assistant/tool 历史续接沿用入口拒绝规则。
+
+- Profile 必须指定 `endpoint=https://chatgpt.com/backend-api/codex/responses`，或
+  `base_url=https://chatgpt.com/backend-api`；其它 host、port、path、query 与自定义
+  headers 均拒绝。不得把 OAuth token 发送到通用 OpenAI/第三方 API endpoint。
+- 请求固定 `store:false,stream:true`；`instructions` 为空时使用
+  `You are a helpful assistant.`。支持 user 文本、system instructions、返回函数调用、
+  usage 和原始 attempts；不执行 tool。拒绝 `max_tokens/max_output_tokens`、`top_p`、
+  非空 stop_sequences 与 `parameters.stream:false`，不静默丢弃用户设置。
+- 请求头由 Runtime 注入 Bearer access token、`chatgpt-account-id`、
+  `OpenAI-Beta: responses=experimental`、`Originator: sn-cli`；禁止自动 redirect。
+  SSE 还接受携带有效终态 Response 的 `response.done`；EOF/[DONE] 不是成功信号。
+- HTTP 2xx 固定按 SSE 解码和采集，不因缺少或误标 `Content-Type` 改按 JSON 解码。
+  `--raw` 将已采集的有效 JSON data frame 作为数组输出（单帧也不拆成对象）；
+  API attempts 日志保存相同的帧序列及实际响应头，不补写或覆盖 `Content-Type`。
+  非 2xx 沿用 HTTP 错误分类和响应采集；JSON 错误原样保留。HTML、空响应、损坏或
+  缺少有效终态的流不得作为成功结果，不因响应格式重发请求。
+- Codex 的 `response.output_item.done` 按非负 `output_index` 收集完整 item；索引缺失、
+  重复或 item 缺失是协议错误。终态 `output` 非空时仍以其为准，不重复拼接；为空时，
+  使用已收集且索引从 0 连续的 item 序列。delta 和非终态 item 不作为完成内容。
+  必须先收到合法终态 Response，再归一化一次；终态的 error、finish reason 和 usage
+  保持权威，原始帧（包括终态中的空 `output`）不改写。仍拒绝无内容、未完成函数调用、
+  EOF/[DONE] 结束的截断流。普通 `openai-responses` 的终态输出规则不变。
+- `ServiceOptions.Credentials` 为可注入的公开 `model.CredentialResolver`，只返回
+  短生命周期 `AccessToken/AccountID`。driver 不读磁盘、不刷新、不重试。
+  Runtime composition root 接入 `internal/application/authruntime`，其依赖
+  `internal/infrastructure/codexauth` 的固定 OAuth transport 与凭证文件。
+- access token 在到期前 5 分钟进入刷新窗口，已到期同样按需刷新；在真实调用解析
+  凭证时触发并持久化轮换结果，下一次调用复用新凭证，不依赖后台常驻进程或打开 Auth TUI。
+  刷新授权仍有效时无需再次在浏览器登录。每个逻辑调用遇到 HTTP 401 最多触发
+  一次条件刷新和下一次 attempt，计入既有最多 3 次总 attempt；其它 driver 的
+  401 仍不重试。刷新锁内重读，另一进程已轮换时复用新 token。逻辑调用绑定首次
+  account ID，重试遇到账号切换即失败；每个 HTTP attempt 分别记录并脱敏。
+- OAuth 本身失败不自动重试 token exchange。刷新失败保留旧文件，返回不含
+  token/原始认证响应的错误；用户可重新登录。
+
+公开 CLI：
+
+```text
+sn-cli auth [login|logout]
+sn-cli auth login openai-codex [--device-code|--no-browser]
+sn-cli auth status [openai-codex]
+sn-cli auth logout openai-codex
+```
+
+无 action 的 `auth` 打开认证 TUI；无 provider 的 `auth login|logout` 打开同一
+TUI 并直接进入对应向导。仅在 stdin/stdout 都为 TTY、`TERM != dumb` 且非 `--json`
+时允许；否则在任何认证读取/写入或网络请求前返回带显式命令指引的 invalid_request，
+不等待输入。显式 provider 命令始终直接执行；`auth status` 省略 provider 时直接查询
+当前唯一支持的 `openai-codex`，仍支持 JSON，不打开 TUI。向导入口不接受额外 flags。
+
+TUI 的 command/help/completion 使用同一 inventory：`/login [provider]`、
+`/logout [provider]`、`/status [provider]`、`/help`、`/exit`。只接受当前明确命令，
+不提供 `/quit` alias、shell/model 执行或任意 token 输入；未知输入不回显到错误信息。
+输入 `/` 显示候选，继续输入过滤；↑↓ 选择，Tab 仅补全，Enter 执行。Esc 关闭候选或
+取消向导；Ctrl-C 取消当前操作，在首页退出。PgUp/PgDn 查看超出屏幕的地址/面板。
+多行 bracketed paste 只作为一个文本输入，不执行嵌入换行或控制序列。
+
+首页显示实际 Runtime home、服务、本地状态与账号指纹；已登录时提示支持自动续期，
+进入刷新窗口提示下次调用自动续期。仅 `/status` 展示访问令牌到期时间，并说明它不是登录
+截止时间；直接命令的 human `status` 同样明确区分，JSON 字段保持不变。操作完成和 `/status`
+重读凭证，不凭动画推断远端状态。已有凭证的 `/login` 先确认重新授权，成功保存才替换旧
+记录。浏览器打开失败显示手动地址及切换设备码入口；单次授权上限 15 分钟，失败只由用户
+明确选择重试；TUI 本身没有 15 分钟生存上限。取消、切换方式或退出先取消并 join 旧流程，
+清理 callback listener；若成功写入与取消同时发生，以实际完成结果为准，不谎报取消。
+
+`/logout` 无凭证时显示引导且不写文件；有凭证时显示当前账号、删除范围和后果，默认选中
+取消。确认绑定读取到的 revision；锁内变化时不得删除新凭证，必须重读并重新确认。
+重新授权也绑定确认时 revision，防止确认期间新增/替换的账号被覆盖。成功后回读并更新首页；
+读取失败不当成未登录，不自动删除或修复凭证文件。`/exit` 只结束界面，不删除凭证。
+
+`internal/application/authruntime.Console` 编排短生命周期认证流程，复用同一 Service/Store；
+CLI 只实现命令编辑、选择和屏幕展示，`terminalinput` 负责可取消的 raw terminal I/O。
+TUI 使用 alternate screen，清理时恢复 terminal mode、cursor 和 bracketed paste，不把
+当次 OAuth URL/设备码留在普通 shell scrollback；不保存输入历史、日志、Session 或 Run。
+TUI 复用上述凭证 scope/刷新策略，不增加多账号、批量退出、远端撤销或外部凭证导入。
+
+浏览器登录使用 PKCE S256、随机 state、固定 `http://localhost:1455/auth/callback`，
+仅监听 `127.0.0.1:1455`，state 验证后交换授权码。`--no-browser` 不启动浏览器。
+`--device-code` 使用 Codex 设备码协议；用户本人在浏览器授权，Runtime 有界轮询，
+pending 与 slow_down 遵守轮询间隔。登录上限 15 分钟，Ctrl-C 取消。
+浏览器 URL/设备码仅作为当次登录提示输出到 stderr，不写日志；`--json` stdout
+仅在完成时返回 machine envelope。
+
+凭证固定为 `${SN_CLI_HOME:-~/.sn}/state/auth.json`，内部完整结构是
+`{schema_version:1,revision:<uint64>,providers:{"openai-codex":{type:"oauth",
+access_token:<secret>,refresh_token:<secret>,expires_at:<RFC3339>,account_id:<id>}}}`。
+每个 provider 在一个 Runtime home 内只有一个当前账号，可供多个 Profile 共用。
+`auth.json` 与永久 `auth.lock` 均为 0600、当前用户所有、regular single-link 文件；
+`state/` 为私有 0700 目录，拒绝符号链接。写入持跨进程锁，临时文件 fsync 后原子
+rename 并同步目录。凭证属于明文私有运行态文件，不属于配置或 release payload，
+安装/升级保留，不写 Run/Session。API key 仍使用环境变量；无外部凭证缓存导入、
+alias、migration 或自动 fallback。
+
+`status` 不创建文件、不刷新、不联系远端；`logged_in` 仅表示本地缓存存在，
+`needs_refresh` 表示进入刷新窗口，`expires_at` 为访问令牌过期时间而非登录有效期；
+另返回账号 hash 指纹，不输出 token。临时刷新失败不清除本地登录；刷新授权失效时需重新登录。
+它不证明远端权限或额度。`logout` 只删除该 provider 的本地记录并递增 revision，
+不远端撤销 token、不取消已发出的请求。登录期间凭证 revision 变化时，过时的
+登录流程不能覆盖较新的登录/退出/刷新结果。
+
+这是 Codex subscription backend 的独立适配，并非通用 Platform API；未声明
+公开稳定的 backend endpoint 契约，协议变化需要维护适配器。官方登录说明见
+[Codex authentication](https://learn.chatgpt.com/docs/auth)。
 
 Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作为 Provider
 请求字段。未声明或为 `0` 时使用保守默认窗口 `32768`；输出预留使用显式
@@ -444,6 +564,8 @@ state/session-invocations/
 state/session-mutations/
 state/session-trash-moves/
 state/runtime.db
+state/auth.json
+state/auth.lock
 ```
 
 `sessions/_system/index.json` 是 Session list 的 derived read model。正常启动只严格
@@ -847,10 +969,10 @@ unique/partial 属性和列序；对象缺失、定义变化、未知对象、�
 固定 CLI namespace：
 
 ```text
-doctor exec call profile session agent job server help version update
+doctor exec call profile auth session agent job server help version update
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=9`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=14`。
 bare CLI direct、`exec` 和 `session attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -931,7 +1053,7 @@ session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`
 | `job` | 查询/控制已有 Run | 不提交 fresh work |
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=9` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=14` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。除下述 `call --raw` 的已发生 attempt 诊断外，machine
 非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`
@@ -953,6 +1075,10 @@ adapter，上游模式由 Profile 的 `parameters.stream` 决定。现有 `Resil
 以及对应的原始 response JSON。它不使用 Runtime machine envelope，不混入
 `schema_version/contract_version/type/profile/attempts/error` 等额外字段，
 也不输出标签文本、assistant text、canonical event 或 final result。
+
+两种协议只统一上述输出布局，不统一上游 JSON 的字段：Responses 保留 input/output，
+Chat Completions 保留 messages/choices。上游 response 自带 reasoning、usage、metadata
+等字段时必须保留；其中的模型文本不是 Runtime 指令，也不得被当作 Runtime 注入了指令的证据。
 
 - 第一行直接使用 driver 编码后的 `request.body`，不是 canonical ModelRequest，
   不附带 URL、method 或 headers；这些 HTTP 元信息只保存在日志；

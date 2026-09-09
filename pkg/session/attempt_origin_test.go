@@ -17,7 +17,7 @@ type originTestDriver struct{}
 
 func (originTestDriver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver: model.DriverOpenAI, Implementation: "session.origin-test",
+		Driver: model.DriverOpenAIChatCompletions, Implementation: "session.origin-test",
 		ImplementationVersion: 1,
 	}
 }
@@ -48,7 +48,7 @@ func (originTestDriver) Stream(
 func TestSessionModelRunMarksProviderAttemptOrigin(t *testing.T) {
 	modelCatalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver:   model.DriverOpenAI,
+			Driver:   model.DriverOpenAIChatCompletions,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			Model:    "fixture", Timeout: "1m",
 		},
@@ -67,7 +67,7 @@ func TestSessionModelRunMarksProviderAttemptOrigin(t *testing.T) {
 	var observed []model.Attempt
 	models, err := model.NewService(
 		modelCatalog,
-		map[model.DriverName]model.Driver{model.DriverOpenAI: originTestDriver{}},
+		map[model.DriverName]model.Driver{model.DriverOpenAIChatCompletions: originTestDriver{}},
 		model.ServiceOptions{AttemptObserver: func(attempt model.Attempt) {
 			observed = append(observed, attempt)
 		}},

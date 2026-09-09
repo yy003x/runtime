@@ -13,15 +13,23 @@ import (
 )
 
 func TestResponsesSessionRejectedBeforeCreatingFacts(t *testing.T) {
+	for _, value := range []model.Profile{
+		{Driver: model.DriverOpenAIResponses, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m"},
+		{Driver: model.DriverOpenAICodexResponses, Endpoint: model.OpenAICodexEndpoint, Model: "fixture", Timeout: "1m"},
+	} {
+		t.Run(string(value.Driver), func(t *testing.T) { assertResponsesSessionRejected(t, value) })
+	}
+}
+
+func assertResponsesSessionRejected(t *testing.T, value model.Profile) {
+	t.Helper()
 	generator := &scriptedGenerator{}
 	service := newTestService(t, generator, nil, nil)
 	commands, err := command.NewCatalog(map[string]command.Profile{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := model.NewCatalog(map[string]model.Profile{"api": {
-		Driver: model.DriverOpenAIResponses, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m",
-	}})
+	models, err := model.NewCatalog(map[string]model.Profile{"api": value})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +55,7 @@ func TestResponsesSessionRejectedBeforeCreatingFacts(t *testing.T) {
 }
 
 func TestAPIConfigDigestIncludesResolvedEndpoint(t *testing.T) {
-	modelProfile := model.Profile{Driver: model.DriverOpenAI, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m"}
+	modelProfile := model.Profile{Driver: model.DriverOpenAIChatCompletions, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m"}
 	entry := profile.Entry{ID: "api", Kind: profile.KindModel, Model: &modelProfile}
 	actual, err := profileConfigDigest(entry)
 	if err != nil {

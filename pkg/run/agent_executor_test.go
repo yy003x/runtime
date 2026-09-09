@@ -6749,7 +6749,7 @@ func buildAgentProfiles(t *testing.T, withCommand bool) *profile.Catalog {
 
 func testAgentModelProfile() model.Profile {
 	return model.Profile{
-		Driver:   model.DriverOpenAI,
+		Driver:   model.DriverOpenAIChatCompletions,
 		Endpoint: "https://example.test/v1/chat/completions",
 		Model:    "fixture",
 		Headers: map[string]string{
@@ -6779,7 +6779,7 @@ func testAgentModelExecutionSnapshot(
 		Profile:       profile,
 		ProfileDigest: "sha256:" + hex.EncodeToString(sum[:]),
 		DriverIdentity: model.DriverExecutionIdentity{
-			Driver:                model.DriverOpenAI,
+			Driver:                model.DriverOpenAIChatCompletions,
 			Implementation:        "runtime.run-test.agent-model",
 			ImplementationVersion: 1,
 		},

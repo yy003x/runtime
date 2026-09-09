@@ -27,7 +27,7 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(configDir, "api-cx.json"),
-		[]byte(`{"type":"api","driver":"openai","base_url":"https://example.invalid/provider","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`),
+		[]byte(`{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid/provider","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestLoadStreamModePreservesExplicitFalse(t *testing.T) {
 	for _, value := range []string{"true", "false"} {
 		t.Run(value, func(t *testing.T) {
 			dir := t.TempDir()
-			document := `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":` + value + `},"timeout":"1m"}`
+			document := `{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":` + value + `},"timeout":"1m"}`
 			if err := os.WriteFile(filepath.Join(dir, "api.json"), []byte(document), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -130,8 +130,8 @@ func TestSourceAPIProfilesResolveDriverDefaultEndpoints(t *testing.T) {
 		driver model.DriverName
 		path   string
 	}{
-		"api-cc.json": {model.DriverAnthropic, "/messages"},
-		"api-cx.json": {model.DriverOpenAI, "/chat/completions"},
+		"api-cc.json": {model.DriverAnthropicMessages, "/messages"},
+		"api-cx.json": {model.DriverOpenAIChatCompletions, "/chat/completions"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kind, _, apiProfile, err := loadFile(filepath.Join(
@@ -196,17 +196,17 @@ func TestLoadRejectsInvalidUnifiedProfileFiles(t *testing.T) {
 		},
 		{
 			name: "endpoint_and_base_url", fileName: "api-cx.json",
-			content:   `{"type":"api","driver":"openai","endpoint":"https://example.invalid/v1/chat/completions","base_url":"https://example.invalid","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`,
+			content:   `{"type":"api","driver":"openai-chat-completions","endpoint":"https://example.invalid/v1/chat/completions","base_url":"https://example.invalid","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`,
 			errorText: "exactly one",
 		},
 		{
 			name: "missing_endpoint_and_base_url", fileName: "api-cx.json",
-			content:   `{"type":"api","driver":"openai","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`,
+			content:   `{"type":"api","driver":"openai-chat-completions","model":"fixture","headers":{"Authorization":"${MODEL_API_KEY}"},"timeout":"1m"}`,
 			errorText: "exactly one",
 		},
 		{
 			name: "default_context_without_input_budget", fileName: "api-cc.json",
-			content:   `{"type":"api","driver":"anthropic","endpoint":"https://example.invalid/v1/messages","model":"fixture","headers":{"x-api-key":"${MODEL_API_KEY}"},"parameters":{"max_tokens":32767},"timeout":"1m"}`,
+			content:   `{"type":"api","driver":"anthropic-messages","endpoint":"https://example.invalid/v1/messages","model":"fixture","headers":{"x-api-key":"${MODEL_API_KEY}"},"parameters":{"max_tokens":32767},"timeout":"1m"}`,
 			errorText: "context window",
 		},
 	} {
@@ -285,7 +285,7 @@ func testCatalogs(t *testing.T) (*command.Catalog, *model.Catalog) {
 	}
 	models, err := model.NewCatalog(map[string]model.Profile{
 		"api-cx": {
-			Driver:   model.DriverOpenAI,
+			Driver:   model.DriverOpenAIChatCompletions,
 			Endpoint: "https://example.invalid/v1/chat/completions",
 			Model:    "fixture",
 			Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},

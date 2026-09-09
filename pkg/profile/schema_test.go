@@ -27,6 +27,9 @@ func TestPublicSchemasAreValidJSON(t *testing.T) {
 			if err := json.Unmarshal(data, &document); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := jsonschema.NewCompiler().Compile(filepath.Join(repositoryRoot, "resources", "schema", name)); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }
@@ -83,7 +86,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "openai_api",
 			document: `{
 				"type":"api",
-				"driver":"openai",
+				"driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
 				"headers":{"Authorization":"${MODEL_API_KEY}","X-Runtime":"fixture"},
@@ -97,7 +100,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "anthropic_api",
 			document: `{
 				"type":"api",
-				"driver":"anthropic",
+				"driver":"anthropic-messages",
 				"endpoint":"https://example.invalid/v1/messages",
 				"model":"fixture",
 				"headers":{"x-api-key":"${MODEL_API_KEY}"},
@@ -110,7 +113,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "openai_api_base_url",
 			document: `{
 				"type":"api",
-				"driver":"openai",
+				"driver":"openai-chat-completions",
 				"base_url":"https://example.invalid/provider",
 				"model":"fixture",
 				"headers":{"Authorization":"${MODEL_API_KEY}"},
@@ -125,6 +128,44 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			valid:    true,
 		},
 		{
+			name:     "codex_api",
+			document: `{"type":"api","driver":"openai-codex-responses","endpoint":"https://chatgpt.com/backend-api/codex/responses","model":"fixture","timeout":"1m"}`,
+			valid:    true,
+		},
+		{
+			name:     "codex_base_url",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"stream":true,"temperature":0.5},"timeout":"1m"}`,
+			valid:    true,
+		},
+		{
+			name:     "codex_wrong_destination",
+			document: `{"type":"api","driver":"openai-codex-responses","endpoint":"https://example.invalid/responses","model":"fixture","timeout":"1m"}`,
+		},
+		{
+			name:     "codex_custom_headers",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","headers":{"Authorization":"${KEY}"},"timeout":"1m"}`,
+		},
+		{
+			name:     "codex_json_delivery",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"stream":false},"timeout":"1m"}`,
+		},
+		{
+			name:     "codex_max_tokens",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"max_tokens":100},"timeout":"1m"}`,
+		},
+		{
+			name:     "codex_top_p",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"top_p":0.5},"timeout":"1m"}`,
+		},
+		{
+			name:     "legacy_openai_driver_rejected",
+			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid/v1","model":"fixture","timeout":"1m"}`,
+		},
+		{
+			name:     "legacy_anthropic_driver_rejected",
+			document: `{"type":"api","driver":"anthropic","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"max_tokens":100},"timeout":"1m"}`,
+		},
+		{
 			name:     "responses_stop_sequences_rejected",
 			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"stop_sequences":["END"]},"timeout":"1m"}`,
 		},
@@ -137,7 +178,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "go_duration_greek_microseconds",
 			document: `{
 				"type":"api",
-				"driver":"openai",
+				"driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
 				"headers":{"Authorization":"${MODEL_API_KEY}"},
@@ -149,7 +190,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			name: "nullable_api_optional_values",
 			document: `{
 				"type":"api",
-				"driver":"openai",
+				"driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
 				"headers":{"Authorization":"${MODEL_API_KEY}"},
@@ -165,23 +206,23 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		},
 		{
 			name:     "null_api_stream",
-			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":null},"timeout":"1m"}`,
+			document: `{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":null},"timeout":"1m"}`,
 		},
 		{
 			name:     "string_api_stream",
-			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":"false"},"timeout":"1m"}`,
+			document: `{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":"false"},"timeout":"1m"}`,
 		},
 		{
 			name:     "number_api_stream",
-			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":0},"timeout":"1m"}`,
+			document: `{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":0},"timeout":"1m"}`,
 		},
 		{
 			name:     "array_api_stream",
-			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":[]},"timeout":"1m"}`,
+			document: `{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":[]},"timeout":"1m"}`,
 		},
 		{
 			name:     "object_api_stream",
-			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":{}},"timeout":"1m"}`,
+			document: `{"type":"api","driver":"openai-chat-completions","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":{}},"timeout":"1m"}`,
 		},
 		{
 			name:     "unknown_field",
@@ -238,24 +279,26 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "insecure_api_endpoint",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"http://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
+			semanticRule: "HTTP destination must be loopback, checked by Go loader",
 		},
 		{
 			name: "null_api_object",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},
 				"parameters":null,"timeout":"1m"
 			}`,
 		},
 		{
-			name: "api_endpoint_without_path",
+			name:  "api_endpoint_without_path",
+			valid: true,
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
@@ -263,14 +306,14 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "api_without_endpoint_or_base_url",
 			document: `{
-				"type":"api","driver":"openai","model":"fixture",
+				"type":"api","driver":"openai-chat-completions","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
 		},
 		{
 			name: "api_with_endpoint_and_base_url",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"base_url":"https://example.invalid","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
@@ -279,7 +322,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "endpoint_rejected_by_net_url",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/%zz","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
@@ -288,7 +331,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "blank_api_model",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"   ",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
@@ -296,7 +339,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "invalid_header_name",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Bad Header":"${KEY}"},"timeout":"1m"
 			}`,
@@ -304,7 +347,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "header_environment_reference",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"X-Runtime":"${SECRET}"},"timeout":"1m"
 			}`,
@@ -313,7 +356,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "literal_header_value",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Cookie":"literal"},"timeout":"1m"
 			}`,
@@ -322,7 +365,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "invalid_timeout",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"forever"
 			}`,
@@ -330,7 +373,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "invalid_default_top_p",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"base_url":"https://example.invalid","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},
 				"parameters":{"top_p":1.1},"timeout":"1m"
@@ -339,7 +382,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "empty_default_stop_sequence",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"base_url":"https://example.invalid","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},
 				"parameters":{"stop_sequences":[""]},"timeout":"1m"
@@ -348,7 +391,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "base_url_with_query",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"base_url":"https://example.invalid?region=cn","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
 			}`,
@@ -356,7 +399,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "timeout_above_runtime_bound",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"25h"
 			}`,
@@ -371,19 +414,19 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 			semanticRule: "CLI args must satisfy the selected command adapter grammar",
 		},
 		{
-			name: "context_without_input_budget",
+			name:  "context_without_input_budget",
+			valid: true,
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m",
 				"context":{"window_tokens":1}
 			}`,
-			semanticRule: "context input budget requires cross-field arithmetic",
 		},
 		{
 			name: "default_context_without_input_budget",
 			document: `{
-				"type":"api","driver":"anthropic",
+				"type":"api","driver":"anthropic-messages",
 				"endpoint":"https://example.invalid/v1/messages","model":"fixture",
 				"headers":{"x-api-key":"${KEY}"},
 				"parameters":{"max_tokens":32767},"timeout":"1m"
@@ -393,7 +436,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "api_model_exceeds_byte_limit",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":` +
 				strconv.Quote(strings.Repeat("界", 500)) + `,
 				"headers":{"Authorization":"${KEY}"},"timeout":"1m"
@@ -409,7 +452,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "unified_openai_token_limit",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},
 				"parameters":{"max_tokens":1024},"timeout":"1m"
@@ -419,7 +462,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "openai_token_limit_over_int64",
 			document: `{
-				"type":"api","driver":"openai",
+				"type":"api","driver":"openai-chat-completions",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"Authorization":"${KEY}"},
 				"parameters":{"max_tokens":9223372036854775808},
@@ -429,7 +472,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name: "missing_anthropic_token_limit",
 			document: `{
-				"type":"api","driver":"anthropic",
+				"type":"api","driver":"anthropic-messages",
 				"endpoint":"https://example.invalid/v1","model":"fixture",
 				"headers":{"x-api-key":"${KEY}"},"timeout":"1m"
 			}`,

@@ -1,13 +1,18 @@
 {
   "type": "api",
-  "driver": "openai",
+  "driver": "openai-chat-completions",
   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "model": "qwen3.8-2.4t-a95b",
   "headers": {
     "Authorization": "${BAILIAN_API_KEY}"
   },
   "parameters": {
-    "max_tokens": 16384
+    "max_tokens": 16384,
+    "stream": false
+  },
+  "context": {
+    "window_tokens": 1048576,
+    "reserved_output_tokens": 16384
   },
   "timeout": "5m"
 }

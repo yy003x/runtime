@@ -23,6 +23,7 @@ type Paths struct {
 	SessionsDir       string
 	LogsDir           string
 	StateDir          string
+	AuthFile          string
 	RunDBFile         string
 	ServerPIDFile     string
 	ServerLogFile     string
@@ -87,6 +88,7 @@ func FromHome(home string) (Paths, error) {
 		SessionsDir:       filepath.Join(absolute, "sessions"),
 		LogsDir:           filepath.Join(absolute, "logs"),
 		StateDir:          stateDir,
+		AuthFile:          filepath.Join(stateDir, "auth.json"),
 		RunDBFile:         filepath.Join(stateDir, "runtime.db"),
 		ServerPIDFile:     filepath.Join(stateDir, "sn-server.pid"),
 		ServerLogFile:     filepath.Join(absolute, "logs", "sn-server.log"),

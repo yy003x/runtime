@@ -4,6 +4,7 @@ package model
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -14,9 +15,11 @@ import (
 type DriverName string
 
 const (
-	DriverOpenAI          DriverName = "openai"
-	DriverOpenAIResponses DriverName = "openai-responses"
-	DriverAnthropic       DriverName = "anthropic"
+	DriverOpenAIChatCompletions DriverName = "openai-chat-completions"
+	DriverOpenAIResponses       DriverName = "openai-responses"
+	DriverOpenAICodexResponses  DriverName = "openai-codex-responses"
+	DriverAnthropicMessages     DriverName = "anthropic-messages"
+	OpenAICodexEndpoint                    = "https://chatgpt.com/backend-api/codex/responses"
 
 	defaultContextWindowTokens  int64 = 32_768
 	defaultReservedOutputTokens int64 = 8_192
@@ -47,7 +50,8 @@ type ContextPolicy struct {
 // Profile is the API-only side of the unified Profile protocol. Authentication
 // is configured directly under headers using ${VAR} references; the runtime
 // expands references and, for OpenAI drivers, prefixes a bare Authorization
-// value with the Bearer scheme.
+// value with the Bearer scheme. openai-codex-responses instead obtains its
+// credentials from ServiceOptions.Credentials and accepts no custom headers.
 type Profile struct {
 	Driver     DriverName        `json:"driver"`
 	Endpoint   string            `json:"endpoint,omitempty"`
@@ -61,12 +65,23 @@ type Profile struct {
 
 func (profile Profile) Validate() error {
 	switch profile.Driver {
-	case DriverOpenAI, DriverOpenAIResponses, DriverAnthropic:
+	case DriverOpenAIChatCompletions, DriverOpenAIResponses, DriverOpenAICodexResponses, DriverAnthropicMessages:
 	default:
 		return fmt.Errorf("unsupported driver %q", profile.Driver)
 	}
 	if _, err := profile.ResolvedEndpoint(); err != nil {
 		return err
+	}
+	if profile.Driver == DriverOpenAICodexResponses {
+		if len(profile.Headers) != 0 {
+			return fmt.Errorf("openai-codex-responses uses managed OAuth credentials; headers must be empty")
+		}
+		if !profile.Parameters.StreamingEnabled() {
+			return fmt.Errorf("openai-codex-responses requires parameters.stream=true")
+		}
+		if profile.Parameters.MaxTokens != nil || profile.Parameters.TopP != nil || len(profile.Parameters.StopSequences) != 0 {
+			return fmt.Errorf("openai-codex-responses does not support max_tokens, top_p, or stop_sequences")
+		}
 	}
 	if strings.TrimSpace(profile.Model) == "" || len(profile.Model) > 1024 {
 		return fmt.Errorf("model is required and must not exceed 1024 bytes")
@@ -88,8 +103,8 @@ func (profile Profile) Validate() error {
 	if profile.Parameters.MaxTokens != nil && *profile.Parameters.MaxTokens <= 0 {
 		return fmt.Errorf("parameters.max_tokens must be positive")
 	}
-	if profile.Driver == DriverAnthropic && profile.Parameters.MaxTokens == nil {
-		return fmt.Errorf("anthropic parameters.max_tokens is required")
+	if profile.Driver == DriverAnthropicMessages && profile.Parameters.MaxTokens == nil {
+		return fmt.Errorf("anthropic-messages parameters.max_tokens is required")
 	}
 	if profile.Parameters.Temperature != nil {
 		if err := contract.ValidateTemperature(*profile.Parameters.Temperature); err != nil {
@@ -111,9 +126,10 @@ func (profile Profile) Validate() error {
 		profile.Context.KeepRecentTurns < 0 {
 		return fmt.Errorf("context numeric values must not be negative")
 	}
-	_, _, inputBudget, _ := profile.EffectiveContextBudget()
-	if inputBudget < 2 {
-		return fmt.Errorf("context window must leave at least 2 input tokens")
+	if profile.Driver != DriverOpenAIChatCompletions && profile.Driver != DriverOpenAIResponses {
+		if err := profile.validateContextBudget(); err != nil {
+			return err
+		}
 	}
 	timeout, err := time.ParseDuration(profile.Timeout)
 	if err != nil || timeout <= 0 || timeout > 24*time.Hour {
@@ -125,8 +141,16 @@ func (profile Profile) Validate() error {
 // ValidateManagedExecution rejects adapters that cannot losslessly round-trip
 // the canonical conversation used by Session and durable Agent execution.
 func (profile Profile) ValidateManagedExecution() error {
-	if profile.Driver == DriverOpenAIResponses {
-		return fmt.Errorf("openai-responses supports single calls only; Session and Agent execution are not supported")
+	if profile.Driver == DriverOpenAIResponses || profile.Driver == DriverOpenAICodexResponses {
+		return fmt.Errorf("%s supports single calls only; Session and Agent execution are not supported", profile.Driver)
+	}
+	return profile.validateContextBudget()
+}
+
+func (profile Profile) validateContextBudget() error {
+	_, _, inputBudget, _ := profile.EffectiveContextBudget()
+	if inputBudget < 2 {
+		return fmt.Errorf("context window must leave at least 2 input tokens")
 	}
 	return nil
 }
@@ -168,6 +192,13 @@ func (profile Profile) DefaultTokenLimit() *int64 {
 }
 
 func (profile Profile) ResolvedEndpoint() (string, error) {
+	if profile.Driver == DriverOpenAICodexResponses {
+		if profile.Endpoint == OpenAICodexEndpoint && profile.BaseURL == "" ||
+			profile.Endpoint == "" && profile.BaseURL == "https://chatgpt.com/backend-api" {
+			return OpenAICodexEndpoint, nil
+		}
+		return "", fmt.Errorf("openai-codex-responses requires endpoint %s or base_url https://chatgpt.com/backend-api", OpenAICodexEndpoint)
+	}
 	hasEndpoint := profile.Endpoint != ""
 	hasBaseURL := profile.BaseURL != ""
 	if hasEndpoint == hasBaseURL {
@@ -178,10 +209,9 @@ func (profile Profile) ResolvedEndpoint() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("endpoint: %w", err)
 		}
-		if endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil ||
-			endpoint.Fragment != "" || !endpoint.IsAbs() ||
-			endpoint.EscapedPath() == "" || endpoint.EscapedPath() == "/" {
-			return "", fmt.Errorf("endpoint must be a complete HTTPS URL with an explicit path and without userinfo or fragment")
+		if !profile.validTransportURL(endpoint) || endpoint.User != nil || endpoint.Fragment != "" ||
+			profile.Driver == DriverAnthropicMessages && (endpoint.EscapedPath() == "" || endpoint.EscapedPath() == "/") {
+			return "", fmt.Errorf("endpoint must be an absolute HTTPS URL (HTTP allowed on loopback for generic OpenAI drivers), without userinfo or fragment; anthropic-messages requires an explicit path")
 		}
 		return endpoint.String(), nil
 	}
@@ -189,9 +219,9 @@ func (profile Profile) ResolvedEndpoint() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("base_url: %w", err)
 	}
-	if baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
-		baseURL.RawQuery != "" || baseURL.Fragment != "" || !baseURL.IsAbs() {
-		return "", fmt.Errorf("base_url must be an absolute HTTPS URL without userinfo, query, or fragment")
+	if !profile.validTransportURL(baseURL) || baseURL.User != nil ||
+		baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return "", fmt.Errorf("base_url must be an absolute HTTPS URL (HTTP allowed on loopback for generic OpenAI drivers), without userinfo, query, or fragment")
 	}
 	path, err := defaultEndpointPath(profile.Driver)
 	if err != nil {
@@ -204,13 +234,27 @@ func (profile Profile) ResolvedEndpoint() (string, error) {
 	return resolved, nil
 }
 
+func (profile Profile) validTransportURL(value *url.URL) bool {
+	if !value.IsAbs() || value.Hostname() == "" || value.Opaque != "" {
+		return false
+	}
+	if value.Scheme == "https" {
+		return true
+	}
+	if value.Scheme != "http" || (profile.Driver != DriverOpenAIChatCompletions && profile.Driver != DriverOpenAIResponses) {
+		return false
+	}
+	ip := net.ParseIP(value.Hostname())
+	return strings.EqualFold(value.Hostname(), "localhost") || ip != nil && ip.IsLoopback()
+}
+
 func defaultEndpointPath(driver DriverName) (string, error) {
 	switch driver {
-	case DriverOpenAI:
+	case DriverOpenAIChatCompletions:
 		return "chat/completions", nil
 	case DriverOpenAIResponses:
 		return "responses", nil
-	case DriverAnthropic:
+	case DriverAnthropicMessages:
 		return "messages", nil
 	default:
 		return "", fmt.Errorf("unsupported driver %q", driver)

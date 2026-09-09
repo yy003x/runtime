@@ -244,8 +244,8 @@ Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API 
 // configs/api-cx.json — 调用模型 endpoint 的 API profile
 {
   "type": "api",
-  "driver": "openai",
-  "base_url": "https://your-provider/compatible-mode",
+  "driver": "openai-chat-completions",
+  "base_url": "https://your-provider/compatible-mode/v1",
   "model": "your-model",
   "headers": { "Authorization": "${YOUR_API_KEY}" },
   "parameters": { "max_tokens": 16384 },
@@ -253,11 +253,51 @@ Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API 
 }
 ```
 
-secret 通过 headers 中的 `${VAR}` 引用从环境变量读取，profile 只存引用名不存值；openai
-driver 对裸 `Authorization` 自动补 `Bearer` scheme，anthropic 不补。`runtime.json`
+API key 通过 headers 中的 `${VAR}` 引用从环境变量读取，profile 只存引用名不存值；
+`openai-chat-completions` 与 `openai-responses` driver 对裸 `Authorization` 自动补
+`Bearer` scheme，`anthropic-messages` 不补。`runtime.json`
 选择 Agent tool、预算、scheduler 与 run retention；source `resources/tools/` 默认交付
 使用 `Z_AI_API_KEY` 的 `web_search` / `web_fetch` MCP manifest。完整字段、覆盖顺序与示例见
 [sn-cli 详细使用手册](SN-CLI-USAGE.md)与[SN Runtime 契约](docs/runtime-contract.md)。
+
+API driver 支持 `openai-chat-completions`、`openai-responses`、`anthropic-messages`
+和独立的 `openai-codex-responses`。前三者分别对应 `/chat/completions`、`/responses` 和 `/messages`。
+旧 `openai`、`anthropic` 名称不提供 alias 或自动迁移。
+
+ChatGPT/Codex OAuth 使用默认交付的 `api-codex` Profile：
+
+执行 `sn-cli auth` 进入认证 TUI，输入 `/` 筛选 `/login`、`/logout`、`/status`、
+`/help`、`/exit`；Tab 只补全，Enter 执行。`sn-cli auth login` / `sn-cli auth logout`
+直接进入对应向导。退出登录需要确认（默认取消），退出界面保留登录；重新授权在新凭证
+成功保存前保留原凭证。Esc 取消，PgUp/PgDn 查看长面板。TUI 仅用于非 JSON 交互终端，
+不创建 Session/Run/执行日志。以下显式 provider 命令始终直接执行，适合脚本；
+`sn-cli auth status` 也可省略 provider，仍为只读查询。
+
+```bash
+sn-cli auth login openai-codex
+sn-cli auth status openai-codex
+sn-cli call api-codex "你好"
+sn-cli auth logout openai-codex
+```
+
+默认浏览器 PKCE 授权，`--device-code` 切换设备码，`--no-browser` 仅打印 URL。
+授权由用户本人完成。凭证独立保存在 `${SN_CLI_HOME:-~/.sn}/state/auth.json`
+（本地明文，文件 0600、目录 0700），安装/升级保留，不读取 Codex CLI/Pi 缓存。
+`status` 只读本地状态，不校验远端权限或额度；`logout` 仅删除本地凭证。
+
+Codex driver 固定请求 `https://chatgpt.com/backend-api/codex/responses`，使用
+`store:false,stream:true`；支持单次 `call`，拒绝 Session/Agent、多轮续接、自定义
+headers、max_tokens、top_p 和 stop_sequences。调用前自动刷新已到期或将在 5 分钟内
+到期的访问令牌，并保存轮换后的凭证供后续调用复用；不需要后台常驻进程。刷新授权仍有效时，
+无需重新在浏览器登录。首页提示自动续期，`/status` 才展示访问令牌到期时间，它不是登录截止时间。
+401 最多条件刷新并重试一次，计入既有 attempt 上限，记录逐 attempt 脱敏日志。这是 Codex 订阅
+后端，协议变化需要维护适配；详见[官方登录说明](https://learn.chatgpt.com/docs/auth)
+与[Runtime 契约](docs/runtime-contract.md#codex-oauth-单次调用)。
+
+Codex 的 HTTP 成功响应始终按 SSE 解析、采集，即使缺少或误标 `Content-Type`；
+`--raw` 保留帧数组，日志保留实际响应头。HTTP 错误仍保留其 JSON 响应和既有错误分类。
+终态 Response 的 `output` 为空时，按 `output_index` 使用先前 `response.output_item.done`
+中的已完成内容；仍须收到合法终态，不重复拼接 delta，不放行空消息或截断流。
 
 ## 目录架构
 

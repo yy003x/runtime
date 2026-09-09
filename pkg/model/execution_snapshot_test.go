@@ -14,7 +14,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	stream := false
 	summaryEnabled := true
 	profile := Profile{
-		Driver:   DriverOpenAI,
+		Driver:   DriverOpenAIChatCompletions,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "snapshot-model",
 		Headers: map[string]string{
@@ -43,7 +43,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	service, err := NewService(
 		catalog,
 		map[DriverName]Driver{
-			DriverOpenAI: &testDriver{},
+			DriverOpenAIChatCompletions: &testDriver{},
 		},
 		ServiceOptions{Getenv: func(string) (string, bool) {
 			getenvCalls++
@@ -137,7 +137,7 @@ func TestExecutionSnapshotStrictlyRejectsTampering(t *testing.T) {
 			snapshot.Profile.Parameters.Stream = boolPointer(false)
 		},
 		"driver": func(snapshot *ExecutionSnapshot) {
-			snapshot.DriverIdentity.Driver = DriverAnthropic
+			snapshot.DriverIdentity.Driver = DriverAnthropicMessages
 		},
 		"implementation": func(snapshot *ExecutionSnapshot) {
 			snapshot.DriverIdentity.Implementation = " invalid "
@@ -164,7 +164,7 @@ func TestExecutionSnapshotStrictlyRejectsTampering(t *testing.T) {
 
 func TestExecutionSnapshotStreamModeChangesDigest(t *testing.T) {
 	profile := Profile{
-		Driver: DriverOpenAI, BaseURL: "https://example.invalid", Model: "fixture", Timeout: "1m",
+		Driver: DriverOpenAIChatCompletions, BaseURL: "https://example.invalid", Model: "fixture", Timeout: "1m",
 	}
 	identity := (&testDriver{}).ExecutionIdentity()
 	seenProfiles, seenSnapshots := make(map[string]bool), make(map[string]bool)
@@ -187,7 +187,7 @@ func TestExecutionSnapshotStreamModeChangesDigest(t *testing.T) {
 
 func TestNewServiceRequiresMatchingDriverExecutionIdentity(t *testing.T) {
 	profile := Profile{
-		Driver:   DriverOpenAI,
+		Driver:   DriverOpenAIChatCompletions,
 		Endpoint: "https://example.invalid/v1/chat/completions",
 		Model:    "fixture",
 		Headers:  map[string]string{"Authorization": "${MODEL_API_KEY}"},
@@ -199,16 +199,16 @@ func TestNewServiceRequiresMatchingDriverExecutionIdentity(t *testing.T) {
 	}
 	for name, identity := range map[string]DriverExecutionIdentity{
 		"wrong_driver": {
-			Driver:                DriverAnthropic,
+			Driver:                DriverAnthropicMessages,
 			Implementation:        "runtime.model.test-driver",
 			ImplementationVersion: 1,
 		},
 		"missing_implementation": {
-			Driver:                DriverOpenAI,
+			Driver:                DriverOpenAIChatCompletions,
 			ImplementationVersion: 1,
 		},
 		"invalid_version": {
-			Driver:         DriverOpenAI,
+			Driver:         DriverOpenAIChatCompletions,
 			Implementation: "runtime.model.test-driver",
 		},
 	} {
@@ -217,7 +217,7 @@ func TestNewServiceRequiresMatchingDriverExecutionIdentity(t *testing.T) {
 			if _, err := NewService(
 				catalog,
 				map[DriverName]Driver{
-					DriverOpenAI: driver,
+					DriverOpenAIChatCompletions: driver,
 				},
 				ServiceOptions{},
 			); err == nil {

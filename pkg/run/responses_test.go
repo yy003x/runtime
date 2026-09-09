@@ -17,13 +17,21 @@ import (
 )
 
 func TestResponsesManagedSubmissionRejectedBeforeRunCreation(t *testing.T) {
+	for _, value := range []model.Profile{
+		{Driver: model.DriverOpenAIResponses, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m"},
+		{Driver: model.DriverOpenAICodexResponses, Endpoint: model.OpenAICodexEndpoint, Model: "fixture", Timeout: "1m"},
+	} {
+		t.Run(string(value.Driver), func(t *testing.T) { assertResponsesSubmissionRejected(t, value) })
+	}
+}
+
+func assertResponsesSubmissionRejected(t *testing.T, value model.Profile) {
+	t.Helper()
 	commands, err := command.NewCatalog(map[string]command.Profile{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := model.NewCatalog(map[string]model.Profile{"api": {
-		Driver: model.DriverOpenAIResponses, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m",
-	}})
+	models, err := model.NewCatalog(map[string]model.Profile{"api": value})
 	if err != nil {
 		t.Fatal(err)
 	}

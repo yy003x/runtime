@@ -7,9 +7,11 @@ import (
 	"sort"
 	"time"
 
+	"github.com/yy003x/runtime/internal/application/authruntime"
 	"github.com/yy003x/runtime/internal/application/nativeconsole"
 	"github.com/yy003x/runtime/internal/application/toolruntime"
 	"github.com/yy003x/runtime/internal/domain/identity"
+	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
 	"github.com/yy003x/runtime/internal/infrastructure/envref"
 	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
@@ -50,17 +52,22 @@ func LoadProfileServices(
 	models, err := model.NewService(
 		profiles.ModelCatalog(),
 		map[model.DriverName]model.Driver{
-			model.DriverOpenAI:          openai.New(nil),
-			model.DriverAnthropic:       anthropic.New(nil),
-			model.DriverOpenAIResponses: openairesponses.New(nil),
+			model.DriverOpenAIChatCompletions: openai.New(nil),
+			model.DriverAnthropicMessages:     anthropic.New(nil),
+			model.DriverOpenAIResponses:       openairesponses.New(nil),
+			model.DriverOpenAICodexResponses:  openairesponses.NewCodex(nil),
 		},
-		model.ServiceOptions{CallObserver: executionCallObserver(paths.LogsDir)},
+		model.ServiceOptions{CallObserver: executionCallObserver(paths.LogsDir), Credentials: LoadAuthService(paths).Resolve},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build model service: %w", err)
 	}
 	resilient := model.NewResilientModel(models, model.DefaultRetryPolicy())
 	return &ProfileServices{Profiles: profiles, Models: resilient}, nil
+}
+
+func LoadAuthService(paths layout.Paths) *authruntime.Service {
+	return authruntime.New(codexauth.Store{StateDir: paths.StateDir}, codexauth.NewClient(nil))
 }
 
 func executionCallObserver(logsDir string) model.CallObserver {

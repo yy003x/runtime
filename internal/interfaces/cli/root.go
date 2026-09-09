@@ -98,6 +98,8 @@ func Main(args []string) int {
 	}
 	if err == nil {
 		switch args[0] {
+		case "auth":
+			err = runAuthNamespace(paths, args[1:], output)
 		case "doctor":
 			if len(args) != 1 {
 				err = cliValidationf("doctor does not accept arguments")

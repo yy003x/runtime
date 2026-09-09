@@ -31,6 +31,7 @@ type Request struct {
 type Response struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers"`
+	Format  string            `json:"format,omitempty"`
 	Data    []json.RawMessage `json:"data"`
 }
 

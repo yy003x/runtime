@@ -12,6 +12,10 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli exec <cli-profile-id>`：CLI Profile 的非交互任务调用，不创建 Session/Run；
 - `sn-cli call <api-profile-id>`：API Profile 的单次请求，不创建 Session/Run；
 - `sn-cli profile list|show|check`：Profile 只读管理面，不执行 Profile；
+- `sn-cli auth`：认证 TUI，支持 `/login`、`/logout`、`/status`、`/help`、`/exit`；
+  无 provider 的 `auth login|logout` 直接进入对应向导，仅用于交互终端；
+- `sn-cli auth login|status|logout openai-codex`：Codex OAuth 直接命令管理面；
+  凭证仅供 `openai-codex-responses` 单次调用使用，`status` 只读本地缓存；
 - `sn-cli session exec|call ...`：`interface=managed` 的文件型本地执行会话，
   `--queue` 时进入 durable Run；Session 不自动执行 tool；
 - `sn-cli session open|send|attach|interrupt|close|close-all ...`：`interface=native_tui`，
@@ -37,6 +41,9 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `internal/infrastructure/` 保存配置、文件、日志、进程、private tmux carrier、
   Provider HTTP helper 与 MCP adapter，不反向依赖 application/interfaces；
 - `internal/interfaces/cli/` 只做 decode/call/encode，不建立第二套状态机；
+- Auth TUI 的短生命周期流程由 `internal/application/authruntime` 编排，CLI 只做
+  命令补全、选择和渲染；`internal/infrastructure/terminalinput` 管理可取消的 raw
+  terminal I/O，不创建 Session/Run，不保存输入历史或认证日志；
 - `internal/application/runtimebootstrap/` 是 composition root；
 - `internal/infrastructure/executionlog/` 只保存 best-effort 本地执行诊断，不是
   canonical Store；
@@ -81,6 +88,8 @@ resources/release.json
 sessions/
 logs/YYMMDD/{api,cli}.jsonl
 state/runtime.db
+state/auth.json
+state/auth.lock
 ```
 
 activation 显式映射 `configs/ → configs/`、`resources/tools/ → tools/`、
@@ -91,8 +100,10 @@ source/payload 路径当成 active home 路径，也不得反向从 active home 
 不得重新增加仓库或 archive 顶层配置根。
 
 `configs/*.json` 是唯一 Profile 配置面，必须用 `type=cli|api` 显式分流到独立
-执行领域；不存在第二层 command ID 映射。args 一字符串一 argv token，secret
-只从环境变量解析。loader 严格拒绝当前 schema 之外的字段和缺失的领域标识。
+执行领域；不存在第二层 command ID 映射。args 一字符串一 argv token，API key
+只从环境变量解析。Codex OAuth 由 `sn-cli auth` 独立管理，在单次调用时注入；凭证
+存于 active `state/auth.json`（0600，目录 0700），不进入 Profile、日志、Store 或发布包，
+安装和升级保留；不读取 Codex CLI/Pi 的凭证。loader 严格拒绝当前 schema 之外的字段和缺失的领域标识。
 
 source/payload `resources/tools/*.json` 经 activation 映射到 active
 `tools/*.json`，后者是 Agent 外部工具的唯一运行配置面；文件 basename 必须等于

@@ -235,7 +235,7 @@ func TestRunRecoveryLoaderReconcilesAfterCompositionOnly(t *testing.T) {
 		filepath.Join(paths.ConfigDir, "api.json"),
 		[]byte(`{
 			"type":"api",
-			"driver":"openai",
+			"driver":"openai-chat-completions",
 			"endpoint":"https://example.invalid/v1/chat/completions",
 			"model":"fixture",
 			"headers":{"Authorization":"${FIXTURE_API_KEY}"},
@@ -400,7 +400,7 @@ func TestRunQueryAndMaintenanceLoadersIgnoreExecutionInputsAndClose(
 		filepath.Join(paths.ConfigDir, "api.json"),
 		[]byte(`{
 			"type":"api",
-			"driver":"openai",
+			"driver":"openai-chat-completions",
 			"endpoint":"https://example.invalid/v1/chat/completions",
 			"model":"fixture",
 			"headers":{"Authorization":"${FIXTURE_API_KEY}"},

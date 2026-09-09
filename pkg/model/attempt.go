@@ -46,6 +46,30 @@ type CallObservation struct {
 // attempt. Like AttemptObserver, its failure or panic cannot affect execution.
 type CallObserver func(CallObservation)
 
+func (service *Service) observeAttempt(ctx context.Context, profileID string, wire provider.Attempt, resultError *contract.RuntimeError, secrets []string) {
+	if !wire.Started {
+		return
+	}
+	attempt := Attempt{Origin: attemptOrigin(ctx), ProfileID: profileID, Wire: wire, Error: resultError}
+	callAttempts := pendingCallAttempts(ctx)
+	if service.callObserver != nil || callAttempts != nil {
+		if safe, err := redactValue(attempt, secrets); err == nil {
+			if callAttempts != nil {
+				callAttempts.values = append(callAttempts.values, safe)
+			} else {
+				notifyCallObserver(service.callObserver, CallObservation{Origin: safe.Origin, ProfileID: safe.ProfileID, Attempts: []Attempt{safe}, Error: safe.Error})
+			}
+		}
+	}
+	for _, observer := range []AttemptObserver{service.attemptObserver, attemptObserver(ctx)} {
+		if observer != nil {
+			if safe, err := redactValue(attempt, secrets); err == nil {
+				notifyAttemptObserver(observer, safe)
+			}
+		}
+	}
+}
+
 type callAttemptsKey struct{}
 
 type callAttempts struct {

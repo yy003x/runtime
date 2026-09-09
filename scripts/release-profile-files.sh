@@ -4,6 +4,7 @@
 # 仍有意读取全部 configs/*.json。
 SN_CLI_RELEASE_PROFILE_FILES=(
   api-cc.json
+  api-codex.json
   api-cx.json
   cc-glm.json
   cc-kmm.json

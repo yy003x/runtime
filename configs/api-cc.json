@@ -1,6 +1,6 @@
 {
   "type": "api",
-  "driver": "anthropic",
+  "driver": "anthropic-messages",
   "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1",
   "model": "qwen3.8-2.4t-a95b",
   "headers": {

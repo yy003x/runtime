@@ -30,7 +30,7 @@ func NewDriver(provider *Provider) (*Driver, error) {
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver:                model.DriverOpenAI,
+		Driver:                model.DriverOpenAIChatCompletions,
 		Implementation:        executionImplementation,
 		ImplementationVersion: executionImplementationVersion,
 	}

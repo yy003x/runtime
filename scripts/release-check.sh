@@ -157,6 +157,24 @@ cmp "$ROOT_DIR/release/release.json" \
   "$runtime_home/resources/release.json" >/dev/null ||
   die "installed release manifest differs from the source compatibility contract"
 
+SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" profile check api-codex >/dev/null
+codex_auth_status="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json auth status openai-codex)"
+printf '%s\n' "$codex_auth_status" | grep -Eq '"logged_in"[[:space:]]*:[[:space:]]*false' ||
+  die "fresh install must report Codex logged out"
+[ ! -e "$runtime_home/state/auth.json" ] ||
+  die "auth status created a credential file"
+codex_auth_status="$(SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json auth status)"
+printf '%s\n' "$codex_auth_status" | grep -Eq '"logged_in"[[:space:]]*:[[:space:]]*false' ||
+  die "auth status without provider did not return the local status"
+if SN_CLI_HOME="$runtime_home" "$install_dir/sn-cli" --json auth \
+  >"$temp_root/auth-console.out" 2>"$temp_root/auth-console.err"; then
+  die "JSON auth unexpectedly opened a console"
+fi
+grep -q 'interactive terminal' "$temp_root/auth-console.err" ||
+  die "JSON auth did not provide a direct-command hint"
+[ ! -s "$temp_root/auth-console.out" ] || die "JSON auth emitted TUI output"
+[ ! -e "$runtime_home/state/auth.json" ] || die "auth console preflight wrote credentials"
+
 printf '%s\n' '{"type":"cli","command":"codex"}' \
   >"$runtime_home/configs/local-only.json"
 printf '%s\n' '{"type":"cli","command":"codex","prompt":"local-default"}' \

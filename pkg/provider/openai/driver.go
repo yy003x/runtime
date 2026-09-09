@@ -1,4 +1,4 @@
-// Package openai implements the SN Runtime OpenAI-protocol wire driver.
+// Package openai implements the SN Runtime OpenAI Chat Completions wire driver.
 // It performs exactly one HTTP attempt and owns no retry, Session, or tool loop.
 package openai
 
@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	providerName = "openai"
+	providerName = "openai-chat-completions"
 
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
-	executionImplementation        = "runtime.provider.openai"
-	executionImplementationVersion = 3
+	executionImplementation        = "runtime.provider.openai-chat-completions"
+	executionImplementationVersion = 1
 )
 
 type Driver struct {
@@ -38,15 +38,15 @@ func New(client *http.Client) *Driver {
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver:                model.DriverOpenAI,
+		Driver:                model.DriverOpenAIChatCompletions,
 		Implementation:        executionImplementation,
 		ImplementationVersion: executionImplementationVersion,
 	}
 }
 
 func (*Driver) Validate(profile model.Profile) error {
-	if profile.Driver != model.DriverOpenAI {
-		return fmt.Errorf("openai driver cannot serve %q", profile.Driver)
+	if profile.Driver != model.DriverOpenAIChatCompletions {
+		return fmt.Errorf("openai-chat-completions driver cannot serve %q", profile.Driver)
 	}
 	return profile.Validate()
 }
@@ -106,6 +106,10 @@ func (driver *Driver) Stream(
 	reader := io.TeeReader(response.Body, &captured)
 	defer func() {
 		attempt.Response.Data = provider.ResponseData(captured.Bytes(), contentType)
+		attempt.Response.Format = "json"
+		if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+			attempt.Response.Format = "sse"
+		}
 	}()
 	if response.StatusCode >= 300 {
 		body, readErr := httpx.ReadLimited(reader, httpx.MaxErrorBytes)

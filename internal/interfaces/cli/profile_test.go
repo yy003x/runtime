@@ -18,6 +18,15 @@ import (
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
 )
 
+func TestDirectAPIRejectsRemovedNativeRequestFile(t *testing.T) {
+	for _, args := range [][]string{{"--native-request-file", "missing.json"}, {"--native-request-file=-"}} {
+		_, _, err := parseDirectModelInput("api", model.Profile{}, args)
+		if err == nil || !strings.Contains(err.Error(), "unknown model input option") {
+			t.Fatalf("removed option must be rejected before reading a file or stdin: args=%q error=%v", args, err)
+		}
+	}
+}
+
 func TestProfileUsageDocumentsSingleOptionalInput(t *testing.T) {
 	err := runProfileNamespace(
 		layout.Paths{}, nil, newCLIOutput(false, &strings.Builder{}, &strings.Builder{}),
@@ -195,7 +204,7 @@ func TestRuntimeDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 func TestAPIProfileFixedValueDoesNotConsumeStreamFlag(t *testing.T) {
 	request, options, err := parseDirectModelInput(
 		"api-cx",
-		testModelProfile("openai"),
+		testModelProfile("openai-chat-completions"),
 		[]string{"--system", "--stream", "hello"},
 	)
 	if err == nil || !strings.Contains(err.Error(), "--system requires value") {
@@ -238,7 +247,7 @@ func TestAPIProfileStreamBeginsBeforeProviderFailure(t *testing.T) {
 }
 
 func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
-	openAIProfile := testModelProfile("openai")
+	openAIProfile := testModelProfile("openai-chat-completions")
 	if _, _, err := parseDirectModelInput(
 		"api", openAIProfile, []string{"--model", "other", "hello"},
 	); err == nil {
@@ -258,7 +267,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 		len(request.Input.Messages) != 1 {
 		t.Fatalf("request=%#v stream=%v error=%v", request, options.Stream, err)
 	}
-	anthropicProfile := testModelProfile("anthropic")
+	anthropicProfile := testModelProfile("anthropic-messages")
 	if _, _, err := parseDirectModelInput(
 		"api", anthropicProfile, []string{"--max-tokens", "128", "hello"},
 	); err != nil {
@@ -267,7 +276,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 }
 
 func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) {
-	profile := testModelProfile("openai")
+	profile := testModelProfile("openai-chat-completions")
 	request, options, err := parseDirectModelInput(
 		"api",
 		profile,
@@ -313,7 +322,7 @@ func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) 
 }
 
 func TestParseDirectModelInputRejectsNonFiniteTemperature(t *testing.T) {
-	profile := testModelProfile("openai")
+	profile := testModelProfile("openai-chat-completions")
 	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
 		if _, _, err := parseDirectModelInput(
 			"api", profile,
@@ -654,7 +663,7 @@ func TestBuildCommandProfileInvocationExecRequiresPrompt(t *testing.T) {
 func TestDirectAPIProfileRejectsUnsupportedEffort(t *testing.T) {
 	_, _, err := parseDirectModelInput(
 		"api-cx",
-		testModelProfile("openai"),
+		testModelProfile("openai-chat-completions"),
 		[]string{"--effort", "high", "reply ok"},
 	)
 	if err == nil ||
@@ -718,7 +727,7 @@ func writeRuntimeModel(t *testing.T, dir, id, endpoint string) {
 	t.Helper()
 	value := map[string]any{
 		"type":   "api",
-		"driver": "openai", "endpoint": endpoint, "model": "fixture",
+		"driver": "openai-chat-completions", "endpoint": endpoint, "model": "fixture",
 		"headers":    map[string]any{"Authorization": "${MODEL_API_KEY}"},
 		"parameters": map[string]any{"max_tokens": 1024},
 		"timeout":    "1m",

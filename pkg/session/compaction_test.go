@@ -38,7 +38,7 @@ func compactionEntry(enabled bool, keepRecent int) profile.Entry {
 	return profile.Entry{
 		ID: "api", Kind: profile.KindModel,
 		Model: &model.Profile{
-			Driver: model.DriverAnthropic,
+			Driver: model.DriverAnthropicMessages,
 			Context: model.ContextPolicy{
 				WindowTokens:         700,
 				ReservedOutputTokens: 100, // input budget = 600 tokens

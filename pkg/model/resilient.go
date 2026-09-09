@@ -11,8 +11,9 @@ import (
 
 // RetryPolicy bounds the transient-error retry that ResilientModel applies
 // around Service.GenerateStream. Each retry is a fresh GenerateStream call;
-// the inner driver still performs exactly one HTTP attempt. Non-retryable
-// errors and request-validation errors are never retried.
+// the inner driver still performs exactly one HTTP attempt. Codex OAuth permits
+// one conditional credential refresh after 401 within this same attempt limit;
+// other non-retryable errors and request-validation errors are never retried.
 type RetryPolicy struct {
 	// MaxAttempts is the total number of attempts including the first.
 	// Defaults to 3 when zero or negative.
@@ -120,6 +121,8 @@ func (model *ResilientModel) GenerateStream(
 	request contract.GenerateRequest,
 	sink contract.EventSink,
 ) (result contract.ModelResult, resultError *contract.RuntimeError) {
+	auth := &credentialCall{}
+	ctx = context.WithValue(ctx, credentialCallKey{}, auth)
 	if model.callObserver != nil {
 		attempts := &callAttempts{}
 		ctx = context.WithValue(ctx, callAttemptsKey{}, attempts)
@@ -158,6 +161,12 @@ func (model *ResilientModel) GenerateStream(
 			return result, nil
 		}
 		lastError = err
+		if err.Code == contract.ErrorAuthenticationFailed && err.HTTPStatus == 401 &&
+			err.Provider == string(DriverOpenAICodexResponses) && auth.token != "" &&
+			!auth.refreshed && attempt+1 < policy.MaxAttempts {
+			auth.refreshed, auth.rejected = true, auth.token
+			continue
+		}
 		if !err.Retryable || attempt+1 >= policy.MaxAttempts {
 			return contract.ModelResult{}, err
 		}

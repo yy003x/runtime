@@ -26,7 +26,7 @@ func (driver *testDriver) ExecutionIdentity() DriverExecutionIdentity {
 		return *driver.identity
 	}
 	return DriverExecutionIdentity{
-		Driver:                DriverOpenAI,
+		Driver:                DriverOpenAIChatCompletions,
 		Implementation:        "runtime.model.test-driver",
 		ImplementationVersion: 1,
 	}
@@ -421,7 +421,7 @@ func newTestServiceWithObserver(
 ) *Service {
 	t.Helper()
 	profile := Profile{
-		Driver: DriverOpenAI, Endpoint: "https://example.invalid/faux", Model: "fixture",
+		Driver: DriverOpenAIChatCompletions, Endpoint: "https://example.invalid/faux", Model: "fixture",
 		Headers: map[string]string{"Authorization": "${MODEL_API_KEY}"},
 		Timeout: "1m",
 	}
@@ -431,7 +431,7 @@ func newTestServiceWithObserver(
 	}
 	service, err := NewService(
 		catalog,
-		map[DriverName]Driver{DriverOpenAI: driver},
+		map[DriverName]Driver{DriverOpenAIChatCompletions: driver},
 		ServiceOptions{Getenv: func(name string) (string, bool) {
 			return secret, name == "MODEL_API_KEY"
 		}, AttemptObserver: observer},

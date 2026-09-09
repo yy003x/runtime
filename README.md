@@ -287,7 +287,7 @@ an API profile points at a provider:
 // configs/api-cx.json — an API profile calling a model endpoint
 {
   "type": "api",
-  "driver": "openai",
+  "driver": "openai-chat-completions",
   "base_url": "https://your-provider/compatible-mode/v1",
   "model": "your-model",
   "headers": { "Authorization": "${YOUR_API_KEY}" },
@@ -296,19 +296,22 @@ an API profile points at a provider:
 }
 ```
 
-API `parameters` supports `max_tokens`, `temperature`, `top_p`, `stop_sequences`,
+For canonical generation, API `parameters` supports `max_tokens`, `temperature`, `top_p`, `stop_sequences`,
 and `stream`. `stream` is an optional boolean (not `null`), defaulting to `true`:
 `true` requests SSE, while `false` sends `stream:false` for a regular JSON response.
-Both use the same HTTPS POST endpoint. OpenAI omits `stream_options` when false;
-all adapters decode SSE or JSON according to the actual response Content-Type.
+Both use the same HTTPS POST endpoint. `openai-chat-completions` omits
+`stream_options` when false;
+API-key adapters decode SSE or JSON according to the actual response Content-Type;
+Codex OAuth always uses SSE for successful responses, as described below.
 This Profile setting is independent of CLI `--stream`, `--json`, and `--raw`.
 CLI `--stream` selects Runtime event output; the existing retry layer buffers
 each attempt and publishes events only after success, not in real time.
 
-Secrets are referenced via `${VAR}` in `headers` and expanded from environment
+API keys are referenced via `${VAR}` in `headers` and expanded from environment
 variables at call time — the profile only stores the reference name, never the
-value. The openai and openai-responses drivers auto-prepend the `Bearer ` scheme to a bare
-`Authorization` value; the anthropic driver does not. `runtime.json` selects
+value. The `openai-chat-completions` and `openai-responses` drivers auto-prepend
+the `Bearer ` scheme to a bare `Authorization` value; the `anthropic-messages`
+driver does not. `runtime.json` selects
 the agent tools, budgets, scheduler, run retention, and tmux server mode; source
 `resources/tools/` ships `web_search` and `web_fetch` MCP manifests using
 `Z_AI_API_KEY`. Full field reference, override order, and
@@ -318,8 +321,9 @@ examples: [sn-cli reference](SN-CLI-USAGE.md) and
 ## API protocols
 
 `base_url` is the complete API prefix, including the provider's version path.
-Runtime only appends `chat/completions` (`openai`), `messages` (`anthropic`), or
-`responses` (`openai-responses`). It never adds or detects a version. For example,
+Runtime only appends `chat/completions` (`openai-chat-completions`), `responses`
+(`openai-responses`), or `messages` (`anthropic-messages`). It never adds or
+detects a version. For example,
 `https://example.com/api/v3` becomes `https://example.com/api/v3/chat/completions`.
 A complete `endpoint` is used unchanged. Existing unversioned base URLs must be
 updated explicitly when their provider requires `/v1`; no automatic migration runs.
@@ -327,11 +331,64 @@ updated explicitly when their provider requires `/v1`; no automatic migration ru
 Use `driver: "openai-responses"` with `base_url: "https://api.openai.com/v1"`
 for Responses. It supports single `call` requests (also stateless Go/HTTP model
 generation), SSE/JSON, text, returned function calls, usage, and raw attempt logs.
-Requests send `store:false` and map `max_tokens` to `max_output_tokens`.
+Canonical requests send `store:false` and map `max_tokens` to `max_output_tokens`.
 SSE requires a terminal Response and projects its output once; intermediate frames
 are preserved in raw/logs, not published as real-time canonical deltas.
-Session/Agent, assistant/tool history, stop sequences, hosted tools and multimodal
-input are not supported. Returned function calls are never automatically executed.
+The canonical Responses projection is intentionally limited to user text and
+returned function calls; it is not a limitation of the native protocol.
+Session/Agent support is unchanged. Returned function calls are never automatically executed.
+
+`--raw` prints the actual outbound request body and captured upstream response body.
+Responses uses `input` / `output`; Chat Completions uses `messages` / `choices`.
+Fields such as `reasoning`, `usage`, `metadata`, and provider extensions are retained
+from the upstream response, not added by Runtime or converted into Chat Completions.
+
+For ChatGPT/Codex OAuth, use the included `api-codex` Profile:
+
+Run `sn-cli auth` for the Auth TUI. Type `/` to discover `/login`, `/logout`,
+`/status`, `/help`, and `/exit`; Tab completes without executing. `sn-cli auth login`
+and `sn-cli auth logout` open the corresponding guide. Logout requires confirmation
+(default: cancel); exiting the UI preserves the login. Reauthorization retains the
+old credential until the new login is saved. Escape cancels; PgUp/PgDn scroll long
+panels. The TUI requires interactive stdin/stdout without `--json` and never creates
+a Session, Run, or execution log. Explicit-provider commands below always run directly;
+use them for scripts. `sn-cli auth status` also works without a provider and is read-only.
+
+```bash
+sn-cli auth login openai-codex
+sn-cli auth status openai-codex
+sn-cli call api-codex "Hello"
+sn-cli auth logout openai-codex
+```
+
+Browser login uses PKCE and a loopback callback; use `--device-code` for device
+login, or `--no-browser` to open the printed URL manually. You complete the
+authorization yourself. Credentials are private plaintext in
+`${SN_CLI_HOME:-~/.sn}/state/auth.json` (0600, directory 0700), independently
+managed from Codex CLI/Pi, and retained during Runtime updates. `status` reports
+the local cache only; `logout` removes local credentials without remote revocation.
+
+Calls automatically refresh access tokens when expired or within 5 minutes of
+expiry, and save the rotated credentials for subsequent calls. No background
+process is needed. While refresh authorization remains valid, token expiry does
+not require another browser login. The TUI shows automatic-refresh status;
+`/status` includes the access-token expiry for diagnostics, not a login deadline.
+
+The `openai-codex-responses` driver uses only
+`https://chatgpt.com/backend-api/codex/responses`, rejects custom headers and
+Session/Agent/history continuation, and always requests SSE with `store:false`.
+Successful HTTP responses are decoded and captured as SSE even if Content-Type is
+missing or incorrect. `--raw` retains the frame array; logs retain the actual headers.
+HTTP errors still preserve their JSON bodies and existing error classification.
+If the Codex terminal Response has an empty output array, completed
+`response.output_item.done` items supply its output in `output_index` order. A valid
+terminal Response is still required; deltas are never duplicated or treated as completion.
+`max_tokens`, `top_p`, and stop sequences are unsupported. Expiring credentials
+refresh under a process lock; one conditional refresh/retry after HTTP 401 fits
+within the existing total attempt limit. OAuth credentials never enter Profiles,
+logs, or release archives. This is the Codex subscription backend, whose protocol
+can change; see [authentication](https://learn.chatgpt.com/docs/auth) and the
+[Runtime contract](docs/runtime-contract.md#codex-oauth-单次调用).
 
 ## Project layout
 

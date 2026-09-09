@@ -608,7 +608,7 @@ func parseDirectModelInput(
 			options.Raw = true
 		case "--request-file":
 			value, next, err := directModelOptionValue(
-				args, index, "--request-file",
+				args, index, current,
 			)
 			if err != nil {
 				return contract.GenerateRequest{}, options, err

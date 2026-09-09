@@ -1809,7 +1809,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 	)
 	writeFixture(
 		filepath.Join(payload, "release", "release.json"),
-		"{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":9,\"session_schema_version\":3,\"run_schema_version\":6}\n",
+		fmt.Sprintf("{\"schema_version\":1,\"activation_epoch\":4,\"contract_version\":%d,\"session_schema_version\":3,\"run_schema_version\":6}\n", contract.RuntimeContractVersion),
 		0o600,
 	)
 	return payload, target, candidate

@@ -1,0 +1,7 @@
+{
+  "type": "api",
+  "driver": "openai-codex-responses",
+  "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+  "model": "gpt-5.6-sol",
+  "timeout": "5m"
+}

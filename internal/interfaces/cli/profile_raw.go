@@ -31,7 +31,7 @@ func runRawModelCall(
 	// envelope. The complete retry history belongs to the execution log.
 	var response any
 	if wire := last.Wire.Response; wire != nil && len(wire.Data) > 0 {
-		if strings.Contains(strings.ToLower(wire.Headers["Content-Type"]), "text/event-stream") {
+		if wire.Format == "sse" || wire.Format == "" && strings.Contains(strings.ToLower(wire.Headers["Content-Type"]), "text/event-stream") {
 			response = wire.Data
 		} else {
 			response = wire.Data[0]

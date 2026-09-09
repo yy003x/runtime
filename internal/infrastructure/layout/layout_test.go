@@ -24,6 +24,7 @@ func TestResolveUsesSNCLIHome(t *testing.T) {
 		paths.RuntimeConfigFile != filepath.Join(home, "runtime.json") ||
 		paths.ResourcesDir != filepath.Join(home, "resources") ||
 		paths.RunDBFile != filepath.Join(home, "state", "runtime.db") ||
+		paths.AuthFile != filepath.Join(home, "state", "auth.json") ||
 		paths.ServerBinary != filepath.Join(home, "bin", "sn-server") ||
 		paths.ServerPIDFile != filepath.Join(home, "state", "sn-server.pid") ||
 		paths.ServerLogFile != filepath.Join(home, "logs", "sn-server.log") ||

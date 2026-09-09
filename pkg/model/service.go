@@ -59,12 +59,14 @@ type Service struct {
 	getenv          func(string) (string, bool)
 	attemptObserver AttemptObserver
 	callObserver    CallObserver
+	credentials     CredentialResolver
 }
 
 type ServiceOptions struct {
 	Getenv          func(string) (string, bool)
 	AttemptObserver AttemptObserver
 	CallObserver    CallObserver
+	Credentials     CredentialResolver
 }
 
 func NewService(
@@ -114,6 +116,7 @@ func NewService(
 		catalog: catalog, drivers: values, getenv: getenv,
 		attemptObserver: options.AttemptObserver,
 		callObserver:    options.CallObserver,
+		credentials:     options.Credentials,
 	}, nil
 }
 
@@ -219,6 +222,21 @@ func (service *Service) GenerateStream(
 	}
 	callContext, cancel := context.WithTimeout(ctx, time.Duration(resolved.Timeout))
 	defer cancel()
+	if err := profile.ValidateSingleCallInput(input); err != nil {
+		return contract.ModelResult{}, runtimeError(contract.ErrorInvalidRequest, contract.PhaseRequest, err.Error())
+	}
+	authSecrets, err := service.resolveCredentials(callContext, &resolved)
+	if err != nil {
+		code := contract.ErrorAuthenticationFailed
+		if callContext.Err() != nil {
+			code = contract.ErrorCancelled
+			if errors.Is(callContext.Err(), context.DeadlineExceeded) {
+				code = contract.ErrorTimeout
+			}
+		}
+		return contract.ModelResult{}, runtimeError(code, contract.PhaseProfile, err.Error())
+	}
+	secrets = append(secrets, authSecrets...)
 
 	state := streamState{
 		sink: sink, secrets: secrets, expected: 1,
@@ -227,39 +245,7 @@ func (service *Service) GenerateStream(
 	result, wireAttempt, callError := driver.Stream(
 		callContext, resolved, input, state.accept,
 	)
-	requestObserver := attemptObserver(ctx)
-	callAttempts := pendingCallAttempts(ctx)
-	if wireAttempt.Started && (service.attemptObserver != nil || requestObserver != nil ||
-		service.callObserver != nil || callAttempts != nil) {
-		defer func() {
-			attempt := Attempt{
-				Origin: attemptOrigin(ctx), ProfileID: request.ModelProfile,
-				Wire: wireAttempt, Error: resultError,
-			}
-			if service.callObserver != nil || callAttempts != nil {
-				if safeAttempt, redactErr := redactValue(attempt, secrets); redactErr == nil {
-					if callAttempts != nil {
-						callAttempts.values = append(callAttempts.values, safeAttempt)
-					} else {
-						notifyCallObserver(service.callObserver, CallObservation{
-							Origin: safeAttempt.Origin, ProfileID: safeAttempt.ProfileID,
-							Attempts: []Attempt{safeAttempt}, Error: safeAttempt.Error,
-						})
-					}
-				}
-			}
-			for _, observer := range []AttemptObserver{service.attemptObserver, requestObserver} {
-				if observer == nil {
-					continue
-				}
-				safeAttempt, redactErr := redactValue(attempt, secrets)
-				if redactErr != nil {
-					continue
-				}
-				notifyAttemptObserver(observer, safeAttempt)
-			}
-		}()
-	}
+	defer func() { service.observeAttempt(ctx, request.ModelProfile, wireAttempt, resultError, secrets) }()
 	if state.failure != nil {
 		return contract.ModelResult{}, state.failure
 	}

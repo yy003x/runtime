@@ -47,6 +47,10 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `sn-cli profile list` | 列出所有 Profile 的 ID 与类型 | — | `sn-cli profile list` |
 | `sn-cli profile show <id>` | 查看 Profile 实际配置 | — | `sn-cli profile show cx` |
 | `sn-cli profile check [id]` | 校验 Profile 结构与分流 | — | `sn-cli profile check` |
+| `sn-cli auth` | Auth TUI；输入 `/` 查看命令 | 仅登录/退出登录写凭证 | `sn-cli auth login` |
+| `sn-cli auth login openai-codex` | 用户完成 OAuth 授权 | 私有凭证文件 | `sn-cli auth login openai-codex --device-code` |
+| `sn-cli auth status openai-codex` | 查询本地登录缓存 | — | `sn-cli --json auth status openai-codex` |
+| `sn-cli auth logout openai-codex` | 移除本地登录凭证 | 私有凭证文件 | `sn-cli auth logout openai-codex` |
 
 ### session
 
@@ -284,7 +288,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 9
+  "contract_version": 14
 }
 ```
 
@@ -392,6 +396,8 @@ sessions/
     index.json
     trash/<timestamp>/<session-id>/
 state/
+  auth.json
+  auth.lock
   session-locks/
   session-invocations/
   session-mutations/
@@ -541,7 +547,7 @@ execution mode 不属于 Profile 配置；配置中的 `exec` 是未知字段，
 ```json
 {
   "type": "api",
-  "driver": "openai",
+  "driver": "openai-chat-completions",
   "base_url": "https://example.com/provider/v1",
   "model": "model-name",
   "headers": {
@@ -567,13 +573,15 @@ execution mode 不属于 Profile 配置；配置中的 `exec` 是未知字段，
 当前 driver：
 
 ```text
-openai
-anthropic
+openai-chat-completions
 openai-responses
+openai-codex-responses
+anthropic-messages
 ```
 
-API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai / openai-responses 对裸
-`Authorization` 值（不含空格）自动补 `Bearer ` 前缀，anthropic 不补。`profile show`
+API key 通过 headers 的 `${VAR}` 引用从环境变量读取；`openai-chat-completions` /
+`openai-responses` 对裸 `Authorization` 值（不含空格）自动补 `Bearer ` 前缀，
+`anthropic-messages` 不补。`profile show`
 不会输出展开后的 secret。`endpoint` 与 `base_url` 二选一；后者是包含版本的完整 API
 前缀，只追加 `/chat/completions`、`/messages` 或 `/responses`。Runtime 不额外拼接
 版本，也不自动迁移配置。例如方舟 `/api/v3`、智谱 `/api/paas/v4` 保留原样。
@@ -599,20 +607,84 @@ sn-cli call api-responses "你好"
 sn-cli call api-responses --raw "你好"
 ```
 
-首版仅支持单次 `call`（及等价无状态 Go/HTTP model generation）：文本、返回函数调用、
+canonical 模式支持单次 `call`（及等价无状态 Go/HTTP model generation）：文本、返回函数调用、
 usage、HTTP JSON 与 SSE、原始请求/响应和 attempts 日志。请求固定 `store:false`；
 `parameters.stream:false` 选择普通 JSON。SSE 以终态 response 归一化一次，原始 delta
 留在 raw/日志；不承诺实时打印。不支持 Session/Agent、assistant/tool 历史续接、
 `previous_response_id`、非空 stop_sequences、内建托管工具或多模态；均不得默默降级。
+这些是 Runtime canonical 输入/投影边界，不是上游协议本身的限制。
+`--raw` 输出实际发出的 request body 和上游原始 response body，不添加 Runtime 包装。
+Responses 的 input/output 和 Chat Completions 的 messages/choices 本来不同；
+reasoning、usage、metadata 等原生响应字段不裁剪、不改造成另一种协议格式。
 
-`parameters` 当前支持的完整字段如下，不接受任意 Provider 参数透传：
+Codex OAuth 使用独立 driver，示例已随 source/payload 交付为 `configs/api-codex.json`：
+
+```json
+{
+  "type": "api",
+  "driver": "openai-codex-responses",
+  "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+  "model": "gpt-5.6-sol",
+  "timeout": "5m"
+}
+```
+
+```bash
+sn-cli auth login openai-codex
+sn-cli auth login openai-codex --device-code
+sn-cli auth login openai-codex --no-browser
+sn-cli --json auth status openai-codex
+sn-cli call api-codex "你好"
+sn-cli call api-codex --raw "你好"
+sn-cli auth logout openai-codex
+```
+
+交互入口为 `sn-cli auth`；`sn-cli auth login` / `sn-cli auth logout` 直接进入对应向导。
+输入 `/` 展开命令菜单，继续输入筛选，↑↓ 选择、Tab 补全、Enter 执行；Tab 不执行命令。
+首版命令为 `/login [provider]`、`/logout [provider]`、`/status [provider]`、`/help`、
+`/exit`，provider 仅支持 `openai-codex`。单服务自动选中。退出登录默认取消，确认后仅
+清除当前 Runtime home 的本地凭证；确认期间凭证发生变化需重新确认。退出界面不退出登录。
+重新授权保留原凭证直到新登录保存成功；取消或切换方式会先结束旧授权流程。Esc 取消/返回，
+Ctrl-C 取消当前操作，在首页退出；PgUp/PgDn 查看长地址/面板。已登录时提示支持自动续期，
+进入刷新窗口则提示下次调用自动续期；仅 `/status` 展示访问令牌到期时间，它不是登录截止时间。
+不把本地状态当作远端权限/额度，也不会自动删除异常凭证文件。
+TUI 使用临时终端屏幕，不保存输入历史、授权地址/设备码或执行日志，不创建 Session/Run；
+退出时恢复终端。无 TTY、`TERM=dumb` 或 `--json` 不启动 TUI，应使用上述显式 provider 命令。
+`sn-cli auth status` 可省略 provider，仍直接只读返回，支持 `--json`。
+
+上述三个显式 login 示例是不同登录方式，始终直接执行，不进入 TUI。默认浏览器 PKCE，localhost:1455 回调，
+`--no-browser` 手动打开打印的 URL；`--device-code` 需要账号启用设备码登录。
+授权由用户完成，15 分钟超时或 Ctrl-C 取消。`--json` 的登录提示仍在 stderr，
+stdout 只返回最终 machine envelope。
+
+凭证保存在 `${SN_CLI_HOME:-~/.sn}/state/auth.json`（明文 0600，目录 0700），
+按 provider 保存一个当前账号，多 Profile 共用；不进入配置、日志或发布包，
+升级保留。`status` 不刷新、不检查远端额度，只报告缓存、刷新窗口、过期时间和
+账号指纹。`logout` 仅删除本地记录；不远端撤销、不影响已经发出的请求。
+
+Codex endpoint 固定；可等价配置 `base_url=https://chatgpt.com/backend-api`，
+拒绝其它地址和自定义 headers。单次请求强制 `store:false,stream:true`，不支持
+Session/Agent、多轮历史、max_tokens/max_output_tokens、top_p 或 stop_sequences。
+HTTP 2xx 始终按 SSE 解码与采集，缺少或误标 `Content-Type` 不改变该协议。
+`--raw` 保留有效 JSON 帧数组（包括单帧），日志保留实际响应头；HTTP 错误仍保留
+JSON 响应和既有分类。空响应、HTML、损坏或缺少有效终态的流不会被视为成功。
+终态 Response 的 `output` 为空时，按 `output_index` 使用先前 `response.output_item.done`
+中的已完成 item；终态非空则以终态为准，不重复拼接 delta。仍需合法终态和有效内容，
+raw/log 保留原始帧，不把终态空数组改写成组装结果。
+调用前自动刷新已到期或将在 5 分钟内到期的访问令牌，保存轮换后的凭证供后续调用复用；
+不需要后台常驻进程，`status` 不触发刷新。刷新授权仍有效时不需要再次登录；刷新失败保留旧凭证，
+临时网络失败不等于退出登录，授权失效则需重新登录。401 最多条件刷新并重试一次，计入原有总 attempt 上限。
+OAuth token 不从现有 Codex CLI/Pi 缓存读取。后端协议的稳定性与 Platform API 不同，
+详见 [Codex OAuth contract](docs/runtime-contract.md#codex-oauth-单次调用)。
+
+`parameters` 当前支持的完整字段如下，不接受任意 Provider 参数透传；Codex 的限制见上：
 
 | 字段 | 类型与约束 | 作用 |
 |---|---|---|
-| `max_tokens` | 正整数；Anthropic 必填，OpenAI 可省略或为 `null` | 默认最大输出 token 数；CLI `--max-tokens` 或请求 `max_output_tokens` 可覆盖 |
+| `max_tokens` | 正整数；`anthropic-messages` 必填，两个 OpenAI driver 可省略或为 `null` | 默认最大输出 token 数；CLI `--max-tokens` 或请求 `max_output_tokens` 可覆盖 |
 | `temperature` | `0..2`，可省略或为 `null` | 默认采样温度；请求级值优先 |
 | `top_p` | `0..1`，可省略或为 `null` | 默认核采样概率；请求级值优先 |
-| `stop_sequences` | 最多 4 个非空字符串，每项最多 1024 字节 | 默认停止序列；OpenAI 映射为 `stop`，Anthropic 使用同名字段 |
+| `stop_sequences` | 最多 4 个非空字符串，每项最多 1024 字节 | 默认停止序列；`openai-chat-completions` 映射为 `stop`，`anthropic-messages` 使用同名字段，`openai-responses` 不支持非空值 |
 | `stream` | `true` / `false`，省略默认 `true`；不接受 `null` 或字符串 | 控制 Provider 上游响应模式，与 CLI 输出模式无关 |
 
 需要普通 JSON 响应时，在 API Profile 中设置：
@@ -630,9 +702,11 @@ usage、HTTP JSON 与 SSE、原始请求/响应和 attempts 日志。请求固�
 `stream:true` 请求 SSE，`stream:false` 请求普通 JSON；两者都是发往同一个 HTTPS
 endpoint 的 POST，不切换 URL，不增加自动 fallback 或重试。默认 `Accept` 随配置
 切换为 `text/event-stream, application/json` 或 `application/json`；显式 Profile
-headers 仍可覆盖默认 header。OpenAI 仅在流式请求中发送 `stream_options.include_usage`。
-adapter 按实际 `Content-Type` 解析 SSE/JSON，即使服务端返回的格式与请求偏好不同，
+headers 仍可覆盖默认 header。`openai-chat-completions` 仅在流式请求中发送
+`stream_options.include_usage`。
+API-key adapter 按实际 `Content-Type` 解析 SSE/JSON，即使服务端返回的格式与请求偏好不同，
 仍处理实际响应，不因格式不同再发一次请求。错误仍统一归一化，raw/log 保留实际响应。
+Codex OAuth 的成功响应固定为 SSE，不依赖响应头，见上述例外。
 
 CLI `--stream` 只是下游 Runtime 事件 NDJSON 输出选项，不覆盖 `parameters.stream`。
 既有重试层会缓存每次 attempt 的事件，仅在成功后放行；因此当前 CLI 事件输出并非
@@ -1190,14 +1264,17 @@ sn-cli call api-cx --temperature 0.2 "回复OK"
 sn-cli call api-cx --temperature=0.2 "回复OK"
 ```
 
-两个 driver 使用同一个 token 参数：
+三类 API driver 使用同一个 token 参数：
 
 ```bash
-# openai driver
+# openai-chat-completions driver
 sn-cli call api-cx --max-tokens 2048 "回复OK"
 
-# anthropic driver
+# anthropic-messages driver
 sn-cli call api-cc --max-tokens 2048 "回复OK"
+
+# openai-responses driver
+sn-cli call api-responses --max-tokens 2048 "回复OK"
 ```
 
 `--request-file` 可以与 `--stream` 组合，但不能同时使用：
@@ -1307,8 +1384,9 @@ Profile 应使用 `profile list/show` 查询。
 
 | ID | Adapter | 推荐入口 |
 |---|---|---|
-| `api-cc` | anthropic | `call api-cc` |
-| `api-cx` | openai | `call api-cx` |
+| `api-cc` | anthropic-messages | `call api-cc` |
+| `api-codex` | openai-codex-responses | `call api-codex`（先 `auth login openai-codex`） |
+| `api-cx` | openai-chat-completions | `call api-cx` |
 | `cc` | Claude CLI | `cc` 或 `exec cc` |
 | `cc-glm` | Claude CLI | `exec cc-glm` |
 | `cc-kmm` | Claude CLI | `cc-kmm` 或 `exec cc-kmm` |

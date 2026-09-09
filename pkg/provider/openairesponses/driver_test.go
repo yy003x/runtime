@@ -64,7 +64,7 @@ func TestDriverIdentityAndValidation(t *testing.T) {
 	if identity.Driver != model.DriverOpenAIResponses || identity.ImplementationVersion != 1 || identity.Implementation != "runtime.provider.openai-responses" {
 		t.Fatalf("identity=%#v", identity)
 	}
-	if err := driver.Validate(model.Profile{Driver: model.DriverOpenAI}); err == nil {
+	if err := driver.Validate(model.Profile{Driver: model.DriverOpenAIChatCompletions}); err == nil {
 		t.Fatal("wrong driver accepted")
 	}
 }

@@ -47,7 +47,7 @@ func TestValidateRunRequestRejectsNonFiniteTemperature(t *testing.T) {
 func TestValidateRunRequestRejectsInvalidCommonModelOptions(t *testing.T) {
 	entry := profile.Entry{
 		ID: "api", Kind: profile.KindModel,
-		Model: &model.Profile{Driver: model.DriverOpenAI},
+		Model: &model.Profile{Driver: model.DriverOpenAIChatCompletions},
 	}
 	invalidTopP := 1.1
 	for name, options := range map[string]contract.GenerateOptions{
@@ -69,7 +69,7 @@ func TestValidateRunRequestRejectsOutputLimitWithoutInputBudget(t *testing.T) {
 	maxOutput := int64(32_767)
 	entry := profile.Entry{
 		ID: "api", Kind: profile.KindModel,
-		Model: &model.Profile{Driver: model.DriverAnthropic},
+		Model: &model.Profile{Driver: model.DriverAnthropicMessages},
 	}
 	err := validateRunRequest(RunRequest{
 		ProfileID: "api",
@@ -89,7 +89,7 @@ func TestBuildProjectionUsesConservativeContextBudget(t *testing.T) {
 	entry := profile.Entry{
 		ID: "api", Kind: profile.KindModel,
 		Model: &model.Profile{
-			Driver: model.DriverAnthropic,
+			Driver: model.DriverAnthropicMessages,
 			Parameters: model.Parameters{
 				MaxTokens: &profileDefault,
 			},
@@ -1501,7 +1501,7 @@ func newTestService(
 		t.Fatal(err)
 	}
 	modelProfile := model.Profile{
-		Driver:   model.DriverOpenAI,
+		Driver:   model.DriverOpenAIChatCompletions,
 		Endpoint: "https://example.test/v1/chat/completions",
 		Model:    "fixture",
 		Headers: map[string]string{

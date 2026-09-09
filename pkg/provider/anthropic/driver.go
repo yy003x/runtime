@@ -1,5 +1,5 @@
-// Package anthropic implements the SN Runtime Anthropic-protocol wire
-// driver. It performs exactly one HTTP attempt and owns no retry or tool loop.
+// Package anthropic implements the SN Runtime Anthropic Messages wire driver.
+// It performs exactly one HTTP attempt and owns no retry or tool loop.
 package anthropic
 
 import (
@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	providerName = "anthropic"
+	providerName = "anthropic-messages"
 
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
-	executionImplementation        = "runtime.provider.anthropic"
-	executionImplementationVersion = 3
+	executionImplementation        = "runtime.provider.anthropic-messages"
+	executionImplementationVersion = 1
 )
 
 type Driver struct {
@@ -38,21 +38,21 @@ func New(client *http.Client) *Driver {
 
 func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	return model.DriverExecutionIdentity{
-		Driver:                model.DriverAnthropic,
+		Driver:                model.DriverAnthropicMessages,
 		Implementation:        executionImplementation,
 		ImplementationVersion: executionImplementationVersion,
 	}
 }
 
 func (*Driver) Validate(profile model.Profile) error {
-	if profile.Driver != model.DriverAnthropic {
-		return fmt.Errorf("anthropic driver cannot serve %q", profile.Driver)
+	if profile.Driver != model.DriverAnthropicMessages {
+		return fmt.Errorf("anthropic-messages driver cannot serve %q", profile.Driver)
 	}
 	if err := profile.Validate(); err != nil {
 		return err
 	}
 	if profile.Parameters.MaxTokens == nil {
-		return fmt.Errorf("anthropic profile requires parameters.max_tokens")
+		return fmt.Errorf("anthropic-messages profile requires parameters.max_tokens")
 	}
 	return nil
 }

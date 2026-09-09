@@ -167,7 +167,7 @@ type snapshotContractFixture struct {
 func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 	t.Helper()
 	modelProfile := model.Profile{
-		Driver:   model.DriverOpenAI,
+		Driver:   model.DriverOpenAIChatCompletions,
 		Endpoint: "https://example.test/v1/chat/completions",
 		Model:    "snapshot-fixture",
 		Headers: map[string]string{
@@ -194,7 +194,7 @@ func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 	}
 	driver := &snapshotContractDriver{
 		identity: model.DriverExecutionIdentity{
-			Driver:                model.DriverOpenAI,
+			Driver:                model.DriverOpenAIChatCompletions,
 			Implementation:        "runtime.run.snapshot-contract-test",
 			ImplementationVersion: 1,
 		},
@@ -204,7 +204,7 @@ func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 	models, err := model.NewService(
 		modelCatalog,
 		map[model.DriverName]model.Driver{
-			model.DriverOpenAI: driver,
+			model.DriverOpenAIChatCompletions: driver,
 		},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			secretReads++

@@ -17,9 +17,9 @@ import (
 
 func TestDriverExecutionIdentity(t *testing.T) {
 	identity := New(nil).ExecutionIdentity()
-	if identity.Driver != model.DriverOpenAI ||
-		identity.Implementation != executionImplementation ||
-		identity.ImplementationVersion != executionImplementationVersion {
+	if identity.Driver != model.DriverOpenAIChatCompletions ||
+		identity.Implementation != "runtime.provider.openai-chat-completions" ||
+		identity.ImplementationVersion != 1 {
 		t.Fatalf("identity=%#v", identity)
 	}
 	if err := identity.Validate(); err != nil {
@@ -212,7 +212,7 @@ func newService(
 	topP := 0.9
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver: model.DriverOpenAI, BaseURL: baseURL + "/v1", Model: "fixture",
+			Driver: model.DriverOpenAIChatCompletions, BaseURL: baseURL + "/v1", Model: "fixture",
 			Headers: map[string]string{"Authorization": "${MODEL_API_KEY}"},
 			Parameters: model.Parameters{
 				MaxTokens: &maxTokens, TopP: &topP,
@@ -230,7 +230,7 @@ func newService(
 	}
 	service, err := model.NewService(
 		catalog,
-		map[model.DriverName]model.Driver{model.DriverOpenAI: New(client)},
+		map[model.DriverName]model.Driver{model.DriverOpenAIChatCompletions: New(client)},
 		model.ServiceOptions{Getenv: func(name string) (string, bool) {
 			return "secret", name == "MODEL_API_KEY"
 		}, AttemptObserver: observer},

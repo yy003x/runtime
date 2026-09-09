@@ -11,8 +11,12 @@ import (
 )
 
 // decodeStream requires a terminal Response, not EOF or [DONE]. Intermediate
-// events are wire evidence; only the terminal response.output is projected.
+// events are wire evidence; only completed output is projected.
 func decodeStream(reader io.Reader) (responseEnvelope, *contract.RuntimeError) {
+	return decodeResponseStream(reader, false)
+}
+
+func decodeResponseStream(reader io.Reader, codex bool) (responseEnvelope, *contract.RuntimeError) {
 	fail := func(message string) (responseEnvelope, *contract.RuntimeError) {
 		return responseEnvelope{}, httpx.ProtocolError(providerName, message)
 	}
@@ -20,6 +24,7 @@ func decodeStream(reader io.Reader) (responseEnvelope, *contract.RuntimeError) {
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 64<<10), int(httpx.MaxResponseBytes))
 	var data []string
+	var completedItems map[int]outputItem
 	eventName := ""
 	for scanner.Scan() {
 		if limited.N == 0 {
@@ -47,10 +52,12 @@ func decodeStream(reader io.Reader) (responseEnvelope, *contract.RuntimeError) {
 			return fail("Responses SSE ended without a terminal response")
 		}
 		var event struct {
-			Type     string            `json:"type"`
-			Response *responseEnvelope `json:"response"`
-			Code     string            `json:"code"`
-			Message  string            `json:"message"`
+			Type        string            `json:"type"`
+			Response    *responseEnvelope `json:"response"`
+			OutputIndex *int              `json:"output_index"`
+			Item        *outputItem       `json:"item"`
+			Code        string            `json:"code"`
+			Message     string            `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fail("decode Responses SSE: " + err.Error())
@@ -63,16 +70,48 @@ func decodeStream(reader io.Reader) (responseEnvelope, *contract.RuntimeError) {
 			return responseEnvelope{}, (responseError{Code: event.Code, Message: event.Message}).runtimeError()
 		}
 		switch event.Type {
+		case "response.output_item.done":
+			if codex {
+				if event.OutputIndex == nil || *event.OutputIndex < 0 || event.Item == nil {
+					return fail("Codex completed output item is missing its index or item")
+				}
+				if completedItems == nil {
+					completedItems = make(map[int]outputItem)
+				}
+				if _, exists := completedItems[*event.OutputIndex]; exists {
+					return fail("Codex completed output item index is duplicated")
+				}
+				completedItems[*event.OutputIndex] = *event.Item
+			}
+			continue
+		case "response.done":
+			if !codex || event.Response == nil || (event.Response.Status != "completed" && event.Response.Status != "incomplete" && event.Response.Status != "failed") {
+				return fail("invalid Codex terminal response")
+			}
 		case "response.completed", "response.incomplete", "response.failed":
 			if event.Response == nil || event.Response.Status != strings.TrimPrefix(event.Type, "response.") {
 				return fail("Responses SSE terminal event and response status disagree")
 			}
-			return *event.Response, nil
 		default:
 			if !strings.HasPrefix(event.Type, "response.") {
 				return fail("unsupported Responses SSE event: " + event.Type)
 			}
+			continue
 		}
+		// Codex may send output items only in output_item.done, leaving the
+		// terminal output empty. Assemble those snapshots once, never deltas;
+		// the terminal still determines success, finish reason, errors and usage.
+		if codex && len(event.Response.Output) == 0 && len(completedItems) > 0 {
+			event.Response.Output = make([]outputItem, len(completedItems))
+			for index := range event.Response.Output {
+				item, exists := completedItems[index]
+				if !exists {
+					return fail("Codex completed output item indices are not contiguous")
+				}
+				event.Response.Output[index] = item
+			}
+		}
+		return *event.Response, nil
 	}
 	if err := scanner.Err(); err != nil {
 		return fail("read Responses SSE: " + err.Error())

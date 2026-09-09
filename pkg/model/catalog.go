@@ -122,7 +122,7 @@ func (catalog *Catalog) resolve(
 			logValue = "[REDACTED]"
 		}
 		if sensitive && strings.EqualFold(name, authorizationHeader) &&
-			(profile.Driver == DriverOpenAI || profile.Driver == DriverOpenAIResponses) && !hasAuthScheme(value) {
+			(profile.Driver == DriverOpenAIChatCompletions || profile.Driver == DriverOpenAIResponses) && !hasAuthScheme(value) {
 			value = bearerScheme + " " + value
 			logValue = bearerScheme + " " + logValue
 		}

@@ -72,7 +72,7 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 
 func TestMainHelpTopicsHaveHumanAndMachineContracts(t *testing.T) {
 	topics := []string{
-		"tui", "exec", "call", "doctor", "profile",
+		"tui", "exec", "call", "auth", "doctor", "profile",
 		"session", "agent", "job", "server", "update",
 	}
 	for _, topic := range topics {

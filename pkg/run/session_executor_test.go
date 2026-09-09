@@ -216,7 +216,7 @@ func newSessionExecutorProfiles(
 	}
 	models, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver:   model.DriverOpenAI,
+			Driver:   model.DriverOpenAIChatCompletions,
 			Endpoint: endpoint,
 			Model:    "fixture",
 			Headers: map[string]string{

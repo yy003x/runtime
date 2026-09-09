@@ -1,6 +1,7 @@
 // Package openairesponses implements single-call OpenAI Responses requests.
-// The driver performs one HTTP attempt; it never persists responses, executes
-// tools, retries, or reconstructs a multi-turn reasoning conversation.
+// The driver performs one HTTP attempt with no local persistence, tool loop or
+// retry. Wire diagnostics preserve the consumed upstream JSON independently of
+// the canonical result projection.
 package openairesponses
 
 import (
@@ -22,13 +23,18 @@ const providerName = "openai-responses"
 
 type Driver struct {
 	client *http.Client
+	codex  bool
 }
 
 func New(client *http.Client) *Driver {
 	return &Driver{client: provider.SingleAttemptClient(client)}
 }
 
-func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
+func (driver *Driver) ExecutionIdentity() model.DriverExecutionIdentity {
+	if driver.codex {
+		return model.DriverExecutionIdentity{Driver: model.DriverOpenAICodexResponses,
+			Implementation: "runtime.provider.openai-codex-responses", ImplementationVersion: 1}
+	}
 	return model.DriverExecutionIdentity{
 		Driver:                model.DriverOpenAIResponses,
 		Implementation:        "runtime.provider.openai-responses",
@@ -36,9 +42,9 @@ func (*Driver) ExecutionIdentity() model.DriverExecutionIdentity {
 	}
 }
 
-func (*Driver) Validate(profile model.Profile) error {
-	if profile.Driver != model.DriverOpenAIResponses {
-		return fmt.Errorf("openai-responses driver cannot serve %q", profile.Driver)
+func (driver *Driver) Validate(profile model.Profile) error {
+	if profile.Driver != driver.ExecutionIdentity().Driver {
+		return fmt.Errorf("%s driver cannot serve %q", driver.ExecutionIdentity().Driver, profile.Driver)
 	}
 	return profile.Validate()
 }
@@ -49,7 +55,20 @@ func (driver *Driver) Stream(
 	request contract.ModelRequest,
 	sink contract.EventSink,
 ) (result contract.ModelResult, attempt provider.Attempt, runtimeErr *contract.RuntimeError) {
+	if driver.codex {
+		defer func() {
+			if runtimeErr != nil {
+				runtimeErr.Provider = string(model.DriverOpenAICodexResponses)
+			}
+		}()
+		if resolved.Driver != model.DriverOpenAICodexResponses || resolved.Endpoint != model.OpenAICodexEndpoint {
+			return result, attempt, httpx.ProtocolError(string(model.DriverOpenAICodexResponses), "invalid Codex destination")
+		}
+	}
 	payload, err := encodeRequest(resolved, request)
+	if driver.codex {
+		payload, err = encodeCodexRequest(resolved, request)
+	}
 	if err != nil {
 		return result, attempt, &contract.RuntimeError{
 			Code: contract.ErrorInvalidRequest, Phase: contract.PhaseRequest,
@@ -68,6 +87,12 @@ func (driver *Driver) Stream(
 	for name, value := range resolved.RequestHeaders() {
 		httpRequest.Header.Set(name, value)
 	}
+	if driver.codex {
+		httpRequest.Header.Set("Accept", "text/event-stream")
+		httpRequest.Header.Set("OpenAI-Beta", "responses=experimental")
+		httpRequest.Header.Set("Originator", "sn-cli")
+		httpRequest.Header.Set("User-Agent", "sn-runtime")
+	}
 	attempt = provider.Attempt{Started: true, Request: provider.Request{
 		Method: httpRequest.Method, URL: provider.SafeURL(httpRequest.URL.String()),
 		Headers: provider.RequestHeaders(httpRequest.Header, resolved.LogRequestHeaders()),
@@ -78,7 +103,12 @@ func (driver *Driver) Stream(
 		return result, attempt, httpx.NetworkError(providerName, provider.SafeNetworkError(err))
 	}
 	defer response.Body.Close()
-	contentType := response.Header.Get("Content-Type")
+	responseFormat := response.Header.Get("Content-Type")
+	if driver.codex && response.StatusCode >= 200 && response.StatusCode < 300 {
+		// Codex always streams; gateways may omit or mislabel Content-Type.
+		// Use the same framing for decoding and capture, without changing wire headers.
+		responseFormat = "text/event-stream"
+	}
 	attempt.Response = &provider.Response{
 		Status: response.StatusCode, Headers: provider.SafeHeaders(response.Header),
 		Data: make([]json.RawMessage, 0),
@@ -86,7 +116,11 @@ func (driver *Driver) Stream(
 	var captured bytes.Buffer
 	reader := io.TeeReader(response.Body, &captured)
 	defer func() {
-		attempt.Response.Data = provider.ResponseData(captured.Bytes(), contentType)
+		attempt.Response.Data = provider.ResponseData(captured.Bytes(), responseFormat)
+		attempt.Response.Format = "json"
+		if strings.Contains(strings.ToLower(responseFormat), "text/event-stream") {
+			attempt.Response.Format = "sse"
+		}
 	}()
 	if response.StatusCode >= 300 {
 		body, err := httpx.ReadLimited(reader, httpx.MaxErrorBytes)
@@ -96,8 +130,8 @@ func (driver *Driver) Stream(
 		return result, attempt, httpx.ProviderError(providerName, response.StatusCode, response.Header, body)
 	}
 	var envelope responseEnvelope
-	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-		envelope, runtimeErr = decodeStream(reader)
+	if strings.Contains(strings.ToLower(responseFormat), "text/event-stream") {
+		envelope, runtimeErr = decodeResponseStream(reader, driver.codex)
 	} else {
 		var body []byte
 		body, err = httpx.ReadLimited(reader, httpx.MaxResponseBytes)
@@ -118,8 +152,11 @@ func (driver *Driver) Stream(
 	if runtimeErr != nil {
 		return contract.ModelResult{}, attempt, runtimeErr
 	}
-	// The terminal Response is authoritative. Emit its canonical projection once,
-	// not a concatenation of both deltas and output_text.done/completed snapshots.
+	if driver.codex {
+		result.Provider.Name = string(model.DriverOpenAICodexResponses)
+	}
+	// The terminal Response gates completion. Project completed output once,
+	// not a concatenation of deltas and completed item/response snapshots.
 	// The enclosing ResilientModel also buffers events until an attempt succeeds.
 	if err := emitResult(result, sink); err != nil {
 		return contract.ModelResult{}, attempt, &contract.RuntimeError{
