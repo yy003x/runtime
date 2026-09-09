@@ -57,6 +57,9 @@ func (executor *AgentExecutor) validateAgentRequestShape(
 				request.ProfileID,
 			)
 		}
+		if err := entry.Model.ValidateManagedExecution(); err != nil {
+			return err
+		}
 		if _, ok := executor.Model.(agentExecutionModel); !ok {
 			return fmt.Errorf(
 				"agent model must provide generation and execution snapshots on the same object",
@@ -323,6 +326,9 @@ func canonicalAgentExecutionSnapshot(
 	modelJSON, err := snapshot.ModelExecutionSnapshot.CanonicalJSON()
 	if err != nil {
 		return nil, fmt.Errorf("Agent model execution snapshot: %w", err)
+	}
+	if err := snapshot.ModelExecutionSnapshot.Profile.ValidateManagedExecution(); err != nil {
+		return nil, err
 	}
 	var modelSnapshot model.ExecutionSnapshot
 	if err := json.Unmarshal(modelJSON, &modelSnapshot); err != nil {

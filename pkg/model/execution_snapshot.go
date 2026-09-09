@@ -32,7 +32,7 @@ type DriverExecutionIdentity struct {
 
 func (identity DriverExecutionIdentity) Validate() error {
 	switch identity.Driver {
-	case DriverOpenAI, DriverAnthropic:
+	case DriverOpenAI, DriverOpenAIResponses, DriverAnthropic:
 	default:
 		return fmt.Errorf(
 			"driver execution identity has unsupported driver %q",

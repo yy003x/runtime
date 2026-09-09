@@ -25,7 +25,7 @@ const (
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
 	executionImplementation        = "runtime.provider.anthropic"
-	executionImplementationVersion = 2
+	executionImplementationVersion = 3
 )
 
 type Driver struct {
@@ -78,7 +78,11 @@ func (driver *Driver) Stream(
 		return contract.ModelResult{}, attempt, httpx.ProtocolError(providerName, err.Error())
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "text/event-stream, application/json")
+	if resolved.Parameters.StreamingEnabled() {
+		httpRequest.Header.Set("Accept", "text/event-stream, application/json")
+	} else {
+		httpRequest.Header.Set("Accept", "application/json")
+	}
 	httpRequest.Header.Set("anthropic-version", "2023-06-01")
 	for name, value := range resolved.RequestHeaders() {
 		httpRequest.Header.Set(name, value)
@@ -211,7 +215,7 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 		Temperature:   request.Options.Temperature,
 		TopP:          request.Options.TopP,
 		StopSequences: request.Options.StopSequences,
-		Stream:        true,
+		Stream:        resolved.Parameters.StreamingEnabled(),
 	})
 }
 

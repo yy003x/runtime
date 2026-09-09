@@ -11,6 +11,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	maxTokens := int64(2048)
 	temperature := 0.25
 	topP := 0.9
+	stream := false
 	summaryEnabled := true
 	profile := Profile{
 		Driver:   DriverOpenAI,
@@ -25,6 +26,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 			Temperature:   &temperature,
 			TopP:          &topP,
 			StopSequences: []string{"END"},
+			Stream:        &stream,
 		},
 		Timeout: "90s",
 		Context: ContextPolicy{
@@ -80,6 +82,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	first.Profile.Headers["X-Alpha"] = "mutated"
 	*first.Profile.Parameters.MaxTokens = 1
 	*first.Profile.Parameters.TopP = 0.1
+	*first.Profile.Parameters.Stream = true
 	first.Profile.Parameters.StopSequences[0] = "mutated"
 	*first.Profile.Context.SummaryEnabled = false
 	second, err := service.ExecutionSnapshot("snapshot")
@@ -97,6 +100,7 @@ func TestServiceExecutionSnapshotIsCanonicalNonSecretAndCloned(
 	if second.Profile.Headers["X-Alpha"] != "a" ||
 		*second.Profile.Parameters.MaxTokens != 2048 ||
 		*second.Profile.Parameters.TopP != 0.9 ||
+		*second.Profile.Parameters.Stream ||
 		second.Profile.Parameters.StopSequences[0] != "END" ||
 		!*second.Profile.Context.SummaryEnabled {
 		t.Fatalf("snapshot shares mutable Profile storage: %#v", second.Profile)
@@ -129,6 +133,9 @@ func TestExecutionSnapshotStrictlyRejectsTampering(t *testing.T) {
 		"profile_digest": func(snapshot *ExecutionSnapshot) {
 			snapshot.ProfileDigest = "sha256:forged"
 		},
+		"stream": func(snapshot *ExecutionSnapshot) {
+			snapshot.Profile.Parameters.Stream = boolPointer(false)
+		},
 		"driver": func(snapshot *ExecutionSnapshot) {
 			snapshot.DriverIdentity.Driver = DriverAnthropic
 		},
@@ -152,6 +159,29 @@ func TestExecutionSnapshotStrictlyRejectsTampering(t *testing.T) {
 				t.Fatal("tampered snapshot produced canonical JSON")
 			}
 		})
+	}
+}
+
+func TestExecutionSnapshotStreamModeChangesDigest(t *testing.T) {
+	profile := Profile{
+		Driver: DriverOpenAI, BaseURL: "https://example.invalid", Model: "fixture", Timeout: "1m",
+	}
+	identity := (&testDriver{}).ExecutionIdentity()
+	seenProfiles, seenSnapshots := make(map[string]bool), make(map[string]bool)
+	for _, stream := range []*bool{nil, boolPointer(true), boolPointer(false)} {
+		profile.Parameters.Stream = stream
+		snapshot, err := newExecutionSnapshot("fixture", profile, identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest, err := snapshot.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seenProfiles[snapshot.ProfileDigest] || seenSnapshots[digest] {
+			t.Fatal("stream change was not captured in execution identity")
+		}
+		seenProfiles[snapshot.ProfileDigest], seenSnapshots[digest] = true, true
 	}
 }
 

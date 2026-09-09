@@ -80,19 +80,30 @@ type resilientInner interface {
 //
 // The retry boundary is one Profile. It never switches drivers or Profiles.
 type ResilientModel struct {
-	inner   resilientInner
-	policy  RetryPolicy
-	backoff func(attempt int, retryAfter time.Duration) time.Duration
-	sleep   func(ctx context.Context, delay time.Duration) bool
+	inner        resilientInner
+	policy       RetryPolicy
+	callObserver CallObserver
+	backoff      func(attempt int, retryAfter time.Duration) time.Duration
+	sleep        func(ctx context.Context, delay time.Duration) bool
 }
 
 // NewResilientModel wraps inner with policy. Pass DefaultRetryPolicy() for the
 // production default. inner must be non-nil.
 func NewResilientModel(inner *Service, policy RetryPolicy) *ResilientModel {
-	model := &ResilientModel{inner: inner, policy: policy.normalized()}
+	model := &ResilientModel{
+		inner: inner, policy: policy.normalized(), callObserver: inner.callObserver,
+	}
 	model.backoff = model.defaultBackoff
 	model.sleep = defaultRetrySleep
 	return model
+}
+
+// ValidateManagedExecution preserves the inner Generator's capability restriction.
+func (model *ResilientModel) ValidateManagedExecution(profileID string) error {
+	if validator, ok := model.inner.(ManagedExecutionValidator); ok {
+		return validator.ValidateManagedExecution(profileID)
+	}
+	return nil
 }
 
 // Generate runs a non-streaming inference with the same retry semantics as
@@ -108,7 +119,21 @@ func (model *ResilientModel) GenerateStream(
 	ctx context.Context,
 	request contract.GenerateRequest,
 	sink contract.EventSink,
-) (contract.ModelResult, *contract.RuntimeError) {
+) (result contract.ModelResult, resultError *contract.RuntimeError) {
+	if model.callObserver != nil {
+		attempts := &callAttempts{}
+		ctx = context.WithValue(ctx, callAttemptsKey{}, attempts)
+		defer func() {
+			if len(attempts.values) == 0 {
+				return
+			}
+			first := attempts.values[0]
+			notifyCallObserver(model.callObserver, CallObservation{
+				Origin: first.Origin, ProfileID: first.ProfileID,
+				Attempts: attempts.values, Error: resultError,
+			})
+		}()
+	}
 	policy := model.policy
 	var lastError *contract.RuntimeError
 	for attempt := 0; attempt < policy.MaxAttempts; attempt++ {

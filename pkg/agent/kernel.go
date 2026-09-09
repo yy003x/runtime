@@ -893,6 +893,14 @@ func (kernel *Kernel) validate(state *LoopState) *contract.RuntimeError {
 	if strings.TrimSpace(state.ModelProfile) == "" {
 		return agentError(contract.ErrorInvalidRequest, "model_profile is required")
 	}
+	// A completed terminal outcome can still be read back without executing its
+	// model. A paused outcome may resume tool effects, so it must pass the gate.
+	if validator, ok := kernel.Model.(model.ManagedExecutionValidator); ok &&
+		(state.TerminalOutcome == nil || state.TerminalOutcome.State == StatePaused) {
+		if err := validator.ValidateManagedExecution(state.ModelProfile); err != nil {
+			return agentError(contract.ErrorInvalidRequest, err.Error())
+		}
+	}
 	if len(state.Messages) == 0 {
 		return agentError(contract.ErrorInvalidRequest, "messages are required")
 	}

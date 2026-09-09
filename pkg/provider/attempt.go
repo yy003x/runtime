@@ -132,17 +132,40 @@ func SensitiveQueryParameter(name string) bool {
 func ResponseData(body []byte, contentType string) []json.RawMessage {
 	values := make([]json.RawMessage, 0)
 	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		var pending []byte
+		flush := func() {
+			if json.Valid(pending) {
+				values = append(values, append(json.RawMessage(nil), pending...))
+			}
+			pending = nil
+		}
 		for _, line := range bytes.Split(body, []byte{'\n'}) {
 			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				flush()
+				continue
+			}
 			if !bytes.HasPrefix(line, []byte("data:")) {
 				continue
 			}
 			data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-			if bytes.Equal(data, []byte("[DONE]")) || !json.Valid(data) {
+			if len(pending) > 0 {
+				pending = append(pending, '\n')
+				pending = append(pending, data...)
 				continue
 			}
-			values = append(values, append(json.RawMessage(nil), data...))
+			if bytes.Equal(data, []byte("[DONE]")) {
+				continue
+			}
+			if json.Valid(data) {
+				values = append(values, append(json.RawMessage(nil), data...))
+			} else if len(data) > 0 && (data[0] == '{' || data[0] == '[') {
+				// Validate a multiline frame only at its boundary, avoiding
+				// quadratic rescanning of an ever-growing partial JSON body.
+				pending = append(pending, data...)
+			}
 		}
+		flush()
 		return values
 	}
 	data := bytes.TrimSpace(body)

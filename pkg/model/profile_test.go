@@ -72,6 +72,70 @@ func TestValidateModelProfile(t *testing.T) {
 	}
 }
 
+func TestParametersStreamDefaultsAndCatalogIsolation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		stream *bool
+		want   bool
+	}{
+		{name: "omitted", want: true},
+		{name: "true", stream: boolPointer(true), want: true},
+		{name: "false", stream: boolPointer(false), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := Profile{
+				Driver: DriverOpenAI, BaseURL: "https://example.invalid", Model: "fixture",
+				Parameters: Parameters{Stream: test.stream}, Timeout: "1m",
+			}
+			catalog, err := NewCatalog(map[string]Profile{"fixture": profile})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.stream != nil {
+				*test.stream = !test.want
+			}
+			first, _ := catalog.Get("fixture")
+			if first.Parameters.StreamingEnabled() != test.want {
+				t.Fatal("input Profile mutation affected the catalog")
+			}
+			data, err := json.Marshal(first.Parameters)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if test.stream == nil {
+				if _, exists := fields["stream"]; exists {
+					t.Fatal("omitted stream was serialized")
+				}
+			} else if string(fields["stream"]) != fmt.Sprint(test.want) {
+				t.Fatalf("stream=%s want=%t", fields["stream"], test.want)
+			}
+			if first.Parameters.Stream != nil {
+				*first.Parameters.Stream = !test.want
+			}
+			resolved, _, err := catalog.resolve("fixture", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.Parameters.StreamingEnabled() != test.want {
+				t.Fatal("getter shares Stream storage")
+			}
+			if resolved.Parameters.Stream != nil {
+				*resolved.Parameters.Stream = !test.want
+			}
+			second, _ := catalog.Get("fixture")
+			if second.Parameters.StreamingEnabled() != test.want {
+				t.Fatal("resolved model shares Stream storage")
+			}
+		})
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
 func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		profile Profile
@@ -89,14 +153,14 @@ func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) 
 				Driver:  DriverOpenAI,
 				BaseURL: "https://example.invalid/provider/",
 			},
-			want: "https://example.invalid/provider/v1/chat/completions",
+			want: "https://example.invalid/provider/chat/completions",
 		},
 		"anthropic_base": {
 			profile: Profile{
 				Driver:  DriverAnthropic,
 				BaseURL: "https://example.invalid/provider",
 			},
-			want: "https://example.invalid/provider/v1/messages",
+			want: "https://example.invalid/provider/messages",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -123,6 +187,46 @@ func TestResolvedEndpointSupportsExplicitEndpointAndDriverBaseURL(t *testing.T) 
 				t.Fatalf("profile=%#v was accepted", profile)
 			}
 		})
+	}
+}
+
+func TestEndpointNeverInsertsOrDetectsVersion(t *testing.T) {
+	for driver, suffix := range map[DriverName]string{
+		DriverOpenAI: "/chat/completions", DriverAnthropic: "/messages", DriverOpenAIResponses: "/responses",
+	} {
+		for _, prefix := range []string{"", "/v1", "/api/v3", "/api/paas/v4", "/compatible-mode/v1", "/vendor/unversioned"} {
+			for _, trailing := range []string{"", "/"} {
+				base := "https://example.invalid" + prefix
+				got, err := (Profile{Driver: driver, BaseURL: base + trailing}).ResolvedEndpoint()
+				if err != nil || got != base+suffix {
+					t.Fatalf("driver=%s base=%s got=%s err=%v", driver, base+trailing, got, err)
+				}
+			}
+		}
+		endpoint := "https://example.invalid/custom/endpoint?api-version=fixture"
+		got, err := (Profile{Driver: driver, Endpoint: endpoint}).ResolvedEndpoint()
+		if err != nil || got != endpoint {
+			t.Fatalf("driver=%s got=%s err=%v", driver, got, err)
+		}
+	}
+}
+
+func TestResponsesProfileValidation(t *testing.T) {
+	profile := Profile{Driver: DriverOpenAIResponses, BaseURL: "https://example.invalid/v1", Model: "fixture", Timeout: "1m"}
+	if err := profile.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := profile.ValidateManagedExecution(); err == nil {
+		t.Fatal("Responses managed execution accepted")
+	}
+	profile.Parameters.StopSequences = []string{"END"}
+	if err := profile.Validate(); err == nil {
+		t.Fatal("Responses stop sequences accepted")
+	}
+	for _, driver := range []DriverName{DriverOpenAI, DriverAnthropic} {
+		if err := (Profile{Driver: driver}).ValidateManagedExecution(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

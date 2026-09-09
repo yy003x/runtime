@@ -66,7 +66,7 @@ func TestDriverStreamsToolUseWithoutRetry(t *testing.T) {
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
 			Driver:  model.DriverAnthropic,
-			BaseURL: server.URL, Model: "fixture",
+			BaseURL: server.URL + "/v1", Model: "fixture",
 			Headers: map[string]string{"x-api-key": "${MODEL_API_KEY}"},
 			Parameters: model.Parameters{
 				MaxTokens: &maxTokens, TopP: &topP,
@@ -114,6 +114,38 @@ func TestDriverRequiresMaxTokens(t *testing.T) {
 	}
 	if err := New(nil).Validate(profile); err == nil {
 		t.Fatal("profile without max_tokens was accepted")
+	}
+}
+
+func TestEncodeRequestStreamModes(t *testing.T) {
+	for _, name := range []string{"omitted", "true", "false"} {
+		t.Run(name, func(t *testing.T) {
+			var stream *bool
+			if name != "omitted" {
+				value := name == "true"
+				stream = &value
+			}
+			maxTokens := int64(64)
+			payload, err := encodeRequest(model.ResolvedModel{
+				Model: "fixture", Parameters: model.Parameters{Stream: stream},
+			}, contract.ModelRequest{
+				Messages: []contract.Message{{Role: contract.RoleUser, Content: "hello"}},
+				Options:  contract.GenerateOptions{MaxOutputTokens: &maxTokens},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &body); err != nil {
+				t.Fatal(err)
+			}
+			if string(body["stream"]) != fmt.Sprint(name != "false") {
+				t.Fatalf("stream=%s mode=%s", body["stream"], name)
+			}
+			if _, exists := body["stream_options"]; exists {
+				t.Fatal("unexpected OpenAI stream_options")
+			}
+		})
 	}
 }
 

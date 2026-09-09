@@ -168,6 +168,39 @@ func TestEncodeRequestOmitsUnsetCommonOptions(t *testing.T) {
 	}
 }
 
+func TestEncodeRequestStreamModes(t *testing.T) {
+	for _, name := range []string{"omitted", "true", "false"} {
+		t.Run(name, func(t *testing.T) {
+			var stream *bool
+			if name != "omitted" {
+				value := name == "true"
+				stream = &value
+			}
+			payload, err := encodeRequest(model.ResolvedModel{
+				Model: "fixture", Parameters: model.Parameters{Stream: stream},
+			}, request().Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &body); err != nil {
+				t.Fatal(err)
+			}
+			want := name != "false"
+			if string(body["stream"]) != fmt.Sprint(want) {
+				t.Fatalf("stream=%s want=%t", body["stream"], want)
+			}
+			if want {
+				if string(body["stream_options"]) != `{"include_usage":true}` {
+					t.Fatalf("stream_options=%s", body["stream_options"])
+				}
+			} else if _, exists := body["stream_options"]; exists {
+				t.Fatal("non-stream request must not include stream_options")
+			}
+		})
+	}
+}
+
 func newService(
 	t *testing.T,
 	baseURL string,
@@ -179,7 +212,7 @@ func newService(
 	topP := 0.9
 	catalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": {
-			Driver: model.DriverOpenAI, BaseURL: baseURL, Model: "fixture",
+			Driver: model.DriverOpenAI, BaseURL: baseURL + "/v1", Model: "fixture",
 			Headers: map[string]string{"Authorization": "${MODEL_API_KEY}"},
 			Parameters: model.Parameters{
 				MaxTokens: &maxTokens, TopP: &topP,

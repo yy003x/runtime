@@ -193,15 +193,15 @@ func TestRuntimeDirectModelStreamEndsWithOneCompactFinal(t *testing.T) {
 }
 
 func TestAPIProfileFixedValueDoesNotConsumeStreamFlag(t *testing.T) {
-	request, stream, err := parseDirectModelInput(
+	request, options, err := parseDirectModelInput(
 		"api-cx",
 		testModelProfile("openai"),
 		[]string{"--system", "--stream", "hello"},
 	)
 	if err == nil || !strings.Contains(err.Error(), "--system requires value") {
-		t.Fatalf("request=%#v stream=%t error=%v", request, stream, err)
+		t.Fatalf("request=%#v stream=%t error=%v", request, options.Stream, err)
 	}
-	if stream {
+	if options.Stream {
 		t.Fatal("value-position --stream selected stream mode")
 	}
 }
@@ -244,7 +244,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 	); err == nil {
 		t.Fatal("unsupported --model override was accepted")
 	}
-	request, stream, err := parseDirectModelInput(
+	request, options, err := parseDirectModelInput(
 		"api",
 		openAIProfile,
 		[]string{
@@ -252,11 +252,11 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 			"--max-tokens", "128", "hello",
 		},
 	)
-	if err != nil || !stream || request.Input.Options.Temperature == nil ||
+	if err != nil || !options.Stream || request.Input.Options.Temperature == nil ||
 		request.Input.Options.MaxOutputTokens == nil ||
 		*request.Input.Options.MaxOutputTokens != 128 ||
 		len(request.Input.Messages) != 1 {
-		t.Fatalf("request=%#v stream=%v error=%v", request, stream, err)
+		t.Fatalf("request=%#v stream=%v error=%v", request, options.Stream, err)
 	}
 	anthropicProfile := testModelProfile("anthropic")
 	if _, _, err := parseDirectModelInput(
@@ -268,7 +268,7 @@ func TestParseDirectModelInputRejectsModelOverride(t *testing.T) {
 
 func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) {
 	profile := testModelProfile("openai")
-	request, stream, err := parseDirectModelInput(
+	request, options, err := parseDirectModelInput(
 		"api",
 		profile,
 		[]string{
@@ -281,11 +281,11 @@ func TestParseDirectModelInputEnforcesStrictOptionAndInputGrammar(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stream || request.Input.System != "system" ||
+	if !options.Stream || request.Input.System != "system" ||
 		request.Input.Options.Temperature == nil ||
 		*request.Input.Options.Temperature != 0.5 ||
 		request.Input.Messages[0].Content != "--leading-input" {
-		t.Fatalf("request=%#v stream=%t", request, stream)
+		t.Fatalf("request=%#v stream=%t", request, options.Stream)
 	}
 
 	for _, args := range [][]string{

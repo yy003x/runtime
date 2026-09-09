@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yy003x/runtime/internal/domain/identity"
+	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/internal/infrastructure/runtimeconfig"
 	"github.com/yy003x/runtime/internal/testkit/reporoot"
@@ -19,15 +20,15 @@ import (
 	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
 )
 
-func TestExecutionAttemptObserverWritesAPIRecordBestEffort(t *testing.T) {
+func TestExecutionCallObserverWritesAPIRecordBestEffort(t *testing.T) {
 	logsDir := filepath.Join(t.TempDir(), "logs")
-	observer := executionAttemptObserver(logsDir)
-	observer(model.Attempt{
+	observer := executionCallObserver(logsDir)
+	observer(model.CallObservation{
 		Origin: model.AttemptOrigin{
 			Namespace: model.AttemptNamespaceAgent, Source: "agent run_fixture",
 		},
 		ProfileID: "api-cc",
-		Wire: provider.Attempt{
+		Attempts: []model.Attempt{{Wire: provider.Attempt{
 			Started: true,
 			Request: provider.Request{
 				Method: "POST", URL: "https://example.invalid/v1/messages",
@@ -35,7 +36,7 @@ func TestExecutionAttemptObserverWritesAPIRecordBestEffort(t *testing.T) {
 				Body:    json.RawMessage(`{"model":"fixture"}`),
 			},
 			Response: &provider.Response{Status: 200, Data: []json.RawMessage{}},
-		},
+		}}},
 	})
 	paths, err := filepath.Glob(filepath.Join(logsDir, "*", "api.jsonl"))
 	if err != nil || len(paths) != 1 {
@@ -46,16 +47,18 @@ func TestExecutionAttemptObserverWritesAPIRecordBestEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	var record struct {
-		Namespace string `json:"namespace"`
-		Profile   string `json:"profile"`
-		Source    string `json:"source"`
-		CallID    string `json:"call_id"`
+		Namespace string                    `json:"namespace"`
+		Profile   string                    `json:"profile"`
+		Source    string                    `json:"source"`
+		CallID    string                    `json:"call_id"`
+		Attempts  []executionlog.APIAttempt `json:"attempts"`
 	}
 	if err := json.Unmarshal(data, &record); err != nil {
 		t.Fatal(err)
 	}
 	if record.Namespace != "agent" || record.Profile != "api-cc" ||
-		record.Source != "agent run_fixture" || identity.Validate(record.CallID, "call") != nil {
+		record.Source != "agent run_fixture" || identity.Validate(record.CallID, "call") != nil ||
+		len(record.Attempts) != 1 || record.Attempts[0].Attempt != 1 {
 		t.Fatalf("record=%#v", record)
 	}
 
@@ -64,9 +67,9 @@ func TestExecutionAttemptObserverWritesAPIRecordBestEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The observer is diagnostic-only: an unwritable target must be swallowed.
-	executionAttemptObserver(broken)(model.Attempt{
+	executionCallObserver(broken)(model.CallObservation{
 		Origin:    model.AttemptOrigin{Namespace: model.AttemptNamespaceRequest},
-		ProfileID: "api", Wire: provider.Attempt{Started: true},
+		ProfileID: "api", Attempts: []model.Attempt{{Wire: provider.Attempt{Started: true}}},
 	})
 	content, err := os.ReadFile(broken)
 	if err != nil || strings.TrimSpace(string(content)) != "not a directory" {

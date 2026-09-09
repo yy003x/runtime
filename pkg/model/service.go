@@ -35,16 +35,36 @@ type Generator interface {
 	) (contract.ModelResult, *contract.RuntimeError)
 }
 
+// ManagedExecutionValidator is an optional Generator capability restriction.
+// Agent consumers must check it before any model/tool effect. Wrappers around
+// a restricted Generator must forward this capability rather than erase it.
+type ManagedExecutionValidator interface {
+	ValidateManagedExecution(profileID string) error
+}
+
+func (service *Service) ValidateManagedExecution(profileID string) error {
+	if service == nil || service.catalog == nil {
+		return fmt.Errorf("model service is unavailable")
+	}
+	profile, exists := service.catalog.Get(profileID)
+	if !exists {
+		return fmt.Errorf("unknown model profile %q", profileID)
+	}
+	return profile.ValidateManagedExecution()
+}
+
 type Service struct {
 	catalog         *Catalog
 	drivers         map[DriverName]Driver
 	getenv          func(string) (string, bool)
 	attemptObserver AttemptObserver
+	callObserver    CallObserver
 }
 
 type ServiceOptions struct {
 	Getenv          func(string) (string, bool)
 	AttemptObserver AttemptObserver
+	CallObserver    CallObserver
 }
 
 func NewService(
@@ -93,6 +113,7 @@ func NewService(
 	return &Service{
 		catalog: catalog, drivers: values, getenv: getenv,
 		attemptObserver: options.AttemptObserver,
+		callObserver:    options.CallObserver,
 	}, nil
 }
 
@@ -206,17 +227,37 @@ func (service *Service) GenerateStream(
 	result, wireAttempt, callError := driver.Stream(
 		callContext, resolved, input, state.accept,
 	)
-	if wireAttempt.Started && service.attemptObserver != nil {
+	requestObserver := attemptObserver(ctx)
+	callAttempts := pendingCallAttempts(ctx)
+	if wireAttempt.Started && (service.attemptObserver != nil || requestObserver != nil ||
+		service.callObserver != nil || callAttempts != nil) {
 		defer func() {
 			attempt := Attempt{
 				Origin: attemptOrigin(ctx), ProfileID: request.ModelProfile,
 				Wire: wireAttempt, Error: resultError,
 			}
-			safeAttempt, redactErr := redactValue(attempt, secrets)
-			if redactErr != nil {
-				return
+			if service.callObserver != nil || callAttempts != nil {
+				if safeAttempt, redactErr := redactValue(attempt, secrets); redactErr == nil {
+					if callAttempts != nil {
+						callAttempts.values = append(callAttempts.values, safeAttempt)
+					} else {
+						notifyCallObserver(service.callObserver, CallObservation{
+							Origin: safeAttempt.Origin, ProfileID: safeAttempt.ProfileID,
+							Attempts: []Attempt{safeAttempt}, Error: safeAttempt.Error,
+						})
+					}
+				}
 			}
-			notifyAttemptObserver(service.attemptObserver, safeAttempt)
+			for _, observer := range []AttemptObserver{service.attemptObserver, requestObserver} {
+				if observer == nil {
+					continue
+				}
+				safeAttempt, redactErr := redactValue(attempt, secrets)
+				if redactErr != nil {
+					continue
+				}
+				notifyAttemptObserver(observer, safeAttempt)
+			}
 		}()
 	}
 	if state.failure != nil {

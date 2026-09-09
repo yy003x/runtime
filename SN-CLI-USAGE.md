@@ -126,7 +126,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | 打开 Codex/Claude/Grok 交互 TUI | `sn-cli <cli-profile-id>` | 无 / cli-log | bare CLI Profile 固定 direct |
 | 临时覆盖模型或 effort | `sn-cli <cli-profile> --model ... --effort ...` | 无 / cli-log | typed 参数优先于 Profile 配置 |
 | 一次性运行 CLI 并退出 | `sn-cli exec <cli-profile> ...` | 无 / cli-log | Codex 映射为 `exec`，Claude 映射为 `-p`，Grok 映射为 `--single` |
-| 调用一次模型 API | `sn-cli call <api-profile> ...` | 无 / api-log | 只执行一次 Provider call |
+| 调用一次模型 API | `sn-cli call <api-profile> ...` | 无 / api-log | 一个逻辑模型请求，可包含有限重试 |
 | 保存一轮 CLI 会话历史 | `sn-cli session exec <cli-profile> ...` | session / cli-log | managed non-interactive Turn |
 | 保存一轮 API 会话历史 | `sn-cli session call <api-profile> ...` | session / api-log | 单次 API Turn |
 | 后台执行并保存会话 | `session exec\|call <profile> --queue ...` | durable / worker log | 提交 Durable Session Run |
@@ -542,7 +542,7 @@ execution mode 不属于 Profile 配置；配置中的 `exec` 是未知字段，
 {
   "type": "api",
   "driver": "openai",
-  "base_url": "https://example.com/provider",
+  "base_url": "https://example.com/provider/v1",
   "model": "model-name",
   "headers": {
     "Authorization": "${API_KEY}"
@@ -550,7 +550,9 @@ execution mode 不属于 Profile 配置；配置中的 `exec` 是未知字段，
   "parameters": {
     "max_tokens": 16384,
     "temperature": 0.2,
-    "stop_sequences": ["END"]
+    "top_p": 0.9,
+    "stop_sequences": ["END"],
+    "stream": true
   },
   "timeout": "5m",
   "context": {
@@ -567,12 +569,75 @@ execution mode 不属于 Profile 配置；配置中的 `exec` 是未知字段，
 ```text
 openai
 anthropic
+openai-responses
 ```
 
-API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai driver 对裸
+API secret 通过 headers 的 `${VAR}` 引用从环境变量读取；openai / openai-responses 对裸
 `Authorization` 值（不含空格）自动补 `Bearer ` 前缀，anthropic 不补。`profile show`
-不会输出展开后的 secret。`endpoint` 与 `base_url` 二选一；后者按 driver 自动追加
-`/v1/chat/completions` 或 `/v1/messages`，并保留已有路径前缀。
+不会输出展开后的 secret。`endpoint` 与 `base_url` 二选一；后者是包含版本的完整 API
+前缀，只追加 `/chat/completions`、`/messages` 或 `/responses`。Runtime 不额外拼接
+版本，也不自动迁移配置。例如方舟 `/api/v3`、智谱 `/api/paas/v4` 保留原样。
+
+Responses Profile 示例（写入所使用 Runtime home 的 `configs/api-responses.json`）：
+
+```json
+{
+  "type": "api",
+  "driver": "openai-responses",
+  "base_url": "https://api.openai.com/v1",
+  "model": "your-responses-model",
+  "headers": { "Authorization": "${OPENAI_API_KEY}" },
+  "parameters": { "max_tokens": 4096, "stream": true },
+  "timeout": "5m"
+}
+```
+
+```bash
+sn-cli profile check api-responses
+sn-cli profile show api-responses
+sn-cli call api-responses "你好"
+sn-cli call api-responses --raw "你好"
+```
+
+首版仅支持单次 `call`（及等价无状态 Go/HTTP model generation）：文本、返回函数调用、
+usage、HTTP JSON 与 SSE、原始请求/响应和 attempts 日志。请求固定 `store:false`；
+`parameters.stream:false` 选择普通 JSON。SSE 以终态 response 归一化一次，原始 delta
+留在 raw/日志；不承诺实时打印。不支持 Session/Agent、assistant/tool 历史续接、
+`previous_response_id`、非空 stop_sequences、内建托管工具或多模态；均不得默默降级。
+
+`parameters` 当前支持的完整字段如下，不接受任意 Provider 参数透传：
+
+| 字段 | 类型与约束 | 作用 |
+|---|---|---|
+| `max_tokens` | 正整数；Anthropic 必填，OpenAI 可省略或为 `null` | 默认最大输出 token 数；CLI `--max-tokens` 或请求 `max_output_tokens` 可覆盖 |
+| `temperature` | `0..2`，可省略或为 `null` | 默认采样温度；请求级值优先 |
+| `top_p` | `0..1`，可省略或为 `null` | 默认核采样概率；请求级值优先 |
+| `stop_sequences` | 最多 4 个非空字符串，每项最多 1024 字节 | 默认停止序列；OpenAI 映射为 `stop`，Anthropic 使用同名字段 |
+| `stream` | `true` / `false`，省略默认 `true`；不接受 `null` 或字符串 | 控制 Provider 上游响应模式，与 CLI 输出模式无关 |
+
+需要普通 JSON 响应时，在 API Profile 中设置：
+
+```json
+{
+  "parameters": {
+    "max_tokens": 16384,
+    "stream": false
+  }
+}
+```
+
+这是 Profile 配置片段，不是 `--request-file` 中的 canonical `ModelRequest`。
+`stream:true` 请求 SSE，`stream:false` 请求普通 JSON；两者都是发往同一个 HTTPS
+endpoint 的 POST，不切换 URL，不增加自动 fallback 或重试。默认 `Accept` 随配置
+切换为 `text/event-stream, application/json` 或 `application/json`；显式 Profile
+headers 仍可覆盖默认 header。OpenAI 仅在流式请求中发送 `stream_options.include_usage`。
+adapter 按实际 `Content-Type` 解析 SSE/JSON，即使服务端返回的格式与请求偏好不同，
+仍处理实际响应，不因格式不同再发一次请求。错误仍统一归一化，raw/log 保留实际响应。
+
+CLI `--stream` 只是下游 Runtime 事件 NDJSON 输出选项，不覆盖 `parameters.stream`。
+既有重试层会缓存每次 attempt 的事件，仅在成功后放行；因此当前 CLI 事件输出并非
+端到端实时逐字输出。`--raw` 仍在结束后输出请求体和响应 JSON（实际为 SSE 时输出
+分片数组）。`stream` 被纳入执行 snapshot/digest，修改配置不能静默改变已冻结的执行。
 
 ### 4.3 runtime.json
 
@@ -651,15 +716,16 @@ sn-cli agent api-cc \
 ```
 
 `agent` 会把启用的 definitions 注入每一轮 model request，并自动执行 model 返回的
-tool call。`call` 仍只有一次 Provider call；`session call` 仍不自动执行 tool。
+tool call。`call` 只执行一个逻辑模型请求，可包含有限重试；`session call` 仍不自动执行 tool。
 每次 MCP 执行不 retry、不跟随 redirect；失败作为 `is_error=true` 的 tool result
 返回下一轮模型。`doctor` 会检查已启用 tool 的环境变量，但不访问远端。
 
 ### 4.5 本地 execution、audit 与 server log
 
 只有携带 Profile ID 并进入真实执行边界的调用才写日志：CLI 在最终 invocation
-准备 launch 时写 `cli.jsonl`；API 在 Provider driver 调用 `http.Client.Do` 后写
-`api.jsonl`。`profile list/show/check`、Session/Run/Tmux 查询和控制、前置校验失败、
+准备 launch 时写 `cli.jsonl`；API 在至少一次 Provider driver 调用 `http.Client.Do`
+之后，逻辑模型调用结束时写一行 `api.jsonl`，其中 `attempts` 包含完整重试过程。
+`profile list/show/check`、Session/Run/Tmux 查询和控制、前置校验失败、
 queue submit 都不写这两类 execution log。queued Session/Agent 由 worker 真正执行
 时写；Agent 每个 model round 各写一条。MCP HTTP 不写 `api.jsonl`；tool call/result 由 Durable Run 的
 effect/event evidence 记录。`session logs` 是 canonical Session activity，和这里的
@@ -691,9 +757,10 @@ CLI 行保持紧凑结构：
 {"time":"2026-08-04 10:40:23","namespace":"exec","profile":"cx","source":"sn-cli exec cx 简单介绍下自己","command":"CODEX_HOME=${HOME}/.codex-aip && cd /workspace && /opt/homebrew/bin/codex exec --ephemeral --json -- 简单介绍下自己"}
 ```
 
-下面是 `sn-cli call api-cc "简单介绍下自己"` 对应的 API 日志示例。文件中仍是单行
-JSONL，这里只为阅读展开；`response.data` 中的每个元素都是按到达顺序保存的原始
-JSON response/frame（经过 secret 脱敏），不是 Runtime event：
+下面是 `sn-cli call api-cc "简单介绍下自己"` 对应的 API 日志示例。每次逻辑调用
+只写一行 JSONL，这里只为阅读展开。`attempts` 按顺序保留全部实际 HTTP 尝试，
+`attempt` 从 1 开始；每个 `response.data` 元素都是原始 JSON response/frame
+（经过 secret 脱敏），不是 Runtime event：
 
 ```json
 {
@@ -702,58 +769,103 @@ JSON response/frame（经过 secret 脱敏），不是 Runtime event：
   "profile": "api-cc",
   "source": "sn-cli call api-cc 简单介绍下自己",
   "call_id": "call_0123456789abcdef0123456789abcdef",
-  "request": {
-    "method": "POST",
-    "url": "https://open.bigmodel.cn/api/anthropic/v1/messages",
-    "headers": {
-      "Accept": "text/event-stream, application/json",
-      "Anthropic-Version": "2023-06-01",
-      "Content-Type": "application/json",
-      "X-Api-Key": "${Z_AI_API_KEY}"
-    },
-    "body": {
-      "model": "glm-5.2",
-      "messages": [
-        {
-          "role": "user",
-          "content": [
-            {"type": "text", "text": "简单介绍下自己"}
-          ]
+  "attempts": [
+    {
+      "attempt": 1,
+      "request": {
+        "method": "POST",
+        "url": "https://open.bigmodel.cn/api/anthropic/v1/messages",
+        "headers": {
+          "Accept": "text/event-stream, application/json",
+          "Anthropic-Version": "2023-06-01",
+          "Content-Type": "application/json",
+          "X-Api-Key": "${Z_AI_API_KEY}"
+        },
+        "body": {
+          "model": "glm-5.2",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "简单介绍下自己"
+                }
+              ]
+            }
+          ],
+          "max_tokens": 16384,
+          "stream": true
         }
-      ],
-      "max_tokens": 16384,
-      "stream": true
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream"
+        },
+        "data": [
+          {
+            "type": "message_start",
+            "message": {
+              "id": "msg_example",
+              "model": "glm-5.2",
+              "usage": {
+                "input_tokens": 12
+              }
+            }
+          },
+          {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          },
+          {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "我是一个AI助手。"
+            }
+          },
+          {
+            "type": "message_delta",
+            "delta": {
+              "stop_reason": "end_turn"
+            },
+            "usage": {
+              "output_tokens": 9
+            }
+          },
+          {
+            "type": "message_stop"
+          }
+        ]
+      },
+      "error": null
     }
-  },
-  "response": {
-    "status": 200,
-    "headers": {
-      "Content-Type": "text/event-stream"
-    },
-    "data": [
-      {"type": "message_start", "message": {"id": "msg_example", "model": "glm-5.2", "usage": {"input_tokens": 12}}},
-      {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-      {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "我是一个AI助手。"}},
-      {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 9}},
-      {"type": "message_stop"}
-    ]
-  },
+  ],
   "error": null
 }
 ```
 
-API `request` 固定为 `method/url/headers/body`，不保存 curl 字符串；普通 JSON
+每个 API attempt 的 `request` 固定为 `method/url/headers/body`，不保存 curl 字符串；普通 JSON
 response 作为 `data` 的单元素，SSE 收集全部有效 JSON `data:` frame，OpenAI
 `[DONE]` 不保存。网络错误时 `response` 为 `null`，`error` 保存脱敏后的 typed
 RuntimeError。API key 等 header 使用 Profile 的 `${VAR}` 引用（OpenAI 裸 key 会记成
 `Bearer ${VAR}`），字面量敏感 header、cookie、URL query 及 response/error 中回显的
 secret 记为 `[REDACTED]`。Driver 不自动跟随 redirect，3xx 作为这一次 Provider
-response/error 记录，避免一次调用产生未分账的多个 HTTP request。
+response/error 记录，避免一次 attempt 产生未分账的多个 HTTP request。
+`call_id` 标识整次逻辑调用，其全部重试都在同一 `attempts` 数组；顶层 `error`
+记录最终 RuntimeError。每个 attempt 的 `error` 则记录当次错误，成功为 `null`。
+前置失败无实际 HTTP attempt 时不写日志；逻辑调用结束前进程退出可能导致整条日志缺失。
 
 execution log 是 best-effort 诊断：写入错误、锁冲突、非法路径或 observer 异常都
 直接丢弃，不改变请求结果、stream、exit code、retry、Session 或 Run。写入不与执行
 建事务，也不做 `fsync`。当前没有 retention、总量限制或自动 GC；旧 flat `.jsonl`
-保持原样，不迁移、不读取。
+保持原样，不迁移、不读取。既有每日日志行也不重写，不提供旧 schema reader。
 
 ## 5. Profile 管理和执行入口
 
@@ -1046,7 +1158,7 @@ stdin内容
 
 ```text
 sn-cli [--json] call <api-profile-id>
-  [--stream]
+  [--stream | --raw]
   [--request-file PATH|-]
   [--system TEXT]
   [--max-tokens POSITIVE_INT]
@@ -1058,6 +1170,7 @@ sn-cli [--json] call <api-profile-id>
 | 参数 | 作用与限制 |
 |---|---|
 | `--stream` | 输出 NDJSON model events |
+| `--raw` | 调用结束后输出最后一次尝试的原始请求体、响应 JSON；完整 attempts 在日志内；与 leading `--json`、`--stream` 互斥 |
 | `--request-file PATH` | 读取 canonical `ModelRequest` JSON |
 | `--request-file -` | 从 stdin 读取整个 JSON request |
 | `--system TEXT` | 设置 system prompt |
@@ -1148,7 +1261,7 @@ sn-cli call api-cx --system "只回答结论" "当前状态是什么"
 --effort is not supported for API profile "<id>"
 ```
 
-一次 `call` 调用只执行一次 Provider call，不创建 Session 或 Run。模型返回
+一次 `call` 执行一个逻辑模型请求，瞬时错误按现有策略最多尝试 3 次，不创建 Session 或 Run。模型返回
 tool call 时输出 `requires_action`，但不会执行工具。
 
 输出模式：
@@ -1159,6 +1272,30 @@ tool call 时输出 `requires_action`，但不会执行工具。
 | Tool call | 打印 `requires_action` 和 tool call 摘要 |
 | leading `--json` | 输出 `state=completed|requires_action` 和完整 result |
 | `--stream` | NDJSON model events，最后输出 final envelope |
+| `--raw` | 两行裸 JSON：实际 request body、原始 response JSON；不含 Runtime 元信息或额外 error 包装 |
+
+查看实际输入输出，或保存到文件：
+
+```bash
+sn-cli call cc-api --raw "你好"
+sn-cli call cc-api --raw --request-file request.json > model-io.jsonl
+```
+
+`cc-api` 是示例 Profile ID，替换为本机 `profile list` 中的 API Profile。
+第一行是最后一次 HTTP 尝试的 `request.body`：Provider 协议编码及 Profile 默认参数
+合并后的实际 JSON，而不是 canonical `ModelRequest`。第二行直接输出对应的原始
+响应 JSON；SSE 的有效 JSON `data:` 分片按序保存在一个数组内，不输出 `[DONE]`。
+没有 `attempts`、`profile`、`type`、版本号、HTTP 元信息或额外 Runtime `error` 包装。
+Provider 返回错误 JSON 时原样保留其结构：原文本身有 `error` 字段就保留，
+原文没有就不添加。完整 attempts、HTTP 元信息和 RuntimeError 只在 API 日志中记录。
+
+这是脱敏后的 application-level JSON 诊断，不是字节级 HTTP 抓包。
+读取失败或中断时数据可能不完整。没有响应 JSON（如网络失败、非 JSON body）时，
+第二行输出 `null`，不伪造错误响应。失败仍在 stderr 报错、退出码非零。
+前置参数、Profile、认证环境校验失败不会伪造请求或响应，stdout 为空。
+API key、敏感 header/cookie、URL credential 和回显的已解析 secret 仍会脱敏；
+prompt 和模型内容可能包含其它敏感业务数据，重定向文件应自行妥善保管。
+是否使用 `--raw` 不影响日志格式、重试、Session/Run 或 tool 执行行为。
 
 ### 5.7 正式 release Profile
 

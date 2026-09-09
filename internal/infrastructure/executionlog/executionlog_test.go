@@ -31,22 +31,25 @@ func TestAppendSeparatesDailyCLIAndAPIRecords(t *testing.T) {
 	if err := AppendAPI(root, APIRecord{
 		Time: when, Namespace: NamespaceRequest, Profile: "api-cc",
 		Source: "sn-cli call api-cc 简单介绍下自己", CallID: "call_fixture",
-		Request: provider.Request{
-			Method: "POST", URL: "https://example.invalid/v1/messages",
-			Headers: map[string]string{
-				"Content-Type": "application/json",
-				"X-Api-Key":    "${MODEL_API_KEY}",
+		Attempts: []APIAttempt{{
+			Attempt: 1,
+			Request: provider.Request{
+				Method: "POST", URL: "https://example.invalid/v1/messages",
+				Headers: map[string]string{
+					"Content-Type": "application/json",
+					"X-Api-Key":    "${MODEL_API_KEY}",
+				},
+				Body: json.RawMessage(`{"model":"fixture","messages":[]}`),
 			},
-			Body: json.RawMessage(`{"model":"fixture","messages":[]}`),
-		},
-		Response: &provider.Response{
-			Status: 200, Headers: map[string]string{"Content-Type": "application/json"},
-			Data: []json.RawMessage{json.RawMessage(`{"id":"msg-1"}`)},
-		},
-		Error: &contract.RuntimeError{
-			Code:  contract.ErrorProviderUnavailable,
-			Phase: contract.PhaseProvider, Message: "fixture", Retryable: true,
-		},
+			Response: &provider.Response{
+				Status: 200, Headers: map[string]string{"Content-Type": "application/json"},
+				Data: []json.RawMessage{json.RawMessage(`{"id":"msg-1"}`)},
+			},
+			Error: &contract.RuntimeError{
+				Code:  contract.ErrorProviderUnavailable,
+				Phase: contract.PhaseProvider, Message: "fixture", Retryable: true,
+			},
+		}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +63,7 @@ func TestAppendSeparatesDailyCLIAndAPIRecords(t *testing.T) {
 		t.Fatalf("CLI keys=%v", got)
 	}
 	if got := sortedKeys(api); !reflect.DeepEqual(got, []string{
-		"call_id", "error", "namespace", "profile", "request", "response", "source", "time",
+		"attempts", "call_id", "error", "namespace", "profile", "source", "time",
 	}) {
 		t.Fatalf("API keys=%v", got)
 	}
@@ -71,7 +74,15 @@ func TestAppendSeparatesDailyCLIAndAPIRecords(t *testing.T) {
 	if _, exists := api["command"]; exists {
 		t.Fatalf("API record unexpectedly contains command: %#v", api)
 	}
-	request := api["request"].(map[string]any)
+	attempts := api["attempts"].([]any)
+	if len(attempts) != 1 {
+		t.Fatalf("attempts=%v", attempts)
+	}
+	attempt := attempts[0].(map[string]any)
+	if got := sortedKeys(attempt); !reflect.DeepEqual(got, []string{"attempt", "error", "request", "response"}) || attempt["attempt"] != float64(1) {
+		t.Fatalf("attempt=%v", attempt)
+	}
+	request := attempt["request"].(map[string]any)
 	headers := request["headers"].(map[string]any)
 	if headers["X-Api-Key"] != "${MODEL_API_KEY}" {
 		t.Fatalf("request headers=%#v", headers)
@@ -191,7 +202,7 @@ func TestAppendConcurrentRecordsRemainValidJSONLines(t *testing.T) {
 			if err := AppendAPI(root, APIRecord{
 				Time: when, Namespace: NamespaceAgent, Profile: "api",
 				Source: "agent run_fixture", CallID: "call_fixture",
-				Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)},
+				Attempts: []APIAttempt{{Attempt: 1, Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)}}},
 			}); err != nil {
 				t.Errorf("append: %v", err)
 			}
@@ -240,7 +251,7 @@ func TestAppendConcurrentAcrossDistinctFiles(t *testing.T) {
 			if err := AppendAPI(root, APIRecord{
 				Time: when, Namespace: NamespaceAgent, Profile: "api",
 				Source: "agent run", CallID: "call",
-				Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)},
+				Attempts: []APIAttempt{{Attempt: 1, Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)}}},
 			}); err != nil {
 				t.Errorf("append api: %v", err)
 			}
@@ -294,7 +305,7 @@ func TestAppendLeavesLegacyFlatLogUntouchedAndEncodesNetworkFailure(t *testing.T
 	if err := AppendAPI(root, APIRecord{
 		Time: when, Namespace: NamespaceRequest, Profile: "api",
 		Source: "sn-cli call api hello", CallID: "call_fixture",
-		Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)},
+		Attempts: []APIAttempt{{Attempt: 1, Request: provider.Request{Method: "POST", Body: json.RawMessage(`{}`)}}},
 		Error: &contract.RuntimeError{
 			Code: contract.ErrorProviderUnavailable, Phase: contract.PhaseProvider,
 			Message: "connection failed", Retryable: true,
@@ -306,7 +317,8 @@ func TestAppendLeavesLegacyFlatLogUntouchedAndEncodesNetworkFailure(t *testing.T
 		t.Fatalf("legacy=%q error=%v", data, err)
 	}
 	record := decodeLine(t, filepath.Join(root, "260804", "api.jsonl"))
-	if response, exists := record["response"]; !exists || response != nil {
+	attempt := record["attempts"].([]any)[0].(map[string]any)
+	if response, exists := attempt["response"]; !exists || response != nil {
 		t.Fatalf("response=%#v exists=%t", response, exists)
 	}
 	if record["error"] == nil {
@@ -397,7 +409,7 @@ func TestAppendRejectsRedirectedDayAndFileTargets(t *testing.T) {
 			test.setup(t, root, outside)
 			err := AppendAPI(root, APIRecord{
 				Time: when, Profile: "api",
-				Request: provider.Request{Method: "POST"},
+				Attempts: []APIAttempt{{Attempt: 1, Request: provider.Request{Method: "POST"}}},
 			})
 			if err == nil {
 				t.Fatal("redirected target was accepted")
@@ -423,7 +435,7 @@ func TestAppendDoesNotBlockOnFIFOLogTarget(t *testing.T) {
 	go func() {
 		done <- AppendAPI(root, APIRecord{
 			Time:    time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC),
-			Profile: "api", Request: provider.Request{Method: "POST"},
+			Profile: "api", Attempts: []APIAttempt{{Attempt: 1, Request: provider.Request{Method: "POST"}}},
 		})
 	}()
 	select {

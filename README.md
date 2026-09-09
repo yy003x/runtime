@@ -109,6 +109,9 @@ sn-cli profile check     # validate every profile's structure
 # One model API call (needs the profile's referenced env var set)
 sn-cli call api-cx "Reply OK"
 
+# Inspect the actual model request and response (two bare, redacted JSON values)
+sn-cli call api-cx --raw "Reply OK"
+
 # Open the Codex/Claude/Grok interactive TUI
 sn-cli cx
 sn-cli gk
@@ -116,6 +119,17 @@ sn-cli gk
 # Run a CLI one-shot and wait for it to exit
 sn-cli exec cx "Summarize this repo"
 ```
+
+`call` defaults to assistant text. `--raw` prints two bare JSON values after
+completion: the last HTTP attempt's Provider-encoded request body, then the original
+response JSON (an array of original frames for SSE). No Runtime metadata, `attempts`
+wrapper or extra `error` field is added. A Provider error JSON keeps its own fields;
+missing or non-JSON responses are represented by `null`. Failures still exit non-zero
+with stderr diagnostics, and preflight failures produce no raw values. `--raw` cannot
+be combined with `--json` or `--stream`. All attempts, HTTP metadata and the final
+Runtime error are kept in one best-effort `api.jsonl` record per logical call,
+regardless of output mode. Credentials are redacted, but model content may remain
+sensitive. Capture is not byte-exact HTTP and interrupted responses may be partial.
 
 ### A recorded session
 
@@ -274,23 +288,50 @@ an API profile points at a provider:
 {
   "type": "api",
   "driver": "openai",
-  "base_url": "https://your-provider/compatible-mode",
+  "base_url": "https://your-provider/compatible-mode/v1",
   "model": "your-model",
   "headers": { "Authorization": "${YOUR_API_KEY}" },
-  "parameters": { "max_tokens": 16384 },
+  "parameters": { "max_tokens": 16384, "stream": true },
   "timeout": "5m"
 }
 ```
 
+API `parameters` supports `max_tokens`, `temperature`, `top_p`, `stop_sequences`,
+and `stream`. `stream` is an optional boolean (not `null`), defaulting to `true`:
+`true` requests SSE, while `false` sends `stream:false` for a regular JSON response.
+Both use the same HTTPS POST endpoint. OpenAI omits `stream_options` when false;
+all adapters decode SSE or JSON according to the actual response Content-Type.
+This Profile setting is independent of CLI `--stream`, `--json`, and `--raw`.
+CLI `--stream` selects Runtime event output; the existing retry layer buffers
+each attempt and publishes events only after success, not in real time.
+
 Secrets are referenced via `${VAR}` in `headers` and expanded from environment
 variables at call time — the profile only stores the reference name, never the
-value. The openai driver auto-prepends the `Bearer ` scheme to a bare
+value. The openai and openai-responses drivers auto-prepend the `Bearer ` scheme to a bare
 `Authorization` value; the anthropic driver does not. `runtime.json` selects
 the agent tools, budgets, scheduler, run retention, and tmux server mode; source
 `resources/tools/` ships `web_search` and `web_fetch` MCP manifests using
 `Z_AI_API_KEY`. Full field reference, override order, and
 examples: [sn-cli reference](SN-CLI-USAGE.md) and
 [SN Runtime contract](docs/runtime-contract.md).
+
+## API protocols
+
+`base_url` is the complete API prefix, including the provider's version path.
+Runtime only appends `chat/completions` (`openai`), `messages` (`anthropic`), or
+`responses` (`openai-responses`). It never adds or detects a version. For example,
+`https://example.com/api/v3` becomes `https://example.com/api/v3/chat/completions`.
+A complete `endpoint` is used unchanged. Existing unversioned base URLs must be
+updated explicitly when their provider requires `/v1`; no automatic migration runs.
+
+Use `driver: "openai-responses"` with `base_url: "https://api.openai.com/v1"`
+for Responses. It supports single `call` requests (also stateless Go/HTTP model
+generation), SSE/JSON, text, returned function calls, usage, and raw attempt logs.
+Requests send `store:false` and map `max_tokens` to `max_output_tokens`.
+SSE requires a terminal Response and projects its output once; intermediate frames
+are preserved in raw/logs, not published as real-time canonical deltas.
+Session/Agent, assistant/tool history, stop sequences, hosted tools and multimodal
+input are not supported. Returned function calls are never automatically executed.
 
 ## Project layout
 

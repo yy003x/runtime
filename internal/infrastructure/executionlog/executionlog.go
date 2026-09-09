@@ -43,9 +43,15 @@ type APIRecord struct {
 	Profile   string
 	Source    string
 	CallID    string
-	Request   provider.Request
-	Response  *provider.Response
+	Attempts  []APIAttempt
 	Error     *contract.RuntimeError
+}
+
+type APIAttempt struct {
+	Attempt  int                    `json:"attempt"`
+	Request  provider.Request       `json:"request"`
+	Response *provider.Response     `json:"response"`
+	Error    *contract.RuntimeError `json:"error"`
 }
 
 // AuditRecord contains only control-plane metadata. Callers must never put
@@ -77,8 +83,7 @@ type apiRecordJSON struct {
 	Profile   string                 `json:"profile"`
 	Source    string                 `json:"source"`
 	CallID    string                 `json:"call_id"`
-	Request   provider.Request       `json:"request"`
-	Response  *provider.Response     `json:"response"`
+	Attempts  []APIAttempt           `json:"attempts"`
 	Error     *contract.RuntimeError `json:"error"`
 }
 
@@ -123,7 +128,7 @@ func AppendAPI(logDir string, record APIRecord) error {
 		Time:      record.Time.Format("2006-01-02 15:04:05"),
 		Namespace: record.Namespace, Profile: record.Profile,
 		Source: record.Source, CallID: record.CallID,
-		Request: record.Request, Response: record.Response, Error: record.Error,
+		Attempts: record.Attempts, Error: record.Error,
 	}
 	return appendRecord(logDir, record.Time, "api.jsonl", payload)
 }

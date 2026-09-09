@@ -1,10 +1,10 @@
 {
   "type": "api",
   "driver": "anthropic",
-  "base_url": "https://open.bigmodel.cn/api/anthropic",
-  "model": "glm-5.2",
+  "base_url": "https://ws-guu9tlrmhj23g0fa.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1",
+  "model": "qwen3.8-2.4t-a95b",
   "headers": {
-    "x-api-key": "${Z_AI_API_KEY}"
+    "x-api-key": "${BAILIAN_API_KEY}"
   },
   "parameters": {
     "max_tokens": 16384
@@ -13,5 +13,5 @@
     "window_tokens": 1048576,
     "reserved_output_tokens": 16384
   },
-  "timeout": "50m"
+  "timeout": "5m"
 }

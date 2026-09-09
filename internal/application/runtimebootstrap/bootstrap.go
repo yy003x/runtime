@@ -23,6 +23,7 @@ import (
 	"github.com/yy003x/runtime/pkg/profile"
 	"github.com/yy003x/runtime/pkg/provider/anthropic"
 	"github.com/yy003x/runtime/pkg/provider/openai"
+	"github.com/yy003x/runtime/pkg/provider/openairesponses"
 	runtime "github.com/yy003x/runtime/pkg/run"
 	"github.com/yy003x/runtime/pkg/session"
 	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
@@ -49,10 +50,11 @@ func LoadProfileServices(
 	models, err := model.NewService(
 		profiles.ModelCatalog(),
 		map[model.DriverName]model.Driver{
-			model.DriverOpenAI:    openai.New(nil),
-			model.DriverAnthropic: anthropic.New(nil),
+			model.DriverOpenAI:          openai.New(nil),
+			model.DriverAnthropic:       anthropic.New(nil),
+			model.DriverOpenAIResponses: openairesponses.New(nil),
 		},
-		model.ServiceOptions{AttemptObserver: executionAttemptObserver(paths.LogsDir)},
+		model.ServiceOptions{CallObserver: executionCallObserver(paths.LogsDir)},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build model service: %w", err)
@@ -61,21 +63,30 @@ func LoadProfileServices(
 	return &ProfileServices{Profiles: profiles, Models: resilient}, nil
 }
 
-func executionAttemptObserver(logsDir string) model.AttemptObserver {
-	return func(attempt model.Attempt) {
+func executionCallObserver(logsDir string) model.CallObserver {
+	return func(call model.CallObservation) {
+		if len(call.Attempts) == 0 {
+			return
+		}
 		callID, err := identity.New("call")
 		if err != nil {
 			return
 		}
+		attempts := make([]executionlog.APIAttempt, len(call.Attempts))
+		for index, attempt := range call.Attempts {
+			attempts[index] = executionlog.APIAttempt{
+				Attempt: index + 1, Request: attempt.Wire.Request,
+				Response: attempt.Wire.Response, Error: attempt.Error,
+			}
+		}
 		_ = executionlog.AppendAPI(logsDir, executionlog.APIRecord{
 			Time:      time.Now(),
-			Namespace: executionlog.Namespace(attempt.Origin.Namespace),
-			Profile:   attempt.ProfileID,
-			Source:    attempt.Origin.Source,
+			Namespace: executionlog.Namespace(call.Origin.Namespace),
+			Profile:   call.ProfileID,
+			Source:    call.Origin.Source,
 			CallID:    callID,
-			Request:   attempt.Wire.Request,
-			Response:  attempt.Wire.Response,
-			Error:     attempt.Error,
+			Attempts:  attempts,
+			Error:     call.Error,
 		})
 	}
 }

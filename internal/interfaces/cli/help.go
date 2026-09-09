@@ -45,11 +45,21 @@ var cliHelpTopics = []cliHelpTopic{
 		Summary: "Send one request through an API Profile without creating a Runtime Session or Run.",
 		Usage: []string{
 			"sn-cli call <api-profile-id> [options...] [input]",
+			"sn-cli call <api-profile-id> --raw [options...] [input]",
 			"sn-cli --json call <api-profile-id> [options...] [input]",
 		},
 		Notes: []string{
-			"call accepts API Profiles only, performs one Provider call, and never executes a returned tool call.",
-			"A best-effort execution record is written to logs/YYMMDD/api.jsonl.",
+			"call accepts API Profiles only, performs one logical model request with bounded transient retries, and never executes a returned tool call.",
+			"Drivers: openai (Chat Completions), anthropic (Messages), openai-responses (single call only; no Session, Agent, assistant/tool history, or stop_sequences).",
+			"base_url is the complete API prefix including any version; Runtime appends only chat/completions, messages, or responses. endpoint is used unchanged.",
+			"openai-responses sends store:false; terminal response output is projected once and original SSE frames remain available in --raw and attempts logs.",
+			"API Profile parameters.stream controls upstream delivery: true (default) requests SSE; false requests regular JSON. Both use HTTPS POST; --stream only selects downstream Runtime events.",
+			"The retry layer buffers each attempt's events and publishes them after success; --stream is not real-time Provider passthrough.",
+			"Default output is assistant text; --raw prints the last attempt's request body and original response JSON as two bare JSON values, without Runtime metadata or an extra error field.",
+			"--raw is mutually exclusive with leading --json and --stream. SSE responses use an array of original JSON frames; a missing/non-JSON response is null.",
+			"Provider error JSON is preserved, including its own error key. Preflight failures print no raw values; errors go to stderr and return non-zero.",
+			"--raw contains captured JSON, not byte-exact HTTP: non-JSON bodies/control frames are omitted; interrupted responses may be partial. Model content can still be sensitive.",
+			"One best-effort record per logical call is written to logs/YYMMDD/api.jsonl, with the complete attempts array and final Runtime error.",
 		},
 	},
 	{
@@ -254,6 +264,7 @@ Usage:
   sn-cli <cli-profile-id> --resume [session-id]
   sn-cli exec <cli-profile-id> [options...] [input]
   sn-cli call <api-profile-id> [options...] [input]
+  sn-cli call <api-profile-id> --raw [options...] [input]
   sn-cli --json call <api-profile-id> [options...] [input]
   sn-cli --json <management-command> [args...]
   sn-cli doctor
@@ -292,6 +303,14 @@ Detailed help:
 Lifecycle safety:
   session open       create a native_tui Session and opaque lifecycle Run
   session close-all  close Session-bound native TUI windows; retain Session facts
+
+API call output:
+  default            assistant text
+  parameters.stream  API Profile boolean: true (default) requests SSE; false JSON
+  --stream           Runtime events, buffered until an attempt succeeds
+  --raw              last request body and original response JSON; no Runtime wrapper
+                     call-only; mutually exclusive with --json and --stream
+  API logs           all retry attempts grouped in one record per logical call
 
 Global:
   -h, --help         show root help

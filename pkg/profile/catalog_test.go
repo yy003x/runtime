@@ -52,6 +52,27 @@ func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadStreamModePreservesExplicitFalse(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		t.Run(value, func(t *testing.T) {
+			dir := t.TempDir()
+			document := `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":` + value + `},"timeout":"1m"}`
+			if err := os.WriteFile(filepath.Join(dir, "api.json"), []byte(document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, ok := catalog.Resolve("api")
+			if !ok || entry.Model == nil || entry.Model.Parameters.Stream == nil ||
+				entry.Model.Parameters.StreamingEnabled() != (value == "true") {
+				t.Fatalf("entry=%#v", entry)
+			}
+		})
+	}
+}
+
 func TestLoadAllowsUnreservedProfileIDs(t *testing.T) {
 	configDir := filepath.Join(t.TempDir(), "configs")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
@@ -109,8 +130,8 @@ func TestSourceAPIProfilesResolveDriverDefaultEndpoints(t *testing.T) {
 		driver model.DriverName
 		path   string
 	}{
-		"api-cc.json": {model.DriverAnthropic, "/v1/messages"},
-		"api-cx.json": {model.DriverOpenAI, "/v1/chat/completions"},
+		"api-cc.json": {model.DriverAnthropic, "/messages"},
+		"api-cx.json": {model.DriverOpenAI, "/chat/completions"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kind, _, apiProfile, err := loadFile(filepath.Join(

@@ -12,6 +12,7 @@ import (
 
 	runtimecommand "github.com/yy003x/runtime/pkg/command"
 	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/runtime/pkg/model"
 	"github.com/yy003x/runtime/pkg/profile"
 	"golang.org/x/sys/unix"
 )
@@ -40,6 +41,11 @@ func (service *Service) prepareRunRequest(
 	request RunRequest,
 	entry profile.Entry,
 ) (RunRequest, *contract.RuntimeError) {
+	if entry.Kind == profile.KindModel && entry.Model != nil {
+		if err := entry.Model.ValidateManagedExecution(); err != nil {
+			return RunRequest{}, sessionRuntimeError(contract.ErrorInvalidRequest, err.Error())
+		}
+	}
 	configDigest, err := profileConfigDigest(entry)
 	if err != nil {
 		return RunRequest{}, sessionRuntimeError(
@@ -302,7 +308,14 @@ func requestBasePromptDigest(request RunRequest) string {
 func profileConfigDigest(entry profile.Entry) (string, error) {
 	value := any(entry.Command)
 	if entry.Kind == profile.KindModel {
-		value = entry.Model
+		endpoint, err := entry.Model.ResolvedEndpoint()
+		if err != nil {
+			return "", err
+		}
+		value = struct {
+			*model.Profile
+			ResolvedEndpoint string `json:"resolved_endpoint"`
+		}{entry.Model, endpoint}
 	}
 	data, err := json.Marshal(value)
 	if err != nil {

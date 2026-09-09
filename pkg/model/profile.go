@@ -14,19 +14,27 @@ import (
 type DriverName string
 
 const (
-	DriverOpenAI    DriverName = "openai"
-	DriverAnthropic DriverName = "anthropic"
+	DriverOpenAI          DriverName = "openai"
+	DriverOpenAIResponses DriverName = "openai-responses"
+	DriverAnthropic       DriverName = "anthropic"
 
 	defaultContextWindowTokens  int64 = 32_768
 	defaultReservedOutputTokens int64 = 8_192
 )
 
-// Parameters carries the model generation defaults merged into each request.
+// Parameters carries generation defaults and the upstream response mode.
 type Parameters struct {
 	MaxTokens     *int64   `json:"max_tokens,omitempty"`
 	Temperature   *float64 `json:"temperature,omitempty"`
 	TopP          *float64 `json:"top_p,omitempty"`
 	StopSequences []string `json:"stop_sequences,omitempty"`
+	Stream        *bool    `json:"stream,omitempty"`
+}
+
+// StreamingEnabled selects Provider SSE delivery, independently of whether a
+// caller consumes Runtime events. Omission preserves the default streaming mode.
+func (parameters Parameters) StreamingEnabled() bool {
+	return parameters.Stream == nil || *parameters.Stream
 }
 
 type ContextPolicy struct {
@@ -38,7 +46,7 @@ type ContextPolicy struct {
 
 // Profile is the API-only side of the unified Profile protocol. Authentication
 // is configured directly under headers using ${VAR} references; the runtime
-// expands references and, for the openai driver, prefixes a bare Authorization
+// expands references and, for OpenAI drivers, prefixes a bare Authorization
 // value with the Bearer scheme.
 type Profile struct {
 	Driver     DriverName        `json:"driver"`
@@ -53,7 +61,7 @@ type Profile struct {
 
 func (profile Profile) Validate() error {
 	switch profile.Driver {
-	case DriverOpenAI, DriverAnthropic:
+	case DriverOpenAI, DriverOpenAIResponses, DriverAnthropic:
 	default:
 		return fmt.Errorf("unsupported driver %q", profile.Driver)
 	}
@@ -96,6 +104,9 @@ func (profile Profile) Validate() error {
 	if err := contract.ValidateStopSequences(profile.Parameters.StopSequences); err != nil {
 		return fmt.Errorf("parameters.stop_sequences: %w", err)
 	}
+	if profile.Driver == DriverOpenAIResponses && len(profile.Parameters.StopSequences) != 0 {
+		return fmt.Errorf("openai-responses does not support parameters.stop_sequences")
+	}
 	if profile.Context.WindowTokens < 0 || profile.Context.ReservedOutputTokens < 0 ||
 		profile.Context.KeepRecentTurns < 0 {
 		return fmt.Errorf("context numeric values must not be negative")
@@ -107,6 +118,15 @@ func (profile Profile) Validate() error {
 	timeout, err := time.ParseDuration(profile.Timeout)
 	if err != nil || timeout <= 0 || timeout > 24*time.Hour {
 		return fmt.Errorf("timeout must be a positive duration no greater than 24h")
+	}
+	return nil
+}
+
+// ValidateManagedExecution rejects adapters that cannot losslessly round-trip
+// the canonical conversation used by Session and durable Agent execution.
+func (profile Profile) ValidateManagedExecution() error {
+	if profile.Driver == DriverOpenAIResponses {
+		return fmt.Errorf("openai-responses supports single calls only; Session and Agent execution are not supported")
 	}
 	return nil
 }
@@ -187,9 +207,11 @@ func (profile Profile) ResolvedEndpoint() (string, error) {
 func defaultEndpointPath(driver DriverName) (string, error) {
 	switch driver {
 	case DriverOpenAI:
-		return "v1/chat/completions", nil
+		return "chat/completions", nil
+	case DriverOpenAIResponses:
+		return "responses", nil
 	case DriverAnthropic:
-		return "v1/messages", nil
+		return "messages", nil
 	default:
 		return "", fmt.Errorf("unsupported driver %q", driver)
 	}

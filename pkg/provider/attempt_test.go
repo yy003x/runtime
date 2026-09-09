@@ -30,6 +30,14 @@ func TestResponseDataCollectsJSONFramesInOrder(t *testing.T) {
 	}
 }
 
+func TestResponseDataJoinsMultilineSSEJSON(t *testing.T) {
+	body := "event: response.completed\r\ndata: {\"type\":\"response.completed\",\r\ndata: \"response\":{\"status\":\"completed\"}}\r\n\r\ndata: [DONE]\r\n\r\n"
+	got := ResponseData([]byte(body), "text/event-stream")
+	if len(got) != 1 || !json.Valid(got[0]) || !strings.Contains(string(got[0]), `"response":`) {
+		t.Fatalf("data=%q", got)
+	}
+}
+
 func TestRequestHeadersPreserveReferencesAndRedactLiterals(t *testing.T) {
 	header := http.Header{
 		"Authorization": []string{"Bearer plaintext"},

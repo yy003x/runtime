@@ -87,7 +87,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 				"endpoint":"https://example.invalid/v1/chat/completions",
 				"model":"fixture",
 				"headers":{"Authorization":"${MODEL_API_KEY}","X-Runtime":"fixture"},
-				"parameters":{"max_tokens":1024,"temperature":0.2,"top_p":0.9,"stop_sequences":["END"]},
+				"parameters":{"max_tokens":1024,"temperature":0.2,"top_p":0.9,"stop_sequences":["END"],"stream":true},
 				"timeout":".5s",
 				"context":{"window_tokens":0,"reserved_output_tokens":0,"keep_recent_turns":0}
 			}`,
@@ -101,7 +101,7 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 				"endpoint":"https://example.invalid/v1/messages",
 				"model":"fixture",
 				"headers":{"x-api-key":"${MODEL_API_KEY}"},
-				"parameters":{"max_tokens":1024},
+				"parameters":{"max_tokens":1024,"stream":false},
 				"timeout":"5m"
 			}`,
 			valid: true,
@@ -118,6 +118,20 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 				"timeout":"1m"
 			}`,
 			valid: true,
+		},
+		{
+			name:     "responses_api",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"stream":false,"max_tokens":100},"timeout":"1m"}`,
+			valid:    true,
+		},
+		{
+			name:     "responses_stop_sequences_rejected",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"stop_sequences":["END"]},"timeout":"1m"}`,
+		},
+		{
+			name:     "responses_empty_stop_sequences",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"stop_sequences":[]},"timeout":"1m"}`,
+			valid:    true,
 		},
 		{
 			name: "go_duration_greek_microseconds",
@@ -148,6 +162,26 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		{
 			name:     "missing_type",
 			document: `{"command":"codex"}`,
+		},
+		{
+			name:     "null_api_stream",
+			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":null},"timeout":"1m"}`,
+		},
+		{
+			name:     "string_api_stream",
+			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":"false"},"timeout":"1m"}`,
+		},
+		{
+			name:     "number_api_stream",
+			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":0},"timeout":"1m"}`,
+		},
+		{
+			name:     "array_api_stream",
+			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":[]},"timeout":"1m"}`,
+		},
+		{
+			name:     "object_api_stream",
+			document: `{"type":"api","driver":"openai","base_url":"https://example.invalid","model":"fixture","parameters":{"stream":{}},"timeout":"1m"}`,
 		},
 		{
 			name:     "unknown_field",

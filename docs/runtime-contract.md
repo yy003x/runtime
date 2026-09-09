@@ -92,7 +92,7 @@ API Profile 只接受以下字段：
 | 字段 | 契约 |
 | --- | --- |
 | `type` | 必须为 `api` |
-| `driver` | `openai|anthropic` |
+| `driver` | `openai|anthropic|openai-responses`；Responses 仅支持无状态单次调用 |
 | `endpoint` / `base_url` | 必须且只能配置一个；HTTPS；`base_url` 不接受 query/fragment |
 | `model` | 必填 Provider 模型名 |
 | `headers` | 可选；secret 使用 `${VAR}`；resolved value 不持久化 |
@@ -100,6 +100,7 @@ API Profile 只接受以下字段：
 | `parameters.temperature` | 可选，`0..2` |
 | `parameters.top_p` | 可选，`0..1` |
 | `parameters.stop_sequences` | 可选，最多四个非空字符串 |
+| `parameters.stream` | 可选布尔值；省略默认 `true`；`true` 请求 SSE，`false` 请求普通 JSON；不接受 `null` |
 | `timeout` | 必填 Go duration，范围 `(0,24h]` |
 | `context.window_tokens` | Session 本地上下文窗口；`0`/省略为 `32768` |
 | `context.reserved_output_tokens` | 本地输出预留；`0`/省略基础值为 `8192` |
@@ -235,7 +236,8 @@ logs/
 原样，不迁移，也没有兼容 reader。
 
 记录门禁固定为：必须有 Profile ID，并且进入真实执行边界。CLI 在最终 invocation
-已构建并准备 launch 时写一条；API 只有在 driver 调用 `http.Client.Do` 时写一条。
+已构建并准备 launch 时写一条；API 只有在至少一次 driver 调用 `http.Client.Do`
+之后，才在逻辑模型调用结束时写一条，包含本次调用的全部 HTTP attempts。
 Profile 查询/校验、Session/Run/Tmux 查询与控制、无网络的前置校验失败、queue submit
 都不写 `cli.jsonl`/`api.jsonl`；queued Session/Agent 由 worker 真正执行时写，Agent
 每个 Provider round 各写一条。HTTP `POST /v1/model/generate` 同样进入统一 API 日志。MCP HTTP 不属于
@@ -245,9 +247,12 @@ effect/event 记录。
 CLI 行固定字段为 `time,namespace,profile,source,command`。`command` 是 Runtime
 交给 OS 的可读 invocation；Profile env 保留 `${VAR}` 引用，不写 resolved value。
 API 行固定字段为
-`time,namespace,profile,source,call_id,request,response,error`：
+`time,namespace,profile,source,call_id,attempts,error`：
 
-- `request={method,url,headers,body}` 是 driver protocol encoding 后交给
+- `attempts=[{attempt,request,response,error}]` 按实际 HTTP 尝试顺序排列，
+  `attempt` 从 1 开始，保留每次失败重试；顶层 `error` 是最终 RuntimeError，成功为
+  `null`。只要发生过 HTTP attempt，取消退避或 consumer 失败也记录这次逻辑调用；
+- 每个 attempt 的 `request={method,url,headers,body}` 是 driver protocol encoding 后交给
   `http.Client` 的 application-level request；不保存 curl 字符串；
 - `response={status,headers,data}`；普通 JSON response 的 `data` 是单元素数组，
   SSE 按顺序收集所有有效 JSON `data:` frame，OpenAI `[DONE]` 不属于 JSON；
@@ -255,8 +260,13 @@ API 行固定字段为
 - `${VAR}` header 按 driver 的 auth shaping 保留引用，例如
   `Bearer ${MODEL_API_KEY}`；字面量敏感 header、cookie、URL query 和 response/error
   中回显的 secret 必须脱敏；
-- `call_id` 每次 Provider call 唯一，不等同于 Provider request ID、Run ID 或 Tool
-  call ID。
+- `call_id` 每次逻辑模型调用唯一，同一调用的重试全部位于该记录的 `attempts` 内，
+  不等同于 Provider request ID、Run ID 或 Tool call ID；
+- 通过 `model.CallObserver` 在逻辑调用结束后收集已脱敏的独立副本，由 composition
+  root 写日志。`Service` 直接使用时是单 attempt，`ResilientModel` 汇总 bounded retries。
+  原有 `AttemptObserver` 仍逐次通知，不被日志 observer 替换；
+- 不改写或迁移旧日志，不新增兼容 reader。日志非 durable receipt；若进程在逻辑
+  调用结束前退出，整条记录可能缺失。
 
 `audit.jsonl` 是脱敏控制面审计，`schema_version=1`，时间为 UTC RFC3339Nano。CLI
 记录 `doctor`，Session 的执行提交/terminal/lifecycle mutation，Tmux mutation，Agent
@@ -293,16 +303,73 @@ Driver 禁止 `http.Client` 自动跟随 redirect；每次 `Stream` 只调用一
 Profile 默认输出上限统一配置为 `parameters.max_tokens`，CLI override 统一为
 `--max-tokens`。Canonical request 使用 `max_output_tokens`；openai driver
 将它映射为 wire `max_completion_tokens`，anthropic driver 映射为
-wire `max_tokens`。共有的可选 `temperature`、`top_p`、`stop_sequences` 同样先进入
+wire `max_tokens`，openai-responses 映射为 `max_output_tokens`。
+可选 `temperature`、`top_p`、`stop_sequences` 同样先进入
 canonical request，其中 OpenAI 将停止序列映射为 `stop`；未配置时 adapter 不发送，
-目标模型不保证支持每个可选参数。Canonical tool Message 的
+目标模型不保证支持每个可选参数；Responses 不支持非空 `stop_sequences`，配置和
+请求级值均在发起 HTTP 前拒绝，不静默丢弃。Canonical tool Message 的
 `is_error` 必须保存在 canonical tool Message；anthropic driver 将其映射到
 `tool_result.is_error`，不能只保留在 lifecycle event 中。
 
+`parameters.stream` 是 Profile-only 的上游响应模式，不属于 canonical
+`GenerateOptions`，也不被 CLI `--stream`、`--json`、`--raw` 或下游 HTTP 的 SSE
+选择覆盖。所有 adapter 都发送明确的 wire `stream:true|false`；省略配置时使用
+`true`，显式 `false` 不得因 `omitempty` 丢失。所有模式都使用同一个 HTTPS POST endpoint，
+不放宽 URL 校验。默认 `Accept` 在 true 时为 `text/event-stream, application/json`，
+false 时为 `application/json`；显式 Profile headers 保持原有覆盖优先级。
+Chat Completions 的 `stream_options={include_usage:true}` 只在 stream=true 时发送，false 时
+完全省略；Anthropic 和 Responses 不发送这个字段。
+
+响应始终按实际 `Content-Type` 分流：SSE 逐帧解析，普通 JSON 整体解析，归一为
+相同的 ModelResult/events/usage/tool calls。服务端返回与请求偏好不同的格式时，
+解析实际响应，不切换模式重发；HTTP/协议/认证错误仍按既有 contract 处理。
+raw 和 API attempts 日志记录实际请求参数及实际收到的响应。
+Stream 指针必须与 caller/catalog/snapshot 隔离；配置进入现有 Profile snapshot/digest，
+配置切换使冻结执行的身份发生变化。不增加 schema migration。
+
 API Profile 必须在完整 `endpoint` 与 `base_url` 中二选一。`endpoint` 原样请求；
-`base_url` 保留已有路径前缀，openai driver 追加 `/v1/chat/completions`，
-anthropic driver 追加 `/v1/messages`。`base_url` 不接受 query 或 fragment；
-非默认路径使用显式 `endpoint`。
+`base_url` 是包含供应商要求的版本段在内的完整 API 前缀。openai driver 仅追加
+`/chat/completions`，anthropic 仅追加 `/messages`，openai-responses 仅追加
+`/responses`。不自动插入、猜测或删除 `v1/v3/v4`，不探测、不 fallback 重发。
+例如 `/compatible-mode/v1`、`/api/v3`、`/api/paas/v4` 都原样保留；没有版本的
+前缀也原样保留。`base_url` 不接受 query 或 fragment；非默认路径使用显式 `endpoint`。
+原先依赖自动追加 `/v1` 的配置需要显式补全前缀，不自动迁移 active home。
+这项 URL 语义变化使已有 openai/anthropic driver implementation version 升为 `3`；
+冻结的 Agent execution snapshot 因实现身份不一致而 fail closed，不兼容重放。
+Session API 的配置摘要也纳入 `resolved_endpoint`，防止旧队列在 URL 解析语义改变后
+沿用同一配置摘要执行；旧摘要不兼容重放，不改写历史记录。
+
+### Responses 单次调用
+
+公开 adapter owner 是 `pkg/provider/openairesponses/`，driver 为 `openai-responses`，
+implementation identity 为 `runtime.provider.openai-responses@1`。仅支持 `call` 与
+等价的无状态 Go/HTTP model generation；Session 与 durable Agent 在创建执行记录前
+由领域 owner 调用 `Profile.ValidateManagedExecution` 拒绝，冻结 Agent snapshot 也拒绝。
+Model Service/ResilientModel 通过 `ManagedExecutionValidator` 暴露同一限制；直接嵌入
+Agent Kernel 时也在 Run/Resume 的 model/tool effect 前检查。Generator wrapper 必须保留
+该能力限制；Kernel 不因此读取 Profile/config。
+不扩展 canonical message schema，不保存或猜测 Responses opaque reasoning context。
+
+- 请求使用 `instructions`、仅含 user 文本 Message 的 `input`、平铺 function `tools`，
+  始终 `store:false`。function schema 设置 `strict:false` 保持 canonical 可选字段语义。
+- 拒绝 assistant/tool 历史与工具结果续接；不接受 `previous_response_id`、后台任务、
+  内建托管工具、多模态或任意 Provider 字段透传。函数调用只返回，不执行。
+- JSON 按 `output[]` 提取 assistant 的 `output_text` / `refusal` 和 `function_call`；
+  canonical ToolCall ID 使用 `call_id`，不是 output item 的 `id`。arguments 必须是完整
+  JSON object。reasoning item 只保留在 raw/日志中，不伪装成 canonical 历史。
+- SSE 正确按事件边界合并多行 data，必须收到 `response.completed`、
+  `response.incomplete` 或 `response.failed` 终态；EOF、`[DONE]`、畸形/超限帧不能
+  冒充成功。以终态完整 response 为权威，归一化一次，不重复累加 delta/done/output。
+  因而不承诺逐 token 实时事件输出；所有已消费的原始 JSON 帧仍进入 raw/attempts。
+- `completed` 对应 stop/tool_call；`incomplete` 的 max_output_tokens/content_filter
+  分别对应 length/content_filter。空输出、未知终态、未知输出类型或不完整函数调用
+  明确报协议错误，不构造可执行的残缺 ToolCall。
+- usage 使用 input/output/total_tokens 及缓存、reasoning 明细；显式 `0` 与缺失值区分。
+  HTTP 错误沿用现有映射；JSON error / SSE error / response.failed 也进入 typed error。
+  原始 Provider JSON 不加 Runtime error 包装；raw 的 SSE 仍为帧数组，日志仍为 attempts。
+
+协议依据：[OpenAI Responses 迁移指南](https://developers.openai.com/api/docs/guides/migrate-to-responses)
+与 [Streaming Responses](https://developers.openai.com/api/docs/guides/streaming-responses)。
 
 Profile `context.window_tokens` 只约束 Session 本地上下文投影，不作为 Provider
 请求字段。未声明或为 `0` 时使用保守默认窗口 `32768`；输出预留使用显式
@@ -811,6 +878,7 @@ sn-cli <cli-profile-id> resume [native-session-id] [--model M] [--effort E]
 sn-cli <cli-profile-id> --resume [native-session-id] [--model M] [--effort E]
 sn-cli exec <cli-profile-id> [options] [input]
 sn-cli call <api-profile-id> [options] [input]
+sn-cli call <api-profile-id> --raw [options] [input]
 sn-cli doctor
 sn-cli help [topic]
 sn-cli profile list|show|check
@@ -864,9 +932,49 @@ session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
 `schema_version=1,contract_version=9` machine envelope；stream/watch 使用 NDJSON 或
-SSE，并以 event sequence 续读。非流失败 stdout 为空，stderr 只有一个 compact
+SSE，并以 event sequence 续读。除下述 `call --raw` 的已发生 attempt 诊断外，machine
+非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`
 只支持 human TTY。
+
+`call` 默认输出 assistant text；leading `--json` 输出 canonical result envelope，
+`--stream` 输出 model events 和 final envelope。仅顶层 `call` 新增 `--raw`，与
+leading `--json`、`--stream` 互斥，且仍遵守 option 在 Profile ID 后、input 最后的
+严格语法；支持 prompt/stdin、`--request-file` 及现有 request options，不新增 `api`
+namespace 或修改 `call` 名称。
+
+CLI `--stream` 只选择下游事件输出。`Generate()` 与 `GenerateStream()` 共用 Provider
+adapter，上游模式由 Profile 的 `parameters.stream` 决定。现有 `ResilientModel`
+先缓存一个 attempt 的全部 events，成功后再逐条交给 sink，失败 attempt 的 events
+不外泄；因此当前 CLI 事件输出不是端到端实时流。本字段不改动该重试/事件策略。
+
+`call --raw` 在逻辑请求结束后向 stdout 输出且只输出两个 compact JSON 值
+（各占一行，以换行分隔）：最后一次已发生 HTTP attempt 的实际 request body，
+以及对应的原始 response JSON。它不使用 Runtime machine envelope，不混入
+`schema_version/contract_version/type/profile/attempts/error` 等额外字段，
+也不输出标签文本、assistant text、canonical event 或 final result。
+
+- 第一行直接使用 driver 编码后的 `request.body`，不是 canonical ModelRequest，
+  不附带 URL、method 或 headers；这些 HTTP 元信息只保存在日志；
+- 普通 JSON 响应直接输出原始 JSON body，不包在 `response` 或 `data` 字段内；
+  SSE 则将已读取的有效 JSON `data:` frame 按顺序放进一个 JSON 数组，
+  不合成为伪造的完整 Provider response，不包含 `[DONE]` 等控制标记；
+- Provider 返回错误时，第二行仍是它的原始 JSON，不再加 Runtime `error` 字段。
+  如果 Provider 原文自带 `error`，必须保留该原生字段，不拆包或重构；
+- 没有响应、非 JSON body 或没有有效 frame 时，第二行为 `null`，
+  不伪造 Provider error JSON。没有实际 attempt 的前置失败 stdout 为空；
+- 失败仍在 stderr 诊断并使用非零退出码。stdout 写入失败不得被 observer 吞掉，
+  也不能触发 Provider 重试。完整重试信息位于 §3 API 日志的 `attempts` 数组，
+  raw 只展示最后一次已发生的 attempt，不改变重试策略或上游 stream 参数。
+
+raw 是已消费、可解析 JSON 的脱敏 application-level 诊断，不承诺逐字节 HTTP
+完整性。取消、截断或解码失败可能只有部分 frame；未观察到响应不代表远端未执行。
+解析后的 secret 脱敏不等于业务内容匿名化，用户自行负责 stdout/重定向文件的保密。
+raw 不读取日志文件，不创建 Session/Run，不执行 tool；是否使用 raw 不改变日志格式。
+`model.WithAttemptObserver` 仅携带 process-local、request-scoped observer；每次
+已开始 attempt 在返回前同步通知，继承到 bounded retries。它替换父 context 的
+observer，但不替换 ServiceOptions 的 observer；逐 attempt 和逻辑 call observer
+各得独立脱敏副本，panic 不影响执行。跨并发请求共用 callback 时，调用者负责同步。
 
 Run Record 可以公开 Runtime-owned `request_digest/config_digest`，但
 `private_request_json`、Agent execution snapshot 和最新 Resume input 均不属于

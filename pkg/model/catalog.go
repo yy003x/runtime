@@ -122,7 +122,7 @@ func (catalog *Catalog) resolve(
 			logValue = "[REDACTED]"
 		}
 		if sensitive && strings.EqualFold(name, authorizationHeader) &&
-			profile.Driver == DriverOpenAI && !hasAuthScheme(value) {
+			(profile.Driver == DriverOpenAI || profile.Driver == DriverOpenAIResponses) && !hasAuthScheme(value) {
 			value = bearerScheme + " " + value
 			logValue = bearerScheme + " " + logValue
 		}
@@ -206,6 +206,10 @@ func cloneProfile(profile Profile) Profile {
 	if profile.Parameters.TopP != nil {
 		value := *profile.Parameters.TopP
 		result.Parameters.TopP = &value
+	}
+	if profile.Parameters.Stream != nil {
+		value := *profile.Parameters.Stream
+		result.Parameters.Stream = &value
 	}
 	if profile.Parameters.StopSequences != nil {
 		result.Parameters.StopSequences = append(

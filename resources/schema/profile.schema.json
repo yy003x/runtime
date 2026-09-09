@@ -107,6 +107,7 @@
           "description": "Selects the Provider wire protocol adapter.",
           "enum": [
             "openai",
+            "openai-responses",
             "anthropic"
           ]
         },
@@ -118,7 +119,7 @@
           "pattern": "^https://[^/?#@]+/[^?#]+(?:\\?[^#]*)?$"
         },
         "base_url": {
-          "description": "Optional Provider HTTPS base URL; Runtime appends the driver default API path and preserves an existing path prefix.",
+          "description": "Complete Provider HTTPS API prefix, including any version path. Runtime appends only chat/completions (openai), responses (openai-responses), or messages (anthropic); it never inserts or detects a version.",
           "type": "string",
           "format": "uri",
           "x-sn-url-semantics": "absolute HTTPS URL with host, optional path prefix, no userinfo, query, or fragment",
@@ -133,7 +134,7 @@
           "pattern": "\\S"
         },
         "headers": {
-          "description": "HTTP headers applied to every Provider request. Values may use ${VAR} references that the runtime expands from the environment; the openai driver prefixes a bare Authorization value with the Bearer scheme.",
+          "description": "HTTP headers applied to every Provider request. Values may use ${VAR} references that the runtime expands from the environment; openai and openai-responses prefix a bare Authorization value with the Bearer scheme.",
           "type": "object",
           "maxProperties": 128,
           "propertyNames": {
@@ -147,10 +148,15 @@
           }
         },
         "parameters": {
-          "description": "Provider-neutral default generation parameters applied when a request does not override them.",
+          "description": "Default generation parameters and upstream response mode. Generation defaults apply when a request does not override them; stream is Profile-only.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "stream": {
+              "description": "Upstream response mode: true requests SSE; false requests a regular JSON response. Omission defaults to true. Independent of CLI --stream and downstream HTTP event delivery.",
+              "type": "boolean",
+              "default": true
+            },
             "max_tokens": {
               "description": "Default maximum output tokens; adapters map it to their native wire field.",
               "type": [
@@ -265,6 +271,10 @@
         }
       ],
       "allOf": [
+        {
+          "if": {"properties": {"driver": {"const": "openai-responses"}}, "required": ["driver"]},
+          "then": {"properties": {"parameters": {"properties": {"stop_sequences": {"maxItems": 0}}}}}
+        },
         {
           "if": {
             "properties": {

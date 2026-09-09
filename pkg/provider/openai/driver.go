@@ -25,7 +25,7 @@ const (
 	// Bump manually when execution semantics change in a way not represented by
 	// the Profile or Provider-neutral request contract.
 	executionImplementation        = "runtime.provider.openai"
-	executionImplementationVersion = 2
+	executionImplementationVersion = 3
 )
 
 type Driver struct {
@@ -72,7 +72,11 @@ func (driver *Driver) Stream(
 		return contract.ModelResult{}, attempt, httpx.ProtocolError(providerName, err.Error())
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "text/event-stream, application/json")
+	if resolved.Parameters.StreamingEnabled() {
+		httpRequest.Header.Set("Accept", "text/event-stream, application/json")
+	} else {
+		httpRequest.Header.Set("Accept", "application/json")
+	}
 	for name, value := range resolved.RequestHeaders() {
 		httpRequest.Header.Set(name, value)
 	}
@@ -190,14 +194,18 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 			},
 		})
 	}
+	var streamOptions map[string]bool
+	if resolved.Parameters.StreamingEnabled() {
+		streamOptions = map[string]bool{"include_usage": true}
+	}
 	return json.Marshal(requestBody{
 		Model: resolved.Model, Messages: messages, Tools: tools,
 		MaxCompletionTokens: request.Options.MaxOutputTokens,
 		Temperature:         request.Options.Temperature,
 		TopP:                request.Options.TopP,
 		Stop:                request.Options.StopSequences,
-		Stream:              true,
-		StreamOptions:       map[string]bool{"include_usage": true},
+		Stream:              resolved.Parameters.StreamingEnabled(),
+		StreamOptions:       streamOptions,
 	})
 }
 

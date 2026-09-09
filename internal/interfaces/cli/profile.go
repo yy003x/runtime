@@ -224,12 +224,15 @@ func runLoadedProfileID(
 		}
 		return runtimecommand.ReplaceProcess(invocation, stdinMode)
 	}
-	request, stream, err := parseDirectModelInput(entry.ID, *entry.Model, args)
-	if stream {
+	request, options, err := parseDirectModelInput(entry.ID, *entry.Model, args)
+	if options.Stream {
 		output.beginStream()
 	}
 	if err != nil {
 		return err
+	}
+	if options.Raw && output.JSON() {
+		return cliValidationf("--raw cannot be combined with --json")
 	}
 	callContext := runtimemodel.WithAttemptOrigin(
 		context.Background(),
@@ -238,7 +241,10 @@ func runLoadedProfileID(
 			Source:    executionlog.SourceFromArgs(os.Args),
 		},
 	)
-	if stream {
+	if options.Raw {
+		return runRawModelCall(callContext, runtime.Models, request, output)
+	}
+	if options.Stream {
 		result, runtimeErr := runtime.Models.GenerateStream(
 			callContext, request,
 			func(event contract.Event) error {
@@ -538,13 +544,18 @@ func splitTypedOption(value string) (string, string, bool) {
 	return value, "", false
 }
 
+type directModelOutputOptions struct {
+	Stream bool
+	Raw    bool
+}
+
 func parseDirectModelInput(
 	profileID string,
 	_ runtimemodel.Profile,
 	args []string,
-) (contract.GenerateRequest, bool, error) {
+) (contract.GenerateRequest, directModelOutputOptions, error) {
 	request := contract.GenerateRequest{ModelProfile: profileID}
-	stream := false
+	options := directModelOutputOptions{}
 	requestFile := ""
 	system := ""
 	prompt := ""
@@ -554,13 +565,13 @@ func parseDirectModelInput(
 		current := args[index]
 		if current == "--" {
 			if inputSet {
-				return contract.GenerateRequest{}, stream, cliValidationf(
+				return contract.GenerateRequest{}, options, cliValidationf(
 					"model input terminator cannot follow positional input",
 				)
 			}
 			remaining := args[index+1:]
 			if len(remaining) > 1 {
-				return contract.GenerateRequest{}, stream, cliValidationf(
+				return contract.GenerateRequest{}, options, cliValidationf(
 					"`--` accepts at most one model input",
 				)
 			}
@@ -571,7 +582,7 @@ func parseDirectModelInput(
 			break
 		}
 		if inputSet {
-			return contract.GenerateRequest{}, stream, cliValidationf(
+			return contract.GenerateRequest{}, options, cliValidationf(
 				"model input must be the final argument",
 			)
 		}
@@ -585,20 +596,22 @@ func parseDirectModelInput(
 			name = "--effort"
 		}
 		if seen[name] {
-			return contract.GenerateRequest{}, stream, cliValidationf(
+			return contract.GenerateRequest{}, options, cliValidationf(
 				"model option %s may only be used once", name,
 			)
 		}
 		seen[name] = true
 		switch current {
 		case "--stream":
-			stream = true
+			options.Stream = true
+		case "--raw":
+			options.Raw = true
 		case "--request-file":
 			value, next, err := directModelOptionValue(
 				args, index, "--request-file",
 			)
 			if err != nil {
-				return contract.GenerateRequest{}, stream, err
+				return contract.GenerateRequest{}, options, err
 			}
 			requestFile = value
 			index = next
@@ -607,7 +620,7 @@ func parseDirectModelInput(
 				args, index, "--system",
 			)
 			if err != nil {
-				return contract.GenerateRequest{}, stream, err
+				return contract.GenerateRequest{}, options, err
 			}
 			system = value
 			index = next
@@ -616,11 +629,11 @@ func parseDirectModelInput(
 				args, index, "--max-tokens",
 			)
 			if err != nil {
-				return contract.GenerateRequest{}, stream, err
+				return contract.GenerateRequest{}, options, err
 			}
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || parsed <= 0 {
-				return contract.GenerateRequest{}, stream, cliValidationf("--max-tokens must be positive")
+				return contract.GenerateRequest{}, options, cliValidationf("--max-tokens must be positive")
 			}
 			request.Input.Options.MaxOutputTokens = &parsed
 			index = next
@@ -629,16 +642,16 @@ func parseDirectModelInput(
 				args, index, "--temperature",
 			)
 			if err != nil {
-				return contract.GenerateRequest{}, stream, err
+				return contract.GenerateRequest{}, options, err
 			}
 			parsed, err := strconv.ParseFloat(value, 64)
 			if err != nil {
-				return contract.GenerateRequest{}, stream, cliValidationf(
+				return contract.GenerateRequest{}, options, cliValidationf(
 					"--temperature must be between 0 and 2",
 				)
 			}
 			if err := contract.ValidateTemperature(parsed); err != nil {
-				return contract.GenerateRequest{}, stream, cliValidationf(
+				return contract.GenerateRequest{}, options, cliValidationf(
 					"--temperature: %v", err,
 				)
 			}
@@ -653,44 +666,47 @@ func parseDirectModelInput(
 						args, index, "--effort",
 					)
 					if err != nil {
-						return contract.GenerateRequest{}, stream, err
+						return contract.GenerateRequest{}, options, err
 					}
 				}
 				if _, err := runtimecommand.ParseEffort(value); err != nil {
-					return contract.GenerateRequest{}, stream, cliValidation(err)
+					return contract.GenerateRequest{}, options, cliValidation(err)
 				}
-				return contract.GenerateRequest{}, stream, cliValidationf(
+				return contract.GenerateRequest{}, options, cliValidationf(
 					"--effort is not supported for API profile %q",
 					profileID,
 				)
 			}
-			return contract.GenerateRequest{}, stream, cliValidationf(
+			return contract.GenerateRequest{}, options, cliValidationf(
 				"unknown model input option: %s", current,
 			)
 		}
 	}
+	if options.Raw && options.Stream {
+		return contract.GenerateRequest{}, options, cliValidationf("--raw cannot be combined with --stream")
+	}
 	if requestFile != "" {
 		if prompt != "" || system != "" || request.Input.Options.MaxOutputTokens != nil ||
 			request.Input.Options.Temperature != nil {
-			return contract.GenerateRequest{}, stream, cliValidationf(
+			return contract.GenerateRequest{}, options, cliValidationf(
 				"--request-file cannot be combined with prompt or request options",
 			)
 		}
 		value, err := readModelRequest(requestFile)
 		if err != nil {
-			return contract.GenerateRequest{}, stream, err
+			return contract.GenerateRequest{}, options, err
 		}
 		request.Input = value
 	} else {
 		if prompt == "" {
 			value, err := readDirectStdin()
 			if err != nil {
-				return contract.GenerateRequest{}, stream, err
+				return contract.GenerateRequest{}, options, err
 			}
 			prompt = value
 		}
 		if strings.TrimSpace(prompt) == "" {
-			return contract.GenerateRequest{}, stream, cliValidationf("model prompt is required")
+			return contract.GenerateRequest{}, options, cliValidationf("model prompt is required")
 		}
 		request.Input.System = system
 		request.Input.Messages = []contract.Message{{
@@ -698,9 +714,9 @@ func parseDirectModelInput(
 		}}
 	}
 	if err := request.Validate(); err != nil {
-		return contract.GenerateRequest{}, stream, cliValidation(err)
+		return contract.GenerateRequest{}, options, cliValidation(err)
 	}
-	return request, stream, nil
+	return request, options, nil
 }
 
 func directModelOptionValue(

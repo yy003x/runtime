@@ -61,6 +61,12 @@ var allowedPublicModuleDependencies = map[string][]string{
 		modulePath + "/pkg/model",
 		modulePath + "/pkg/provider",
 	},
+	modulePath + "/pkg/provider/openairesponses": {
+		modulePath + "/internal/infrastructure/providerhttp",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/model",
+		modulePath + "/pkg/provider",
+	},
 	modulePath + "/pkg/run": {
 		modulePath + "/internal/domain/identity",
 		modulePath + "/internal/domain/profileid",
@@ -102,6 +108,7 @@ var allowedConcreteAdapterConsumers = map[string][]string{
 	modulePath + "/internal/infrastructure/providerhttp": {
 		modulePath + "/pkg/provider/anthropic",
 		modulePath + "/pkg/provider/openai",
+		modulePath + "/pkg/provider/openairesponses",
 	},
 	modulePath + "/internal/infrastructure/tmux": {
 		modulePath + "/internal/application/nativeconsole",
@@ -119,6 +126,9 @@ var allowedConcreteAdapterConsumers = map[string][]string{
 		modulePath + "/internal/application/runtimebootstrap",
 	},
 	modulePath + "/pkg/provider/openai": {
+		modulePath + "/internal/application/runtimebootstrap",
+	},
+	modulePath + "/pkg/provider/openairesponses": {
 		modulePath + "/internal/application/runtimebootstrap",
 	},
 	modulePath + "/pkg/store/sqlite": {
