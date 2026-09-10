@@ -595,7 +595,7 @@ func parseDirectModelInput(
 		if strings.HasPrefix(current, "--effort=") {
 			name = "--effort"
 		}
-		if seen[name] {
+		if seen[name] && name != "--param" {
 			return contract.GenerateRequest{}, options, cliValidationf(
 				"model option %s may only be used once", name,
 			)
@@ -606,6 +606,15 @@ func parseDirectModelInput(
 			options.Stream = true
 		case "--raw":
 			options.Raw = true
+		case "--param":
+			value, next, err := directModelOptionValue(args, index, current)
+			if err != nil {
+				return contract.GenerateRequest{}, options, err
+			}
+			if err := addModelParam(&request.Input.Options, value); err != nil {
+				return contract.GenerateRequest{}, options, err
+			}
+			index = next
 		case "--request-file":
 			value, next, err := directModelOptionValue(
 				args, index, current,
@@ -687,7 +696,7 @@ func parseDirectModelInput(
 	}
 	if requestFile != "" {
 		if prompt != "" || system != "" || request.Input.Options.MaxOutputTokens != nil ||
-			request.Input.Options.Temperature != nil {
+			request.Input.Options.Temperature != nil || len(request.Input.Options.ExtraBody) > 0 {
 			return contract.GenerateRequest{}, options, cliValidationf(
 				"--request-file cannot be combined with prompt or request options",
 			)

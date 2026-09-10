@@ -16,6 +16,7 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
   无 provider 的 `auth login|logout` 直接进入对应向导，仅用于交互终端；
 - `sn-cli auth login|status|logout openai-codex`：Codex OAuth 直接命令管理面；
   凭证仅供 `openai-codex-responses` 单次调用使用，`status` 只读本地缓存；
+- `sn-cli doctor`：本机就绪检查，不调用 Provider 或 MCP；
 - `sn-cli session exec|call ...`：`interface=managed` 的文件型本地执行会话，
   `--queue` 时进入 durable Run；Session 不自动执行 tool；
 - `sn-cli session open|send|attach|interrupt|close|close-all ...`：`interface=native_tui`，
@@ -25,6 +26,7 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
   PTY carrier；
 - `sn-cli agent <api-profile-id>`：唯一 API-only Agent Kernel，`--queue` 时排队；
 - `sn-cli job ...`：SQLite durable Run 查询与控制面，不负责提交新 Run；
+- `sn-cli server info|start|status|stop`：HTTP 与 durable worker 生命周期；
 - `sn-cli update ...`：检查/下载/激活 Runtime release，不执行 Profile。
 
 所有有效 CLI/API Profile 都通过同一 Profile ID 路由，并由 `type=cli|api` 选择
@@ -123,7 +125,8 @@ barrier 时，同步：
 
 - 对应领域测试；
 - `sn-cli --help`；
-- `README.md`；
+- `README.md` 与 `README.zh-CN.md`；
+- `SN-CLI-USAGE.md`；
 - 唯一契约文档 `docs/runtime-contract.md`；
 - install/self-update/release payload（如影响交付物）。
 

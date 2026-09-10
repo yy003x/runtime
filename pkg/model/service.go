@@ -201,6 +201,7 @@ func (service *Service) GenerateStream(
 			contract.ErrorInternal, contract.PhaseRequest, "cannot clone model request",
 		)
 	}
+	input.Options.ExtraBody = contract.MergeExtraBody(profile.Parameters.ExtraBody, input.Options.ExtraBody)
 	if tokenLimit := profile.DefaultTokenLimit(); input.Options.MaxOutputTokens == nil &&
 		tokenLimit != nil {
 		value := *tokenLimit

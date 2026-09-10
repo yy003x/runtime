@@ -209,14 +209,14 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 			InputSchema: append(json.RawMessage(nil), tool.InputSchema...),
 		})
 	}
-	return json.Marshal(requestBody{
+	return httpx.MarshalRequest(requestBody{
 		Model: resolved.Model, System: request.System, Messages: messages, Tools: tools,
 		MaxTokens:     *request.Options.MaxOutputTokens,
 		Temperature:   request.Options.Temperature,
 		TopP:          request.Options.TopP,
 		StopSequences: request.Options.StopSequences,
 		Stream:        resolved.Parameters.StreamingEnabled(),
-	})
+	}, request.Options.ExtraBody)
 }
 
 type streamEnvelope struct {

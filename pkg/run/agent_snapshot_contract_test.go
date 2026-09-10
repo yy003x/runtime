@@ -164,7 +164,7 @@ type snapshotContractFixture struct {
 	secretReads *int
 }
 
-func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
+func newSnapshotContractFixture(t *testing.T, extra ...contract.ExtraBody) snapshotContractFixture {
 	t.Helper()
 	modelProfile := model.Profile{
 		Driver:   model.DriverOpenAIChatCompletions,
@@ -175,6 +175,9 @@ func newSnapshotContractFixture(t *testing.T) snapshotContractFixture {
 			"X-Fixture":     "snapshot",
 		},
 		Timeout: "1m",
+	}
+	if len(extra) > 0 {
+		modelProfile.Parameters.ExtraBody = extra[0]
 	}
 	modelCatalog, err := model.NewCatalog(map[string]model.Profile{
 		"api": modelProfile,
@@ -263,6 +266,36 @@ func snapshotContractRequest() Request {
 		Labels: map[string]string{
 			"source": "contract-test",
 		},
+	}
+}
+
+func TestAgentExecutionSnapshotPreservesNativeOptionNulls(t *testing.T) {
+	extra := contract.ExtraBody{
+		"metadata":           json.RawMessage(`null`),
+		"provider_extension": json.RawMessage(`{"nested":[null,0,false],"integer":9007199254740993}`),
+	}
+	fixture := newSnapshotContractFixture(t, extra)
+	prepared, err := fixture.executor.Prepare(context.Background(), snapshotContractRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := decodeAgentExecutionSnapshot(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range extra {
+		if got := snapshot.ModelExecutionSnapshot.Profile.Parameters.ExtraBody[name]; !bytes.Equal(got, want) {
+			t.Fatalf("%s=%s, want %s", name, got, want)
+		}
+	}
+	for _, path := range [][]string{
+		{"model_execution_snapshot", "profile", "model"},
+		{"model_execution_snapshot", "profile", "parameters", "stream"},
+		{"model_execution_snapshot", "profile", "parameters", "unknown"},
+	} {
+		if agentExecutionSnapshotAllowsNull(path) {
+			t.Fatalf("null policy escaped extra_body: %v", path)
+		}
 	}
 }
 

@@ -80,6 +80,9 @@ func (request ModelRequest) Validate() error {
 	if err := ValidateStopSequences(request.Options.StopSequences); err != nil {
 		return fmt.Errorf("options.stop_sequences: %w", err)
 	}
+	if err := request.Options.ExtraBody.Validate(); err != nil {
+		return fmt.Errorf("options.%w", err)
+	}
 	if len(request.Trace.Labels) > maxLabels {
 		return fmt.Errorf("trace.labels exceed %d items", maxLabels)
 	}

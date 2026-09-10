@@ -52,6 +52,37 @@ func TestProfileSchemaAndLoaderShareContractFixtures(t *testing.T) {
 		semanticRule string
 	}{
 		{
+			name:     "native_generation_options",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"extra_body":{"reasoning":{"effort":"low","summary":null},"max_tool_calls":0,"parallel_tool_calls":false,"metadata":null,"provider_extension":[null,0,false]}},"timeout":"1m"}`,
+			valid:    true,
+		},
+		{
+			name:     "null_extra_body",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"extra_body":null},"timeout":"1m"}`,
+			valid:    true,
+		},
+		{
+			name:     "non_object_extra_body",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"extra_body":0},"timeout":"1m"}`,
+		},
+		{
+			name:     "owned_native_field",
+			document: `{"type":"api","driver":"openai-responses","base_url":"https://example.invalid/v1","model":"fixture","parameters":{"extra_body":{"model":null}},"timeout":"1m"}`,
+		},
+		{
+			name:     "codex_store_false",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"extra_body":{"store":false,"metadata":null}},"timeout":"1m"}`,
+			valid:    true,
+		},
+		{
+			name:     "codex_store_null",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"extra_body":{"store":null}},"timeout":"1m"}`,
+		},
+		{
+			name:     "codex_store_true",
+			document: `{"type":"api","driver":"openai-codex-responses","base_url":"https://chatgpt.com/backend-api","model":"fixture","parameters":{"extra_body":{"store":true}},"timeout":"1m"}`,
+		},
+		{
 			name:     "minimal_cli",
 			document: `{"type":"cli","command":"codex"}`,
 			valid:    true,

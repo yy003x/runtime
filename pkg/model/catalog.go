@@ -9,6 +9,7 @@ import (
 
 	"github.com/yy003x/runtime/internal/domain/profileid"
 	"github.com/yy003x/runtime/internal/infrastructure/envref"
+	"github.com/yy003x/runtime/pkg/contract"
 	"github.com/yy003x/runtime/pkg/provider"
 )
 
@@ -189,6 +190,7 @@ func (resolved ResolvedModel) DefaultTokenLimit() *int64 {
 
 func cloneProfile(profile Profile) Profile {
 	result := profile
+	result.Parameters.ExtraBody = contract.MergeExtraBody(profile.Parameters.ExtraBody, nil)
 	if profile.Headers != nil {
 		result.Headers = make(map[string]string, len(profile.Headers))
 		for name, value := range profile.Headers {

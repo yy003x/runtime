@@ -151,10 +151,11 @@ type ToolCall struct {
 }
 
 type GenerateOptions struct {
-	MaxOutputTokens *int64   `json:"max_output_tokens,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	TopP            *float64 `json:"top_p,omitempty"`
-	StopSequences   []string `json:"stop_sequences,omitempty"`
+	MaxOutputTokens *int64    `json:"max_output_tokens,omitempty"`
+	Temperature     *float64  `json:"temperature,omitempty"`
+	TopP            *float64  `json:"top_p,omitempty"`
+	StopSequences   []string  `json:"stop_sequences,omitempty"`
+	ExtraBody       ExtraBody `json:"extra_body,omitempty"`
 }
 
 type TraceContext struct {

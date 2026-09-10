@@ -41,6 +41,10 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		"sn-cli <cli-profile-id> --resume [session-id]",
 		"sn-cli exec <cli-profile-id> [options...] [input]",
 		"sn-cli call <api-profile-id> [options...] [input]",
+		"sn-cli auth [login|logout]",
+		"sn-cli auth login openai-codex [--device-code|--no-browser]",
+		"sn-cli auth status [openai-codex]",
+		"sn-cli auth logout openai-codex",
 		"sn-cli doctor",
 		"sn-cli session exec <cli-profile-id> [options...] [input]",
 		"sn-cli session call <api-profile-id> [options...] [input]",
@@ -139,6 +143,7 @@ func TestJobHelpDocumentsRunCorrelationAndPagination(t *testing.T) {
 		for _, expected := range []string{
 			"--session-id", "--task-id", "--profile-id", "--before-run-id",
 			"created_at DESC, run_id DESC", "not_found",
+			"job trace",
 		} {
 			if !strings.Contains(stdout, expected) {
 				t.Fatalf("missing %q in %s", expected, stdout)

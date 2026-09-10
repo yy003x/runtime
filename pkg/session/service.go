@@ -1138,7 +1138,10 @@ func validateRunRequest(request RunRequest, entry profile.Entry) error {
 	hasModelOptions := request.ModelOptions.MaxOutputTokens != nil ||
 		request.ModelOptions.Temperature != nil ||
 		request.ModelOptions.TopP != nil ||
-		len(request.ModelOptions.StopSequences) > 0
+		len(request.ModelOptions.StopSequences) > 0 || len(request.ModelOptions.ExtraBody) > 0
+	if err := request.ModelOptions.ExtraBody.Validate(); err != nil {
+		return fmt.Errorf("model_options.%w", err)
+	}
 	if request.ModelOptions.MaxOutputTokens != nil &&
 		*request.ModelOptions.MaxOutputTokens <= 0 {
 		return fmt.Errorf("model_options.max_output_tokens must be positive")

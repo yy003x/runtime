@@ -220,7 +220,7 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 			Parameters: tool.InputSchema, Strict: false,
 		})
 	}
-	return json.Marshal(body)
+	return httpx.MarshalRequest(body, request.Options.ExtraBody)
 }
 
 func emitResult(result contract.ModelResult, sink contract.EventSink) error {

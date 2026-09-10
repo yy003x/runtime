@@ -48,8 +48,8 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
   （不做启发式修复）。
 - 🤖 **自主 agent 循环**——model + 受控 builtin/MCP tool（默认包含 `web_search`、
   `web_fetch`），带预算限制、durable effect 与流式事件。
-- 🪟 **长期 tmux 窗口**——支持默认或隔离 tmux server，可按稳定 ID open / send /
-  attach / interrupt / stop。
+- 🪟 **长期 native TUI Session**——Provider TUI 跑在私有的默认或隔离 tmux PTY 中；
+  按 Runtime Session ID 进行 open / send / attach / interrupt / close。
 - 🧪 **严格 JSON Schema 校验**——CLI 与 HTTP 用同一套规则；未知字段与歧义状态 fail closed。
 - 🌐 **HTTP / SSE 控制面**——loopback `sn-server` 暴露完整的 Session / Run / Agent /
   Model API，并提供 `/healthz` 与感知执行面的 `/readyz` 探针。
@@ -98,6 +98,9 @@ sn-cli profile check     # 校验每个 profile 的结构
 # 一次模型 API 调用（需先设置该 profile 引用的环境变量）
 sn-cli call api-cx "回复OK"
 
+# 查看实际模型请求与响应（两行脱敏后的裸 JSON）
+sn-cli call api-cx --raw "回复OK"
+
 # 打开 Codex/Claude/Grok 交互 TUI
 sn-cli cx
 sn-cli gk
@@ -105,6 +108,14 @@ sn-cli gk
 # 一次性执行 CLI 并等待退出
 sn-cli exec cx "总结当前仓库"
 ```
+
+`call` 默认输出 assistant text。`--raw` 在调用结束后打印两行裸 JSON：最后一次
+HTTP 尝试的 Provider 编码请求体，以及原始响应 JSON（SSE 为原始帧数组）。不含
+Runtime 元信息、`attempts` 包装或额外 `error` 字段。Provider 错误 JSON 保留其自身
+字段；缺失或非 JSON 响应为 `null`。失败仍非零退出并写 stderr；前置校验失败不输出
+raw 值。`--raw` 不能与 `--json` 或 `--stream` 组合。完整 attempts、HTTP 元信息和
+最终 Runtime error 记在该次逻辑调用的 `api.jsonl` 中。凭据会脱敏，模型内容仍可能
+敏感。采集不是字节级 HTTP，中断时可能不完整。
 
 ### 一次有记录的会话
 
@@ -152,7 +163,7 @@ sn-cli --json session list --interface native_tui
 sn-cli --json session show --session-id <session_id>
 ```
 
-tmux server/window registry 现在只作为私有 PTY carrier，不再提供 public
+tmux server/window registry 只作为私有 PTY carrier，不提供 public
 `sn-cli tmux` namespace 或兼容 alias。所有 mutation 使用 Runtime Session ID；
 `session close-all` 只关闭 Session-bound native TUI window，不删除 Session fact。
 
@@ -264,6 +275,22 @@ API driver 支持 `openai-chat-completions`、`openai-responses`、`anthropic-me
 和独立的 `openai-codex-responses`。前三者分别对应 `/chat/completions`、`/responses` 和 `/messages`。
 旧 `openai`、`anthropic` 名称不提供 alias 或自动迁移。
 
+原生请求参数默认值放入 API Profile 的 `parameters.extra_body`，单次用
+`options.extra_body` 或 `call --param '字段名=JSON值'` 覆盖。字段直接进入 HTTP request
+顶层；显式 `null`、`0`、`false` 原样发送，未填写的选项由上游使用自身默认值。
+`--param` 可重复，同名最后一次生效，嵌套对象整体替换，不与 `--request-file` 组合：
+
+```bash
+sn-cli call api-resp --raw --param 'reasoning={"effort":"low"}' --param 'metadata=null' "你好"
+sn-cli call api-cx --raw --param 'frequency_penalty=0' --param 'parallel_tool_calls=false' "你好"
+sn-cli call api-cc --raw --param 'thinking={"type":"disabled"}' --param 'top_k=0' "你好"
+```
+
+`null/0` 并不是所有 API 都接受的占位值。模型支持与原生参数取值校验由上游负责；
+现有 canonical 消息、工具、预算及流模式仍使用原入口，不借此扩展多模态或历史续接。
+Anthropic thinking 暂限单次调用，不丢弃签名后伪装成可续接历史。
+完整字段示例与边界见[原生请求参数扩展](docs/runtime-contract.md#原生请求参数扩展)。
+
 ChatGPT/Codex OAuth 使用默认交付的 `api-codex` Profile：
 
 执行 `sn-cli auth` 进入认证 TUI，输入 `/` 筛选 `/login`、`/logout`、`/status`、
@@ -332,15 +359,8 @@ scripts/         交付与验证脚本
 
 Run 列表在 state/kind 外支持 `session_id`、`task_id`、`profile_id` 精确筛选，例如
 `sn-cli --json job list --task-id <task-id> --limit 50`，或
-`GET /v1/runs?task_id=<task-id>&limit=50`。下一页传上一页末条 Run ID：CLI 为
-`--before-run-id`，HTTP 为 `before_run_id`，顺序固定为 `(created_at, run_id)` 降序。
-这是实时查询而非快照；游标被 GC 后返回 `not_found`，调用方应重新从首页查询。
-空 Run 列表为 `[]`。
-
-Session watch 与 Run event SSE 立即 flush，并每 5 秒发送不改变事件 ID 的注释心跳。
-续读使用 `Last-Event-ID`，或显式 query `after_seq`；后者包括 `0` 都优先。
-非法、未知、重复或显式空序号 query 均拒绝。完整 version 9 语义见
-[Runtime 契约](docs/runtime-contract.md)。
+`GET /v1/runs?task_id=<task-id>&limit=50`。分页、SSE 续读与心跳见
+[Runtime 契约](docs/runtime-contract.md)（`contract_version=15`）。
 
 ## 文档
 
@@ -368,8 +388,8 @@ git diff --check
 ## 贡献
 
 本仓库使用 Conventional Commits（中文主题），并保持契约/代码严格锁步：修改公开命令需
-同步对应测试、`sn-cli --help`、本 README 与相关契约文档。开发流程、架构边界与验收门禁见
-[`AGENTS.md`](AGENTS.md)。
+同步对应测试、`sn-cli --help`、本 README、`README.md`、`SN-CLI-USAGE.md` 与
+`docs/runtime-contract.md`。开发流程、架构边界与验收门禁见 [`AGENTS.md`](AGENTS.md)。
 
 ## 许可证
 

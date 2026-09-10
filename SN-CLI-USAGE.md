@@ -93,6 +93,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `job get` | 获取完整 Run Record | — | `sn-cli job get --run-id <id>` |
 | `job list` | 按状态/kind/关联 ID 筛选并分页查询 Run | — | `sn-cli job list --state failed` |
 | `job result` | 读取当前 result/error/state | — | `sn-cli job result --run-id <id>` |
+| `job trace` | 聚合 Run record 与 event/model_call/tool_effect journal | — | `sn-cli job trace --run-id <id>` |
 | `job events` | 读取持久化事件 | — | `sn-cli job events --run-id <id>` |
 | `job watch` | 流式追踪事件直到终态 | — | `sn-cli job watch --run-id <id>` |
 | `job cancel` | 取消 Run（queued/paused/running） | audit | `sn-cli job cancel --run-id <id>` |
@@ -166,6 +167,8 @@ sn-cli
 ├─ <cli-profile> --resume [session-id]
 ├─ exec <cli-profile> [options] [input]  # non-interactive CLI
 ├─ call <api-profile> [options] [input]  # one API request
+├─ auth [login|logout]                   # Auth TUI / 向导
+├─ auth login|status|logout openai-codex
 ├─ doctor                                # local Runtime health check
 ├─ profile
 │  ├─ list
@@ -181,14 +184,14 @@ sn-cli
 │  └─ configure | export | delete | gc
 ├─ agent <api-profile> [options] [input]
 ├─ job
-│  ├─ get | list | result | events | watch
+│  ├─ get | list | result | trace | events | watch
 │  └─ cancel | continue | retry | reconcile | gc
 ├─ server
 │  ├─ info | start | status | stop
 │  └─ upgrade-activate       # 内部 activation action
 ├─ update [options]
 ├─ update upgrade-check [options]
-├─ help [tui|exec|call|doctor|profile|session|agent|job|server|update]
+├─ help [tui|exec|call|auth|doctor|profile|session|agent|job|server|update]
 ├─ -h | --help                         # 仅根帮助
 ├─ version | --version
 └─ __sn_tmux_helper          # 内部 Tmux bootstrap
@@ -206,7 +209,7 @@ Profile ID：
 - 首字符必须是 ASCII 字母或数字。
 - 后续字符可使用 ASCII 字母、数字、`-`、`_`、`.`。
 - `.` 不能是首字符。
-- 不能使用固定 namespace `doctor/exec/call/profile/session/agent/job/server/help/version/update`
+- 不能使用固定 namespace `doctor/exec/call/profile/auth/session/agent/job/server/help/version/update`
   或管理 action `list/show/check`。
 
 Runtime 生成的 Session 系列 ID 使用前缀加 32 位小写十六进制：
@@ -242,7 +245,7 @@ sn-cli --json version
 `sn-cli help <topic>` 是唯一 topic 级帮助入口。当前 topic 固定为：
 
 ```text
-tui exec call doctor profile session agent job server update
+tui exec call auth doctor profile session agent job server update
 ```
 
 human 输出包含准确语法与关键状态边界；`sn-cli --json help [topic]` 返回同一份
@@ -288,7 +291,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 14
+  "contract_version": 15
 }
 ```
 
@@ -608,7 +611,7 @@ sn-cli call api-responses --raw "你好"
 ```
 
 canonical 模式支持单次 `call`（及等价无状态 Go/HTTP model generation）：文本、返回函数调用、
-usage、HTTP JSON 与 SSE、原始请求/响应和 attempts 日志。请求固定 `store:false`；
+usage、HTTP JSON 与 SSE、原始请求/响应和 attempts 日志。请求默认 `store:false`（extra_body 可覆盖）；
 `parameters.stream:false` 选择普通 JSON。SSE 以终态 response 归一化一次，原始 delta
 留在 raw/日志；不承诺实时打印。不支持 Session/Agent、assistant/tool 历史续接、
 `previous_response_id`、非空 stop_sequences、内建托管工具或多模态；均不得默默降级。
@@ -677,7 +680,7 @@ raw/log 保留原始帧，不把终态空数组改写成组装结果。
 OAuth token 不从现有 Codex CLI/Pi 缓存读取。后端协议的稳定性与 Platform API 不同，
 详见 [Codex OAuth contract](docs/runtime-contract.md#codex-oauth-单次调用)。
 
-`parameters` 当前支持的完整字段如下，不接受任意 Provider 参数透传；Codex 的限制见上：
+`parameters` 字段如下；原生生成参数通过 `extra_body` 扩展，Codex 的限制见上：
 
 | 字段 | 类型与约束 | 作用 |
 |---|---|---|
@@ -686,6 +689,33 @@ OAuth token 不从现有 Codex CLI/Pi 缓存读取。后端协议的稳定性与
 | `top_p` | `0..1`，可省略或为 `null` | 默认核采样概率；请求级值优先 |
 | `stop_sequences` | 最多 4 个非空字符串，每项最多 1024 字节 | 默认停止序列；`openai-chat-completions` 映射为 `stop`，`anthropic-messages` 使用同名字段，`openai-responses` 不支持非空值 |
 | `stream` | `true` / `false`，省略默认 `true`；不接受 `null` 或字符串 | 控制 Provider 上游响应模式，与 CLI 输出模式无关 |
+| `extra_body` | JSON object/null，值原样保留，包括 `null/0/false` | 原生 HTTP body 顶层字段默认值；请求 `options.extra_body` 或 `call --param` 按 key 覆盖 |
+
+例如，为 Responses Profile 的 `parameters` 增加：
+
+```json
+{
+  "max_tokens": 16384,
+  "stream": false,
+  "extra_body": {
+    "reasoning": {"effort": "low", "summary": "auto"},
+    "text": {"format": {"type": "text"}},
+    "include": [],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "metadata": {},
+    "service_tier": "auto"
+  }
+}
+```
+
+Chat Completions 可填 `reasoning_effort`、`response_format`、`frequency_penalty`、
+`presence_penalty`、`logprobs`、`top_logprobs`、`logit_bias`、`seed`、`stream_options` 等；
+Anthropic 可填 `thinking`、`output_config`、`tool_choice`、`top_k`、`metadata`、
+`cache_control`、`service_tier` 等。缓存选项和供应商新字段也可通过同一入口发送。
+示例仅展示写法，不保证具体模型接受所有参数；不自动为未填写的字段补 null 或 0。
+完整范围、保留字段及 Anthropic thinking 的单次调用边界见
+[原生请求参数扩展](docs/runtime-contract.md#原生请求参数扩展)。
 
 需要普通 JSON 响应时，在 API Profile 中设置：
 
@@ -702,8 +732,8 @@ OAuth token 不从现有 Codex CLI/Pi 缓存读取。后端协议的稳定性与
 `stream:true` 请求 SSE，`stream:false` 请求普通 JSON；两者都是发往同一个 HTTPS
 endpoint 的 POST，不切换 URL，不增加自动 fallback 或重试。默认 `Accept` 随配置
 切换为 `text/event-stream, application/json` 或 `application/json`；显式 Profile
-headers 仍可覆盖默认 header。`openai-chat-completions` 仅在流式请求中发送
-`stream_options.include_usage`。
+headers 仍可覆盖默认 header。`openai-chat-completions` 仅在流式请求中自动添加
+`stream_options.include_usage`；显式 `extra_body.stream_options` 可以覆盖这个默认值。
 API-key adapter 按实际 `Content-Type` 解析 SSE/JSON，即使服务端返回的格式与请求偏好不同，
 仍处理实际响应，不因格式不同再发一次请求。错误仍统一归一化，raw/log 保留实际响应。
 Codex OAuth 的成功响应固定为 SSE，不依赖响应头，见上述例外。
@@ -1237,6 +1267,7 @@ sn-cli [--json] call <api-profile-id>
   [--system TEXT]
   [--max-tokens POSITIVE_INT]
   [--temperature FINITE_0_TO_2]
+  [--param 'NAME=JSON' ...]
   [--]
   [PROMPT]
 ```
@@ -1250,13 +1281,22 @@ sn-cli [--json] call <api-profile-id>
 | `--system TEXT` | 设置 system prompt |
 | `--max-tokens N` | Provider-neutral 输出上限，正整数；adapter 转为 wire 字段 |
 | `--temperature T` | 有限值 `[0,2]` |
+| `--param 'NAME=JSON'` | 原生生成参数，重复使用可设置多个字段；重名最后一次生效，不与 `--request-file` 组合 |
 | `PROMPT` | 最终且最多一个位置参数；省略时从 stdin 读取 |
 
 `call` 参数使用分离形式：
 
 ```bash
 sn-cli call api-cx --temperature 0.2 "回复OK"
+sn-cli call api-cx --raw --param 'frequency_penalty=0' --param 'parallel_tool_calls=false' "回复OK"
+sn-cli call api-resp --raw --param 'reasoning={"effort":"low"}' --param 'metadata=null' "回复OK"
+sn-cli call api-cc --raw --param 'thinking={"type":"disabled"}' --param 'top_k=0' "回复OK"
 ```
+
+`null`、`0`、`false` 会真实发送，不等同于未设置；上游不支持时可能返回参数错误。
+嵌套对象整体替换：覆盖 `reasoning={"effort":"low"}` 不会保留 Profile 中的 summary。
+原生字符串要保留 JSON 引号，例如 `--param 'reasoning_effort="high"'`。
+这些字段最终在 HTTP request 顶层，`--raw` 不输出额外的 extra_body 包装。
 
 不要依赖：
 
@@ -1284,6 +1324,7 @@ positional prompt
 --system
 token limit
 --temperature
+--param
 ```
 
 `PATH` 文件必须是普通文件，不能是 symlink。JSON 使用 canonical `ModelRequest`
@@ -2372,6 +2413,7 @@ event。可在另一个终端查询：
 ```bash
 sn-cli job list --kind agent
 sn-cli job get --run-id <run_id>
+sn-cli job trace --run-id <run_id>
 sn-cli job events --run-id <run_id>
 ```
 
@@ -2442,6 +2484,7 @@ Run kind：
 ```text
 agent
 session
+native_tui
 ```
 
 Run 不是 Session 或 Agent 的第二套执行引擎，而是两者共用的持久控制面。它把提交方、
@@ -2452,7 +2495,7 @@ Run 不是 Session 或 Agent 的第二套执行引擎，而是两者共用的持
 execution owner ──--queue──> SQLite Durable Run ──dequeue──> sn-server worker
                               │                         ├─ kind=session → Session executor
                               │                         └─ kind=agent   → Agent Kernel
-                              └─ get/list/events/watch/cancel/retry <── observer
+                              └─ get/list/result/trace/events/watch/cancel/retry <── observer
 ```
 
 `kind=session` 执行一个有记录的 Session Turn；`kind=agent` 执行 API-only
@@ -2587,7 +2630,29 @@ sn-cli --json job result --run-id <run_id>
 
 Human 输出会尽量提取 Session 或 Agent 的 assistant text，然后打印最终 state。
 
-### 9.6 `job events`
+### 9.6 `job trace`
+
+语法：
+
+```text
+sn-cli job trace --run-id <run_id>
+```
+
+用途：只读聚合单个 Run 的 record，以及同一 `run_id` 下的 event、model_call、
+tool_effect journal。不引入独立 `trace_id` 或并行 trace 存储；
+`model_calls.provider_request_id` 是单次模型调用的 span 标识。只加载 Run Store，
+不执行、不改变 Run 状态。
+
+```bash
+sn-cli job trace --run-id <run_id>
+sn-cli --json job trace --run-id <run_id>
+```
+
+Human 输出依次打印 Run 摘要、事件、model call 和 tool effect。machine 输出为
+`{"trace":{...}}`，内含 `run`、`events`、`model_calls`、`tool_effects`。
+`kind=native_tui` 也可查询；其 journal 只反映 opaque lifecycle，不含 TUI transcript。
+
+### 9.7 `job events`
 
 语法：
 
@@ -2604,7 +2669,7 @@ sn-cli job events --run-id <run_id>
 sn-cli --json job events --run-id <run_id> --after-seq 10
 ```
 
-### 9.7 `job watch`
+### 9.8 `job watch`
 
 语法：
 
@@ -2623,7 +2688,7 @@ sn-cli job watch --run-id <run_id> --after-seq 10
 
 `watch` 本身就是 machine stream，不要求额外使用 `--json`。
 
-### 9.8 `job cancel`
+### 9.9 `job cancel`
 
 语法：
 
@@ -2656,7 +2721,7 @@ sn-cli job cancel --run-id <run_id>
 reservation；只有 kind-specific cancellation finalizer 可以消费 reservation。
 `POST /v1/runs/{run_id}:cancel` 使用相同语义。
 
-### 9.9 `job continue`
+### 9.10 `job continue`
 
 语法：
 
@@ -2704,7 +2769,7 @@ pause/resume 是 Kernel extension control plane。stock builtin tools 不产生
 `job continue` CLI、HTTP route、Store state 和 validator contract 继续保留，供注入
 会返回 Pause 的自定义 ToolExecutor 使用。
 
-### 9.10 `job retry`
+### 9.11 `job retry`
 
 语法：
 
@@ -2730,7 +2795,7 @@ model/Provider/tool/Agent/Session identity；任何 drift 都返回 conflict，�
 sn-cli job retry --run-id <run_id>
 ```
 
-### 9.11 `job reconcile`
+### 9.12 `job reconcile`
 
 语法必须严格为：
 
@@ -2761,7 +2826,7 @@ tool-result 写入口。
 sn-cli job reconcile --run-id <run_id>
 ```
 
-### 9.12 `job gc`
+### 9.13 `job gc`
 
 语法：
 
@@ -3761,6 +3826,7 @@ sn-cli --json agent api-cx \
 ```bash
 sn-cli job list --kind agent
 sn-cli job get --run-id <run_id>
+sn-cli job trace --run-id <run_id>
 sn-cli job events --run-id <run_id>
 sn-cli job watch --run-id <run_id>
 ```

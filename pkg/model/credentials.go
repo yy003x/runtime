@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/yy003x/runtime/pkg/contract"
 )
@@ -80,11 +81,21 @@ func cloneHeaders(headers map[string]string) map[string]string {
 	return cloned
 }
 
-// ValidateSingleCallInput rejects unsupported Codex request options before
-// credential resolution can perform a token refresh.
+// ValidateSingleCallInput enforces canonical input capabilities and Codex OAuth
+// constraints before credential resolution can perform a token refresh.
 func (profile Profile) ValidateSingleCallInput(input contract.ModelRequest) error {
+	if profile.Driver == DriverAnthropicMessages && anthropicThinkingEnabled(contract.MergeExtraBody(profile.Parameters.ExtraBody, input.Options.ExtraBody)) {
+		for _, message := range input.Messages {
+			if message.Role != contract.RoleUser {
+				return fmt.Errorf("anthropic-messages thinking requires native thinking-block history for assistant/tool continuation")
+			}
+		}
+	}
 	if profile.Driver != DriverOpenAICodexResponses {
 		return nil
+	}
+	if err := validateCodexExtraBody(input.Options.ExtraBody); err != nil {
+		return err
 	}
 	if input.Options.MaxOutputTokens != nil || input.Options.TopP != nil || len(input.Options.StopSequences) != 0 {
 		return fmt.Errorf("openai-codex-responses does not support max_output_tokens, top_p, or stop_sequences")
@@ -93,6 +104,13 @@ func (profile Profile) ValidateSingleCallInput(input contract.ModelRequest) erro
 		if message.Role != contract.RoleUser {
 			return fmt.Errorf("openai-codex-responses single calls accept user messages only")
 		}
+	}
+	return nil
+}
+
+func validateCodexExtraBody(fields contract.ExtraBody) error {
+	if value, exists := fields["store"]; exists && strings.TrimSpace(string(value)) != "false" {
+		return fmt.Errorf("openai-codex-responses requires extra_body.store=false when supplied")
 	}
 	return nil
 }

@@ -42,7 +42,7 @@ func (service *Service) prepareRunRequest(
 	entry profile.Entry,
 ) (RunRequest, *contract.RuntimeError) {
 	if entry.Kind == profile.KindModel && entry.Model != nil {
-		if err := entry.Model.ValidateManagedExecution(); err != nil {
+		if err := entry.Model.ValidateManagedOptions(request.ModelOptions); err != nil {
 			return RunRequest{}, sessionRuntimeError(contract.ErrorInvalidRequest, err.Error())
 		}
 	}

@@ -101,6 +101,7 @@ API Profile 只接受以下字段：
 | `parameters.top_p` | 可选，`0..1` |
 | `parameters.stop_sequences` | 可选，最多四个非空字符串 |
 | `parameters.stream` | 可选布尔值；省略默认 `true`；`true` 请求 SSE，`false` 请求普通 JSON；不接受 `null` |
+| `parameters.extra_body` | 可选 object/null；原生请求参数默认值，单次 `options.extra_body` 按顶层 key 覆盖；值不转换、不按模型枚举过滤 |
 | `timeout` | 必填 Go duration，范围 `(0,24h]` |
 | `context.window_tokens` | Session 本地上下文窗口；`0`/省略为 `32768` |
 | `context.reserved_output_tokens` | 本地输出预留；`0`/省略基础值为 `8192` |
@@ -193,7 +194,7 @@ window；carrier stop 会向 supervisor 发送 `SIGTERM`，supervisor 显式向 
 Session fact。`job cancel|retry|continue` 不接管 `native_tui` lifecycle；
 关闭必须使用 `session close|close-all`。上述 Session ID 不能传给 `session exec|call`。
 
-Command adapter 按 `filepath.Base(command)` 选择，首期支持 Codex 与 Claude。adapter
+Command adapter 按 `filepath.Base(command)` 选择，已登记 Codex、Claude 与 Grok。adapter
 用显式 option grammar：
 
 - 区分 command/common、exec-only 和 mode selector；
@@ -211,7 +212,7 @@ leading global `--json` 不包装其原生输出。
 bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`call` 只接受 API
 Profile。Profile ID 必须紧跟拥有它的 namespace/action，option 位于其后，input
 必须最后。固定根 namespace
-`doctor|exec|call|profile|session|agent|job|server|help|version|update`，以及 Profile 管理
+`doctor|exec|call|profile|auth|session|agent|job|server|help|version|update`，以及 Profile 管理
 action `list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。
 
 `profile` 只提供 `list|show|check` 管理动作，不执行 Profile。`profile check` 是纯
@@ -321,8 +322,9 @@ canonical 模式的 `parameters.stream` 是 Profile-only 的上游响应模式�
 `true`，显式 `false` 不得因 `omitempty` 丢失。所有模式使用同一个 POST endpoint；
 通用 OpenAI 允许 loopback HTTP，其余目标仍要求 HTTPS。默认 `Accept` 在 true 时为 `text/event-stream, application/json`，
 false 时为 `application/json`；显式 Profile headers 保持原有覆盖优先级。
-Chat Completions 的 `stream_options={include_usage:true}` 只在 stream=true 时发送，false 时
-完全省略；`anthropic-messages` 和 `openai-responses` 不发送这个字段。
+未显式配置扩展字段时，Chat Completions 的 `stream_options={include_usage:true}` 只在
+stream=true 时发送，false 时完全省略；`anthropic-messages` 和 `openai-responses`
+不自动添加该字段。显式 `extra_body.stream_options` 原样覆盖这个默认行为。
 
 API-key driver 响应按实际 `Content-Type` 分流：SSE 逐帧解析，普通 JSON 整体解析，归一为
 相同的 ModelResult/events/usage/tool calls。服务端返回与请求偏好不同的格式时，
@@ -348,6 +350,68 @@ identity 不一致而 fail closed，不兼容重放。
 Session API 的配置摘要也纳入 `resolved_endpoint`，防止旧队列在 URL 解析语义改变后
 沿用同一配置摘要执行；旧摘要不兼容重放，不改写历史记录。
 
+### 原生请求参数扩展
+
+`parameters.extra_body` 是 API Profile 的原生生成参数默认值；canonical
+`ModelRequest.options.extra_body`（HTTP 为 `input.options.extra_body`）是请求级覆盖。
+Go 对应 `contract.ExtraBody`，值为 `json.RawMessage`，保留大整数精度。
+`sn-cli call --param 'name=JSON'` 生成相同的请求级字段，可重复，重名最后一次生效；
+字符串值必须有 JSON 双引号，例如 `--param 'reasoning_effort="high"'`。
+`--param` 不与 `--request-file` 组合，后者仍只接收 canonical ModelRequest，不是原生 body。
+Agent 仍使用 Profile 参数，不新增 Agent 请求级 model_options；Session 的现有
+model_options 可以携带 extra_body，但不扩展原先不支持的协议/历史能力。
+
+合并只按顶层 key 进行：请求级值完整替换 Profile 同名值，嵌套对象不递归合并。
+缺省 key 继承 Profile 默认值；显式 `null`、`0`、`false`、空数组和空对象均原样发送，
+不删除字段、不当作“没有设置”。`extra_body` 容器本身为 `null` 或 `{}` 不清空 Profile
+默认值。字段进入 HTTP request 顶层，wire 上没有 `extra_body` 包装；raw 和 attempts
+记录合并后的真实请求 JSON，沿用现有 secret 脱敏。
+
+支持字段不限于下表，不按模型名、枚举或原生参数取值白名单筛选。下表是入口举例，
+不是所有模型的可用字段保证；服务端负责原生字段的类型、取值与组合是否合法。
+
+| 协议 | 常用原生字段 |
+|---|---|
+| `openai-chat-completions` | `reasoning_effort`、`response_format`、`tool_choice`、`parallel_tool_calls`、`frequency_penalty`、`presence_penalty`、`logprobs`、`top_logprobs`、`logit_bias`、`seed`、`metadata`、`store`、`service_tier`、`verbosity`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention`、`stream_options` |
+| `openai-responses` | `reasoning`、`text`、`include`、`tool_choice`、`parallel_tool_calls`、`max_tool_calls`、`metadata`、`store`、`service_tier`、`truncation`、`top_logprobs`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention` |
+| `anthropic-messages` | `thinking`、`output_config`、`tool_choice`、`top_k`、`metadata`、`cache_control`、`service_tier` |
+
+保留官方原生名字与嵌套形状，例如 Responses 的 `reasoning.effort`、`text.format`，
+Chat Completions 的 `reasoning_effort`、`response_format`，Messages 的 `thinking.type`
+与 `output_config.effort`。不互相改名，不把一个协议的结构转换成另一个协议。
+兼容供应商额外字段也可以通过同一入口发送。
+
+不批量填入可选字段的 `null/0/false`，因为它们不一定是无效值或官方默认值；未提供字段
+留给上游采用自身默认值。原有公共参数（正整数 max_tokens、temperature/top_p 范围等）
+保持原契约，不通过 extra_body 绕过。扩展字段不解析 `${VAR}`、不承载凭据；认证仍由
+Profile headers 的环境变量引用或 Codex OAuth 管理。Profile 参数可能进入持久化快照与日志。
+
+有限的保留 key 分为两类，均只约束 Runtime 的 owner/投影边界，不代表原生协议不支持：
+
+- 已有 owner：`model`、`messages`、`input`、`system`、`instructions`、`tools`、`stream`、
+  `max_tokens`、`max_completion_tokens`、`max_output_tokens`、`temperature`、`top_p`、
+  `stop`、`stop_sequences`。使用已有 Profile、canonical request 或 CLI 参数。
+- 本轮不扩展的原生生命周期/工具/多模态/多结果：`background`、`conversation`、
+  `previous_response_id`、`context_management`、`container`、`mcp_servers`、`modalities`、
+  `audio`、`n`、`functions`、`function_call`。
+
+只做 JSON 结构与大小校验：key 非空、有效 UTF-8、无 NUL、最多 256 字节，extra_body
+编码后最多 1 MiB；外层 Profile/请求原有总大小限制仍适用。Profile loader、schema、Go、
+CLI 与 HTTP 的边界一致；strict JSON 入口仍拒绝重复 object key。深拷贝隔离 caller、catalog、
+resolved Profile 和冻结 snapshot；扩展字段纳入现有配置/请求摘要，不增加另一套 reader。
+
+显式启用 Anthropic thinking 的请求只允许单次 user 输入；canonical history 尚不能回传
+原生 thinking/signature blocks，因此 assistant/tool 续接、Session 和 Agent 在执行前拒绝。
+`thinking:{"type":"disabled"}` 可请求级覆盖 Profile 默认值。thinking 响应保留在 raw/日志，
+不伪装成 assistant 正文或可回传历史。普通 Responses 的 store 默认 false，可通过本入口
+覆盖，但这不增加服务端 conversation/retrieval 能力；Codex OAuth 仍固定 store=false，
+显式其它 store 值在 credential refresh/HTTP 前拒绝。
+
+官方参数形状参考 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、
+[Responses 迁移指南](https://developers.openai.com/api/docs/guides/migrate-to-responses)、
+[Anthropic Messages](https://platform.claude.com/docs/en/api/python/messages/create)；
+扩展入口参考 [Anthropic SDK extra_body](https://platform.claude.com/docs/en/cli-sdks-libraries/sdks/python)。
+
 ### Responses canonical 单次调用
 
 公开 adapter owner 是 `pkg/provider/openairesponses/`，driver 为 `openai-responses`，
@@ -361,9 +425,9 @@ Agent Kernel 时也在 Run/Resume 的 model/tool effect 前检查。Generator wr
 以下限制属于 Runtime canonical 输入与投影，不是上游原生协议的能力定义。
 
 - 请求使用 `instructions`、仅含 user 文本 Message 的 `input`、平铺 function `tools`，
-  始终 `store:false`。function schema 设置 `strict:false` 保持 canonical 可选字段语义。
+  默认 `store:false`（extra_body 可覆盖）。function schema 设置 `strict:false` 保持 canonical 可选字段语义。
 - 拒绝 assistant/tool 历史与工具结果续接；不接受 `previous_response_id`、后台任务、
-  内建托管工具、多模态或任意 Provider 字段透传。函数调用只返回，不执行。
+  内建托管工具或多模态；生成参数通过上述 extra_body 扩展。函数调用只返回，不执行。
 - JSON 按 `output[]` 提取 assistant 的 `output_text` / `refusal` 和 `function_call`；
   canonical ToolCall ID 使用 `call_id`，不是 output item 的 `id`。arguments 必须是完整
   JSON object。reasoning item 只保留在 raw/日志中，不伪装成 canonical 历史。
@@ -972,7 +1036,7 @@ unique/partial 属性和列序；对象缺失、定义变化、未知对象、�
 doctor exec call profile auth session agent job server help version update
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=14`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=15`。
 bare CLI direct、`exec` 和 `session attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -983,7 +1047,7 @@ namespace；active CLI Profile；否则失败。namespace/Profile 后出现的 `
 help 使用单一 topic grammar：
 
 ```text
-sn-cli help [tui|exec|call|doctor|profile|session|agent|job|server|update]
+sn-cli help [tui|exec|call|auth|doctor|profile|session|agent|job|server|update]
 sn-cli --json help [topic]
 ```
 
@@ -1001,6 +1065,10 @@ sn-cli <cli-profile-id> --resume [native-session-id] [--model M] [--effort E]
 sn-cli exec <cli-profile-id> [options] [input]
 sn-cli call <api-profile-id> [options] [input]
 sn-cli call <api-profile-id> --raw [options] [input]
+sn-cli auth [login|logout]
+sn-cli auth login openai-codex [--device-code|--no-browser]
+sn-cli auth status [openai-codex]
+sn-cli auth logout openai-codex
 sn-cli doctor
 sn-cli help [topic]
 sn-cli profile list|show|check
@@ -1053,7 +1121,7 @@ session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`
 | `job` | 查询/控制已有 Run | 不提交 fresh work |
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=14` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=15` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。除下述 `call --raw` 的已发生 attempt 诊断外，machine
 非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`

@@ -3,6 +3,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -27,11 +28,12 @@ const (
 
 // Parameters carries generation defaults and the upstream response mode.
 type Parameters struct {
-	MaxTokens     *int64   `json:"max_tokens,omitempty"`
-	Temperature   *float64 `json:"temperature,omitempty"`
-	TopP          *float64 `json:"top_p,omitempty"`
-	StopSequences []string `json:"stop_sequences,omitempty"`
-	Stream        *bool    `json:"stream,omitempty"`
+	MaxTokens     *int64             `json:"max_tokens,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Stream        *bool              `json:"stream,omitempty"`
+	ExtraBody     contract.ExtraBody `json:"extra_body,omitempty"`
 }
 
 // StreamingEnabled selects Provider SSE delivery, independently of whether a
@@ -72,7 +74,13 @@ func (profile Profile) Validate() error {
 	if _, err := profile.ResolvedEndpoint(); err != nil {
 		return err
 	}
+	if err := profile.Parameters.ExtraBody.Validate(); err != nil {
+		return fmt.Errorf("parameters.%w", err)
+	}
 	if profile.Driver == DriverOpenAICodexResponses {
+		if err := validateCodexExtraBody(profile.Parameters.ExtraBody); err != nil {
+			return err
+		}
 		if len(profile.Headers) != 0 {
 			return fmt.Errorf("openai-codex-responses uses managed OAuth credentials; headers must be empty")
 		}
@@ -141,10 +149,26 @@ func (profile Profile) Validate() error {
 // ValidateManagedExecution rejects adapters that cannot losslessly round-trip
 // the canonical conversation used by Session and durable Agent execution.
 func (profile Profile) ValidateManagedExecution() error {
+	return profile.ValidateManagedOptions(contract.GenerateOptions{})
+}
+
+// ValidateManagedOptions evaluates capabilities using the effective per-request
+// defaults. Native Anthropic thinking blocks are not part of canonical history.
+func (profile Profile) ValidateManagedOptions(options contract.GenerateOptions) error {
 	if profile.Driver == DriverOpenAIResponses || profile.Driver == DriverOpenAICodexResponses {
 		return fmt.Errorf("%s supports single calls only; Session and Agent execution are not supported", profile.Driver)
 	}
+	if profile.Driver == DriverAnthropicMessages && anthropicThinkingEnabled(contract.MergeExtraBody(profile.Parameters.ExtraBody, options.ExtraBody)) {
+		return fmt.Errorf("anthropic-messages thinking requires native thinking-block history; use a single call, or disable thinking for Session/Agent execution")
+	}
 	return profile.validateContextBudget()
+}
+
+func anthropicThinkingEnabled(fields contract.ExtraBody) bool {
+	var thinking struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(fields["thinking"], &thinking) == nil && thinking.Type != "" && thinking.Type != "disabled"
 }
 
 func (profile Profile) validateContextBudget() error {

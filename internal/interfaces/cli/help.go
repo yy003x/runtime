@@ -46,6 +46,7 @@ var cliHelpTopics = []cliHelpTopic{
 		Usage: []string{
 			"sn-cli call <api-profile-id> [options...] [input]",
 			"sn-cli call <api-profile-id> --raw [options...] [input]",
+			"sn-cli call <api-profile-id> [--param 'name=JSON' ...] [options...] [input]",
 			"sn-cli --json call <api-profile-id> [options...] [input]",
 		},
 		Notes: []string{
@@ -55,7 +56,10 @@ var cliHelpTopics = []cliHelpTopic{
 			"Codex HTTP success responses use SSE even without a reliable Content-Type; --raw keeps a frame array and logs keep the actual response headers. HTTP error JSON is unchanged.",
 			"When Codex terminal output is empty, completed output_item.done items are assembled by output_index; a valid terminal Response is still required and deltas are not duplicated.",
 			"base_url is the complete API prefix including any version; Runtime appends only chat/completions, messages, or responses. endpoint is used unchanged.",
-			"Canonical openai-responses generation sends store:false, accepts user text and returns text/function calls. --raw preserves the actual upstream request/response bodies, including reasoning, usage and unknown fields.",
+			"Canonical openai-responses generation defaults to store:false, accepts user text and returns text/function calls. --raw preserves the actual upstream request/response bodies, including reasoning, usage and unknown fields.",
+			"Native generation options: Profile parameters.extra_body supplies defaults; ModelRequest options.extra_body or repeated --param 'name=JSON' overrides by top-level key. Nested values replace, not deep-merge; explicit null, 0 and false are sent unchanged. Repeated names use the last value.",
+			"extra_body fields enter the actual HTTP body top level, not an extra_body wrapper. Optional fields are not auto-filled; model-specific support and value checks belong to the upstream API. Canonical identity/messages/tools/budget/stream and native conversation/multimodal lifecycle fields cannot be overridden.",
+			"--param is for call only and cannot be combined with --request-file. Anthropic thinking is single-call only until native thinking-block history is supported. Codex extra_body.store must be false if supplied.",
 			"Responses raw bodies use input/output; Chat Completions raw bodies use messages/choices. Runtime does not translate one wire protocol into the other or add model-supplied reasoning text.",
 			"Canonical API Profile parameters.stream controls upstream delivery: true (default) requests SSE; false requests regular JSON. Generic OpenAI endpoints allow root paths and HTTP loopback; remote destinations require HTTPS. --stream only selects downstream output.",
 			"The retry layer buffers each attempt's events and publishes them after success; --stream is not real-time Provider passthrough.",
@@ -163,7 +167,7 @@ var cliHelpTopics = []cliHelpTopic{
 			"sn-cli job gc [options...]",
 		},
 		Notes: []string{
-			"job is a control plane over Run records (run_id); new work enters through session or agent.",
+			"job is a control plane over Run records (run_id); new work enters through session or agent. job trace aggregates the Run record with its event, model_call, and tool_effect journals.",
 			"job list accepts --state, --kind, --session-id, --task-id, --profile-id, and --limit (default 100, maximum 1000).",
 			"Results use created_at DESC, run_id DESC; --before-run-id <last-id> reads the next page. A missing cursor is not_found.",
 			"job continue resumes a paused Run; it is not the same as <cli-profile> resume.",
@@ -294,6 +298,10 @@ Usage:
   sn-cli call <api-profile-id> --raw [options...] [input]
   sn-cli --json call <api-profile-id> [options...] [input]
   sn-cli --json <management-command> [args...]
+  sn-cli auth [login|logout]
+  sn-cli auth login openai-codex [--device-code|--no-browser]
+  sn-cli auth status [openai-codex]
+  sn-cli auth logout openai-codex
   sn-cli doctor
   sn-cli profile list|show|check
   sn-cli session exec <cli-profile-id> [options...] [input]

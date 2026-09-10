@@ -53,6 +53,7 @@ func TestValidateRunRequestRejectsInvalidCommonModelOptions(t *testing.T) {
 	for name, options := range map[string]contract.GenerateOptions{
 		"top_p":          {TopP: &invalidTopP},
 		"stop_sequences": {StopSequences: []string{""}},
+		"extra_body":     {ExtraBody: contract.ExtraBody{"model": json.RawMessage(`null`)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := validateRunRequest(RunRequest{

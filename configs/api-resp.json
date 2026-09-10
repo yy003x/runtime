@@ -1,7 +1,7 @@
 {
   "type": "api",
   "driver": "openai-responses",
-  "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "model": "qwen3.8-2.4t-a95b",
   "headers": {
     "Authorization": "${BAILIAN_API_KEY}"

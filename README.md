@@ -54,8 +54,8 @@ rejected rather than silently papered over.
 - 🤖 **Autonomous agent loops** — model + controlled builtin/MCP tools
   (including `web_search` and `web_fetch`) with budgets, durable effects, and
   streaming events.
-- 🪟 **Long-lived tmux windows** — native/default or isolated tmux transport you
-  can open, send, attach, interrupt, and stop by stable ID.
+- 🪟 **Long-lived native TUI sessions** — provider TUI in a private default or
+  isolated tmux PTY; open, send, attach, interrupt, and close by Runtime Session ID.
 - 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
   unknown fields and ambiguous states fail closed.
 - 🌐 **HTTP / SSE control plane** — a loopback `sn-server` exposes the full
@@ -182,7 +182,7 @@ sn-cli --json session list --interface native_tui
 sn-cli --json session show --session-id <session_id>
 ```
 
-The tmux server/window registry is now a private PTY carrier. There is no
+The tmux server/window registry is a private PTY carrier. There is no
 public `sn-cli tmux` namespace or compatibility alias; all native TUI
 mutations use the owning Runtime Session ID.
 
@@ -297,10 +297,11 @@ an API profile points at a provider:
 ```
 
 For canonical generation, API `parameters` supports `max_tokens`, `temperature`, `top_p`, `stop_sequences`,
-and `stream`. `stream` is an optional boolean (not `null`), defaulting to `true`:
+`stream`, and native option defaults under `extra_body`. `stream` is an optional
+boolean (not `null`), defaulting to `true`:
 `true` requests SSE, while `false` sends `stream:false` for a regular JSON response.
 Both use the same HTTPS POST endpoint. `openai-chat-completions` omits
-`stream_options` when false;
+`stream_options` when false unless explicitly supplied through `extra_body`;
 API-key adapters decode SSE or JSON according to the actual response Content-Type;
 Codex OAuth always uses SSE for successful responses, as described below.
 This Profile setting is independent of CLI `--stream`, `--json`, and `--raw`.
@@ -331,7 +332,7 @@ updated explicitly when their provider requires `/v1`; no automatic migration ru
 Use `driver: "openai-responses"` with `base_url: "https://api.openai.com/v1"`
 for Responses. It supports single `call` requests (also stateless Go/HTTP model
 generation), SSE/JSON, text, returned function calls, usage, and raw attempt logs.
-Canonical requests send `store:false` and map `max_tokens` to `max_output_tokens`.
+Canonical requests default to `store:false` and map `max_tokens` to `max_output_tokens`.
 SSE requires a terminal Response and projects its output once; intermediate frames
 are preserved in raw/logs, not published as real-time canonical deltas.
 The canonical Responses projection is intentionally limited to user text and
@@ -342,6 +343,26 @@ Session/Agent support is unchanged. Returned function calls are never automatica
 Responses uses `input` / `output`; Chat Completions uses `messages` / `choices`.
 Fields such as `reasoning`, `usage`, `metadata`, and provider extensions are retained
 from the upstream response, not added by Runtime or converted into Chat Completions.
+
+Native generation options use `parameters.extra_body` in an API Profile for
+defaults and canonical `options.extra_body` for per-request overrides. These keys
+are merged into the actual HTTP body top level. `null`, `0`, and `false` are sent
+unchanged; omitted options use the provider's defaults. Overrides replace the
+whole value, not individual nested properties. For quick single-call experiments:
+
+```bash
+sn-cli call api-resp --raw --param 'reasoning={"effort":"low"}' --param 'metadata=null' "Hello"
+sn-cli call api-cx --raw --param 'frequency_penalty=0' --param 'parallel_tool_calls=false' "Hello"
+sn-cli call api-cc --raw --param 'thinking={"type":"disabled"}' --param 'top_k=0' "Hello"
+```
+
+`--param` is repeatable (last value per name wins) and cannot accompany
+`--request-file`. Native values remain subject to upstream API/model support;
+`null` and `0` are not universal no-ops. Canonical messages/tools/budgets and
+native conversation/multimodal features are not replaced through this extension.
+Anthropic thinking is currently single-call only because canonical history has no
+native thinking/signature blocks. Full field examples and boundaries are in the
+[request options contract](docs/runtime-contract.md#原生请求参数扩展).
 
 For ChatGPT/Codex OAuth, use the included `api-codex` Profile:
 
@@ -423,18 +444,12 @@ cross-domain or internal-adapter coupling requires an explicit review.
 does not host a second product UI; callers use public CLI/HTTP entry points and
 never read or write the active Runtime home directly.
 
-Run lists support exact `session_id`, `task_id` and `profile_id` filters in
-addition to state/kind. Use `sn-cli --json job list --task-id <task-id> --limit 50`
-or `GET /v1/runs?task_id=<task-id>&limit=50`. Pass the last returned Run ID as
-`--before-run-id` / `before_run_id` to continue in `(created_at, run_id)` descending
-order. This is a live query, not a snapshot; a garbage-collected cursor returns
-`not_found` and requires restarting pagination. Empty Run lists are `[]`.
-
-Session watch and Run event SSE flush immediately and send comment heartbeats
-every five seconds without changing event IDs. Resume with `Last-Event-ID`, or
-an explicit `after_seq` query (including `0`, which takes precedence). Malformed,
-unknown, repeated or empty sequence query parameters are rejected. See the
-[Runtime contract](docs/runtime-contract.md) for the full version 9 contract.
+Run lists accept exact `session_id`, `task_id`, and `profile_id` filters in
+addition to state/kind, for example
+`sn-cli --json job list --task-id <task-id> --limit 50` or
+`GET /v1/runs?task_id=<task-id>&limit=50`. Pagination, SSE resume, and
+heartbeats follow the [Runtime contract](docs/runtime-contract.md)
+(`contract_version=15`).
 
 ## Documentation
 
@@ -463,9 +478,9 @@ active `~/.sn`. See the [Makefile](Makefile) for all targets.
 
 This repo follows Conventional Commits with Chinese subjects and strict
 contract/code lock-step: changing a public command requires syncing its tests,
-`sn-cli --help`, this README, and the relevant contract docs. The development
-workflow, architecture boundaries, and verification gates are in
-[`AGENTS.md`](AGENTS.md).
+`sn-cli --help`, this README, `README.zh-CN.md`, `SN-CLI-USAGE.md`, and
+`docs/runtime-contract.md`. The development workflow, architecture boundaries,
+and verification gates are in [`AGENTS.md`](AGENTS.md).
 
 ## License
 

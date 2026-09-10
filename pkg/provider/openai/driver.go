@@ -202,7 +202,7 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 	if resolved.Parameters.StreamingEnabled() {
 		streamOptions = map[string]bool{"include_usage": true}
 	}
-	return json.Marshal(requestBody{
+	return httpx.MarshalRequest(requestBody{
 		Model: resolved.Model, Messages: messages, Tools: tools,
 		MaxCompletionTokens: request.Options.MaxOutputTokens,
 		Temperature:         request.Options.Temperature,
@@ -210,7 +210,7 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 		Stop:                request.Options.StopSequences,
 		Stream:              resolved.Parameters.StreamingEnabled(),
 		StreamOptions:       streamOptions,
-	})
+	}, request.Options.ExtraBody)
 }
 
 type responseEnvelope struct {

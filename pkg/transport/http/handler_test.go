@@ -20,12 +20,16 @@ type stubGenerator struct {
 	result        contract.ModelResult
 	err           *contract.RuntimeError
 	generateCalls *int
+	request       *contract.GenerateRequest
 }
 
 func (stub stubGenerator) Generate(
-	context.Context,
-	contract.GenerateRequest,
+	_ context.Context,
+	request contract.GenerateRequest,
 ) (contract.ModelResult, *contract.RuntimeError) {
+	if stub.request != nil {
+		*stub.request = request
+	}
 	if stub.generateCalls != nil {
 		(*stub.generateCalls)++
 	}
@@ -183,6 +187,27 @@ func TestHandlerAllowsNullInsideToolInputSchema(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("generator calls=%d", calls)
+	}
+}
+
+func TestHandlerPreservesNativeOptionValues(t *testing.T) {
+	var captured contract.GenerateRequest
+	handler := NewHandler(stubGenerator{request: &captured, result: contract.ModelResult{
+		Message: contract.Message{Role: contract.RoleAssistant, Content: "ok"}, FinishReason: contract.FinishStop,
+	}})
+	request := httptest.NewRequest("POST", "/v1/model/generate", strings.NewReader(`{
+		"model_profile":"fixture","input":{"messages":[{"role":"user","content":"hello"}],
+		"options":{"extra_body":{"metadata":null,"top_k":0,"parallel_tool_calls":false,"seed":9007199254740993}}}}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	for name, want := range map[string]string{"metadata": "null", "top_k": "0", "parallel_tool_calls": "false", "seed": "9007199254740993"} {
+		if got := string(captured.Input.Options.ExtraBody[name]); got != want {
+			t.Errorf("%s=%s, want %s", name, got, want)
+		}
 	}
 }
 

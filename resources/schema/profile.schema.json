@@ -153,6 +153,19 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "extra_body": {
+              "description": "Native Provider request option defaults, shallow-merged with ModelRequest.options.extra_body. Values including null, zero and false are forwarded unchanged at the HTTP body top level; model support and value validation belong to the upstream service. This is not a replacement for canonical messages, tools, identity or lifecycle fields.",
+              "type": ["object", "null"],
+              "x-sn-max-bytes": 1048576,
+              "propertyNames": {
+                "minLength": 1,
+                "maxLength": 256,
+                "x-sn-max-bytes": 256,
+                "pattern": "^[^\\x00]+$",
+                "not": {"enum": ["model", "messages", "input", "system", "instructions", "tools", "stream", "max_tokens", "max_completion_tokens", "max_output_tokens", "temperature", "top_p", "stop", "stop_sequences", "background", "conversation", "previous_response_id", "context_management", "container", "mcp_servers", "modalities", "audio", "n", "functions", "function_call"]}
+              },
+              "additionalProperties": true
+            },
             "stream": {
               "description": "Upstream response mode: true requests SSE; false requests JSON. Omission defaults to true. Independent of CLI --stream output framing.",
               "type": "boolean",
@@ -281,6 +294,7 @@
               "headers": {"maxProperties": 0},
               "parameters": {"properties": {
                 "stream": {"const": true},
+                "extra_body": {"properties": {"store": {"const": false}}},
                 "max_tokens": {"type": "null"},
                 "top_p": {"type": "null"},
                 "stop_sequences": {"maxItems": 0}

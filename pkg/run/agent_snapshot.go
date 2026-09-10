@@ -76,6 +76,7 @@ func (executor *AgentExecutor) validateAgentRequestShape(
 		request.ModelOptions.Temperature != nil ||
 		request.ModelOptions.TopP != nil ||
 		len(request.ModelOptions.StopSequences) > 0 ||
+		len(request.ModelOptions.ExtraBody) > 0 ||
 		request.BasePromptDigest != "" {
 		return fmt.Errorf(
 			"model, effort, model_options, and base_prompt_digest are invalid for agent runs",
@@ -296,6 +297,10 @@ func decodeAgentExecutionSnapshot(
 }
 
 func agentExecutionSnapshotAllowsNull(path []string) bool {
+	if len(path) >= 4 && path[0] == "model_execution_snapshot" &&
+		path[1] == "profile" && path[2] == "parameters" && path[3] == "extra_body" {
+		return true
+	}
 	if len(path) < 2 || path[0] != "tool_execution_snapshot" {
 		return false
 	}
