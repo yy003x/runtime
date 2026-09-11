@@ -147,9 +147,19 @@ type requestBody struct {
 
 type messagePayload struct {
 	Role       string            `json:"role"`
-	Content    string            `json:"content,omitempty"`
+	Content    json.RawMessage   `json:"content,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
 	ToolCalls  []toolCallPayload `json:"tool_calls,omitempty"`
+}
+
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL string `json:"url"`
 }
 
 type toolPayload struct {
@@ -174,11 +184,19 @@ type functionPayload struct {
 func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) ([]byte, error) {
 	messages := make([]messagePayload, 0, len(request.Messages)+1)
 	if strings.TrimSpace(request.System) != "" {
-		messages = append(messages, messagePayload{Role: "system", Content: request.System})
+		system, err := json.Marshal(request.System)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, messagePayload{Role: "system", Content: system})
 	}
 	for _, message := range request.Messages {
+		content, err := encodeChatContent(message)
+		if err != nil {
+			return nil, err
+		}
 		current := messagePayload{
-			Role: string(message.Role), Content: message.Content, ToolCallID: message.ToolCallID,
+			Role: string(message.Role), Content: content, ToolCallID: message.ToolCallID,
 		}
 		for _, call := range message.ToolCalls {
 			current.ToolCalls = append(current.ToolCalls, toolCallPayload{
@@ -211,6 +229,29 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 		Stream:              resolved.Parameters.StreamingEnabled(),
 		StreamOptions:       streamOptions,
 	}, request.Options.ExtraBody)
+}
+
+func encodeChatContent(message contract.Message) (json.RawMessage, error) {
+	if len(message.ContentParts) == 0 {
+		if message.Content == "" {
+			return nil, nil
+		}
+		return json.Marshal(message.Content)
+	}
+	parts := make([]chatContentPart, 0, len(message.ContentParts))
+	for _, part := range message.ContentParts {
+		switch part.Type {
+		case contract.ContentPartText:
+			parts = append(parts, chatContentPart{Type: "text", Text: part.Text})
+		case contract.ContentPartImageURL:
+			parts = append(parts, chatContentPart{
+				Type: "image_url", ImageURL: &chatImageURL{URL: part.ImageURL.URL},
+			})
+		default:
+			return nil, fmt.Errorf("unsupported content part type %q", part.Type)
+		}
+	}
+	return json.Marshal(parts)
 }
 
 type responseEnvelope struct {

@@ -15,6 +15,38 @@ import (
 	"github.com/yy003x/runtime/pkg/model"
 )
 
+type streamOverrideGenerator struct {
+	inner  model.Generator
+	stream *bool
+}
+
+func bindAgentModelStream(inner model.Generator, stream *bool) model.Generator {
+	if inner == nil || stream == nil {
+		return inner
+	}
+	value := *stream
+	return streamOverrideGenerator{inner: inner, stream: &value}
+}
+
+func (generator streamOverrideGenerator) Generate(
+	ctx context.Context,
+	request contract.GenerateRequest,
+) (contract.ModelResult, *contract.RuntimeError) {
+	return generator.GenerateStream(ctx, request, nil)
+}
+
+func (generator streamOverrideGenerator) GenerateStream(
+	ctx context.Context,
+	request contract.GenerateRequest,
+	sink contract.EventSink,
+) (contract.ModelResult, *contract.RuntimeError) {
+	if generator.stream != nil {
+		value := *generator.stream
+		request.Input.Options.Stream = &value
+	}
+	return generator.inner.GenerateStream(ctx, request, sink)
+}
+
 type recordingModel struct {
 	runID        string
 	model        model.Generator

@@ -19,6 +19,7 @@ type testDriver struct {
 	mutateInput bool
 	identity    *DriverExecutionIdentity
 	attempt     provider.Attempt
+	gotStream   *bool
 }
 
 func (driver *testDriver) ExecutionIdentity() DriverExecutionIdentity {
@@ -38,10 +39,12 @@ func (driver *testDriver) Validate(Profile) error {
 
 func (driver *testDriver) Stream(
 	_ context.Context,
-	_ ResolvedModel,
+	resolved ResolvedModel,
 	request contract.ModelRequest,
 	sink contract.EventSink,
 ) (contract.ModelResult, provider.Attempt, *contract.RuntimeError) {
+	value := resolved.Parameters.StreamingEnabled()
+	driver.gotStream = &value
 	driver.attempts++
 	if driver.mutateInput {
 		request.Messages[0].Content = "mutated"
@@ -56,6 +59,52 @@ func (driver *testDriver) Stream(
 		}
 	}
 	return driver.result, driver.attempt, driver.err
+}
+
+func TestServiceRequestStreamOverridesProfile(t *testing.T) {
+	driver := &testDriver{
+		events: []contract.Event{{Sequence: 1, Type: contract.EventModelStarted}},
+		result: contract.ModelResult{
+			Message:      contract.Message{Role: contract.RoleAssistant, Content: "ok"},
+			FinishReason: contract.FinishStop,
+		},
+	}
+	falseValue := false
+	profile := Profile{
+		Driver: DriverOpenAIChatCompletions, Endpoint: "https://example.invalid/faux", Model: "fixture",
+		Headers:    map[string]string{"Authorization": "${MODEL_API_KEY}"},
+		Timeout:    "1m",
+		Parameters: Parameters{Stream: &falseValue},
+	}
+	catalog, err := NewCatalog(map[string]Profile{"fixture": profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(
+		catalog,
+		map[DriverName]Driver{DriverOpenAIChatCompletions: driver},
+		ServiceOptions{Getenv: func(name string) (string, bool) {
+			return "secret", name == "MODEL_API_KEY"
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testRequest()
+	if _, runtimeErr := service.Generate(context.Background(), request); runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	if driver.gotStream == nil || *driver.gotStream {
+		t.Fatalf("profile stream=false leaked as %v", driver.gotStream)
+	}
+	trueValue := true
+	request.Input.Options.Stream = &trueValue
+	if _, runtimeErr := service.Generate(context.Background(), request); runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	if driver.gotStream == nil || !*driver.gotStream {
+		t.Fatalf("request stream=true was not applied: %v", driver.gotStream)
+	}
 }
 
 func TestServiceUsesOneAttemptAndCompletesStream(t *testing.T) {

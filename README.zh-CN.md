@@ -278,12 +278,16 @@ API driver 支持 `openai-chat-completions`、`openai-responses`、`anthropic-me
 原生请求参数默认值放入 API Profile 的 `parameters.extra_body`，单次用
 `options.extra_body` 或 `call --param '字段名=JSON值'` 覆盖。字段直接进入 HTTP request
 顶层；显式 `null`、`0`、`false` 原样发送，未填写的选项由上游使用自身默认值。
-`--param` 可重复，同名最后一次生效，嵌套对象整体替换，不与 `--request-file` 组合：
+`--param` 可重复，同名最后一次生效，嵌套对象整体替换，不与 `--request-file` 组合。
+`--image` 可重复，把本地 jpeg/png/gif/webp 编成 canonical `content_parts`
+（Chat Completions 的 `image_url`；Anthropic 映射为 `type=image`）。Responses/Codex
+拒绝 `content_parts`：
 
 ```bash
 sn-cli call api-resp --raw --param 'reasoning={"effort":"low"}' --param 'metadata=null' "你好"
 sn-cli call api-cx --raw --param 'frequency_penalty=0' --param 'parallel_tool_calls=false' "你好"
 sn-cli call api-cc --raw --param 'thinking={"type":"disabled"}' --param 'top_k=0' "你好"
+sn-cli call api-cx --raw --image ./screenshot.png "这张图里有什么"
 ```
 
 `null/0` 并不是所有 API 都接受的占位值。模型支持与原生参数取值校验由上游负责；
@@ -360,7 +364,7 @@ scripts/         交付与验证脚本
 Run 列表在 state/kind 外支持 `session_id`、`task_id`、`profile_id` 精确筛选，例如
 `sn-cli --json job list --task-id <task-id> --limit 50`，或
 `GET /v1/runs?task_id=<task-id>&limit=50`。分页、SSE 续读与心跳见
-[Runtime 契约](docs/runtime-contract.md)（`contract_version=15`）。
+[Runtime 契约](docs/runtime-contract.md)（`contract_version=17`）。
 
 ## 文档
 

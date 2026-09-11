@@ -18,6 +18,78 @@ import (
 	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
 )
 
+func TestParseDirectModelInputStreamOverride(t *testing.T) {
+	request, options, err := parseDirectModelInput(
+		"api-cx", model.Profile{}, []string{"--stream", "true", "hello"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Stream || request.Input.Options.Stream == nil || !*request.Input.Options.Stream ||
+		request.Input.Messages[0].Content != "hello" {
+		t.Fatalf("request=%#v options=%#v", request, options)
+	}
+	request, options, err = parseDirectModelInput(
+		"api-cx", model.Profile{}, []string{"--stream", "hello"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.Stream || request.Input.Options.Stream != nil {
+		t.Fatalf("bare --stream=%#v options=%#v", request, options)
+	}
+	request, options, err = parseDirectModelInput(
+		"api-cx", model.Profile{},
+		[]string{"--raw", "--stream", "true", "hello"},
+	)
+	if err != nil || !options.Raw || options.Stream ||
+		request.Input.Options.Stream == nil || !*request.Input.Options.Stream {
+		t.Fatalf("raw+stream true: request=%#v options=%#v err=%v", request, options, err)
+	}
+	if _, _, err := parseDirectModelInput(
+		"api-cx", model.Profile{},
+		[]string{"--stream", "true", "--request-file", "x.json"},
+	); err == nil {
+		t.Fatal("stream override combined with request-file")
+	}
+}
+
+func TestParseDirectModelInputEncodesImageFiles(t *testing.T) {
+	png := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+		0x42, 0x60, 0x82,
+	}
+	path := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(path, png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request, _, err := parseDirectModelInput("api-cx", model.Profile{}, []string{
+		"--image", path, "what is this",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := request.Input.Messages[0].ContentParts
+	if request.Input.Messages[0].Content != "" || len(parts) != 2 ||
+		parts[0].Type != contract.ContentPartText || parts[0].Text != "what is this" ||
+		parts[1].Type != contract.ContentPartImageURL || parts[1].ImageURL == nil ||
+		!strings.HasPrefix(parts[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("request=%#v", request.Input.Messages[0])
+	}
+	if _, _, err := parseDirectModelInput("api-cx", model.Profile{}, []string{
+		"--image", path, "--request-file", "x.json",
+	}); err == nil {
+		t.Fatal("image combined with request-file")
+	}
+}
+
 func TestDirectAPIRejectsRemovedNativeRequestFile(t *testing.T) {
 	for _, args := range [][]string{{"--native-request-file", "missing.json"}, {"--native-request-file=-"}} {
 		_, _, err := parseDirectModelInput("api", model.Profile{}, args)

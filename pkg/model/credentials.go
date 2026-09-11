@@ -84,6 +84,14 @@ func cloneHeaders(headers map[string]string) map[string]string {
 // ValidateSingleCallInput enforces canonical input capabilities and Codex OAuth
 // constraints before credential resolution can perform a token refresh.
 func (profile Profile) ValidateSingleCallInput(input contract.ModelRequest) error {
+	if input.HasContentParts() &&
+		(profile.Driver == DriverOpenAIResponses || profile.Driver == DriverOpenAICodexResponses) {
+		return fmt.Errorf("%s does not support content_parts; use openai-chat-completions or anthropic-messages", profile.Driver)
+	}
+	if profile.Driver == DriverOpenAICodexResponses &&
+		input.Options.Stream != nil && !*input.Options.Stream {
+		return fmt.Errorf("openai-codex-responses requires options.stream=true when supplied")
+	}
 	if profile.Driver == DriverAnthropicMessages && anthropicThinkingEnabled(contract.MergeExtraBody(profile.Parameters.ExtraBody, input.Options.ExtraBody)) {
 		for _, message := range input.Messages {
 			if message.Role != contract.RoleUser {

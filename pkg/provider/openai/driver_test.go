@@ -150,6 +150,53 @@ func TestDriverDoesNotFollowRedirect(t *testing.T) {
 	}
 }
 
+func TestEncodeRequestProjectsImageContentParts(t *testing.T) {
+	encoded, err := contract.DataImageURL("image/png", []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+		0x42, 0x60, 0x82,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := encodeRequest(model.ResolvedModel{Model: "fixture"}, contract.ModelRequest{
+		Messages: []contract.Message{{
+			Role: contract.RoleUser,
+			ContentParts: []contract.ContentPart{
+				{Type: contract.ContentPartText, Text: "what is this"},
+				{Type: contract.ContentPartImageURL, ImageURL: &contract.ImageURL{URL: encoded}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Messages []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 1 || len(body.Messages[0].Content) != 2 {
+		t.Fatalf("payload=%s", payload)
+	}
+	if body.Messages[0].Content[0]["type"] != "text" || body.Messages[0].Content[0]["text"] != "what is this" {
+		t.Fatalf("text part=%v", body.Messages[0].Content[0])
+	}
+	image, _ := body.Messages[0].Content[1]["image_url"].(map[string]any)
+	if body.Messages[0].Content[1]["type"] != "image_url" || image["url"] != encoded {
+		t.Fatalf("image part=%v", body.Messages[0].Content[1])
+	}
+}
+
 func TestEncodeRequestOmitsUnsetCommonOptions(t *testing.T) {
 	maxTokens := int64(64)
 	payload, err := encodeRequest(model.ResolvedModel{Model: "fixture"}, contract.ModelRequest{

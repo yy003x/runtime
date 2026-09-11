@@ -71,6 +71,39 @@ func TestExtraBodyManagedThinkingBoundary(t *testing.T) {
 	}
 }
 
+func TestContentPartsRejectedForResponsesDrivers(t *testing.T) {
+	request := contract.ModelRequest{
+		Messages: []contract.Message{{
+			Role: contract.RoleUser,
+			ContentParts: []contract.ContentPart{{
+				Type: contract.ContentPartText, Text: "hello",
+			}},
+		}},
+	}
+	for _, driver := range []DriverName{DriverOpenAIResponses, DriverOpenAICodexResponses} {
+		profile := Profile{Driver: driver}
+		if err := profile.ValidateSingleCallInput(request); err == nil || !strings.Contains(err.Error(), "content_parts") {
+			t.Fatalf("driver=%s err=%v", driver, err)
+		}
+	}
+	if err := (Profile{Driver: DriverOpenAIChatCompletions}).ValidateSingleCallInput(request); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodexRejectsStreamFalseOverride(t *testing.T) {
+	falseValue := false
+	profile := Profile{Driver: DriverOpenAICodexResponses}
+	request := contract.ModelRequest{
+		Messages: []contract.Message{{Role: contract.RoleUser, Content: "hello"}},
+		Options:  contract.GenerateOptions{Stream: &falseValue},
+	}
+	if err := profile.ValidateSingleCallInput(request); err == nil ||
+		!strings.Contains(err.Error(), "options.stream=true") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestExtraBodyCodexStoreBoundary(t *testing.T) {
 	for _, value := range []string{`null`, `0`, `true`, `"false"`} {
 		if err := validateCodexExtraBody(contract.ExtraBody{"store": json.RawMessage(value)}); err == nil {

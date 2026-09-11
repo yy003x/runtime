@@ -291,7 +291,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 15
+  "contract_version": 17
 }
 ```
 
@@ -1262,27 +1262,30 @@ stdin内容
 
 ```text
 sn-cli [--json] call <api-profile-id>
-  [--stream | --raw]
+  [--stream | --stream true|false | --raw]
   [--request-file PATH|-]
   [--system TEXT]
   [--max-tokens POSITIVE_INT]
   [--temperature FINITE_0_TO_2]
   [--param 'NAME=JSON' ...]
+  [--image PATH ...]
   [--]
   [PROMPT]
 ```
 
 | 参数 | 作用与限制 |
 |---|---|
-| `--stream` | 输出 NDJSON model events |
-| `--raw` | 调用结束后输出最后一次尝试的原始请求体、响应 JSON；完整 attempts 在日志内；与 leading `--json`、`--stream` 互斥 |
+| `--stream` | 输出 NDJSON model events；不改 Profile `parameters.stream` |
+| `--stream true\|false` | 覆盖本次请求的上游 `parameters.stream`；与裸 `--stream` 互斥；`true`/`false` 必须是下一个 argv token |
+| `--raw` | 调用结束后输出最后一次尝试的原始请求体、响应 JSON；完整 attempts 在日志内；与 leading `--json`、裸 `--stream` 互斥 |
 | `--request-file PATH` | 读取 canonical `ModelRequest` JSON |
 | `--request-file -` | 从 stdin 读取整个 JSON request |
 | `--system TEXT` | 设置 system prompt |
 | `--max-tokens N` | Provider-neutral 输出上限，正整数；adapter 转为 wire 字段 |
 | `--temperature T` | 有限值 `[0,2]` |
 | `--param 'NAME=JSON'` | 原生生成参数，重复使用可设置多个字段；重名最后一次生效，不与 `--request-file` 组合 |
-| `PROMPT` | 最终且最多一个位置参数；省略时从 stdin 读取 |
+| `--image PATH` | 读取普通 jpeg/png/gif/webp 文件，编码为 canonical `content_parts.image_url` data URL；可重复；不与 `--request-file` 组合 |
+| `PROMPT` | 最终且最多一个位置参数；省略时从 stdin 读取；仅有 `--image` 时可以没有文本 |
 
 `call` 参数使用分离形式：
 
@@ -1325,6 +1328,8 @@ positional prompt
 token limit
 --temperature
 --param
+--image
+--stream true|false
 ```
 
 `PATH` 文件必须是普通文件，不能是 symlink。JSON 使用 canonical `ModelRequest`
@@ -1334,8 +1339,18 @@ text field 中的 NUL 由 `ModelRequest` validator 拒绝。
 `-` 表示请求体完全来自 stdin，并使用相同校验。
 
 `call` 只把已经读取的内容发送给 Provider。本地路径写在 prompt 中只是普通文本，
-Provider 不能据此读取或写入本机文件；`--request-file` 也由 Runtime 先读取内容，
-不会把路径交给模型。结果同步返回 stdout，不承诺产生本地文件副作用。
+Provider 不能据此读取或写入本机文件；`--request-file` 与 `--image` 也由 Runtime
+先读取内容，不会把路径交给模型。结果同步返回 stdout，不承诺产生本地文件副作用。
+
+```bash
+sn-cli call api-cx --image ./screenshot.png "这张图里有什么"
+sn-cli call api-cc --image ./a.png --image ./b.jpg "比较这两张图"
+```
+
+`api-cx`（Chat Completions）发出 `content: [{type:text},{type:image_url}]`。
+`api-cc`（Anthropic）把 data URL 编成 `type=image` + `source.base64`。
+`api-resp` / `api-codex` 拒绝 `content_parts`。`--request-file` 可直接写 canonical
+`content_parts`，不要写原生 Anthropic `type:image` 数组进 `content` 字符串字段。
 
 请求文件示例：
 
@@ -2261,7 +2276,7 @@ sn-cli [--json] agent <api-profile-id>
   [--queue]
   [--session-id <session-id>]
   [--task-id <task-id>]
-  [--stream]
+  [--stream | --stream true|false]
   [--max-rounds <1..128>]
   [--max-tool-calls <1..1024>]
   [--max-total-tokens <positive-int64>]
@@ -2279,7 +2294,8 @@ sn-cli [--json] agent <api-profile-id>
 | `--queue` | false | 只创建 queued Run，由 worker 执行 |
 | `--session-id` | 空 | 可选；把 Agent 消息投影到 Session |
 | `--task-id` | 空 | 关联外部任务 |
-| `--stream` | false | 输出 NDJSON events |
+| `--stream` | false | 输出 NDJSON events；不改 Profile `parameters.stream` |
+| `--stream true\|false` | Profile 默认 | 覆盖本次 Agent Run 每一轮上游 `parameters.stream`；与裸 `--stream` 互斥 |
 | `--max-rounds` | runtime.json，默认 16 | 最大 model round，`1..128` |
 | `--max-tool-calls` | runtime.json，默认 64 | 最大 tool call，`1..1024` |
 | `--max-total-tokens` | runtime.json，默认 0 | 正整数；配置 0 表示不限 |
@@ -2288,8 +2304,8 @@ sn-cli [--json] agent <api-profile-id>
 | `INPUT` | stdin | 最终 Agent 输入 |
 
 除 `--label` 外，每个 option 最多一次。Agent 参数只支持分离形式，不支持
-`--name=value`。`--queue` 与 `--stream` 互斥：queued 调用只返回提交 receipt，后续
-通过 `job watch` 观察事件。
+`--name=value`。`--queue` 与裸 `--stream` 互斥：queued 调用只返回提交 receipt，后续
+通过 `job watch` 观察事件。`--queue --stream true` 可以，只覆盖上游模式。
 
 Label 限制：
 
@@ -2327,6 +2343,9 @@ Agent 不支持：
 
 ```bash
 sn-cli agent api-cx \
+  "审查当前仓库并给出结论"
+
+sn-cli agent api-cx --stream true \
   "审查当前仓库并给出结论"
 ```
 

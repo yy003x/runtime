@@ -299,13 +299,7 @@ func (service *Service) resultFromTurn(
 }
 
 func cloneContractMessage(value contract.Message) contract.Message {
-	value.ToolCalls = append([]contract.ToolCall(nil), value.ToolCalls...)
-	for index := range value.ToolCalls {
-		value.ToolCalls[index].Arguments = append(
-			[]byte(nil), value.ToolCalls[index].Arguments...,
-		)
-	}
-	return value
+	return value.Clone()
 }
 
 func (service *Service) begin(

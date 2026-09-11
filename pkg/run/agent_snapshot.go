@@ -72,14 +72,10 @@ func (executor *AgentExecutor) validateAgentRequestShape(
 		}
 	}
 	if request.Model != "" || request.Effort != "" ||
-		request.ModelOptions.MaxOutputTokens != nil ||
-		request.ModelOptions.Temperature != nil ||
-		request.ModelOptions.TopP != nil ||
-		len(request.ModelOptions.StopSequences) > 0 ||
-		len(request.ModelOptions.ExtraBody) > 0 ||
+		request.ModelOptions.HasSamplingOrExtraBody() ||
 		request.BasePromptDigest != "" {
 		return fmt.Errorf(
-			"model, effort, model_options, and base_prompt_digest are invalid for agent runs",
+			"model, effort, sampling model_options, extra_body, and base_prompt_digest are invalid for agent runs",
 		)
 	}
 	if request.CWD != "" {

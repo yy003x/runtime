@@ -354,10 +354,14 @@ whole value, not individual nested properties. For quick single-call experiments
 sn-cli call api-resp --raw --param 'reasoning={"effort":"low"}' --param 'metadata=null' "Hello"
 sn-cli call api-cx --raw --param 'frequency_penalty=0' --param 'parallel_tool_calls=false' "Hello"
 sn-cli call api-cc --raw --param 'thinking={"type":"disabled"}' --param 'top_k=0' "Hello"
+sn-cli call api-cx --raw --image ./screenshot.png "What is in this image?"
 ```
 
 `--param` is repeatable (last value per name wins) and cannot accompany
-`--request-file`. Native values remain subject to upstream API/model support;
+`--request-file`. `--image` is repeatable and encodes a local jpeg/png/gif/webp
+file as canonical `content_parts` (`image_url` data URL). Chat Completions sends
+OpenAI vision parts; Anthropic maps them to `type=image`. Responses/Codex reject
+`content_parts`. Native values remain subject to upstream API/model support;
 `null` and `0` are not universal no-ops. Canonical messages/tools/budgets and
 native conversation/multimodal features are not replaced through this extension.
 Anthropic thinking is currently single-call only because canonical history has no
@@ -449,7 +453,7 @@ addition to state/kind, for example
 `sn-cli --json job list --task-id <task-id> --limit 50` or
 `GET /v1/runs?task_id=<task-id>&limit=50`. Pagination, SSE resume, and
 heartbeats follow the [Runtime contract](docs/runtime-contract.md)
-(`contract_version=15`).
+(`contract_version=17`).
 
 ## Documentation
 

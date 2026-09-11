@@ -24,6 +24,10 @@ const (
 	maxLabelValueBytes   = 512
 	maxStopSequences     = 4
 	maxStopSequenceBytes = 1024
+	maxContentParts      = 16
+	maxImageParts        = 8
+	maxImageURLBytes     = 1 << 20
+	MaxDecodedImageBytes = 768 << 10
 )
 
 func (request GenerateRequest) Validate() error {
@@ -138,13 +142,28 @@ func ValidateStopSequences(values []string) error {
 	return nil
 }
 
+func (request ModelRequest) HasContentParts() bool {
+	for _, message := range request.Messages {
+		if len(message.ContentParts) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (message Message) Validate() error {
 	if err := validateText(message.Content, "message content"); err != nil {
 		return err
 	}
+	if len(message.ContentParts) > 0 && message.Content != "" {
+		return fmt.Errorf("content and content_parts cannot both be set")
+	}
+	if err := validateContentParts(message); err != nil {
+		return err
+	}
 	switch message.Role {
 	case RoleUser:
-		if message.Content == "" {
+		if message.Content == "" && len(message.ContentParts) == 0 {
 			return fmt.Errorf("user content is required")
 		}
 		if len(message.ToolCalls) != 0 || message.ToolCallID != "" ||
@@ -152,6 +171,9 @@ func (message Message) Validate() error {
 			return fmt.Errorf("user message cannot contain tool fields")
 		}
 	case RoleAssistant:
+		if len(message.ContentParts) > 0 {
+			return fmt.Errorf("assistant message cannot contain content_parts")
+		}
 		if message.Content == "" && len(message.ToolCalls) == 0 {
 			return fmt.Errorf("assistant message requires content or tool_calls")
 		}
@@ -159,6 +181,9 @@ func (message Message) Validate() error {
 			return fmt.Errorf("assistant message cannot contain tool result fields")
 		}
 	case RoleTool:
+		if len(message.ContentParts) > 0 {
+			return fmt.Errorf("tool message cannot contain content_parts")
+		}
 		if message.ToolCallID == "" {
 			return fmt.Errorf("tool message requires tool_call_id")
 		}
@@ -185,6 +210,68 @@ func (message Message) Validate() error {
 		callIDs[call.ID] = struct{}{}
 	}
 	return nil
+}
+
+func validateContentParts(message Message) error {
+	if len(message.ContentParts) == 0 {
+		return nil
+	}
+	if len(message.ContentParts) > maxContentParts {
+		return fmt.Errorf("content_parts exceed %d items", maxContentParts)
+	}
+	images := 0
+	total := 0
+	for index, part := range message.ContentParts {
+		if err := part.Validate(); err != nil {
+			return fmt.Errorf("content_parts[%d]: %w", index, err)
+		}
+		if part.Type == ContentPartImageURL {
+			images++
+			total += len(part.ImageURL.URL)
+		} else {
+			total += len(part.Text)
+		}
+	}
+	if images > maxImageParts {
+		return fmt.Errorf("content_parts exceed %d image_url items", maxImageParts)
+	}
+	if total > maxImageURLBytes*maxImageParts {
+		return fmt.Errorf("content_parts exceed %d bytes", maxImageURLBytes*maxImageParts)
+	}
+	return nil
+}
+
+func (part ContentPart) Validate() error {
+	switch part.Type {
+	case ContentPartText:
+		if part.ImageURL != nil {
+			return fmt.Errorf("text part cannot contain image_url")
+		}
+		if strings.TrimSpace(part.Text) == "" {
+			return fmt.Errorf("text is required")
+		}
+		if len(part.Text) > maxMessageBytes {
+			return fmt.Errorf("text exceeds %d bytes", maxMessageBytes)
+		}
+		return validateText(part.Text, "text")
+	case ContentPartImageURL:
+		if part.Text != "" {
+			return fmt.Errorf("image_url part cannot contain text")
+		}
+		if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+			return fmt.Errorf("image_url.url is required")
+		}
+		if len(part.ImageURL.URL) > maxImageURLBytes {
+			return fmt.Errorf("image_url.url exceeds %d bytes", maxImageURLBytes)
+		}
+		if err := validateText(part.ImageURL.URL, "image_url.url"); err != nil {
+			return err
+		}
+		_, _, _, err := ParseImageURL(part.ImageURL.URL)
+		return err
+	default:
+		return fmt.Errorf("unsupported content part type %q", part.Type)
+	}
 }
 
 func (tool ToolSpec) Validate() error {

@@ -153,15 +153,38 @@ func TestParseAgentRunEnforcesStrictOptionAndInputGrammar(t *testing.T) {
 		t.Fatal(err)
 	}
 	if options.profileID != "api-agent" || !options.stream ||
+		options.providerStream != nil ||
 		options.input != "--leading-input" ||
 		options.labels["team"] != "runtime" ||
 		options.labels["task"] != "review" {
 		t.Fatalf("options=%#v", options)
 	}
 
+	override, err := parseAgentRun([]string{
+		"api-agent", "--stream", "true", "input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.stream || override.providerStream == nil || !*override.providerStream ||
+		override.input != "input" {
+		t.Fatalf("stream override=%#v", override)
+	}
+	disabled, err := parseAgentRun([]string{
+		"api-agent", "--queue", "--stream", "false", "input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.stream || disabled.providerStream == nil || *disabled.providerStream ||
+		!disabled.queue {
+		t.Fatalf("stream false override=%#v", disabled)
+	}
+
 	for _, args := range [][]string{
 		{"--stream", "api", "input"},
 		{"api", "--stream", "--stream", "input"},
+		{"api", "--stream", "true", "--stream", "input"},
 		{"api", "--queue", "--stream", "input"},
 		{"api", "--label", "task=one", "--label", "task=two", "input"},
 		{"api", "--label", "--stream", "input"},

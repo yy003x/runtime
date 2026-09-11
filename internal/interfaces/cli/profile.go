@@ -560,6 +560,7 @@ func parseDirectModelInput(
 	system := ""
 	prompt := ""
 	inputSet := false
+	var imagePaths []string
 	seen := make(map[string]bool)
 	for index := 0; index < len(args); index++ {
 		current := args[index]
@@ -595,7 +596,7 @@ func parseDirectModelInput(
 		if strings.HasPrefix(current, "--effort=") {
 			name = "--effort"
 		}
-		if seen[name] && name != "--param" {
+		if seen[name] && name != "--param" && name != "--image" {
 			return contract.GenerateRequest{}, options, cliValidationf(
 				"model option %s may only be used once", name,
 			)
@@ -603,6 +604,11 @@ func parseDirectModelInput(
 		seen[name] = true
 		switch current {
 		case "--stream":
+			if override, next, ok := takeStreamOverride(args, index); ok {
+				request.Input.Options.Stream = override
+				index = next
+				break
+			}
 			options.Stream = true
 		case "--raw":
 			options.Raw = true
@@ -614,6 +620,13 @@ func parseDirectModelInput(
 			if err := addModelParam(&request.Input.Options, value); err != nil {
 				return contract.GenerateRequest{}, options, err
 			}
+			index = next
+		case "--image":
+			value, next, err := directModelOptionValue(args, index, current)
+			if err != nil {
+				return contract.GenerateRequest{}, options, err
+			}
+			imagePaths = append(imagePaths, value)
 			index = next
 		case "--request-file":
 			value, next, err := directModelOptionValue(
@@ -695,8 +708,11 @@ func parseDirectModelInput(
 		return contract.GenerateRequest{}, options, cliValidationf("--raw cannot be combined with --stream")
 	}
 	if requestFile != "" {
-		if prompt != "" || system != "" || request.Input.Options.MaxOutputTokens != nil ||
-			request.Input.Options.Temperature != nil || len(request.Input.Options.ExtraBody) > 0 {
+		if prompt != "" || system != "" || len(imagePaths) > 0 ||
+			request.Input.Options.MaxOutputTokens != nil ||
+			request.Input.Options.Temperature != nil ||
+			request.Input.Options.Stream != nil ||
+			len(request.Input.Options.ExtraBody) > 0 {
 			return contract.GenerateRequest{}, options, cliValidationf(
 				"--request-file cannot be combined with prompt or request options",
 			)
@@ -714,13 +730,15 @@ func parseDirectModelInput(
 			}
 			prompt = value
 		}
-		if strings.TrimSpace(prompt) == "" {
+		if strings.TrimSpace(prompt) == "" && len(imagePaths) == 0 {
 			return contract.GenerateRequest{}, options, cliValidationf("model prompt is required")
 		}
+		message, err := buildUserMessage(prompt, imagePaths)
+		if err != nil {
+			return contract.GenerateRequest{}, options, err
+		}
 		request.Input.System = system
-		request.Input.Messages = []contract.Message{{
-			Role: contract.RoleUser, Content: prompt,
-		}}
+		request.Input.Messages = []contract.Message{message}
 	}
 	if err := request.Validate(); err != nil {
 		return contract.GenerateRequest{}, options, cliValidation(err)
@@ -738,6 +756,51 @@ func directModelOptionValue(
 		return "", index, cliValidationf("%s requires value", name)
 	}
 	return args[index], index, nil
+}
+
+func buildUserMessage(prompt string, imagePaths []string) (contract.Message, error) {
+	text := strings.TrimSpace(prompt)
+	if len(imagePaths) == 0 {
+		return contract.Message{Role: contract.RoleUser, Content: prompt}, nil
+	}
+	parts := make([]contract.ContentPart, 0, len(imagePaths)+1)
+	if text != "" {
+		parts = append(parts, contract.ContentPart{
+			Type: contract.ContentPartText, Text: prompt,
+		})
+	}
+	for _, path := range imagePaths {
+		part, err := loadImageContentPart(path)
+		if err != nil {
+			return contract.Message{}, err
+		}
+		parts = append(parts, part)
+	}
+	return contract.Message{Role: contract.RoleUser, ContentParts: parts}, nil
+}
+
+func loadImageContentPart(path string) (contract.ContentPart, error) {
+	data, err := strictjson.ReadRegularFileBytes(path, int64(contract.MaxDecodedImageBytes))
+	if err != nil {
+		if strictjson.IsValidation(err) {
+			return contract.ContentPart{}, cliValidation(fmt.Errorf("image %s: %w", path, err))
+		}
+		return contract.ContentPart{}, fmt.Errorf("image %s: %w", path, err)
+	}
+	mediaType := contract.DetectImageMediaType(data)
+	if mediaType == "" {
+		return contract.ContentPart{}, cliValidationf(
+			"image %s must be jpeg, png, gif, or webp", path,
+		)
+	}
+	encoded, err := contract.DataImageURL(mediaType, data)
+	if err != nil {
+		return contract.ContentPart{}, cliValidation(fmt.Errorf("image %s: %w", path, err))
+	}
+	return contract.ContentPart{
+		Type:     contract.ContentPartImageURL,
+		ImageURL: &contract.ImageURL{URL: encoded},
+	}, nil
 }
 
 func readModelRequest(path string) (contract.ModelRequest, error) {

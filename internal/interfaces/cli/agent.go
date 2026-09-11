@@ -79,7 +79,8 @@ func runAgentNamespace(
 		Kind: runtime.KindAgent, ProfileID: options.profileID,
 		Input: options.input, SessionID: options.sessionID,
 		TaskID: options.taskID, AgentBudget: budget,
-		Labels: options.labels,
+		Labels:       options.labels,
+		ModelOptions: contract.GenerateOptions{Stream: options.providerStream},
 	}
 	var record runtime.Record
 	var runtimeErr *contract.RuntimeError
@@ -129,6 +130,7 @@ type agentRunOptions struct {
 	taskID         string
 	input          string
 	stream         bool
+	providerStream *bool
 	queue          bool
 	maxRounds      int
 	maxToolCalls   int
@@ -203,6 +205,11 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			value.taskID = optionValue
 			index = next
 		case "--stream":
+			if override, next, ok := takeStreamOverride(args, index); ok {
+				value.providerStream = override
+				index = next
+				break
+			}
 			value.stream = true
 		case "--queue":
 			value.queue = true

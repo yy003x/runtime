@@ -41,6 +41,7 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 		"sn-cli <cli-profile-id> --resume [session-id]",
 		"sn-cli exec <cli-profile-id> [options...] [input]",
 		"sn-cli call <api-profile-id> [options...] [input]",
+		"sn-cli call <api-profile-id> --image FILE [options...] [input]",
 		"sn-cli auth [login|logout]",
 		"sn-cli auth login openai-codex [--device-code|--no-browser]",
 		"sn-cli auth status [openai-codex]",

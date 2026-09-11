@@ -210,6 +210,9 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 		if message.Role != contract.RoleUser {
 			return nil, fmt.Errorf("openai-responses single calls accept user messages only; assistant history and tool-result continuation require unsupported Responses context")
 		}
+		if len(message.ContentParts) > 0 {
+			return nil, fmt.Errorf("openai-responses does not support content_parts")
+		}
 		body.Input = append(body.Input, inputMessage{Role: "user", Content: message.Content})
 	}
 	for _, tool := range request.Tools {

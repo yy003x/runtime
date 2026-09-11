@@ -157,7 +157,7 @@ func (executor *AgentExecutor) FinalizeCancellation(
 			currentModel = unavailableAgentModel{}
 		}
 		kernel := agent.Kernel{
-			Model: currentModel, Tools: boundTools,
+			Model: bindAgentModelStream(currentModel, record.Request.ModelOptions.Stream), Tools: boundTools,
 			Effects: &durableEffects{store: executor.Store},
 			Budget:  record.Request.AgentBudget, Now: executor.Now,
 		}
@@ -692,7 +692,9 @@ func (executor *AgentExecutor) Execute(
 		)
 	})
 	modelRecorder := &recordingModel{
-		runID: record.ID, model: executor.Model, store: executor.Store,
+		runID:    record.ID,
+		model:    bindAgentModelStream(executor.Model, record.Request.ModelOptions.Stream),
+		store:    executor.Store,
 		sequence: state.Round, beforeEffect: currentGate,
 	}
 	effects := &durableEffects{store: executor.Store}

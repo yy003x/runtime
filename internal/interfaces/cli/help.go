@@ -47,6 +47,8 @@ var cliHelpTopics = []cliHelpTopic{
 			"sn-cli call <api-profile-id> [options...] [input]",
 			"sn-cli call <api-profile-id> --raw [options...] [input]",
 			"sn-cli call <api-profile-id> [--param 'name=JSON' ...] [options...] [input]",
+			"sn-cli call <api-profile-id> --stream true|false [options...] [input]",
+			"sn-cli call <api-profile-id> --image FILE [--image FILE ...] [options...] [input]",
 			"sn-cli --json call <api-profile-id> [options...] [input]",
 		},
 		Notes: []string{
@@ -60,8 +62,9 @@ var cliHelpTopics = []cliHelpTopic{
 			"Native generation options: Profile parameters.extra_body supplies defaults; ModelRequest options.extra_body or repeated --param 'name=JSON' overrides by top-level key. Nested values replace, not deep-merge; explicit null, 0 and false are sent unchanged. Repeated names use the last value.",
 			"extra_body fields enter the actual HTTP body top level, not an extra_body wrapper. Optional fields are not auto-filled; model-specific support and value checks belong to the upstream API. Canonical identity/messages/tools/budget/stream and native conversation/multimodal lifecycle fields cannot be overridden.",
 			"--param is for call only and cannot be combined with --request-file. Anthropic thinking is single-call only until native thinking-block history is supported. Codex extra_body.store must be false if supplied.",
+			"User vision images use canonical content_parts (text + image_url). --image FILE is repeatable, reads a regular jpeg/png/gif/webp file, and sends data:image/...;base64,... Chat Completions uses image_url; Anthropic maps it to type=image source. openai-responses and openai-codex-responses reject content_parts. --image cannot accompany --request-file.",
 			"Responses raw bodies use input/output; Chat Completions raw bodies use messages/choices. Runtime does not translate one wire protocol into the other or add model-supplied reasoning text.",
-			"Canonical API Profile parameters.stream controls upstream delivery: true (default) requests SSE; false requests regular JSON. Generic OpenAI endpoints allow root paths and HTTP loopback; remote destinations require HTTPS. --stream only selects downstream output.",
+			"Canonical API Profile parameters.stream is the default upstream delivery: true (default) requests SSE; false requests regular JSON. --stream true|false overrides that Profile value for this call. Bare --stream still selects downstream Runtime events and does not change the Profile. extra_body cannot set stream.",
 			"The retry layer buffers each attempt's events and publishes them after success; --stream is not real-time Provider passthrough.",
 			"Default output is assistant text; --raw prints the last attempt's request body and original response JSON as two bare JSON values, without Runtime metadata or an extra error field.",
 			"--raw is mutually exclusive with leading --json and --stream. SSE responses use an array of original JSON frames; a missing/non-JSON response is null.",
@@ -150,11 +153,13 @@ var cliHelpTopics = []cliHelpTopic{
 		Summary: "Run the durable API-only Agent Kernel and its model/tool loop.",
 		Usage: []string{
 			"sn-cli agent <api-profile-id> [options...] [input]",
+			"sn-cli agent <api-profile-id> --stream true|false [options...] [input]",
 		},
 		Notes: []string{
 			"agent is the API-only Kernel; it does not wrap CLI Profiles such as gk/cx/cc.",
 			"agent accepts API Profiles only; --queue submits work without starting sn-server.",
 			"Tool execution follows the active Tool Catalog effect and risk contract.",
+			"--stream true|false overrides Profile parameters.stream for every model round in this Run. Bare --stream still selects downstream NDJSON events. Agent still rejects sampling model_options and extra_body.",
 		},
 	},
 	{
@@ -296,6 +301,7 @@ Usage:
   sn-cli exec <cli-profile-id> [options...] [input]
   sn-cli call <api-profile-id> [options...] [input]
   sn-cli call <api-profile-id> --raw [options...] [input]
+  sn-cli call <api-profile-id> --image FILE [options...] [input]
   sn-cli --json call <api-profile-id> [options...] [input]
   sn-cli --json <management-command> [args...]
   sn-cli auth [login|logout]
@@ -342,6 +348,7 @@ Lifecycle safety:
 API call output:
   default            assistant text
   parameters.stream  API Profile boolean: true (default) requests SSE; false JSON
+  --stream true|false  override parameters.stream for this call/agent Run
   --stream           Runtime events, buffered until an attempt succeeds
   --raw              last request body and original response JSON; no Runtime wrapper
                      call-only; mutually exclusive with --json and --stream

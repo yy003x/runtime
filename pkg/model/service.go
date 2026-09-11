@@ -221,6 +221,10 @@ func (service *Service) GenerateStream(
 			[]string(nil), profile.Parameters.StopSequences...,
 		)
 	}
+	if input.Options.Stream != nil {
+		value := *input.Options.Stream
+		resolved.Parameters.Stream = &value
+	}
 	callContext, cancel := context.WithTimeout(ctx, time.Duration(resolved.Timeout))
 	defer cancel()
 	if err := profile.ValidateSingleCallInput(input); err != nil {

@@ -454,6 +454,18 @@ func TestAgentExecutionRequestDigestBindsAllImmutableInputs(
 	if computeAgentRequestDigest(changedOptions, snapshot) == base {
 		t.Fatal("Agent request digest does not bind model_options")
 	}
+	streamTrue := true
+	withStream := snapshotContractRequest()
+	withStream.ModelOptions.Stream = &streamTrue
+	preparedStream, err := fixture.executor.Prepare(
+		context.Background(), withStream,
+	)
+	if err != nil {
+		t.Fatalf("agent stream override was rejected: %v", err)
+	}
+	if computeAgentRequestDigest(preparedStream, snapshot) == base {
+		t.Fatal("Agent request digest does not bind options.stream")
+	}
 
 	withCWD := snapshotContractRequest()
 	withCWD.CWD = "/tmp/unsupported-agent-cwd"

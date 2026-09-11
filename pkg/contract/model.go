@@ -110,11 +110,57 @@ type ModelRequest struct {
 }
 
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	IsError    bool       `json:"is_error,omitempty"`
+	Role         Role          `json:"role"`
+	Content      string        `json:"content,omitempty"`
+	ContentParts []ContentPart `json:"content_parts,omitempty"`
+	ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID   string        `json:"tool_call_id,omitempty"`
+	IsError      bool          `json:"is_error,omitempty"`
+}
+
+const (
+	ContentPartText     = "text"
+	ContentPartImageURL = "image_url"
+)
+
+// ContentPart is a Provider-neutral user-message part. Chat Completions wire
+// uses type/text and type/image_url; Anthropic maps image_url onto native
+// image source blocks. content and content_parts are mutually exclusive.
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL is a vision image reference. URL is either an https/http locator
+// passed through to the Provider, or a data:image/<type>;base64,... value.
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
+// Clone returns an independent copy, including tool-call arguments and image URLs.
+func (message Message) Clone() Message {
+	clone := message
+	if len(message.ContentParts) > 0 {
+		clone.ContentParts = make([]ContentPart, len(message.ContentParts))
+		copy(clone.ContentParts, message.ContentParts)
+		for index := range clone.ContentParts {
+			if clone.ContentParts[index].ImageURL != nil {
+				url := *clone.ContentParts[index].ImageURL
+				clone.ContentParts[index].ImageURL = &url
+			}
+		}
+	}
+	if len(message.ToolCalls) > 0 {
+		clone.ToolCalls = make([]ToolCall, len(message.ToolCalls))
+		copy(clone.ToolCalls, message.ToolCalls)
+		for index := range clone.ToolCalls {
+			clone.ToolCalls[index].Arguments = append(
+				json.RawMessage(nil), message.ToolCalls[index].Arguments...,
+			)
+		}
+	}
+	return clone
 }
 
 type ToolSpec struct {
@@ -155,7 +201,18 @@ type GenerateOptions struct {
 	Temperature     *float64  `json:"temperature,omitempty"`
 	TopP            *float64  `json:"top_p,omitempty"`
 	StopSequences   []string  `json:"stop_sequences,omitempty"`
+	Stream          *bool     `json:"stream,omitempty"`
 	ExtraBody       ExtraBody `json:"extra_body,omitempty"`
+}
+
+// HasSamplingOrExtraBody reports request fields other than stream. Agent runs
+// may override stream but still reject sampling and extra_body options.
+func (options GenerateOptions) HasSamplingOrExtraBody() bool {
+	return options.MaxOutputTokens != nil ||
+		options.Temperature != nil ||
+		options.TopP != nil ||
+		len(options.StopSequences) > 0 ||
+		len(options.ExtraBody) > 0
 }
 
 type TraceContext struct {

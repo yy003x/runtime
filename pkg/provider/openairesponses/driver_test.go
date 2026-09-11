@@ -191,6 +191,15 @@ func TestResponsesRejectUnsupportedInputBeforeHTTP(t *testing.T) {
 	if err == nil || err.Code != contract.ErrorInvalidRequest || calls.Load() != 0 || observed != 0 {
 		t.Fatalf("err=%v calls=%d observed=%d", err, calls.Load(), observed)
 	}
+	request = input()
+	request.Input.Messages = []contract.Message{{
+		Role:         contract.RoleUser,
+		ContentParts: []contract.ContentPart{{Type: contract.ContentPartText, Text: "hello"}},
+	}}
+	_, err = service.Generate(context.Background(), request)
+	if err == nil || err.Code != contract.ErrorInvalidRequest || !strings.Contains(err.Error(), "content_parts") || calls.Load() != 0 {
+		t.Fatalf("content_parts err=%v calls=%d", err, calls.Load())
+	}
 }
 
 func TestResponsesTerminalValidation(t *testing.T) {

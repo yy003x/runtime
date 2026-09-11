@@ -162,6 +162,14 @@ type contentPart struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	Source    *imageSource    `json:"source,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type toolPayload struct {
@@ -185,9 +193,11 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 				IsError: message.IsError,
 			})
 		} else {
-			if message.Content != "" {
-				parts = append(parts, contentPart{Type: "text", Text: message.Content})
+			encoded, err := encodeAnthropicContent(message)
+			if err != nil {
+				return nil, err
 			}
+			parts = append(parts, encoded...)
 			for _, call := range message.ToolCalls {
 				parts = append(parts, contentPart{
 					Type: "tool_use", ID: call.ID, Name: call.Name,
@@ -217,6 +227,45 @@ func encodeRequest(resolved model.ResolvedModel, request contract.ModelRequest) 
 		StopSequences: request.Options.StopSequences,
 		Stream:        resolved.Parameters.StreamingEnabled(),
 	}, request.Options.ExtraBody)
+}
+
+func encodeAnthropicContent(message contract.Message) ([]contentPart, error) {
+	if len(message.ContentParts) == 0 {
+		if message.Content == "" {
+			return nil, nil
+		}
+		return []contentPart{{Type: "text", Text: message.Content}}, nil
+	}
+	parts := make([]contentPart, 0, len(message.ContentParts))
+	for _, part := range message.ContentParts {
+		switch part.Type {
+		case contract.ContentPartText:
+			parts = append(parts, contentPart{Type: "text", Text: part.Text})
+		case contract.ContentPartImageURL:
+			encoded, err := encodeAnthropicImage(part.ImageURL.URL)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, encoded)
+		default:
+			return nil, fmt.Errorf("unsupported content part type %q", part.Type)
+		}
+	}
+	return parts, nil
+}
+
+func encodeAnthropicImage(raw string) (contentPart, error) {
+	mediaType, data, locator, err := contract.ParseImageURL(raw)
+	if err != nil {
+		return contentPart{}, err
+	}
+	if locator != "" {
+		return contentPart{Type: "image", Source: &imageSource{Type: "url", URL: locator}}, nil
+	}
+	return contentPart{
+		Type:   "image",
+		Source: &imageSource{Type: "base64", MediaType: mediaType, Data: data},
+	}, nil
 }
 
 type streamEnvelope struct {
