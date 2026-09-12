@@ -310,9 +310,9 @@ func (executor *AgentExecutor) FinalizeCancellation(
 				SchemaVersion: agent.LoopStateSchemaVersion,
 				RunID:         record.ID,
 				ModelProfile:  record.Request.ProfileID,
-				Messages: []contract.Message{{
-					Role: contract.RoleUser, Content: record.Request.Input,
-				}},
+				Messages: []contract.Message{
+					agentUserMessage(record.Request),
+				},
 				BaseMessageCount: 1,
 				TerminalOutcome:  &terminal,
 			}

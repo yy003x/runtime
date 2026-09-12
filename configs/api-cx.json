@@ -8,7 +8,7 @@
   },
   "parameters": {
     "max_tokens": 16384,
-    "stream": false
+    "stream": true
   },
   "context": {
     "window_tokens": 1048576,

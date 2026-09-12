@@ -1,14 +1,18 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
+	"github.com/yy003x/runtime/internal/domain/identity"
 	"github.com/yy003x/runtime/internal/infrastructure/layout"
 	"github.com/yy003x/runtime/internal/infrastructure/runtimeconfig"
 	"github.com/yy003x/runtime/pkg/contract"
@@ -47,7 +51,7 @@ func runAgentNamespace(
 			options.profileID,
 		)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := resolveAgentCWD(options.cwd)
 	if err != nil {
 		return err
 	}
@@ -56,6 +60,13 @@ func runAgentNamespace(
 		return err
 	}
 	defer services.Runs.Close()
+	if options.autoSession && options.sessionID == "" {
+		sessionID, sessionErr := identity.New("session")
+		if sessionErr != nil {
+			return sessionErr
+		}
+		options.sessionID = sessionID
+	}
 	budget := services.Config.AgentBudget()
 	if options.maxRounds > 0 {
 		budget.MaxRounds = options.maxRounds
@@ -75,13 +86,30 @@ func runAgentNamespace(
 			return output.writeEvent(event)
 		}
 	}
+	parts, err := buildAgentInputParts(options.input, options.imagePaths)
+	if err != nil {
+		return err
+	}
 	request := runtime.Request{
 		Kind: runtime.KindAgent, ProfileID: options.profileID,
-		Input: options.input, SessionID: options.sessionID,
+		Input: options.input, InputParts: parts, SessionID: options.sessionID,
 		TaskID: options.taskID, AgentBudget: budget,
 		Labels:       options.labels,
 		ModelOptions: contract.GenerateOptions{Stream: options.providerStream},
 	}
+	if options.repl {
+		return runAgentREPL(services, request, options, sink, output)
+	}
+	return executeAgentRun(services, request, options, sink, output)
+}
+
+func executeAgentRun(
+	services *runtimebootstrap.Services,
+	request runtime.Request,
+	options agentRunOptions,
+	sink contract.EventSink,
+	output *cliOutput,
+) error {
 	var record runtime.Record
 	var runtimeErr *contract.RuntimeError
 	if options.queue {
@@ -97,13 +125,103 @@ func runAgentNamespace(
 		return runtimeErr
 	}
 	payload := map[string]any{"run": record}
+	if request.SessionID != "" {
+		payload["session_id"] = request.SessionID
+	}
 	if options.stream {
 		return output.writeFinal(payload)
 	}
 	if output.JSON() {
 		return output.writeJSON(payload)
 	}
+	if request.SessionID != "" {
+		if err := output.line("Session %s", request.SessionID); err != nil {
+			return err
+		}
+	}
 	return renderAgentRun(output, record)
+}
+
+func runAgentREPL(
+	services *runtimebootstrap.Services,
+	request runtime.Request,
+	options agentRunOptions,
+	sink contract.EventSink,
+	output *cliOutput,
+) error {
+	if err := output.line("Session %s  (empty line or /exit to quit)", request.SessionID); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	pending := request
+	hasPending := strings.TrimSpace(request.Input) != "" || len(request.InputParts) > 0
+	for {
+		var turn runtime.Request
+		if hasPending {
+			turn = pending
+			hasPending = false
+		} else {
+			if err := output.text("> "); err != nil {
+				return err
+			}
+			if !scanner.Scan() {
+				break
+			}
+			input := strings.TrimSpace(scanner.Text())
+			if input == "" {
+				continue
+			}
+			if input == "/exit" || input == "/quit" {
+				break
+			}
+			turn = request
+			turn.Input = input
+			turn.InputParts = nil
+		}
+		if err := executeAgentRun(services, turn, options, sink, output); err != nil {
+			if writeErr := output.line("%s", err.Error()); writeErr != nil {
+				return writeErr
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read agent repl: %w", err)
+	}
+	return nil
+}
+
+func buildAgentInputParts(prompt string, imagePaths []string) ([]contract.ContentPart, error) {
+	if len(imagePaths) == 0 {
+		return nil, nil
+	}
+	message, err := buildUserMessage(prompt, imagePaths)
+	if err != nil {
+		return nil, err
+	}
+	return message.ContentParts, nil
+}
+
+func resolveAgentCWD(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return cwd, nil
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", cliValidation(err)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return "", cliValidation(fmt.Errorf("--cwd: %w", err))
+	}
+	if !info.IsDir() {
+		return "", cliValidationf("--cwd must be a directory")
+	}
+	return absolute, nil
 }
 
 func renderAgentRun(output *cliOutput, record runtime.Record) error {
@@ -137,6 +255,10 @@ type agentRunOptions struct {
 	maxTotalTokens int64
 	maxWallTime    time.Duration
 	labels         map[string]string
+	cwd            string
+	imagePaths     []string
+	autoSession    bool
+	repl           bool
 }
 
 func parseAgentRun(args []string) (agentRunOptions, error) {
@@ -177,7 +299,7 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			inputSet = true
 			continue
 		}
-		if current != "--label" {
+		if current != "--label" && current != "--image" {
 			if seen[current] {
 				return value, cliValidationf(
 					"agent option %s may only be used once", current,
@@ -213,6 +335,29 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 			value.stream = true
 		case "--queue":
 			value.queue = true
+		case "--repl":
+			value.repl = true
+			value.autoSession = true
+		case "--session":
+			value.autoSession = true
+		case "--cwd":
+			optionValue, next, err := agentOptionValue(
+				args, index, "--cwd",
+			)
+			if err != nil {
+				return value, err
+			}
+			value.cwd = optionValue
+			index = next
+		case "--image":
+			optionValue, next, err := agentOptionValue(
+				args, index, "--image",
+			)
+			if err != nil {
+				return value, err
+			}
+			value.imagePaths = append(value.imagePaths, optionValue)
+			index = next
 		case "--max-rounds":
 			optionValue, next, err := agentOptionValue(
 				args, index, "--max-rounds",
@@ -290,17 +435,26 @@ func parseAgentRun(args []string) (agentRunOptions, error) {
 	if value.queue && value.stream {
 		return value, cliValidationf("--queue and --stream are mutually exclusive")
 	}
+	if value.queue && value.repl {
+		return value, cliValidationf("--queue and --repl are mutually exclusive")
+	}
+	if value.queue && value.cwd != "" {
+		return value, cliValidationf("--cwd cannot be combined with --queue")
+	}
+	if value.autoSession && value.sessionID != "" && !value.repl {
+		return value, cliValidationf("--session cannot be combined with --session-id")
+	}
 	if err := validateAgentBudgetOverrides(value); err != nil {
 		return value, err
 	}
-	if !inputSet {
+	if !inputSet && !value.repl {
 		input, err := readDirectStdin()
 		if err != nil {
 			return value, err
 		}
 		value.input = input
 	}
-	if strings.TrimSpace(value.input) == "" {
+	if strings.TrimSpace(value.input) == "" && len(value.imagePaths) == 0 && !value.repl {
 		return value, cliValidationf("agent input is required")
 	}
 	return value, nil

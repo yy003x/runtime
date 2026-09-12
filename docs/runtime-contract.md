@@ -907,13 +907,14 @@ trailing data、`null` root 与 `null pause_id`；`input` 自身可为任意单�
 （包括 `null`），具体结构和 null 语义完全由 pause JSON Schema 决定。公开
 Run Record 不序列化最新 resume input。
 
-默认 tool 只读。`write_file` 必须在 `runtime.json` 显式启用，且受 workspace
-roots、symlink 和大小门禁。子进程执行由下述显式启用、需确认的高风险 `shell`
+默认 tool 只读。`write_file`、`edit`、`shell` 必须在 `runtime.json` 显式启用，且受 workspace
+roots、symlink 和大小门禁。`grep` 是只读内置搜索；`edit` 对 `old_string` 必须恰好
+匹配一次后原子写入。子进程执行由下述显式启用、需确认的高风险 `shell`
 builtin 提供；文件工具的 root/path 检查不是 OS sandbox，未知 tool 名称一律 fail closed。
-`read_file`、`list_directory` 在参数 schema 验证通过后的无副作用文件系统拒绝，
+`read_file`、`list_directory`、`grep` 在参数 schema 验证通过后的无副作用文件系统拒绝，
 以尺寸受限的稳定 JSON `ToolResult{IsError:true}` 闭合 effect 并允许下一轮模型继续；
 内部结果编码失败或正常输出超限仍按未知 effect 安全收口。
-三个文件工具在 Build 时固定 canonical workspace root 的 device/inode，执行时以
+文件工具在 Build 时固定 canonical workspace root 的 device/inode，执行时以
 `O_NOFOLLOW + openat/fstatat` 逐组件绑定目录 fd；read 使用 nonblocking 单链接
 regular fd 和 bounded read，list 绑定目录 fd，write 在固定 parent fd 内以
 crypto-random `O_EXCL` 私有临时文件执行 file fsync、`renameat` 和 directory fsync。
@@ -1056,7 +1057,7 @@ unique/partial 属性和列序；对象缺失、定义变化、未知对象、�
 doctor exec call profile auth session agent job server help version update
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=17`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=18`。
 bare CLI direct、`exec` 和 `session attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -1141,7 +1142,7 @@ session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`
 | `job` | 查询/控制已有 Run | 不提交 fresh work |
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=17` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=18` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。除下述 `call --raw` 的已发生 attempt 诊断外，machine
 非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`

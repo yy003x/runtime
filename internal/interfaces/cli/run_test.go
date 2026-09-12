@@ -333,6 +333,23 @@ func TestResumeInputClassifiesFileShapeBeforeRuntimeBootstrap(t *testing.T) {
 		assertMachineErrorCode(t, err, contract.ErrorInvalidRequest)
 	}
 
+	approved, err := readResumeInput([]string{"--approve"})
+	if err != nil || string(approved) != `{"approved":true}` {
+		t.Fatalf("approve=%s err=%v", approved, err)
+	}
+	if _, err := readResumeInput([]string{"--approve", "--reject"}); err == nil {
+		t.Fatal("approve+reject accepted")
+	}
+	wrapped, err := wrapApprovalResume(
+		[]string{"--approve"},
+		approved,
+		runtime.Record{Pause: json.RawMessage(`{"id":"pause_1"}`)},
+	)
+	if err != nil || !strings.Contains(string(wrapped), `"pause_id":"pause_1"`) ||
+		!strings.Contains(string(wrapped), `"approved":true`) {
+		t.Fatalf("wrapped=%s err=%v", wrapped, err)
+	}
+
 	missing := filepath.Join(root, "missing.json")
 	_, err = readResumeInput([]string{"--input-file", missing})
 	var validationErr *cliValidationError

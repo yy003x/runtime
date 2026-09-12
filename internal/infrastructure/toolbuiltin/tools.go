@@ -22,7 +22,7 @@ const (
 	maxToolOutputBytes               = 1 << 20
 	maxReadOnlyToolErrorBytes        = 4 << 10
 	ExecutionImplementation          = "runtime.toolbuiltin"
-	ExecutionImplementationVersion   = 5
+	ExecutionImplementationVersion   = 6
 	toolExecutionConfigSchemaVersion = 2
 )
 
@@ -127,6 +127,28 @@ func BuildBundle(options Options) (Bundle, error) {
 			Handler: resolver.shell,
 			Effect:  contract.EffectWriteExternal, Risk: contract.RiskHigh,
 		},
+		"grep": {
+			Definition: contract.ToolSpec{
+				Name:        "grep",
+				Description: "Search UTF-8 files under a workspace path for a literal or regular-expression pattern.",
+				InputSchema: json.RawMessage(
+					`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"File or directory to search; defaults to workspace cwd"},"glob":{"type":"string","description":"Optional basename glob such as *.go"},"regex":{"type":"boolean","description":"When true, treat pattern as a regular expression"}},"required":["pattern"],"additionalProperties":false}`,
+				),
+			},
+			Handler: resolver.grep,
+			Effect:  contract.EffectReadOnly, Risk: contract.RiskLow,
+		},
+		"edit": {
+			Definition: contract.ToolSpec{
+				Name:        "edit",
+				Description: "Replace exactly one occurrence of old_string with new_string in a UTF-8 workspace file.",
+				InputSchema: json.RawMessage(
+					`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"],"additionalProperties":false}`,
+				),
+			},
+			Handler: resolver.edit,
+			Effect:  contract.EffectWriteLocal, Risk: contract.RiskLow,
+		},
 	}
 	values := make([]agent.RegisteredTool, 0, len(options.Names))
 	for _, name := range options.Names {
@@ -151,7 +173,7 @@ func BuildBundle(options Options) (Bundle, error) {
 // Catalog 独立解析。
 func IsBuiltin(name string) bool {
 	switch name {
-	case "read_file", "list_directory", "write_file", "shell":
+	case "read_file", "list_directory", "write_file", "shell", "grep", "edit":
 		return true
 	default:
 		return false

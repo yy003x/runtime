@@ -453,7 +453,7 @@ addition to state/kind, for example
 `sn-cli --json job list --task-id <task-id> --limit 50` or
 `GET /v1/runs?task_id=<task-id>&limit=50`. Pagination, SSE resume, and
 heartbeats follow the [Runtime contract](docs/runtime-contract.md)
-(`contract_version=17`).
+(`contract_version=18`).
 
 ## Documentation
 

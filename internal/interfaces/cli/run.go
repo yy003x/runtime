@@ -265,11 +265,20 @@ func runRunNamespace(
 	case "continue":
 		if err := validateManagementArgs(
 			args[1:],
-			[]string{"--run-id", "--input-json", "--input-file"}, nil,
+			[]string{"--run-id", "--input-json", "--input-file"},
+			[]string{"--approve", "--reject"},
 		); err != nil {
 			return err
 		}
 		runID, err := requiredOption(args[1:], "--run-id")
+		if err != nil {
+			return err
+		}
+		current, err := executionServices.Runs.Get(context.Background(), runID)
+		if err != nil {
+			return canonicalRunManagementError(err)
+		}
+		resumeInput, err = wrapApprovalResume(args[1:], resumeInput, current)
 		if err != nil {
 			return err
 		}
@@ -396,7 +405,8 @@ func validateRunManagementInvocation(args []string) error {
 	case "continue":
 		if err := validateManagementArgs(
 			actionArgs,
-			[]string{"--run-id", "--input-json", "--input-file"}, nil,
+			[]string{"--run-id", "--input-json", "--input-file"},
+			[]string{"--approve", "--reject"},
 		); err != nil {
 			return err
 		}
@@ -634,6 +644,21 @@ func readResumeInput(args []string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	approve := optionProvided(args, "--approve")
+	reject := optionProvided(args, "--reject")
+	if approve && reject {
+		return nil, cliValidationf("--approve and --reject are mutually exclusive")
+	}
+	if (approve || reject) &&
+		(optionProvided(args, "--input-json") || optionProvided(args, "--input-file")) {
+		return nil, cliValidationf("--approve/--reject cannot be combined with --input-json or --input-file")
+	}
+	if approve {
+		return json.RawMessage(`{"approved":true}`), nil
+	}
+	if reject {
+		return json.RawMessage(`{"approved":false}`), nil
+	}
 	if optionProvided(args, "--input-json") &&
 		optionProvided(args, "--input-file") {
 		return nil, cliValidationf("--input-json and --input-file are mutually exclusive")
@@ -663,4 +688,29 @@ func readResumeInput(args []string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(value), nil
+}
+
+func wrapApprovalResume(
+	args []string,
+	input json.RawMessage,
+	record runtime.Record,
+) (json.RawMessage, error) {
+	if !optionProvided(args, "--approve") && !optionProvided(args, "--reject") {
+		return input, nil
+	}
+	var pause struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(record.Pause, &pause); err != nil || pause.ID == "" {
+		return nil, cliValidationf("paused run is missing pause_id")
+	}
+	envelope := struct {
+		PauseID string          `json:"pause_id"`
+		Input   json.RawMessage `json:"input"`
+	}{PauseID: pause.ID, Input: input}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }

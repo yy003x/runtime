@@ -97,7 +97,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `job events` | 读取持久化事件 | — | `sn-cli job events --run-id <id>` |
 | `job watch` | 流式追踪事件直到终态 | — | `sn-cli job watch --run-id <id>` |
 | `job cancel` | 取消 Run（queued/paused/running） | audit | `sn-cli job cancel --run-id <id>` |
-| `job continue` | 恢复 paused Run | audit | `sn-cli job continue --run-id <id> --input-file ./resume.json` |
+| `job continue` | 恢复 paused Run | audit | `sn-cli job continue --run-id <id> --approve` |
 | `job retry` | 重试终态 Run | durable + audit | `sn-cli job retry --run-id <id>` |
 | `job reconcile` | 收口 unknown outcome Run | audit | `sn-cli job reconcile --run-id <id>` |
 | `job gc` | 永久回收过期终态 Run | audit | `sn-cli job gc --older-than 720h --apply` |
@@ -291,7 +291,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 17
+  "contract_version": 18
 }
 ```
 
@@ -2277,6 +2277,10 @@ sn-cli [--json] agent <api-profile-id>
   [--session-id <session-id>]
   [--task-id <task-id>]
   [--stream | --stream true|false]
+  [--cwd DIR]
+  [--image PATH ...]
+  [--session | --session-id <session-id>]
+  [--repl]
   [--max-rounds <1..128>]
   [--max-tool-calls <1..1024>]
   [--max-total-tokens <positive-int64>]
@@ -2296,6 +2300,10 @@ sn-cli [--json] agent <api-profile-id>
 | `--task-id` | 空 | 关联外部任务 |
 | `--stream` | false | 输出 NDJSON events；不改 Profile `parameters.stream` |
 | `--stream true\|false` | Profile 默认 | 覆盖本次 Agent Run 每一轮上游 `parameters.stream`；与裸 `--stream` 互斥 |
+| `--cwd DIR` | 进程 cwd | 同步 Run 的 builtin 工具工作目录，必须是目录；不与 `--queue` 组合 |
+| `--image PATH` | 无 | 可重复；把 jpeg/png/gif/webp 编进首条 user `content_parts` |
+| `--session` | false | 未给 `--session-id` 时自动分配 Session ID 并打印 |
+| `--repl` | false | 自动 Session；首轮后从 stdin 读取后续用户话，`/exit` 结束；不与 `--queue` 组合 |
 | `--max-rounds` | runtime.json，默认 16 | 最大 model round，`1..128` |
 | `--max-tool-calls` | runtime.json，默认 64 | 最大 tool call，`1..1024` |
 | `--max-total-tokens` | runtime.json，默认 0 | 正整数；配置 0 表示不限 |
@@ -2331,7 +2339,6 @@ Agent 不支持：
 ```text
 --model
 --effort
---cwd
 ```
 
 模型由 API Profile 决定。工具根默认来自执行进程 cwd 和 `runtime.json` 的
@@ -2405,12 +2412,17 @@ printf '%s' '回复OK' |
 ```text
 read_file
 list_directory
+web_search
+web_fetch
 ```
 
 可以在 `runtime.json` 中显式开启：
 
 ```text
+grep
 write_file
+edit
+shell
 ```
 
 `workspace_roots` 非空时限制工具可访问的根目录；必须配置绝对路径。为空时使用执行
@@ -2423,8 +2435,9 @@ single-link regular file，拒绝 FIFO、hardlink 和超限内容；write 使用
 crypto-random private temp、file fsync、atomic rename 和 parent directory fsync。
 该边界不抵抗已完全控制同 UID 进程、可 ptrace 或可直接操纵既有 fd 的攻击者。
 
-builtin 集合只提供受控文件操作。workspace-root/path 检查不是 OS sandbox，不能
-安全约束任意本机 subprocess，因此 Agent 不提供任意 subprocess 执行能力。
+`grep` 在 workspace 内搜索文本；`edit` 要求 `old_string` 恰好出现一次后原子写入。
+`shell` 是 argv 子进程，`risk=high`，每次先 pause，需 `job continue --approve`。
+workspace-root/path 检查不是 OS sandbox。
 
 Agent 虽然由当前 CLI 同步等待，但开始执行前会创建 Durable Run、checkpoint 和
 event。可在另一个终端查询：
@@ -2747,10 +2760,12 @@ reservation；只有 kind-specific cancellation finalizer 可以消费 reservati
 ```text
 sn-cli job continue
   --run-id <run_id>
-  (--input-json JSON | --input-file FILE)
+  (--approve | --reject | --input-json JSON | --input-file FILE)
 ```
 
-`--input-json` 与 `--input-file` 严格互斥，且必须提供一个。只接受 `paused` Run。
+`--approve` / `--reject` 是 `{"approved":true|false}` 的快捷写法，不能与
+`--input-json` / `--input-file` 组合。其余输入仍走 strict resume envelope。
+只接受 `paused` Run。
 输入必须是 strict resume envelope：root 为 non-null object，只包含非空
 `pause_id` 和必填 `input`；拒绝未知字段、重复字段和 trailing data。`input` 自身
 可为任意 JSON value（包括 `null`），并继续由 active pause 的 JSON Schema 校验。

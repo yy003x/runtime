@@ -154,12 +154,16 @@ var cliHelpTopics = []cliHelpTopic{
 		Usage: []string{
 			"sn-cli agent <api-profile-id> [options...] [input]",
 			"sn-cli agent <api-profile-id> --stream true|false [options...] [input]",
+			"sn-cli agent <api-profile-id> --cwd DIR [--image FILE ...] [options...] [input]",
+			"sn-cli agent <api-profile-id> --repl [--session-id <id>] [options...] [input]",
 		},
 		Notes: []string{
 			"agent is the API-only Kernel; it does not wrap CLI Profiles such as gk/cx/cc.",
 			"agent accepts API Profiles only; --queue submits work without starting sn-server.",
 			"Tool execution follows the active Tool Catalog effect and risk contract.",
 			"--stream true|false overrides Profile parameters.stream for every model round in this Run. Bare --stream still selects downstream NDJSON events. Agent still rejects sampling model_options and extra_body.",
+			"--cwd sets the builtin tool workspace for this sync Run and cannot be combined with --queue. --image is repeatable and encodes jpeg/png/gif/webp into the first user message content_parts.",
+			"--session allocates a Session ID when omitted. --repl keeps that Session and reads follow-up turns from stdin until /exit.",
 		},
 	},
 	{
@@ -168,14 +172,15 @@ var cliHelpTopics = []cliHelpTopic{
 		Usage: []string{
 			"sn-cli job get|result|trace|events|watch --run-id <id>",
 			"sn-cli job list [options...]",
-			"sn-cli job cancel|continue|retry|reconcile --run-id <id> [options...]",
+			"sn-cli job continue --run-id <id> --approve|--reject|--input-file PATH",
+			"sn-cli job cancel|retry|reconcile --run-id <id> [options...]",
 			"sn-cli job gc [options...]",
 		},
 		Notes: []string{
 			"job is a control plane over Run records (run_id); new work enters through session or agent. job trace aggregates the Run record with its event, model_call, and tool_effect journals.",
 			"job list accepts --state, --kind, --session-id, --task-id, --profile-id, and --limit (default 100, maximum 1000).",
 			"Results use created_at DESC, run_id DESC; --before-run-id <last-id> reads the next page. A missing cursor is not_found.",
-			"job continue resumes a paused Run; it is not the same as <cli-profile> resume.",
+			"job continue resumes a paused Run; it is not the same as <cli-profile> resume. --approve and --reject are shortcuts for user_confirmation input.",
 			"kind=native_tui Runs are query-only here; use session close or close-all to stop their windows.",
 			"Terminal Run state, result/error, terminal event, and run.settled share one SQLite transaction.",
 		},

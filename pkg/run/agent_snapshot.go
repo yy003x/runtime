@@ -427,6 +427,7 @@ func computeAgentRequestDigest(
 		Kind                 Kind                     `json:"kind"`
 		ProfileID            string                   `json:"profile_id"`
 		Input                string                   `json:"input"`
+		InputParts           []contract.ContentPart   `json:"input_parts,omitempty"`
 		SessionID            string                   `json:"session_id,omitempty"`
 		SessionRetention     string                   `json:"session_retention,omitempty"`
 		TaskID               string                   `json:"task_id,omitempty"`
@@ -438,6 +439,7 @@ func computeAgentRequestDigest(
 		SessionRequestDigest string                   `json:"session_request_digest,omitempty"`
 	}{
 		Kind: KindAgent, ProfileID: request.ProfileID, Input: request.Input,
+		InputParts:       request.InputParts,
 		SessionID:        request.SessionID,
 		SessionRetention: request.SessionRetention,
 		TaskID:           request.TaskID,

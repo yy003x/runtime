@@ -419,9 +419,7 @@ func validateAgentMessageJournal(
 		)
 	}
 	if record.Request.SessionID == "" {
-		base := contract.Message{
-			Role: contract.RoleUser, Content: record.Request.Input,
-		}
+		base := agentUserMessage(record.Request)
 		if state.BaseMessageCount != 1 ||
 			!reflect.DeepEqual(state.Messages[0], base) {
 			return agentRecoveryError(

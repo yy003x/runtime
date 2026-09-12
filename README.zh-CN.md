@@ -364,7 +364,7 @@ scripts/         交付与验证脚本
 Run 列表在 state/kind 外支持 `session_id`、`task_id`、`profile_id` 精确筛选，例如
 `sn-cli --json job list --task-id <task-id> --limit 50`，或
 `GET /v1/runs?task_id=<task-id>&limit=50`。分页、SSE 续读与心跳见
-[Runtime 契约](docs/runtime-contract.md)（`contract_version=17`）。
+[Runtime 契约](docs/runtime-contract.md)（`contract_version=18`）。
 
 ## 文档
 

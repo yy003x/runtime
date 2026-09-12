@@ -165,9 +165,7 @@ func (executor *AgentExecutor) loadState(
 	}
 	messages := initialMessages
 	if len(messages) == 0 {
-		messages = []contract.Message{{
-			Role: contract.RoleUser, Content: record.Request.Input,
-		}}
+		messages = []contract.Message{agentUserMessage(record.Request)}
 	}
 	if initialBaseMessageCount <= 0 ||
 		initialBaseMessageCount > len(messages) {
@@ -342,9 +340,7 @@ func (executor *AgentExecutor) recoverDurableModelTerminal(
 	}
 	baseMessages := initialMessages
 	if len(baseMessages) == 0 {
-		baseMessages = []contract.Message{{
-			Role: contract.RoleUser, Content: record.Request.Input,
-		}}
+		baseMessages = []contract.Message{agentUserMessage(record.Request)}
 	}
 	if initialBaseMessageCount <= 0 ||
 		initialBaseMessageCount > len(baseMessages) ||

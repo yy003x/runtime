@@ -63,6 +63,7 @@ type Request struct {
 	Kind               Kind                     `json:"kind"`
 	ProfileID          string                   `json:"profile_id"`
 	Input              string                   `json:"input"`
+	InputParts         []contract.ContentPart   `json:"input_parts,omitempty"`
 	SessionID          string                   `json:"session_id,omitempty"`
 	ExecutionID        string                   `json:"execution_id,omitempty"`
 	SessionRetention   string                   `json:"session_retention,omitempty"`

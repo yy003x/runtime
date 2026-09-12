@@ -180,6 +180,23 @@ func TestParseAgentRunEnforcesStrictOptionAndInputGrammar(t *testing.T) {
 		!disabled.queue {
 		t.Fatalf("stream false override=%#v", disabled)
 	}
+	cwd, err := parseAgentRun([]string{
+		"api-agent", "--cwd", t.TempDir(), "--session", "hello",
+	})
+	if err != nil || cwd.cwd == "" || !cwd.autoSession || cwd.input != "hello" {
+		t.Fatalf("cwd/session=%#v err=%v", cwd, err)
+	}
+	if _, err := parseAgentRun([]string{
+		"api-agent", "--queue", "--cwd", t.TempDir(), "hello",
+	}); err == nil {
+		t.Fatal("--queue --cwd was accepted")
+	}
+	if _, err := parseAgentRun([]string{
+		"api-agent", "--session", "--session-id",
+		"session_11111111111111111111111111111111", "hello",
+	}); err == nil {
+		t.Fatal("--session combined with --session-id")
+	}
 
 	for _, args := range [][]string{
 		{"--stream", "api", "input"},
