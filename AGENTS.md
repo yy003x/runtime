@@ -111,7 +111,9 @@ source/payload `resources/tools/*.json` 经 activation 映射到 active
 `tools/*.json`，后者是 Agent 外部工具的唯一运行配置面；文件 basename 必须等于
 tool `name`。`effect` 为 `read_only`/`write_local`/`write_external` 三档之一
 （写副作用必须显式声明 `risk`），`executor.type=mcp`，secret 只保留
-`${VAR}` 引用并在实际 tool call 时解析。`call` 和 Session 不自动执行这里的工具。
+`${VAR}` 引用并在实际 tool call 时解析。`web_search` 与 `web_fetch` 是
+`write_external` / `high`，不在默认工具列表中；启用后未确认不得发起外部请求。
+`call` 和 Session 不自动执行这里的工具。
 
 只有携带 Profile ID 并进入真实 CLI launch/API Provider call 的执行才写本地日志；
 查询、校验和 queue submit 不写。API key 只保留 `${VAR}` 引用，resolved secret 必须

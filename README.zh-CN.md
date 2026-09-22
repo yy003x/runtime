@@ -46,8 +46,8 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
   语义，能扛过进程退出。
 - 🗂️ **crash-consistent 会话**——atomic、带 journal 的文件存储，恢复时做 identity 核对
   （不做启发式修复）。
-- 🤖 **自主 agent 循环**——model + 受控 builtin/MCP tool（默认包含 `web_search`、
-  `web_fetch`），带预算限制、durable effect 与流式事件。
+- 🤖 **自主 agent 循环**——model + 受控 builtin/MCP tool（默认只有 `read_file` 和
+  `list_directory`），带预算限制、durable effect 与流式事件。
 - 🪟 **长期 native TUI Session**——Provider TUI 跑在私有的默认或隔离 tmux PTY 中；
   按 Runtime Session ID 进行 open / send / attach / interrupt / close。
 - 🧪 **严格 JSON Schema 校验**——CLI 与 HTTP 用同一套规则；未知字段与歧义状态 fail closed。
@@ -267,8 +267,9 @@ Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API 
 API key 通过 headers 中的 `${VAR}` 引用从环境变量读取，profile 只存引用名不存值；
 `openai-chat-completions` 与 `openai-responses` driver 对裸 `Authorization` 自动补
 `Bearer` scheme，`anthropic-messages` 不补。`runtime.json`
-选择 Agent tool、预算、scheduler 与 run retention；source `resources/tools/` 默认交付
-使用 `Z_AI_API_KEY` 的 `web_search` / `web_fetch` MCP manifest。完整字段、覆盖顺序与示例见
+选择 Agent tool、预算、scheduler 与 run retention；source `resources/tools/` 交付
+使用 `Z_AI_API_KEY` 的 `web_search` / `web_fetch` MCP manifest，二者默认不启用，
+启用后必须经用户确认才会把参数发往第三方。完整字段、覆盖顺序与示例见
 [sn-cli 详细使用手册](SN-CLI-USAGE.md)与[SN Runtime 契约](docs/runtime-contract.md)。
 
 API driver 支持 `openai-chat-completions`、`openai-responses`、`anthropic-messages`

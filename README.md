@@ -52,7 +52,7 @@ rejected rather than silently papered over.
 - 🗂️ **Crash-consistent sessions** — atomic, journal-backed file store with
   identity-checked recovery (no heuristic repairs).
 - 🤖 **Autonomous agent loops** — model + controlled builtin/MCP tools
-  (including `web_search` and `web_fetch`) with budgets, durable effects, and
+  (defaulting to `read_file` and `list_directory`) with budgets, durable effects, and
   streaming events.
 - 🪟 **Long-lived native TUI sessions** — provider TUI in a private default or
   isolated tmux PTY; open, send, attach, interrupt, and close by Runtime Session ID.
@@ -315,7 +315,8 @@ the `Bearer ` scheme to a bare `Authorization` value; the `anthropic-messages`
 driver does not. `runtime.json` selects
 the agent tools, budgets, scheduler, run retention, and tmux server mode; source
 `resources/tools/` ships `web_search` and `web_fetch` MCP manifests using
-`Z_AI_API_KEY`. Full field reference, override order, and
+`Z_AI_API_KEY`. They are disabled by default and, when enabled, require
+user confirmation before sending arguments off-machine. Full field reference, override order, and
 examples: [sn-cli reference](SN-CLI-USAGE.md) and
 [SN Runtime contract](docs/runtime-contract.md).
 

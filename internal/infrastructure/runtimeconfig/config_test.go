@@ -18,7 +18,7 @@ func TestDefaultIsValid(t *testing.T) {
 	if err := value.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"read_file", "list_directory", "web_search", "web_fetch"}
+	want := []string{"read_file", "list_directory"}
 	if len(value.Agent.Tools) != len(want) {
 		t.Fatalf("default tools=%#v", value.Agent.Tools)
 	}

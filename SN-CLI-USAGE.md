@@ -752,9 +752,7 @@ CLI `--stream` 只是下游 Runtime 事件 NDJSON 输出选项，不覆盖 `para
   "agent": {
     "tools": [
       "read_file",
-      "list_directory",
-      "web_search",
-      "web_fetch"
+      "list_directory"
     ],
     "workspace_roots": [],
     "max_rounds": 16,
@@ -792,8 +790,11 @@ list_directory
 write_file
 ```
 
-默认启用两个只读 builtin 与两个只读 MCP tool。`write_file` 必须显式配置；其它
-名称必须在 active `tools/<name>.json` 中存在，否则 Agent bootstrap fail closed。
+默认仅启用两个只读 builtin。`web_search` 和 `web_fetch` 会把模型给出的查询或 URL
+发到配置的外部 endpoint；二者均为 `write_external` / `high` 且默认不启用。
+显式加入 `agent.tools` 后，每次调用在离开本机前都要经过 `user_confirmation`。
+`write_file` 也必须显式配置；其它名称必须在 active `tools/<name>.json` 中存在，
+否则 Agent bootstrap fail closed。
 
 ### 4.4 Tool Catalog
 
@@ -2412,17 +2413,17 @@ printf '%s' '回复OK' |
 ```text
 read_file
 list_directory
-web_search
-web_fetch
 ```
 
-可以在 `runtime.json` 中显式开启：
+可以在 `runtime.json` 中显式开启。`web_search` 和 `web_fetch` 开启后仍要逐次确认：
 
 ```text
 grep
 write_file
 edit
 shell
+web_search
+web_fetch
 ```
 
 `workspace_roots` 非空时限制工具可访问的根目录；必须配置绝对路径。为空时使用执行

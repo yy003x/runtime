@@ -78,7 +78,7 @@ func Default() Config {
 	return Config{
 		Agent: Agent{
 			Tools: []string{
-				"read_file", "list_directory", "web_search", "web_fetch",
+				"read_file", "list_directory",
 			},
 			WorkspaceRoots: []string{},
 			MaxRounds:      16, MaxToolCalls: 64, MaxWallTime: "15m",

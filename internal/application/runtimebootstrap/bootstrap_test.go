@@ -95,7 +95,9 @@ func TestBuildAgentToolsCombinesBuiltinAndConfiguredMCPTools(t *testing.T) {
 	registry, references, err := buildAgentTools(
 		toolsDirectory,
 		root,
-		runtimeconfig.Default().Agent,
+		runtimeconfig.Agent{Tools: []string{
+			"read_file", "list_directory", "web_search", "web_fetch",
+		}},
 		runtimeconfig.MCP{},
 	)
 	if err != nil {
@@ -136,11 +138,11 @@ func TestBuildAgentToolsLoadsSourceDefaultCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	definitions := registry.Definitions()
-	if len(definitions) != 4 || definitions[2].Name != "web_fetch" ||
-		definitions[3].Name != "web_search" {
+	if len(definitions) != 2 || definitions[0].Name != "list_directory" ||
+		definitions[1].Name != "read_file" {
 		t.Fatalf("source default definitions=%#v", definitions)
 	}
-	if len(references) != 1 || references[0] != "Z_AI_API_KEY" {
+	if len(references) != 0 {
 		t.Fatalf("source default environment references=%#v", references)
 	}
 }

@@ -17,7 +17,7 @@
             "type": "string",
             "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
           },
-          "default": ["read_file", "list_directory", "web_search", "web_fetch"]
+          "default": ["read_file", "list_directory"]
         },
         "workspace_roots": {
           "type": "array",

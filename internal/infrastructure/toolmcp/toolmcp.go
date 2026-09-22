@@ -1,6 +1,7 @@
-// Package toolmcp adapts configured read-only MCP tools to the Agent tool
-// registry. Each execution creates one bounded Streamable HTTP MCP session and
-// never retries or follows redirects.
+// Package toolmcp adapts configured MCP tools to the Agent tool registry.
+// Each execution creates one bounded Streamable HTTP MCP session and never
+// retries or follows redirects. write_external and high-risk tools pause for
+// confirmation before any request leaves the machine.
 package toolmcp
 
 import (
@@ -11,19 +12,23 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/yy003x/runtime/internal/domain/identity"
 	"github.com/yy003x/runtime/internal/infrastructure/envref"
 	"github.com/yy003x/runtime/internal/infrastructure/toolconfig"
 	"github.com/yy003x/runtime/pkg/agent"
+	"github.com/yy003x/runtime/pkg/contract"
 )
 
 const (
 	ExecutionImplementation        = "runtime.toolmcp"
-	ExecutionImplementationVersion = 2
+	ExecutionImplementationVersion = 3
 
 	// defaultRequestedProtocolVersion 是客户端在 initialize 中声明的首选协议
 	// 版本；服务端可在 allowed 集合内协商回更早版本。协议版本现在完全可配置，
@@ -86,6 +91,7 @@ func Build(
 		}
 		registered = append(registered, agent.RegisteredTool{
 			Definition: manifest.Definition(), Handler: handler.execute,
+			Effect: manifest.Effect, Risk: manifest.Risk,
 		})
 	}
 	return Bundle{Tools: registered, Configuration: configuration}, nil
@@ -136,6 +142,11 @@ func (handler *handler) execute(
 	ctx context.Context,
 	request agent.ToolRequest,
 ) (agent.ToolResult, error) {
+	if handler.requiresConfirmation() {
+		if result, shouldReturn, err := handler.confirm(request); shouldReturn {
+			return result, err
+		}
+	}
 	headers, secrets, err := resolveHeaders(
 		handler.manifest.Executor.Headers, handler.lookupEnv,
 	)
@@ -169,6 +180,85 @@ func (handler *handler) execute(
 		), nil
 	}
 	return result, nil
+}
+
+// requiresConfirmation is true when the call can send model-controlled
+// arguments to another system. write_external and high-risk tools always
+// pause. Any non-loopback endpoint also pauses, so a stale read_only
+// manifest cannot send workspace text to a third party.
+func (handler *handler) requiresConfirmation() bool {
+	return handler.manifest.Effect == contract.EffectWriteExternal ||
+		handler.manifest.Risk == contract.RiskHigh ||
+		!loopbackEndpoint(handler.manifest.Executor.Endpoint)
+}
+
+func loopbackEndpoint(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	return strings.EqualFold(host, "localhost") ||
+		ip != nil && ip.IsLoopback()
+}
+
+var externalApprovalSchema = json.RawMessage(
+	`{"type":"object","properties":{"approved":{"type":"boolean"}},"required":["approved"],"additionalProperties":false}`,
+)
+
+type externalApproval struct {
+	Approved bool `json:"approved"`
+}
+
+// confirm returns shouldReturn=true when execute must return without making the
+// network call. An approved resume returns shouldReturn=false so execute continues.
+func (handler *handler) confirm(
+	request agent.ToolRequest,
+) (agent.ToolResult, bool, error) {
+	if len(request.Approval) == 0 {
+		pauseID, err := identity.New("pause")
+		if err != nil {
+			return agent.ToolResult{}, true, fmt.Errorf("generate confirmation id: %w", err)
+		}
+		return agent.ToolResult{
+			Pause: &agent.Pause{
+				ID:          pauseID,
+				Kind:        agent.PauseKindUserConfirmation,
+				Prompt:      externalConfirmationPrompt(handler.manifest.Name, request.Arguments),
+				InputSchema: append(json.RawMessage(nil), externalApprovalSchema...),
+			},
+		}, true, nil
+	}
+	var approval externalApproval
+	decoder := json.NewDecoder(bytes.NewReader(request.Approval))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&approval); err != nil {
+		return agent.ToolResult{}, true, fmt.Errorf("decode confirmation: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return agent.ToolResult{}, true, fmt.Errorf("confirmation contains trailing JSON")
+	}
+	if !approval.Approved {
+		return failure(
+			"not_approved",
+			handler.manifest.Name+" was not approved",
+			nil,
+		), true, nil
+	}
+	return agent.ToolResult{}, false, nil
+}
+
+func externalConfirmationPrompt(name string, arguments json.RawMessage) string {
+	shown := arguments
+	const maxArgumentBytes = 4096
+	if len(shown) > maxArgumentBytes {
+		shown = append(bytes.Clone(shown[:maxArgumentBytes]), "…"...)
+	}
+	return "Approve " + name +
+		" before sending its arguments to the configured external endpoint (write_external, high risk): " +
+		string(shown)
 }
 
 func singleAttemptClient(source *http.Client) *http.Client {

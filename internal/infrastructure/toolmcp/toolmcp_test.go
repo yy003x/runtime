@@ -345,10 +345,14 @@ func TestMCPMissingEnvironmentIsToolErrorAndBuildDoesNotResolve(t *testing.T) {
 	if lookups != 0 {
 		t.Fatal("Build resolved a secret")
 	}
-	result, err := bundle.Tools[0].Handler(
-		context.Background(),
-		agent.ToolRequest{Arguments: json.RawMessage(`{"query":"x"}`)},
-	)
+	handler := bundle.Tools[0].Handler
+	request := agent.ToolRequest{Arguments: json.RawMessage(`{"query":"x"}`)}
+	paused, err := handler(context.Background(), request)
+	if err != nil || paused.Pause == nil || lookups != 0 {
+		t.Fatalf("pause=%#v err=%v lookups=%d", paused, err, lookups)
+	}
+	request.Approval = json.RawMessage(`{"approved":true}`)
+	result, err := handler(context.Background(), request)
 	if err != nil || !result.IsError ||
 		!strings.Contains(result.Content, `"code":"configuration_error"`) {
 		t.Fatalf("result=%#v err=%v", result, err)
@@ -374,6 +378,96 @@ func TestMCPPreservesRemoteIsError(t *testing.T) {
 	)
 	if err != nil || !result.IsError || result.Content != "not found" {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestStaleReadOnlyRemoteToolStillRequiresConfirmation(t *testing.T) {
+	manifest := testManifest("https://open.bigmodel.cn/api/mcp/web_search_prime/mcp")
+	bundle, err := Build([]toolconfig.Manifest{manifest}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := bundle.Tools[0].Handler(context.Background(), agent.ToolRequest{
+		Name: "web_search", Arguments: json.RawMessage(`{"query":"workspace secret"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pause == nil || result.Pause.Kind != agent.PauseKindUserConfirmation {
+		t.Fatalf("result = %#v, want confirmation before any remote call", result)
+	}
+	if !strings.Contains(result.Pause.Prompt, "workspace secret") {
+		t.Fatalf("prompt = %q", result.Pause.Prompt)
+	}
+}
+
+func TestMCPExternalToolDoesNotSendBeforeApproval(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		step := calls.Add(1)
+		body, _ := io.ReadAll(request.Body)
+		switch step {
+		case 1:
+			assertRequestMethod(t, body, "initialize")
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.Header().Set("Mcp-Session-Id", "session-1")
+			fmt.Fprint(writer, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n\n")
+		case 2:
+			assertRequestMethod(t, body, "notifications/initialized")
+			writer.WriteHeader(http.StatusOK)
+		case 3:
+			assertRequestMethod(t, body, "tools/call")
+			if !strings.Contains(string(body), "secret file contents") {
+				t.Errorf("call body = %s", body)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+		default:
+			t.Errorf("unexpected request %d", step)
+		}
+	}))
+	defer server.Close()
+
+	manifest := testManifest(server.URL)
+	manifest.Effect = contract.EffectWriteExternal
+	manifest.Risk = contract.RiskHigh
+	bundle, err := Build([]toolconfig.Manifest{manifest}, Options{
+		LookupEnv: func(string) (string, bool) { return "secret", true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := bundle.Tools[0].Handler
+	request := agent.ToolRequest{
+		Name: "web_search", Arguments: json.RawMessage(`{"query":"secret file contents"}`),
+	}
+	paused, err := handler(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused.Pause == nil || paused.Pause.Kind != agent.PauseKindUserConfirmation || calls.Load() != 0 {
+		t.Fatalf("pause=%#v calls=%d", paused, calls.Load())
+	}
+	if !strings.Contains(paused.Pause.Prompt, "secret file contents") {
+		t.Fatalf("confirmation prompt = %q", paused.Pause.Prompt)
+	}
+
+	request.Approval = json.RawMessage(`{"approved":false}`)
+	rejected, err := handler(context.Background(), request)
+	if err != nil || !rejected.IsError || calls.Load() != 0 {
+		t.Fatalf("rejected=%#v err=%v calls=%d", rejected, err, calls.Load())
+	}
+
+	request.Approval = json.RawMessage(`{"approved":true}`)
+	approved, err := handler(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.IsError || approved.Content != "ok" || calls.Load() != 3 {
+		t.Fatalf("approved=%#v calls=%d", approved, calls.Load())
 	}
 }
 

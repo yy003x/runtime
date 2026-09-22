@@ -45,6 +45,8 @@ func TestLoadSourceManifests(t *testing.T) {
 		}
 		if manifest.Executor.Endpoint != test.endpoint ||
 			manifest.Executor.RemoteTool != test.remote ||
+			manifest.Effect != contract.EffectWriteExternal ||
+			manifest.Risk != contract.RiskHigh ||
 			manifest.Executor.Headers["Authorization"] !=
 				"Bearer ${Z_AI_API_KEY}" {
 			t.Fatalf("unexpected manifest: %#v", manifest)

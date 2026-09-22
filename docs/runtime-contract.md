@@ -114,7 +114,7 @@ file、严格 JSON 且无未知字段。当前 shape 与默认语义为：
 ```json
 {
   "agent": {
-    "tools": ["read_file", "list_directory", "web_search", "web_fetch"],
+    "tools": ["read_file", "list_directory"],
     "workspace_roots": [],
     "max_rounds": 16,
     "max_tool_calls": 64,
@@ -929,9 +929,11 @@ source/payload 是 `resources/tools/<name>.json`。loader 接受 `schema_version
 `low`/`high` 两档：写副作用（`write_local`/`write_external`）必须显式声明 risk，
 `read_only` 缺省视为 `low`。`runtime.json` 只保存 enabled name；bootstrap 将
 builtin 与选中的 manifest 组合为一个 Registry，任何 enabled name 无 owner 都
-fail closed。默认启用 `web_search` 和 `web_fetch`，分别绑定 BigModel MCP 的
+fail closed。`web_search` 和 `web_fetch` 分别绑定 BigModel MCP 的
 `web_search_prime` 与 `webReader`，认证引用均为
-`Bearer ${Z_AI_API_KEY}`。
+`Bearer ${Z_AI_API_KEY}`。二者的 effect 是 `write_external`、risk 是 `high`：
+默认工具列表不包含它们；显式启用后，handler 在发出任何外部请求前返回
+`user_confirmation` pause，未批准的调用不会离开本机。
 
 每个 MCP handler execution 建立一个有界 Streamable HTTP session，执行
 `initialize`、`notifications/initialized` 和一次 `tools/call`；不 retry、不跟随

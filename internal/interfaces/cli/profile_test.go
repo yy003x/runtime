@@ -772,8 +772,8 @@ func prepareRuntimeHome(t *testing.T) layout.Paths {
 	if err := os.MkdirAll(paths.ConfigDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// CLI 单元 fixture 不验证配置型网络工具；这里使用内置工具保持执行组合隔离，
-	// source Runtime 默认值仍启用已安装的 web_search 和 web_fetch manifest。
+	// CLI 单元 fixture 只启用只读 builtin。web_search 和 web_fetch 会把模型
+	// 给出的参数发到第三方，默认不启用。
 	if err := os.WriteFile(
 		paths.RuntimeConfigFile,
 		[]byte(`{"agent":{"tools":["read_file","list_directory"]}}`),
