@@ -1,7 +1,7 @@
 {
   "type": "cli",
   "command": "codex",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "effort": "xhigh",
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip"
