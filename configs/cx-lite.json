@@ -4,6 +4,7 @@
   "model": "gpt-6-luna",
   "effort": "medium",
   "args": [
+    "--no-daemon",
     "--sandbox",
     "read-only",
     "--ask-for-approval",

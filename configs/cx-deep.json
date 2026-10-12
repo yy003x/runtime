@@ -4,6 +4,7 @@
   "model": "gpt-6-astra",
   "effort": "max",
   "args": [
+    "--no-daemon",
     "--search",
     "--sandbox",
     "danger-full-access",

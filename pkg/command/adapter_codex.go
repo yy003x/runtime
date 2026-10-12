@@ -168,6 +168,7 @@ var codexOptions = newOptionParser([]optionSpec{
 	{name: "--add-dir", aliases: []string{"--add-dir"}, arity: arityValue, scope: scopeCommon, kind: kindGeneric},
 	{name: "--ask-for-approval", aliases: []string{"-a", "--ask-for-approval"}, arity: arityValue, scope: scopeCommon, kind: kindGeneric},
 	{name: "--search", aliases: []string{"--search"}, arity: arityFlag, scope: scopeCommon, kind: kindGeneric},
+	{name: "--no-daemon", aliases: []string{"--no-daemon"}, arity: arityFlag, scope: scopeCommon, kind: kindGeneric},
 	{name: "exec", aliases: []string{"exec", "e"}, arity: arityFlag, scope: scopeExec, kind: kindMode},
 	{name: "--skip-git-repo-check", aliases: []string{"--skip-git-repo-check"}, arity: arityFlag, scope: scopeExec, kind: kindGeneric},
 	{name: "--ephemeral", aliases: []string{"--ephemeral"}, arity: arityFlag, scope: scopeExec, kind: kindStateless},

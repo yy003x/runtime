@@ -58,6 +58,58 @@ func TestBuildCodexCanonicalOverridesSelectorsAndOrdersScopes(t *testing.T) {
 	}
 }
 
+func TestBuildCodexNoDaemonPrecedesSubcommand(t *testing.T) {
+	profile := Profile{
+		Command: "codex",
+		Args:    []string{"--skip-git-repo-check", "--no-daemon"},
+	}
+	if err := CheckProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		mode     Mode
+		protocol OutputProtocol
+		resume   *string
+		want     []string
+	}{
+		{
+			name: "interactive", mode: ModeInteractive, protocol: OutputNative,
+			want: []string{"codex", "--no-daemon"},
+		},
+		{
+			name: "exec_native", mode: ModeExec, protocol: OutputNative,
+			want: []string{"codex", "--no-daemon", "exec", "--skip-git-repo-check"},
+		},
+		{
+			name: "exec_canonical", mode: ModeExec, protocol: OutputCanonical,
+			want: []string{
+				"codex", "--no-daemon", "exec", "--skip-git-repo-check",
+				"--ephemeral", "--json",
+			},
+		},
+		{
+			name: "resume", mode: ModeInteractive, protocol: OutputNative,
+			resume: stringPointer("codex-session-1"),
+			want:   []string{"codex", "--no-daemon", "resume", "codex-session-1"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invocation, err := Build(BuildRequest{
+				Mode: test.mode, OutputProtocol: test.protocol,
+				Profile: profile, Resume: test.resume,
+				Symbolic: true, InvocationBase: "/__sn_cli_symbolic_cwd__",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(invocation.Argv, test.want) {
+				t.Fatalf("argv=%q want=%q", invocation.Argv, test.want)
+			}
+		})
+	}
+}
+
 func TestAdapterRejectsRegisteredOptionAsRequiredValue(t *testing.T) {
 	for _, args := range [][]string{
 		{"--model", "--json"},

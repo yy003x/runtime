@@ -4,6 +4,7 @@
   "model": "gpt-6-sol",
   "effort": "xhigh",
   "args": [
+    "--no-daemon",
     "-c",
     "sandbox_mode=danger-full-access",
     "-c",

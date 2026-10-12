@@ -2,7 +2,9 @@
   "type": "cli",
   "command": "codex",
   "model": "gpt-6.1-sol",
-  "effort": "xhigh",
+  "args": [
+    "--no-daemon"
+  ],
   "env": {
     "CODEX_HOME": "${HOME}/.codex-aip"
   }
