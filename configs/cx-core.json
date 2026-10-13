@@ -2,7 +2,7 @@
   "type": "cli",
   "command": "codex",
   "model": "gpt-6-sol",
-  "effort": "xhigh",
+  "effort": "high",
   "args": [
     "--no-daemon",
     "-c",
