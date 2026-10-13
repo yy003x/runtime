@@ -109,6 +109,10 @@ sn-cli gk
 sn-cli exec cx "总结当前仓库"
 ```
 
+CLI Profile 的 `--prompt` 接受已有普通文件或文本。路径不存在或文件名探测过长时，
+按参数原文处理。文件正文、文本及合并后的正文统一限制为 128,000 UTF-8 字节，
+超限返回 `prompt exceeds 128000 bytes`；已有文件的权限和读取错误仍正常报告。
+
 `call` 默认输出 assistant text。`--raw` 在调用结束后打印两行裸 JSON：最后一次
 HTTP 尝试的 Provider 编码请求体，以及原始响应 JSON（SSE 为原始帧数组）。不含
 Runtime 元信息、`attempts` 包装或额外 `error` 字段。Provider 错误 JSON 保留其自身

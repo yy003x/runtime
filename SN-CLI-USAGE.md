@@ -1149,13 +1149,17 @@ A
 B
 ```
 
-路径不存在时，`--prompt` 被当作文本：
+路径不存在或文件名探测返回 `ENAMETOOLONG` 时，`--prompt` 被当作文本：
 
 ```bash
 sn-cli exec cx --prompt "先只分析" "再给结论"
 ```
 
 文件存在时必须是普通文件，不能是 symlink。
+
+文本、读取后的文件正文、stdin 和合并后的正文统一按 UTF-8 字节数检查，最多
+128,000 字节；超限统一返回 `prompt exceeds 128000 bytes`。长文本不会因文件名
+探测而返回 `File name too long`；已有文件的权限不足、读取失败等错误仍正常报告。
 
 #### bare CLI direct
 

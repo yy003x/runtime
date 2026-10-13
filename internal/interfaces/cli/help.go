@@ -25,6 +25,7 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 		Notes: []string{
 			"The target CLI owns the terminal and keeps its native stdout, stderr, and exit status.",
+			"--prompt accepts an existing regular file or literal text. Missing or overlong paths are treated as text; resolved and merged prompts are limited to 128,000 UTF-8 bytes.",
 			"resume and --resume are equivalent; they continue a Codex/Claude/Grok native session and do not create a Runtime Session.",
 			"A best-effort execution record is written to logs/YYMMDD/cli.jsonl.",
 		},
@@ -37,6 +38,7 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 		Notes: []string{
 			"exec accepts CLI Profiles only and keeps the target process native stdout, stderr, and exit status.",
+			"--prompt accepts an existing regular file or literal text. Missing or overlong paths are treated as text; resolved and merged prompts are limited to 128,000 UTF-8 bytes.",
 			"Use session exec when the call must create canonical Session facts.",
 		},
 	},

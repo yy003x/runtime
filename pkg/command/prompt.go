@@ -1,11 +1,13 @@
 package command
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func IsTerminal(file *os.File) bool {
@@ -43,7 +45,7 @@ func resolvePrompt(value, invocationBase string) (string, error) {
 	}
 	before, err := os.Lstat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENAMETOOLONG) {
 			return value, nil
 		}
 		return "", fmt.Errorf("inspect prompt file %q: %w", path, err)
@@ -72,7 +74,7 @@ func resolvePrompt(value, invocationBase string) (string, error) {
 	}
 	if len(content) > MaxTokenBytes {
 		return "", &invocationLimitError{message: fmt.Sprintf(
-			"prompt file %q exceeds %d bytes", path, MaxTokenBytes,
+			"prompt exceeds %d bytes", MaxTokenBytes,
 		)}
 	}
 	result := string(content)
@@ -100,7 +102,7 @@ func readPrompt(reader io.Reader) (string, error) {
 	}
 	if len(content) > MaxTokenBytes {
 		return "", &invocationLimitError{message: fmt.Sprintf(
-			"prompt input exceeds %d bytes", MaxTokenBytes,
+			"prompt exceeds %d bytes", MaxTokenBytes,
 		)}
 	}
 	result := string(content)
@@ -127,7 +129,7 @@ func mergePrompt(fragments ...string) (string, error) {
 		}
 		if len(fragment) > MaxTokenBytes {
 			return "", &invocationLimitError{message: fmt.Sprintf(
-				"prompt fragment exceeds %d bytes", MaxTokenBytes,
+				"prompt exceeds %d bytes", MaxTokenBytes,
 			)}
 		}
 		if err := validateTextToken(
@@ -141,7 +143,7 @@ func mergePrompt(fragments ...string) (string, error) {
 		}
 		if total > MaxTokenBytes {
 			return "", &invocationLimitError{message: fmt.Sprintf(
-				"merged prompt exceeds %d bytes", MaxTokenBytes,
+				"prompt exceeds %d bytes", MaxTokenBytes,
 			)}
 		}
 		nonempty = append(nonempty, fragment)

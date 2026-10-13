@@ -209,6 +209,11 @@ Profile `prompt`、typed `--prompt`、piped stdin、位置 input 按顺序合并
 prompt 必须非空；bare interactive direct 可为空。两种 mode 都 process replacement，
 leading global `--json` 不包装其原生输出。
 
+Profile `prompt` 与 typed `--prompt` 指向已有普通文件时读取正文；路径不存在或探测返回
+`ENAMETOOLONG` 时使用参数原文。文本、读取后的文件正文、stdin 和最终合并正文统一
+检查 128,000 UTF-8 bytes 上限，超限返回 `prompt exceeds 128000 bytes`，错误类型为
+`request/context_overflow`。已有文件的权限、读取、symlink 和非普通文件错误仍正常报告。
+
 bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`call` 只接受 API
 Profile。Profile ID 必须紧跟拥有它的 namespace/action，option 位于其后，input
 必须最后。固定根 namespace

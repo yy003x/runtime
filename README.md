@@ -120,6 +120,11 @@ sn-cli gk
 sn-cli exec cx "Summarize this repo"
 ```
 
+CLI Profile `--prompt` accepts an existing regular file or literal text. Missing
+or overlong paths are treated as text. Resolved text and the merged prompt share
+a 128,000 UTF-8 byte limit and report `prompt exceeds 128000 bytes` on overflow.
+Existing file permission and read errors remain errors.
+
 `call` defaults to assistant text. `--raw` prints two bare JSON values after
 completion: the last HTTP attempt's Provider-encoded request body, then the original
 response JSON (an array of original frames for SSE). No Runtime metadata, `attempts`
