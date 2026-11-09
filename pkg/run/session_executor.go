@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/profile"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/profile"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 type SessionExecutor struct {
@@ -30,6 +30,7 @@ func (executor *SessionExecutor) Prepare(
 		SessionID: request.SessionID, TaskID: request.TaskID,
 		ProfileID: request.ProfileID, Input: request.Input,
 		Model: request.Model, Effort: request.Effort, CWD: request.CWD,
+		Permissions:    request.Permissions,
 		InvocationBase: request.InvocationBase,
 		Retention:      session.Retention(request.SessionRetention),
 		ModelOptions:   request.ModelOptions,
@@ -92,10 +93,12 @@ func (executor *SessionExecutor) Validate(request Request) error {
 	return nil
 }
 
+// Execute 把 durable Run 的 record 投影为 Session 执行请求；sink 接收流式
+// 领域事件。返回 ExecutionOutcome 描述终态、结果或失败，不直接写 Run Store。
 func (executor *SessionExecutor) Execute(
 	ctx context.Context,
 	record Record,
-	_ contract.EventSink,
+	sink contract.EventSink,
 ) ExecutionOutcome {
 	sessionRequest := session.RunRequest{
 		SessionID:    record.Request.SessionID,
@@ -106,6 +109,7 @@ func (executor *SessionExecutor) Execute(
 		Model:        record.Request.Model,
 		Effort:       record.Request.Effort,
 		CWD:          record.Request.CWD,
+		Permissions:  record.Request.Permissions,
 		Retention:    session.Retention(record.Request.SessionRetention),
 		ModelOptions: record.Request.ModelOptions,
 	}
@@ -139,7 +143,7 @@ func (executor *SessionExecutor) Execute(
 			},
 		}
 	}
-	result, runtimeErr := executor.Sessions.Run(ctx, prepared)
+	result, runtimeErr := executor.Sessions.RunWithEvents(ctx, prepared, sink)
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return ExecutionOutcome{

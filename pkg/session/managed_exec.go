@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
 	"golang.org/x/sys/unix"
 )
 
@@ -53,11 +55,16 @@ type managedResult struct {
 	runtimeErr *contract.RuntimeError
 }
 
+// executeManagedCLI 执行 ids 标识的 turn，invocation 提供进程调用事实，
+// streamSession 提供已启动的 CLI 流，sink 接收事件。返回 managedResult
+// 汇总输出、退出状态与执行结局，并持久化相应 Session/Execution 事实。
 func (service *Service) executeManagedCLI(
 	ctx context.Context,
 	ids executionIDs,
 	turn Turn,
 	invocation runtimecommand.Invocation,
+	streamSession runtimecommand.StreamSession,
+	sink contract.EventSink,
 ) managedResult {
 	ownerStartToken, err := processStartToken(os.Getpid())
 	if err != nil {
@@ -166,9 +173,18 @@ func (service *Service) executeManagedCLI(
 	stderrCapture := newBoundedCapture(maxDiagnosticStderrBytes, limitSignal)
 	var copyGroup sync.WaitGroup
 	copyGroup.Add(2)
+	// streamDecodeErr 仅在 stdout 消费 goroutine 写入、copyGroup.Wait() 之后
+	// 读取，由 WaitGroup 建立 happens-before，无需额外同步。
+	var streamDecodeErr error
 	go func() {
 		defer copyGroup.Done()
-		_, _ = io.Copy(stdoutCapture, stdoutPipe)
+		if streamSession == nil {
+			_, _ = io.Copy(stdoutCapture, stdoutPipe)
+			return
+		}
+		streamDecodeErr = consumeStreamedStdout(
+			stdoutPipe, stdoutCapture, streamSession, sink,
+		)
 	}()
 	go func() {
 		defer copyGroup.Done()
@@ -255,26 +271,110 @@ func (service *Service) executeManagedCLI(
 		}
 		return result
 	}
-	decoded, err := runtimecommand.Decode(
-		invocation.Argv[0], stdoutCapture.bytes(),
-	)
-	if err != nil {
+	var decoded runtimecommand.CanonicalOutput
+	var decodeErr error
+	if streamSession != nil {
+		decoded, decodeErr = finishStreamedStdout(streamSession, streamDecodeErr)
+	} else {
+		decoded, decodeErr = runtimecommand.Decode(
+			invocation.Argv[0], stdoutCapture.bytes(),
+		)
+	}
+	if decodeErr != nil {
 		result.outcome = OutcomeFailed
 		var runtimeErr *contract.RuntimeError
-		if errors.As(err, &runtimeErr) {
+		if errors.As(decodeErr, &runtimeErr) {
 			result.runtimeErr = runtimeErr
 			return result
 		}
 		result.runtimeErr = &contract.RuntimeError{
 			Code:    contract.ErrorInvalidProviderResponse,
 			Phase:   contract.PhaseTransport,
-			Message: "decode CLI canonical output: " + err.Error(),
+			Message: "decode CLI canonical output: " + decodeErr.Error(),
 		}
 		return result
 	}
 	result.outcome = OutcomeCompleted
 	result.assistant = decoded.Assistant
 	return result
+}
+
+// maxStreamLineBytes 与 canonical 单记录上限一致：流式单行超出即视为流损坏。
+const maxStreamLineBytes = 1 << 20
+
+// consumeStreamedStdout 逐行消费流式 stdout：原始字节照常计入 bounded
+// capture（上限与截断语义不变），完整行交给 StreamSession 归一化并经 emit
+// 推送。DecodeLine 或 emit 失败后停止解码、继续排空计数，保证子进程不会因
+// stdout 阻塞而无法退出；行超限属于流损坏，记入返回错误由调用方在终态解码
+// 前拒绝整个输出，但同样先排空到底。
+// 参数 reader、capture、session、emit 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func consumeStreamedStdout(
+	reader io.Reader,
+	capture *boundedCapture,
+	session runtimecommand.StreamSession,
+	emit contract.EventSink,
+) error {
+	buffered := bufio.NewReaderSize(reader, 64<<10)
+	decoding := true
+	var streamErr error
+	var pending []byte
+	for {
+		fragment, err := buffered.ReadSlice('\n')
+		pending = append(pending, fragment...)
+		complete := err == nil || errors.Is(err, io.EOF)
+		if !complete && !errors.Is(err, bufio.ErrBufferFull) {
+			// 管道异常关闭：剩余字节不可信，照常记账后停止。
+			_, _ = capture.Write(pending)
+			return streamErr
+		}
+		if len(pending) > maxStreamLineBytes {
+			_, _ = capture.Write(pending)
+			pending = pending[:0]
+			if decoding {
+				decoding = false
+				if streamErr == nil {
+					streamErr = fmt.Errorf(
+						"stream record exceeds %d bytes", maxStreamLineBytes,
+					)
+				}
+			}
+			// 超限行内容已丢弃，继续排空后续输出。
+			if errors.Is(err, io.EOF) {
+				return streamErr
+			}
+			continue
+		}
+		if !complete {
+			continue
+		}
+		_, _ = capture.Write(pending)
+		record := bytes.TrimSpace(pending)
+		pending = pending[:0]
+		if decoding && len(record) > 0 {
+			if decodeErr := session.DecodeLine(record, emit); decodeErr != nil {
+				streamErr = decodeErr
+				decoding = false
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return streamErr
+		}
+	}
+}
+
+// finishStreamedStdout 在进程正常退出后校验流式终态；消费阶段发现的流损坏
+// 优先返回，避免 Finish 读到截断状态误判成功。
+// 参数 session、consumeErr 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 runtimecommand.CanonicalOutput、error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func finishStreamedStdout(
+	session runtimecommand.StreamSession,
+	consumeErr error,
+) (runtimecommand.CanonicalOutput, error) {
+	if consumeErr != nil {
+		return runtimecommand.CanonicalOutput{}, consumeErr
+	}
+	return session.Finish()
 }
 
 func (service *Service) persistExecution(value Execution) error {

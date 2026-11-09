@@ -15,11 +15,11 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/internal/infrastructure/runtimeconfig"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/internal/infrastructure/toolbuiltin"
-	"github.com/yy003x/runtime/internal/infrastructure/toolconfig"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/runtimeconfig"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/internal/infrastructure/toolbuiltin"
+	"github.com/yy003x/sn-code/internal/infrastructure/toolconfig"
 )
 
 const (
@@ -816,14 +816,14 @@ func validateSchemaIdentity(name string, raw json.RawMessage) error {
 	}
 	switch name {
 	case "profile.schema.json":
-		const id = "https://github.com/yy003x/runtime/resources/schema/profile.schema.json"
+		const id = "https://github.com/yy003x/sn-code/resources/schema/profile.schema.json"
 		if identity.ID != id ||
 			identity.Title != "Runtime Profile" ||
 			len(identity.OneOf) != 2 {
 			return fmt.Errorf("profile JSON Schema identity or root shape is invalid")
 		}
 	case "runtime.schema.json":
-		const id = "https://github.com/yy003x/runtime/resources/schema/runtime.schema.json"
+		const id = "https://github.com/yy003x/sn-code/resources/schema/runtime.schema.json"
 		if identity.ID != id ||
 			identity.Title != "SN Runtime Configuration" ||
 			identity.Type != "object" ||
@@ -841,7 +841,7 @@ func validateSchemaIdentity(name string, raw json.RawMessage) error {
 			}
 		}
 	case "tool.schema.json":
-		const id = "https://github.com/yy003x/runtime/resources/schema/tool.schema.json"
+		const id = "https://github.com/yy003x/sn-code/resources/schema/tool.schema.json"
 		if identity.ID != id ||
 			identity.Title != "Runtime Tool" ||
 			identity.Type != "object" ||

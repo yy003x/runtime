@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
+	"github.com/yy003x/sn-code/internal/infrastructure/codexauth"
 )
 
 // Console is an ephemeral authentication use case, not a Runtime Session/Run.

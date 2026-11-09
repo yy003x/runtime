@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
+	"github.com/yy003x/sn-code/internal/infrastructure/envref"
 )
 
 // MaxTokenBytes stays below Linux's common 128 KiB single-argv-string limit,
@@ -46,7 +46,7 @@ func (profile Profile) Validate() error {
 	if !exact {
 		return fmt.Errorf("%s", adapterBasenameMessage)
 	}
-	if base != "codex" && base != "claude" && base != "grok" {
+	if base != "codex" && base != "claude" && base != "grok" && base != "pi" {
 		return fmt.Errorf("no command adapter for %q", base)
 	}
 	if err := validateTextToken("command", profile.Command, 4096, false); err != nil {

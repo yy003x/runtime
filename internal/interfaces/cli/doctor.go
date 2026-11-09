@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	"github.com/yy003x/runtime/internal/interfaces/cli/version"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/infrastructure/buildinfo"
+	"github.com/yy003x/sn-code/internal/infrastructure/envref"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
 )
 
 type runtimeDoctorFailures struct {
@@ -107,7 +107,7 @@ func runtimeDoctor(paths layout.Paths, output *cliOutput) error {
 		"schema_version":   cliOutputSchemaVersion,
 		"contract_version": cliOutputContractVersion,
 		"ok":               failures.ok(),
-		"version":          version.String(),
+		"version":          buildinfo.String("sn-cli"),
 		"runtime_home":     paths.Home,
 		"namespaces":       serverNamespaces(),
 		"capabilities":     serverCapabilities(),

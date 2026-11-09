@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
 )
 
 type fakeTmuxManager struct {

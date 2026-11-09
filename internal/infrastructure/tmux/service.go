@@ -19,8 +19,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 type Service struct {

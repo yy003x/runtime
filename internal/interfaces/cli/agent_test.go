@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtime "github.com/yy003x/runtime/pkg/run"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 func TestAgentUsageDocumentsOptionalStdinBackedInput(t *testing.T) {

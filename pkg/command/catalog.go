@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
 )
 
 type Catalog struct {

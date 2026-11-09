@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/testkit/scenario"
+	"github.com/yy003x/sn-code/internal/testkit/scenario"
 )
 
 func TestScriptedProviderScenarioMatrix(t *testing.T) {

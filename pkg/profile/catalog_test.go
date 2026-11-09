@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
-	"github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/model"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 func TestLoadResolvesCLIAndAPIProfilesFromOneDirectory(t *testing.T) {

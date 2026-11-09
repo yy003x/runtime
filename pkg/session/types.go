@@ -8,9 +8,9 @@ import (
 	"errors"
 	"time"
 
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/profile"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/profile"
 )
 
 const SchemaVersion = 3
@@ -262,6 +262,7 @@ type RunRequest struct {
 	Model          string
 	Effort         string
 	CWD            string
+	Permissions    string
 	InvocationBase string
 	Retention      Retention
 	ModelOptions   contract.GenerateOptions
@@ -286,6 +287,7 @@ type CLIExecutionSnapshot struct {
 	CWD              string                 `json:"cwd"`
 	Model            string                 `json:"model,omitempty"`
 	Effort           string                 `json:"effort,omitempty"`
+	Permissions      string                 `json:"permissions,omitempty"`
 }
 
 type RunResult struct {

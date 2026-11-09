@@ -15,10 +15,10 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 // LoopStateSchemaVersion identifies the durable Agent checkpoint contract.

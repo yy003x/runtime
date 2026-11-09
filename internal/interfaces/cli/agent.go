@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/internal/infrastructure/runtimeconfig"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtime "github.com/yy003x/runtime/pkg/run"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/runtimeconfig"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 func runAgentNamespace(

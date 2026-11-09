@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func TestLoadServerConfigUsesLoopbackDefaults(t *testing.T) {

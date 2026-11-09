@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	runtime "github.com/yy003x/runtime/pkg/run"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 func TestTraceByRunAggregatesRecordAndEvents(t *testing.T) {

@@ -16,12 +16,12 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/profile"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/infrastructure/activationgate"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/profile"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 func TestMain(main *testing.M) {
@@ -1776,7 +1776,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 		filepath.Join(payload, "resources", "schema", "profile.schema.json"),
 		`{
 			"$schema":"https://json-schema.org/draft/2020-12/schema",
-			"$id":"https://github.com/yy003x/runtime/resources/schema/profile.schema.json",
+			"$id":"https://github.com/yy003x/sn-code/resources/schema/profile.schema.json",
 			"title":"Runtime Profile",
 			"oneOf":[{"type":"object"},{"type":"object"}]
 		}`+"\n", 0o600,
@@ -1785,7 +1785,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 		filepath.Join(payload, "resources", "schema", "runtime.schema.json"),
 		`{
 			"$schema":"https://json-schema.org/draft/2020-12/schema",
-			"$id":"https://github.com/yy003x/runtime/resources/schema/runtime.schema.json",
+			"$id":"https://github.com/yy003x/sn-code/resources/schema/runtime.schema.json",
 			"title":"SN Runtime Configuration",
 			"type":"object",
 			"additionalProperties":false,
@@ -1796,7 +1796,7 @@ func upgradeFixture(t *testing.T) (string, string, string) {
 		filepath.Join(payload, "resources", "schema", "tool.schema.json"),
 		`{
 			"$schema":"https://json-schema.org/draft/2020-12/schema",
-			"$id":"https://github.com/yy003x/runtime/resources/schema/tool.schema.json",
+			"$id":"https://github.com/yy003x/sn-code/resources/schema/tool.schema.json",
 			"title":"Runtime Tool",
 			"type":"object",
 			"additionalProperties":false,

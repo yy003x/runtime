@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/pkg/agent"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/profile"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/profile"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 type agentExecutionSnapshot struct {

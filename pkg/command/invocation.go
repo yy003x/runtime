@@ -11,7 +11,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
+	"github.com/yy003x/sn-code/internal/infrastructure/envref"
 )
 
 const (

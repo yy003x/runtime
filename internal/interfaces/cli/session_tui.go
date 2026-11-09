@@ -9,17 +9,17 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/application/nativeconsole"
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/application/nativeconsole"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/activationgate"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 type sessionNativeOpenOptions struct {

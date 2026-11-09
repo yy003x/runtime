@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/pkg/profile"
 )
 
 const (

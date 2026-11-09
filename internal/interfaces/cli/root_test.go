@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func TestMainLeadingJSONVersion(t *testing.T) {
@@ -78,7 +78,7 @@ func TestMainHelpDocumentsPublicNamespacesAndJSONProfileBoundary(t *testing.T) {
 func TestMainHelpTopicsHaveHumanAndMachineContracts(t *testing.T) {
 	topics := []string{
 		"tui", "exec", "call", "auth", "doctor", "profile",
-		"session", "agent", "job", "server", "update",
+		"session", "agent", "job", "server", "aep", "update",
 	}
 	for _, topic := range topics {
 		t.Run(topic, func(t *testing.T) {

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	httpx "github.com/yy003x/runtime/internal/infrastructure/providerhttp"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
+	httpx "github.com/yy003x/sn-code/internal/infrastructure/providerhttp"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 const textResponse = `{"id":"resp-fixture","model":"wire-model","status":"completed","output":[{"type":"reasoning","id":"rs-fixture"},{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}`
@@ -259,12 +259,14 @@ func TestResponsesHTTPErrorAndRedirectAreSingleAttempt(t *testing.T) {
 				w.Header().Set("Location", "/redirected")
 				w.Header().Set("Retry-After", "2")
 				w.WriteHeader(status)
-				fmt.Fprint(w, `{"error":{"message":"fixture-secret failed"}}`)
+				fmt.Fprint(w, `{"error":{"message":"fixture failed"}}`)
 			}))
 			defer server.Close()
 			service := newService(t, server, nil, nil)
 			_, err := service.Generate(context.Background(), input())
-			if err == nil || err.HTTPStatus != status || calls.Load() != 1 || strings.Contains(err.Message, "fixture-secret") {
+			// 消费者错误面原样携带 provider 响应体；secret 只存在于 HTTP
+			// 请求层，诊断面脱敏由 pkg/model 的 observer 测试覆盖。
+			if err == nil || err.HTTPStatus != status || calls.Load() != 1 || !strings.Contains(err.Message, "fixture failed") {
 				t.Fatalf("calls=%d err=%v", calls.Load(), err)
 			}
 			if status == 429 && (err.Code != contract.ErrorRateLimited || err.RetryAfterMS != 2000) {

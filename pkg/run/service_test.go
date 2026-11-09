@@ -5,15 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	sqlitestore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
+
+func TestSubmitRejectsTimeoutDurationOverflow(t *testing.T) {
+	service := newRunService(t, fakeExecutor{})
+	_, runtimeErr := service.Submit(context.Background(), runtime.Request{
+		Kind: runtime.KindAgent, TimeoutMS: math.MaxInt64,
+	})
+	if runtimeErr == nil || runtimeErr.Code != contract.ErrorInvalidRequest {
+		t.Fatalf("overflowing timeout error = %#v", runtimeErr)
+	}
+}
 
 type fakeExecutor struct {
 	outcome runtime.ExecutionOutcome

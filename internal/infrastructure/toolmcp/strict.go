@@ -3,7 +3,7 @@ package toolmcp
 import (
 	"bytes"
 
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
 )
 
 func decodeObject(data []byte, target any) error {

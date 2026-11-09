@@ -36,6 +36,7 @@ func TestTerminalKeysPasteAndRestoration(t *testing.T) {
 	}{
 		{"/", Key{Text: "/"}}, {"\x1b[A", Key{Name: "up"}}, {"\x1b[B", Key{Name: "down"}},
 		{"\t", Key{Name: "tab"}}, {"\r", Key{Name: "enter"}}, {"\x03", Key{Name: "interrupt"}},
+		{"\x0c", Key{Name: "ctrl+l"}}, {"\x0f", Key{Name: "ctrl+o"}}, {"\x10", Key{Name: "ctrl+p"}},
 		{"中", Key{Text: "中"}}, {"\x1b[200~/logout\n\x1b[B\r\x1b[201~", Key{Text: "/logout [B "}},
 	} {
 		if _, err := master.Write([]byte(test.input)); err != nil {

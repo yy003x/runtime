@@ -1,8 +1,8 @@
 # SN Runtime
 
-[![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/runtime)](https://goreportcard.com/report/github.com/yy003x/runtime)
+[![CI](https://github.com/yy003x/sn-code/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/sn-code/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yy003x/sn-code?include_prereleases&display_name=release)](https://github.com/yy003x/sn-code/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/sn-code)](https://goreportcard.com/report/github.com/yy003x/sn-code)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -24,6 +24,8 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
 - 保留一个长期可 attach 的交互式 **tmux** 窗口。
 - 运行自主 **agent** 循环（model → tool → tool-result → model）。
 - 把 **durable run** 提交到 SQLite 队列，通过 CLI 或 HTTP 控制。
+- 在 **`sn-code`** 交互编程 TUI 中与任意 API profile 对话：支持 steering、
+  工具确认门与上下文压缩。
 
 一切都是**本地优先**的：数据落在 `${SN_CLI_HOME:-~/.sn}`（run 用 SQLite WAL，session
 用普通文件）。契约**严格、fail-closed**——未知字段、schema 漂移和歧义的 crash 状态都会
@@ -50,6 +52,9 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
   `list_directory`），带预算限制、durable effect 与流式事件。
 - 🪟 **长期 native TUI Session**——Provider TUI 跑在私有的默认或隔离 tmux PTY 中；
   按 Runtime Session ID 进行 open / send / attach / interrupt / close。
+- ⌨️ **交互编程 TUI**——`sn-code` 用同一套 API profile 驱动终端 agent 循环：
+  流式回复、确认门后的工具调用、`!` 直发 shell、上下文压缩与可恢复的
+  JSONL 会话。
 - 🧪 **严格 JSON Schema 校验**——CLI 与 HTTP 用同一套规则；未知字段与歧义状态 fail closed。
 - 🌐 **HTTP / SSE 控制面**——loopback `sn-server` 暴露完整的 Session / Run / Agent /
   Model API，并提供 `/healthz` 与感知执行面的 `/readyz` 探针。
@@ -61,14 +66,14 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
 从 GitHub Release 一行安装（无需源码构建）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install.sh | bash
 ```
 
 或从源码构建（需要 Go 1.25）：
 
 ```bash
-git clone https://github.com/yy003x/runtime.git
-cd runtime
+git clone https://github.com/yy003x/sn-code.git
+cd sn-code
 make build sn-cli-build
 make install
 ```
@@ -91,6 +96,28 @@ sn-cli profile check     # 校验每个 profile 的结构
 > 指向具体 provider 与模型（如 `api-cx` → 阿里百炼 qwen、`api-cc` → GLM）。要真正调用模型，
 > 需通过引用的环境变量提供自己的 key（如 `ALIYUN_API_KEY`），或编辑 profile 换成你自己的
 > endpoint 与 model。详见下文[配置](#配置)与 [sn-cli 详细使用手册](SN-CLI-USAGE.md)。
+
+### 交互编程 TUI
+
+`sn-code` 与 Runtime 一起从源码构建（不在 release archive 内）：
+
+```bash
+make sn-code-build
+./bin/sn-code                     # 使用上次选择的 profile，否则第一个 API profile
+./bin/sn-code --profile api-cx    # 指定初始 API profile
+./bin/sn-code --resume list       # 选择一个历史会话恢复
+./bin/sn-code acp                 # 以 ACP v1 在 stdio 上服务编辑器
+```
+
+`sn-code acp` 支持 Agent Client Protocol v1（stdio JSON-RPC），编辑器（如 Zed）
+可直接驱动同一会话内核——不启动第二个进程，写副作用工具的确认门映射为
+`session/request_permission`；详见 `docs/ACP.md`。
+
+TUI 内：直接输入任务启动 agent 循环，`esc` 中断，`!cmd` 直发 shell 命令，
+`/help` 查看命令表（`/model`、`/new`、`/resume`、`/compact`、`/name`）。带写副作用的
+工具调用会停在确认门（`[y]` 本次允许、`[a]` 本会话总是允许、`[n]` 拒绝）；
+`read`-only 工具直接执行。会话以 JSONL 保存在 `~/.sn/sncode/sessions/`，
+上下文接近 profile 窗口时自动压缩。
 
 ### 第一次调用
 
@@ -189,10 +216,11 @@ sn-cli <cli-id> ────────> Command Bridge ─> 交互 CLI process
 sn-cli exec <cli-id> ───> Command Bridge ─> 一次性 CLI process
 sn-cli call <api-id> ────> Model Core ─────> 一次 HTTP/SSE request
 
-sn-cli session exec|call ─> Session Service ─> command or model
+sn-cli session exec|call ─> Session Service ─> command 或 model
 sn-cli session open ... ─> native_tui Session ─> tmux PTY 中的 Provider TUI
-sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
+sn-cli agent <api-id> ─> Agent Kernel ─────> model + 已配置 tool
 sn-cli job ... ────────> Run Harness ──────> SQLite WAL 控制面
+sn-cli aep ───────────> AEP stdio adapter ─> durable session run
 ```
 
 | 入口 | 作用 | 持久化 |
@@ -204,11 +232,17 @@ sn-cli job ... ────────> Run Harness ──────> SQLite 
 | `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | 带 Runtime identity 的 Provider 原生 TUI | `interface=native_tui` Session + opaque lifecycle Run/Execution 与 tmux binding；无 canonical transcript |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool 循环 | durable run；每轮本地 API 日志（session 可选） |
 | `sn-cli job ...` | 查询和控制已有 durable run | SQLite WAL |
+| `sn-cli aep` | 提供 AEP stdio JSON-RPC adapter，驱动 durable session run | Session + durable run（同一 Run harness 之上的协议投影） |
+| `sn-code [--profile <api-id>]` | 私有交互编程 TUI（agent 循环、确认门、压缩） | `~/.sn/sncode/` 下的 JSONL 会话与偏好；本地 API 日志；无 canonical Session/Run |
+| `sn-code acp` | 同一会话内核的私有 ACP v1 stdio 接入 | 同一套 `sncode/` JSONL 会话；无 canonical Session/Run |
 
 几条最重要的边界：
 
 - 一个 **profile** 要么是 `cli`（包裹 CLI），要么是 `api`（调用模型）。namespace
   选择执行契约，`type` 校验 Profile 是否属于该入口。
+- **`sn-code` 是私有 TUI，不是公开执行面**——它复用同一套 `configs/*.json` API
+  profile 与 model 契约，但会话存在 `${SN_CLI_HOME}/sncode/` 下，不创建 canonical
+  Session/Run。
 - **session 永不自动执行 tool call**——模型返回 tool call 时 turn 停在 `requires_action`。
   自主工具循环属于 `agent`。
 - Provider 原生长期 TUI 的 public owner 固定为 **`native_tui` Session**；tmux 只作为
@@ -251,8 +285,8 @@ Profile ID 就是文件名去掉 `.json`。CLI profile 包裹一个命令；API 
 {
   "type": "cli",
   "command": "codex",
-  "model": "gpt-5.6-sol",
-  "effort": "xhigh",
+  "model": "gpt-6.1-sol",
+  "args": ["--no-daemon"],
   "env": { "CODEX_HOME": "${HOME}/.codex-aip" }
 }
 
@@ -338,14 +372,16 @@ Codex 的 HTTP 成功响应始终按 SSE 解析、采集，即使缺少或误标
 ## 目录架构
 
 ```text
-cmd/             sn-cli、sn-server 入口
+cmd/             sn-cli、sn-server、sn-code 入口
 pkg/             公开 Go API：agent、command、contract、model、profile、
                  provider、run、session、store 与 HTTP transport
 internal/
   domain/        私有 Runtime 值对象与不变量
-  application/   activation、bootstrap、tool/use-case 编排
-  infrastructure/ 配置、文件、日志、进程、私有 tmux 与 MCP adapter
-  interfaces/    入站 CLI adapter
+  application/   activation、bootstrap、tool/use-case 编排与编程 agent 循环
+                 （codingagent）
+  infrastructure/ 配置、文件、日志、进程、私有 tmux、MCP adapter 与编程会话
+                 存储（codingsessions）
+  interfaces/    入站 CLI adapter 与编程 TUI（codingtui）
   testkit/       仅测试复用资产
 configs/         source CLI/API profile
 resources/       schema 与 source tool
@@ -354,8 +390,11 @@ docs/            canonical Runtime 契约
 scripts/         交付与验证脚本
 ```
 
-外部 Go 调用方统一 import `github.com/yy003x/runtime/pkg/...`，不提供旧根 package
-兼容 shim。`internal/application/runtimebootstrap` 是 composition root；四个 internal
+外部 Go 调用方统一 import `github.com/yy003x/sn-code/pkg/...`，不提供旧根 package
+兼容 shim。`runtimebootstrap` 装配 Runtime，`codingbootstrap` 装配 sn-code；
+二者通过 `modelruntime` 共享模型、Profile、认证和日志基础装配，分别维护
+Runtime Session/Run 与编程会话。服务启停由 `serverruntime` 编排，
+`serverprocess` 管理进程与锁。架构测试同时约束产品的传递依赖。四个 internal
 层按 CLI Runtime + Agent 场景适配，不套用固定 HTTP 服务模板。架构测试对每个公开
 `pkg/` package 的直接 module dependency 做 allowlist；新增跨域或 internal adapter
 依赖必须显式评审。
@@ -369,7 +408,7 @@ scripts/         交付与验证脚本
 Run 列表在 state/kind 外支持 `session_id`、`task_id`、`profile_id` 精确筛选，例如
 `sn-cli --json job list --task-id <task-id> --limit 50`，或
 `GET /v1/runs?task_id=<task-id>&limit=50`。分页、SSE 续读与心跳见
-[Runtime 契约](docs/runtime-contract.md)（`contract_version=18`）。
+[Runtime 契约](docs/runtime-contract.md)（`contract_version=21`）。
 
 ## 文档
 

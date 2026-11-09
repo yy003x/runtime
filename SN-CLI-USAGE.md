@@ -102,7 +102,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `job reconcile` | 收口 unknown outcome Run | audit | `sn-cli job reconcile --run-id <id>` |
 | `job gc` | 永久回收过期终态 Run | audit | `sn-cli job gc --older-than 720h --apply` |
 
-### doctor 与 server
+### doctor、server 与 aep
 
 | 命令 | 作用 | 记录 | 示例 |
 |---|---|:---:|---|
@@ -113,6 +113,7 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | `server stop` | 停止 server（幂等） | audit | `sn-cli server stop` |
 | `sn-cli update` | 检查/下载/激活新版本 | audit | `sn-cli update --check` |
 | `update upgrade-check` | 升级前 preflight 检查 | audit | `sn-cli update upgrade-check` |
+| `aep` | 启动 AEP stdio JSON-RPC adapter | 见 §10.9 | `sn-cli aep` |
 
 ### 其他
 
@@ -139,6 +140,18 @@ Durable Run，`—` 表示纯查询。queue submit 当下不写 execution log，
 | 自动执行 model/tool 循环 | `sn-cli agent <api-profile> ...` | Durable Run / 每轮 api-log | 默认同步；`--queue` 只入队 |
 | 查询和控制后台任务 | `sn-cli job ...` | — | 不接受 fresh submission |
 | 启动 worker 和 HTTP 服务 | `sn-cli server start` | 服务状态 | 返回可供第三方托管的 PID |
+| 以 AEP 协议驱动 CLI Profile | `sn-cli aep` | session + durable | stdio JSON-RPC，见 [§10.9](#109-sn-cli-aepaep-stdio-adapter) |
+
+sn-code 是独立二进制的私有编程 TUI（`make sn-code-build` 源码构建），复用同一套
+API profile 但不创建 canonical Session/Run；会话存在 `~/.sn/sncode/` 下，不属于
+本手册的 sn-cli 命令树，定位见 `docs/runtime-contract.md` §11。其 `sn-code acp`
+子命令以 Agent Client Protocol v1（stdio JSON-RPC）服务编辑器，协议界限见
+`docs/ACP.md`；与 `sn-cli aep`（AEP）是两个互不相干的协议。
+
+sn-cli 与 sn-code 分别装配各自的执行能力，复用模型、Profile、认证和日志底座。
+sn-code 无需启动 sn-server；Codex OAuth 认证仍通过 `sn-cli auth` 管理。
+Session 的 `--queue` 提交不加载 Agent 工具配置或 runtime.json；后台 worker
+执行仍需要已启动且配置有效的 sn-server，提交任务不会自动启动它。
 
 几个最重要的边界：
 
@@ -189,9 +202,10 @@ sn-cli
 ├─ server
 │  ├─ info | start | status | stop
 │  └─ upgrade-activate       # 内部 activation action
+├─ aep                                  # AEP stdio JSON-RPC adapter
 ├─ update [options]
 ├─ update upgrade-check [options]
-├─ help [tui|exec|call|auth|doctor|profile|session|agent|job|server|update]
+├─ help [tui|exec|call|auth|doctor|profile|session|agent|job|server|aep|update]
 ├─ -h | --help                         # 仅根帮助
 ├─ version | --version
 └─ __sn_tmux_helper          # 内部 Tmux bootstrap
@@ -209,7 +223,7 @@ Profile ID：
 - 首字符必须是 ASCII 字母或数字。
 - 后续字符可使用 ASCII 字母、数字、`-`、`_`、`.`。
 - `.` 不能是首字符。
-- 不能使用固定 namespace `doctor/exec/call/profile/auth/session/agent/job/server/help/version/update`
+- 不能使用固定 namespace `doctor/exec/call/profile/auth/session/agent/job/server/aep/help/version/update`
   或管理 action `list/show/check`。
 
 Runtime 生成的 Session 系列 ID 使用前缀加 32 位小写十六进制：
@@ -245,7 +259,7 @@ sn-cli --json version
 `sn-cli help <topic>` 是唯一 topic 级帮助入口。当前 topic 固定为：
 
 ```text
-tui exec call auth doctor profile session agent job server update
+tui exec call auth doctor profile session agent job server aep update
 ```
 
 human 输出包含准确语法与关键状态边界；`sn-cli --json help [topic]` 返回同一份
@@ -291,7 +305,7 @@ Machine success 默认包含：
 ```json
 {
   "schema_version": 1,
-  "contract_version": 18
+  "contract_version": 21
 }
 ```
 
@@ -961,10 +975,12 @@ response 作为 `data` 的单元素，SSE 收集全部有效 JSON `data:` frame�
 `[DONE]` 不保存。网络错误时 `response` 为 `null`，`error` 保存脱敏后的 typed
 RuntimeError。API key 等 header 使用 Profile 的 `${VAR}` 引用（OpenAI 裸 key 会记成
 `Bearer ${VAR}`），字面量敏感 header、cookie、URL query 及 response/error 中回显的
-secret 记为 `[REDACTED]`。Driver 不自动跟随 redirect，3xx 作为这一次 Provider
+secret 记为 `[REDACTED]`（结构感知脱敏：只替换字符串值，不改写 JSON key）。Driver
+不自动跟随 redirect，3xx 作为这一次 Provider
 response/error 记录，避免一次 attempt 产生未分账的多个 HTTP request。
 `call_id` 标识整次逻辑调用，其全部重试都在同一 `attempts` 数组；顶层 `error`
-记录最终 RuntimeError。每个 attempt 的 `error` 则记录当次错误，成功为 `null`。
+记录脱敏后的最终 RuntimeError（消费者拿到的错误原样传递，secret 只存在于 HTTP
+请求层）。每个 attempt 的 `error` 则记录当次错误，成功为 `null`。
 前置失败无实际 HTTP attempt 时不写日志；逻辑调用结束前进程退出可能导致整条日志缺失。
 
 execution log 是 best-effort 诊断：写入错误、锁冲突、非法路径或 observer 异常都
@@ -1453,9 +1469,9 @@ Profile 应使用 `profile list/show` 查询。
 | `cc-kmm` | Claude CLI | `cc-kmm` 或 `exec cc-kmm` |
 | `cx` | Codex CLI | `cx` 或 `exec cx` |
 | `commit` | Codex CLI | `exec commit` |
-| `cx-adv` | Codex CLI | `exec cx-adv` |
+| `cx-core` | Codex CLI | `exec cx-core` |
 | `cx-deep` | Codex CLI | `exec cx-deep` |
-| `cx-spark` | Codex CLI | `exec cx-spark` |
+| `cx-lite` | Codex CLI | `exec cx-lite` |
 | `gk` | Grok CLI | `gk` 或 `exec gk` |
 
 模型、effort、timeout、sandbox/approval 和 env 以 `configs/<id>.json` 为唯一 source，
@@ -3152,7 +3168,7 @@ SN_CLI_REPOSITORY
 未设置时默认：
 
 ```text
-yy003x/runtime
+yy003x/sn-code
 ```
 
 ### 10.7 `update upgrade-check`
@@ -3229,6 +3245,67 @@ sn-cli server upgrade-activate
   文件缺失、symlink 或检查期间被替换都会失败。
 
 日常用户不应手工调用该 action。
+
+### 10.9 `sn-cli aep`（AEP stdio adapter）
+
+```bash
+sn-cli aep
+```
+
+启动 AEP（Agent Execution Protocol）stdio adapter：stdin/stdout 承载 NDJSON
+JSON-RPC 2.0 协议帧，供编辑器、Agent 客户端等外部调用方以标准协议驱动 Runtime 的
+durable session Run。它不创建第二套状态机——`run.start` 提交的仍是
+`kind=session` Durable Run，执行、取消、journal 与 settle 都由现有 Run harness 与
+Session executor 完成，`sn-cli job ...` 查询到的是同一批 Run。
+
+规则与语义：
+
+- stdout 只输出协议帧，任何诊断都写 stderr；不接受 `--json`，也不接受其它参数。
+- 必须先 `initialize`（每连接一次），其它 request 在此之前一律返回
+  `-32002 notInitialized`。方法集固定为：
+
+  ```text
+  initialize executor.list executor.get run.start run.cancel run.get run.result run.events shutdown
+  ```
+
+- `executor.list|get` 报告 `codex|claude-code|pi|acp` 的可用性与能力真值；codex、
+  claude-code 与 pi 均已注册 command adapter，`acp` 兼容 adapter 延后。
+  `streaming/structuredEvents` 按 adapter 实际能力上报：codex、claude-code 与 pi
+  当前为 `true`，其余为 `false`；`sessionResume` 对已登记执行器为 `true`。
+- `run.start` 必须同时携带 `executor` 与显式 CLI `profile`：executor 由 Profile
+  `command` basename 派生（`codex|claude|pi`），不一致返回 `invalid_request`；
+  `executor=acp` 在 MVP 显式拒绝。
+- `input.prompt` 必填；`input.cwd` 必须是绝对路径；`input.sessionId` 可复用已有
+  Session ID；`input.resumeFromRunId` 引用已有 session Run，新 Run 复用其 managed
+  Session 作为同一 Session 的新 Turn（与 `input.sessionId` 同时给出必须一致）。
+  `options` 接受 `model`、`reasoningEffort`、`timeoutMs`（正整数毫秒，到期取消
+  执行进程树并按 `timeout` 错误 settle 为 `failed`）与 `permissions.mode`
+  （`read_only|workspace_write`，逐次注入 adapter 权限 flag；无等价 flag 的档位
+  显式拒绝）；`approvalPolicy`、`maxOutputBytes` 等按未知字段拒绝。
+- Run 状态映射：`pending/running/waiting/cancelling/succeeded/failed/cancelled`，
+  其中 `cancelling` 只是 `cancel_requested` 未终态的投影。
+- 事件以 `run.event` notification 推送：`run.completed|failed|cancelled`、
+  `run.status_changed{settled:true}`（对应 `run.settled`）；流式执行器还会在终态
+  之前推送归一化的 `message.delta`、`message.completed`、`tool.started`、
+  `tool.completed`（CLI 内部工具的原生投影）；未识别 journal event 以
+  `executor.event` 兜底。`eventId=<run_id>:<seq>`，`run.events` 可按 seq 回查并
+  完整重放。
+- 进程自带 scheduler worker。stdin EOF、`shutdown` 方法或 `SIGINT|SIGTERM` 触发
+  graceful 收口：取消本连接启动的未终态 Run，等待 terminal settle（宽限 15s）后
+  停止 worker 并退出。
+
+最小调用序列（NDJSON，每行一个 JSON-RPC 帧）：
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize"}
+{"jsonrpc":"2.0","id":2,"method":"executor.list"}
+{"jsonrpc":"2.0","id":3,"method":"run.start","params":{"executor":"codex","profile":"cx","input":{"prompt":"Reply with exactly: ok","cwd":"/abs/workdir"}}}
+{"jsonrpc":"2.0","id":4,"method":"run.result","params":{"runId":"run_xxx"}}
+{"jsonrpc":"2.0","id":5,"method":"shutdown"}
+```
+
+协议细节与状态/事件映射的权威定义见
+[Runtime 契约](docs/runtime-contract.md) §9。
 
 ## 11. 安装与本地源码更新
 

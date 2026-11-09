@@ -3,9 +3,9 @@ package openairesponses
 import (
 	"net/http"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 // NewCodex constructs the separate Codex subscription protocol adapter. It

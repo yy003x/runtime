@@ -1,0 +1,242 @@
+{
+  "captured_at": "2026-10-28",
+  "source_head": "19f9461bb1baf1b186eb833e31173a743a2385f7",
+  "platform": "darwin 27 (arm64)",
+  "purpose": "AEP P0-2/P0-3 能力核验录制样本，供 P2-4 归一化回放测试复用；结论见 docs/aep/capability-matrix.md",
+  "executors": {
+    "codex": {
+      "version": "codex-cli 0.164.0",
+      "env": {
+        "CODEX_HOME": "~/.codex-aip"
+      },
+      "model": "gpt-6.1-sol"
+    },
+    "claude": {
+      "version": "2.1.308",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-aip",
+        "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+        "ANTHROPIC_MODEL": "glm-5.3"
+      },
+      "model": "glm-5.3 (bigmodel Anthropic 兼容端点)"
+    },
+    "pi": {
+      "version": "1.4.0",
+      "env": {},
+      "model": "~/.pi 默认模型"
+    }
+  },
+  "samples": [
+    {
+      "file": "codex-ok.jsonl",
+      "executor": "codex",
+      "scenario": "trivial prompt，完整生命周期，exit 0",
+      "argv": [
+        "codex",
+        "--no-daemon",
+        "--model",
+        "gpt-6.1-sol",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--json",
+        "Reply with exactly: ok"
+      ],
+      "exit_code": 0,
+      "killed_by_signal": null,
+      "elapsed_s": 9.09,
+      "stdout_records": 4,
+      "original_bytes": 345,
+      "published_bytes": 345,
+      "sanitized_long_strings": false
+    },
+    {
+      "file": "codex-tool.jsonl",
+      "executor": "codex",
+      "scenario": "command_execution 工具调用，exit 0",
+      "argv": [
+        "codex",
+        "--no-daemon",
+        "--model",
+        "gpt-6.1-sol",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--json",
+        "Use your shell/bash tool to run the command: echo aep-spike-tool-ok — then report the exact output you saw. You must actually run the command."
+      ],
+      "exit_code": 0,
+      "killed_by_signal": null,
+      "elapsed_s": 12.09,
+      "stdout_records": 7,
+      "original_bytes": 900,
+      "published_bytes": 900,
+      "sanitized_long_strings": false
+    },
+    {
+      "file": "codex-cancel.jsonl",
+      "executor": "codex",
+      "scenario": "8s 后进程组 SIGTERM，死于 signal 15，无终态记录",
+      "argv": [
+        "codex",
+        "--no-daemon",
+        "--model",
+        "gpt-6.1-sol",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--json",
+        "Write a detailed 2500-word technical essay about distributed consensus algorithms (Paxos, Raft, EPaxos). Write it directly without using any tools."
+      ],
+      "exit_code": -15,
+      "killed_by_signal": 15,
+      "elapsed_s": 8.12,
+      "stdout_records": 2,
+      "original_bytes": 101,
+      "published_bytes": 101,
+      "sanitized_long_strings": false
+    },
+    {
+      "file": "claude-ok.jsonl",
+      "executor": "claude",
+      "scenario": "trivial prompt，stream-json + partial-messages，完整生命周期含 result",
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "Reply with exactly: ok"
+      ],
+      "exit_code": 0,
+      "killed_by_signal": null,
+      "elapsed_s": 12.21,
+      "stdout_records": 128,
+      "original_bytes": 39676,
+      "published_bytes": 39676,
+      "sanitized_long_strings": false
+    },
+    {
+      "file": "claude-tool.jsonl",
+      "executor": "claude",
+      "scenario": "tool_use/tool_result 循环（超限已截断超长字段），exit 0；三段摘录，非完整连续流",
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--allowedTools",
+        "Bash(echo *)",
+        "--",
+        "Use your shell/bash tool to run the command: echo aep-spike-tool-ok — then report the exact output you saw. You must actually run the command."
+      ],
+      "exit_code": 0,
+      "killed_by_signal": null,
+      "elapsed_s": 72.17,
+      "stdout_records": 166,
+      "original_bytes": 829999,
+      "published_bytes": 54810,
+      "sanitized_long_strings": true,
+      "excerpt": {
+        "original_records": 3011,
+        "ranges": "[0:30] init+早期 delta；[430:541] 首个 assistant(thinking/text/tool_use)+首个 user(tool_result)；[-25:] 终态 assistant+result"
+      }
+    },
+    {
+      "file": "claude-cancel.jsonl",
+      "executor": "claude",
+      "scenario": "8s 后进程组 SIGTERM，exit 143，无 result 记录",
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "Write a detailed 2500-word technical essay about distributed consensus algorithms (Paxos, Raft, EPaxos). Write it directly without using any tools."
+      ],
+      "exit_code": 143,
+      "killed_by_signal": null,
+      "elapsed_s": 8.64,
+      "stdout_records": 466,
+      "original_bytes": 126301,
+      "published_bytes": 126301,
+      "sanitized_long_strings": false
+    },
+    {
+      "file": "pi-ok.jsonl",
+      "executor": "pi",
+      "scenario": "trivial prompt，mode json 完整生命周期（超限已截断超长字段）",
+      "argv": [
+        "pi",
+        "-p",
+        "-nc",
+        "--mode",
+        "json",
+        "--no-session",
+        "Reply with exactly: ok"
+      ],
+      "exit_code": 0,
+      "killed_by_signal": null,
+      "elapsed_s": 7.59,
+      "stdout_records": 16,
+      "original_bytes": 324146,
+      "published_bytes": 16859,
+      "sanitized_long_strings": true
+    },
+    {
+      "file": "pi-tool.jsonl",
+      "executor": "pi",
+      "scenario": "tool_execution_* 工具调用（超限已截断超长字段），exit 0",
+      "argv": [
+        "pi",
+        "-p",
+        "-nc",
+        "--mode",
+        "json",
+        "--no-session",
+        "Use your shell/bash tool to run the command: echo aep-spike-tool-ok — then report the exact output you saw. You must actually run the command."
+      ],
+      "exit_code": 0,
+      "killed_by_signal": null,
+      "elapsed_s": 33.94,
+      "stdout_records": 86,
+      "original_bytes": 344981,
+      "published_bytes": 36470,
+      "sanitized_long_strings": true
+    },
+    {
+      "file": "pi-cancel.jsonl",
+      "executor": "pi",
+      "scenario": "8s 后进程组 SIGTERM，exit 143，无 agent_settled",
+      "argv": [
+        "pi",
+        "-p",
+        "-nc",
+        "--mode",
+        "json",
+        "--no-session",
+        "Write a detailed 2500-word technical essay about distributed consensus algorithms (Paxos, Raft, EPaxos). Write it directly without using any tools."
+      ],
+      "exit_code": 143,
+      "killed_by_signal": null,
+      "elapsed_s": 8.16,
+      "stdout_records": 61,
+      "original_bytes": 228241,
+      "published_bytes": 28337,
+      "sanitized_long_strings": true
+    }
+  ],
+  "notes": [
+    "stdout 均只承载协议流；stderr 仅诊断（未入库）。",
+    "sanitized 样本中超过 4096 字节的字符串字段被替换为 __AEP_TRIMMED_STRING_<N>B__ 占位（结构保留，值长度标注）。",
+    "claude-cancel/codex-cancel/pi-cancel 验证结论：SIGTERM 后无原生终态记录，终态权威来自 Runtime terminal barrier。",
+    "另实测（无样本文件）：claude -p --output-format stream-json 不带 --verbose 时 CLI 前置拒绝：'When using --print, --output-format=stream-json requires --verbose'。",
+    "取消实验使用 start_new_session 进程组 + SIGTERM，5s 宽限后 SIGKILL；三家均未升级 KILL。",
+    "claude-tool.jsonl 为三段摘录（原文 3011 条/830KB），段间不连续；归一化回放测试按逐条独立解码使用。",
+    "pi 样本：序列化后超过 8192 字节的 content/messages/toolsAdded 列表字段整体替换为 __AEP_TRIMMED_FIELD_<name>_<N>B__ 单元素占位（消除重复的内置系统提示词与工具目录，字段 shape 保留）。"
+  ]
+}

@@ -9,8 +9,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func TestLoadSourceManifests(t *testing.T) {

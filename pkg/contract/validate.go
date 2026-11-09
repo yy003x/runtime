@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
 )
 
 const (
@@ -377,6 +377,38 @@ func (event Event) Validate() error {
 			event.Checkpoint.CheckpointID == "" || event.payloadCount() != 1 {
 			return fmt.Errorf("%s requires checkpoint metadata", event.Type)
 		}
+	case EventExecutorMessageDelta, EventExecutorMessage:
+		if event.Executor == nil || event.Executor.Text == "" ||
+			event.payloadCount() != 1 {
+			return fmt.Errorf("%s requires executor text", event.Type)
+		}
+		if err := event.Executor.validate(); err != nil {
+			return fmt.Errorf("%s: %w", event.Type, err)
+		}
+	case EventExecutorToolStarted:
+		if event.Executor == nil || event.Executor.ID == "" ||
+			event.Executor.Name == "" || event.payloadCount() != 1 {
+			return fmt.Errorf("%s requires executor tool metadata", event.Type)
+		}
+		if err := event.Executor.validate(); err != nil {
+			return fmt.Errorf("%s: %w", event.Type, err)
+		}
+	case EventExecutorToolCompleted:
+		if event.Executor == nil || event.Executor.ID == "" ||
+			event.payloadCount() != 1 {
+			return fmt.Errorf("%s requires executor tool metadata", event.Type)
+		}
+		if err := event.Executor.validate(); err != nil {
+			return fmt.Errorf("%s: %w", event.Type, err)
+		}
+	case EventExecutorNative:
+		if event.Executor == nil || event.Executor.NativeType == "" ||
+			event.payloadCount() != 1 {
+			return fmt.Errorf("%s requires executor native metadata", event.Type)
+		}
+		if err := event.Executor.validate(); err != nil {
+			return fmt.Errorf("%s: %w", event.Type, err)
+		}
 	case EventRunCompleted, EventRunCancelled:
 		wantState := "completed"
 		if event.Type == EventRunCancelled {
@@ -419,6 +451,7 @@ func (event Event) payloadCount() int {
 		event.Tool != nil,
 		event.Agent != nil,
 		event.Checkpoint != nil,
+		event.Executor != nil,
 		event.Run != nil,
 		event.Error != nil,
 	} {
@@ -427,6 +460,20 @@ func (event Event) payloadCount() int {
 		}
 	}
 	return count
+}
+
+// validate 校验 executor payload 的字段边界：原生摘录必须是有界 JSON 值。
+// 返回 error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func (value ExecutorEvent) validate() error {
+	if len(value.Data) > MaxExecutorEventDataBytes {
+		return fmt.Errorf(
+			"executor data exceeds %d bytes", MaxExecutorEventDataBytes,
+		)
+	}
+	if len(value.Data) > 0 && !json.Valid(value.Data) {
+		return fmt.Errorf("executor data must be valid JSON")
+	}
+	return nil
 }
 
 func (result ModelResult) Validate() error {

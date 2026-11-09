@@ -17,8 +17,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/infrastructure/envref"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 const (

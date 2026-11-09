@@ -17,14 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/agent"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/profile"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
-	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/pkg/agent"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
+	sqlitestore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 type agentModel struct {

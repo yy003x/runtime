@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	sqlitestore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 func TestNativeTUIFailedExecutionIsADurableOutcome(t *testing.T) {

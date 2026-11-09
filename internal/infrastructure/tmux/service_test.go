@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 const testTmuxConfig = `set-option -g update-environment ""

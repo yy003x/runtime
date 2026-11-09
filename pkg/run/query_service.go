@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 // QueryService exposes the Store-backed Run query and GC surface without

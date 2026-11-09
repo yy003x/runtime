@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/yy003x/runtime/resources/schema/runtime.schema.json",
+  "$id": "https://github.com/yy003x/sn-code/resources/schema/runtime.schema.json",
   "title": "SN Runtime Configuration",
   "type": "object",
   "additionalProperties": false,

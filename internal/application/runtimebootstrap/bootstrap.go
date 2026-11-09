@@ -7,28 +7,23 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/authruntime"
-	"github.com/yy003x/runtime/internal/application/nativeconsole"
-	"github.com/yy003x/runtime/internal/application/toolruntime"
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/internal/infrastructure/runtimeconfig"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	"github.com/yy003x/runtime/internal/infrastructure/toolbuiltin"
-	"github.com/yy003x/runtime/internal/infrastructure/toolconfig"
-	"github.com/yy003x/runtime/internal/infrastructure/toolmcp"
-	"github.com/yy003x/runtime/pkg/agent"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/profile"
-	"github.com/yy003x/runtime/pkg/provider/anthropic"
-	"github.com/yy003x/runtime/pkg/provider/openai"
-	"github.com/yy003x/runtime/pkg/provider/openairesponses"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
-	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/internal/application/modelruntime"
+	"github.com/yy003x/sn-code/internal/application/nativeconsole"
+	"github.com/yy003x/sn-code/internal/application/toolruntime"
+	"github.com/yy003x/sn-code/internal/infrastructure/envref"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/runtimeconfig"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	"github.com/yy003x/sn-code/internal/infrastructure/toolbuiltin"
+	"github.com/yy003x/sn-code/internal/infrastructure/toolconfig"
+	"github.com/yy003x/sn-code/internal/infrastructure/toolmcp"
+	"github.com/yy003x/sn-code/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
+	sqlitestore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 type ProfileServices struct {
@@ -41,61 +36,15 @@ type Runtime struct {
 	Config runtimeconfig.Config
 }
 
-func LoadProfileServices(
-	paths layout.Paths,
-	reservedProfileIDs ...string,
-) (*ProfileServices, error) {
-	profiles, err := profile.Load(paths.ConfigDir, reservedProfileIDs...)
+func LoadProfileServices(paths layout.Paths, reservedProfileIDs ...string) (*ProfileServices, error) {
+	core, err := modelruntime.Load(paths, reservedProfileIDs...)
 	if err != nil {
 		return nil, err
 	}
-	models, err := model.NewService(
-		profiles.ModelCatalog(),
-		map[model.DriverName]model.Driver{
-			model.DriverOpenAIChatCompletions: openai.New(nil),
-			model.DriverAnthropicMessages:     anthropic.New(nil),
-			model.DriverOpenAIResponses:       openairesponses.New(nil),
-			model.DriverOpenAICodexResponses:  openairesponses.NewCodex(nil),
-		},
-		model.ServiceOptions{CallObserver: executionCallObserver(paths.LogsDir), Credentials: LoadAuthService(paths).Resolve},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("build model service: %w", err)
-	}
-	resilient := model.NewResilientModel(models, model.DefaultRetryPolicy())
-	return &ProfileServices{Profiles: profiles, Models: resilient}, nil
-}
-
-func LoadAuthService(paths layout.Paths) *authruntime.Service {
-	return authruntime.New(codexauth.Store{StateDir: paths.StateDir}, codexauth.NewClient(nil))
-}
-
-func executionCallObserver(logsDir string) model.CallObserver {
-	return func(call model.CallObservation) {
-		if len(call.Attempts) == 0 {
-			return
-		}
-		callID, err := identity.New("call")
-		if err != nil {
-			return
-		}
-		attempts := make([]executionlog.APIAttempt, len(call.Attempts))
-		for index, attempt := range call.Attempts {
-			attempts[index] = executionlog.APIAttempt{
-				Attempt: index + 1, Request: attempt.Wire.Request,
-				Response: attempt.Wire.Response, Error: attempt.Error,
-			}
-		}
-		_ = executionlog.AppendAPI(logsDir, executionlog.APIRecord{
-			Time:      time.Now(),
-			Namespace: executionlog.Namespace(call.Origin.Namespace),
-			Profile:   call.ProfileID,
-			Source:    call.Origin.Source,
-			CallID:    callID,
-			Attempts:  attempts,
-			Error:     call.Error,
-		})
-	}
+	return &ProfileServices{
+		Profiles: core.Profiles,
+		Models:   model.NewResilientModel(core.Models, model.DefaultRetryPolicy()),
+	}, nil
 }
 
 // cancelPollStoreErrorSink returns a diagnostic sink for the Run cancellation

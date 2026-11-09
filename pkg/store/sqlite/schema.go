@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 // SchemaVersion is the canonical durable Run Store schema accepted by this

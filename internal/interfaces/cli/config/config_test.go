@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
 )
 
 func TestResolvePathAndUpdateDefaults(t *testing.T) {

@@ -5,7 +5,7 @@ umask 077
 
 SN_CLI_HOME="${SN_CLI_HOME:-$HOME/.sn}"
 INSTALL_DIR="${SN_CLI_INSTALL_DIR:-${PREFIX:-$HOME/.local}/bin}"
-REPOSITORY="${SN_CLI_SOURCE_REPOSITORY:-https://github.com/yy003x/runtime.git}"
+REPOSITORY="${SN_CLI_SOURCE_REPOSITORY:-https://github.com/yy003x/sn-code.git}"
 REF="${SN_CLI_SOURCE_REF:-main}"
 DRY_RUN=0
 
@@ -14,7 +14,7 @@ usage() {
 Install sn-cli by downloading and compiling its source code.
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install-source.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install-source.sh | bash
   bash install-source.sh [--ref REF] [--dry-run]
 
 Options:

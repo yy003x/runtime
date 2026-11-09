@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/pkg/agent"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 func checkpointMatchesLoopState(

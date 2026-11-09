@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yy003x/runtime/internal/testkit/scenario"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/internal/testkit/scenario"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 const ScenarioLabel = "runtime.faux.scenario"

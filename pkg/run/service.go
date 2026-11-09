@@ -11,9 +11,14 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
+
+// maxRunTimeoutMilliseconds 是 timeout_ms 的最大值（毫秒），取自
+// time.Duration 可表示的最大纳秒值，防止毫秒换算时整数溢出。
+const maxRunTimeoutMilliseconds = int64((time.Duration(1<<63 - 1)) / time.Millisecond)
 
 type Service struct {
 	store              Store
@@ -200,6 +205,19 @@ func (service *Service) execute(
 		return value, runtimeErr
 	}
 	runContext, cancel := context.WithCancel(ctx)
+	if record.Request.TimeoutMS > 0 {
+		// Run 级 deadline：到期取消执行 context；用户主动取消仍走 cancel
+		// 注册表，两者共用同一取消路径。
+		deadlineContext, timeoutCancel := context.WithTimeout(
+			runContext, time.Duration(record.Request.TimeoutMS)*time.Millisecond,
+		)
+		baseCancel := cancel
+		cancel = func() {
+			timeoutCancel()
+			baseCancel()
+		}
+		runContext = deadlineContext
+	}
 	service.activeMu.Lock()
 	service.active[record.ID] = cancel
 	service.activeMu.Unlock()
@@ -265,6 +283,18 @@ func (service *Service) execute(
 		return service.finalizeReservedCancellation(
 			persistContext, current,
 		)
+	}
+	// Run 级 deadline 到期：执行按取消路径返回，但语义是超时失败而非用户
+	// 取消（用户取消已在上方 CancelRequested 分支优先收口）。
+	if outcome.State == StateCancelled &&
+		errors.Is(runContext.Err(), context.DeadlineExceeded) {
+		outcome = ExecutionOutcome{
+			State:  StateFailed,
+			Result: outcome.Result,
+			Error: runError(contract.ErrorTimeout, fmt.Sprintf(
+				"run exceeded timeout_ms %d", record.Request.TimeoutMS,
+			)),
+		}
 	}
 	if outcome.State == StateCompleted {
 		if validator, ok := executor.(CompletionValidator); ok {
@@ -963,6 +993,25 @@ func (service *Service) validateRequest(
 	}
 	if request.RetryOf != "" {
 		if err := identity.Validate(request.RetryOf, "run"); err != nil {
+			return runError(contract.ErrorInvalidRequest, err.Error())
+		}
+	}
+	if request.TimeoutMS < 0 {
+		return runError(
+			contract.ErrorInvalidRequest,
+			"timeout_ms must not be negative",
+		)
+	}
+	if request.TimeoutMS > maxRunTimeoutMilliseconds {
+		return runError(
+			contract.ErrorInvalidRequest,
+			"timeout_ms exceeds the maximum representable duration",
+		)
+	}
+	if request.Permissions != "" {
+		if _, err := runtimecommand.ParsePermissionMode(
+			request.Permissions,
+		); err != nil {
 			return runError(contract.ErrorInvalidRequest, err.Error())
 		}
 	}

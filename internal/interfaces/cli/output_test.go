@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
 )
 
 func TestCLIOutputJSONErrorUsesStableCompactEnvelope(t *testing.T) {

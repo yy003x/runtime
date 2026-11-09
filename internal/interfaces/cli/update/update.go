@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/activation"
-	"github.com/yy003x/runtime/internal/infrastructure/installbundle"
-	"github.com/yy003x/runtime/internal/interfaces/cli/config"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/application/activation"
+	"github.com/yy003x/sn-code/internal/infrastructure/installbundle"
+	"github.com/yy003x/sn-code/internal/interfaces/cli/config"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 type Status struct {

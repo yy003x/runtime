@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/pkg/agent"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 type durableEffects struct {

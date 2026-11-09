@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 type codexTransport func(*http.Request) (*http.Response, error)

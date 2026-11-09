@@ -1,4 +1,4 @@
-module github.com/yy003x/runtime
+module github.com/yy003x/sn-code
 
 go 1.25.0
 

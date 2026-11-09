@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/application/modelruntime"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func runAuthNamespace(paths layout.Paths, args []string, output *cliOutput) error {
@@ -61,7 +61,7 @@ func runAuthNamespace(paths layout.Paths, args []string, output *cliOutput) erro
 	if device && noBrowser {
 		return cliValidationf("--device-code and --no-browser are mutually exclusive")
 	}
-	service := runtimebootstrap.LoadAuthService(paths)
+	service := modelruntime.Auth(paths)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)

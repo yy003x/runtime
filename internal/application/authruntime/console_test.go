@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
+	"github.com/yy003x/sn-code/internal/infrastructure/codexauth"
 )
 
 type scriptedConsole struct {

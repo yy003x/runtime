@@ -12,14 +12,14 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/yy003x/runtime/internal/application/authruntime"
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/internal/infrastructure/terminalinput"
+	"github.com/yy003x/sn-code/internal/application/authruntime"
+	"github.com/yy003x/sn-code/internal/application/modelruntime"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/terminalinput"
 )
 
 func runAuthConsole(paths layout.Paths, input, output *os.File, initial string) error {
-	console := authruntime.Console{Service: runtimebootstrap.LoadAuthService(paths), OpenBrowser: openAuthBrowser}
+	console := authruntime.Console{Service: modelruntime.Auth(paths), OpenBrowser: openAuthBrowser}
 	return runAuthConsoleUI(paths, input, output, initial, console)
 }
 

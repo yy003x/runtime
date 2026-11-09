@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
 )
 
 const (

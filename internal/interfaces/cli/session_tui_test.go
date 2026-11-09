@@ -16,15 +16,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/nativeconsole"
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/application/nativeconsole"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 func TestSessionNativeOpenOptionsStayAtOneActionLevel(t *testing.T) {

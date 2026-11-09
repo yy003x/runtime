@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 func TestResumeSequenceStrictInputAndExplicitZero(t *testing.T) {

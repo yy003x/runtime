@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
 )
 
 type Manifest struct {

@@ -18,7 +18,16 @@
 | Agent Kernel | `pkg/agent/` | 唯一 model/tool loop、预算、暂停恢复 | Profile、SQLite |
 | Run Harness | `pkg/run/` | durable identity、queue、journal、checkpoint | Session 策略 |
 | Store | `pkg/store/sqlite/` | SQLite WAL 与 terminal barrier | 业务 workflow |
-| Inbound adapter | `internal/interfaces/cli/`、`pkg/transport/http/` | decode/call/encode | 第二套状态机 |
+| Inbound adapter | `internal/interfaces/cli/`、`pkg/transport/http/`、`pkg/transport/aep/` | decode/call/encode（AEP 为 stdio JSON-RPC 协议投影） | 第二套状态机 |
+| Coding agent loop | `internal/application/codingagent/` | sn-code 私有 TUI 的模型/工具编排、steering 与上下文压缩 | 公开执行面、canonical Session/Run |
+| Coding session store | `internal/infrastructure/codingsessions/` | `sncode/sessions/` 下 JSONL 会话与上下文重建 | canonical Store、SQLite |
+| Coding TUI | `internal/interfaces/codingtui/` | sn-code 终端渲染、输入与确认门交互 | 第二套状态机 |
+| Coding ACP adapter | `internal/interfaces/codingacp/` | sn-code 的 ACP v1 stdio 协议投影（`sn-code acp`） | 第二套状态机、子进程 agent |
+| Shared model composition | `internal/application/modelruntime/` | Profile、Provider、认证解析与日志观察者统一装配 | 产品会话、Run、工具、重试策略 |
+| Runtime composition | `internal/application/runtimebootstrap/` | Runtime Session/Agent/Run 与调用策略装配 | 编程产品 |
+| Coding composition | `internal/application/codingbootstrap/` | 编程内核所需的模型、工具与会话装配 | Runtime Session/Run、worker |
+| Server lifecycle | `internal/application/serverruntime/`、`internal/infrastructure/serverprocess/` | 启停编排、进程身份、lease 与锁 | CLI 参数解析与渲染 |
+| Build information | `internal/infrastructure/buildinfo/` | 共享版本与构建元数据 | 产品名称、命令行为 |
 
 源码只使用三个 Go 代码根：
 
@@ -43,13 +52,18 @@ internal/
 - `pkg` 不依赖 internal application/interfaces；
 - `pkg/` 下每个 package 都是已登记的公开 Go API/adapter，不嵌套私有 `internal`
   package；
-- `internal/application/runtimebootstrap/` 是唯一 composition root；
+- `runtimebootstrap` 与 `codingbootstrap` 分别装配 Runtime 和编程产品，共同依赖
+  `modelruntime`；共享模型装配不加载 Session、Run、worker 或工具；
+- 架构测试检查传递依赖：Runtime 入口不得引入编程专属模块，sn-code 不得引入
+  CLI 界面、Runtime Session/Run 装配或 SQLite；基础装配不得反向依赖产品；
+- Session 入队使用 `LoadSessionRunServices`，不加载 Agent 工具和 runtime.json；
+  入队与 worker 执行分离，worker 仍按完整 Runtime 配置启动；
 - `pkg/agent/` 不读 Profile 或数据库；Provider driver 每次只做一次 HTTP attempt；
   CLI/HTTP 不拼装独立历史。
 
-调用方只能通过 CLI、HTTP 或 `github.com/yy003x/runtime/pkg/...` 集成，不直接读写
+调用方只能通过 CLI、HTTP 或 `github.com/yy003x/sn-code/pkg/...` 集成，不直接读写
 `${SN_CLI_HOME:-~/.sn}`。本次包迁移不保留旧的
-`github.com/yy003x/runtime/{agent,session,...}` import shim。
+`github.com/yy003x/sn-code/{agent,session,...}` import shim。
 
 用户语境中的 SN root（`SN_ROOT` 概念）等同 Runtime Home；唯一公开配置环境变量是
 `SN_CLI_HOME`，缺省为 `~/.sn`，不提供第二个 home alias。
@@ -82,7 +96,7 @@ passthrough。`resources/schema/{profile,runtime,tool}.schema.json` 与严格 Go
 共同构成规范：Schema 负责文档 shape，loader 负责 adapter grammar、环境引用、
 duration、跨字段约束与文件系统事实；loader-valid 必须 schema-valid。
 
-CLI Profile 的 `command` 不经过 shell，只按 basename 选择已登记的 Codex/Claude/Grok
+CLI Profile 的 `command` 不经过 shell，只按 basename 选择已登记的 Codex/Claude/Grok/Pi
 adapter；`args` 一字符串一 argv token；`env` 在 inherited environment 上覆盖，
 `null` 删除变量；`${NAME}` 是唯一插值语法。`model`、`effort`、`prompt`、`cwd`
 可省略，执行 mode 只由 CLI namespace 决定。旧 `exec` 字段和所有未知字段均拒绝。
@@ -156,6 +170,7 @@ file、严格 JSON 且无未知字段。当前 shape 与默认语义为：
 | `sn-cli session call <api-id> [--queue]` | API request | Session executor | `api.jsonl` + Turn/Execution；queue 时另有 Run |
 | `sn-cli session open <cli-id>` | Provider-native interactive TUI | Tmux PTY + native_tui Session identity | opaque lifecycle Run/Execution；无 canonical transcript/Turn |
 | `sn-cli agent <api-id> [--queue]` | API model/tool loop | Agent Kernel | 每轮 `api.jsonl` + Durable Run |
+| `sn-cli aep` | AEP stdio `run.start` | Session executor（`kind=session` Durable Run） | `cli.jsonl` + Turn/Execution + Durable Run |
 
 namespace 先固定 execution mode，Profile `type` 再做严格配对校验。Profile 不保存
 execution mode；Session 与 private tmux carrier schema 不因 CLI ingress 改名而变化。
@@ -194,7 +209,7 @@ window；carrier stop 会向 supervisor 发送 `SIGTERM`，supervisor 显式向 
 Session fact。`job cancel|retry|continue` 不接管 `native_tui` lifecycle；
 关闭必须使用 `session close|close-all`。上述 Session ID 不能传给 `session exec|call`。
 
-Command adapter 按 `filepath.Base(command)` 选择，已登记 Codex、Claude 与 Grok。adapter
+Command adapter 按 `filepath.Base(command)` 选择，已登记 Codex、Claude、Grok 与 Pi。adapter
 用显式 option grammar：
 
 - 区分 command/common、exec-only 和 mode selector；
@@ -217,7 +232,7 @@ Profile `prompt` 与 typed `--prompt` 指向已有普通文件时读取正文；
 bare Profile 只接受 CLI Profile；`exec` 只接受 CLI Profile；`call` 只接受 API
 Profile。Profile ID 必须紧跟拥有它的 namespace/action，option 位于其后，input
 必须最后。固定根 namespace
-`doctor|exec|call|profile|auth|session|agent|job|server|help|version|update`，以及 Profile 管理
+`doctor|exec|call|profile|auth|session|agent|job|server|aep|help|version|update`，以及 Profile 管理
 action `list|show|check` 都是保留 Profile ID；loader 遇到冲突即失败。
 
 `profile` 只提供 `list|show|check` 管理动作，不执行 Profile。`profile check` 是纯
@@ -265,7 +280,8 @@ API 行固定字段为
 - network error 使用 `response:null`；`error` 是 Provider-neutral RuntimeError；
 - `${VAR}` header 按 driver 的 auth shaping 保留引用，例如
   `Bearer ${MODEL_API_KEY}`；字面量敏感 header、cookie、URL query 和 response/error
-  中回显的 secret 必须脱敏；
+  中回显的 secret 必须脱敏；脱敏是结构感知的（只替换字符串值，永不改写 JSON key
+  或结构），顶层 `error` 同样按日志面脱敏，与消费者拿到的原样错误无关；
 - `call_id` 每次逻辑模型调用唯一，同一调用的重试全部位于该记录的 `attempts` 内，
   不等同于 Provider request ID、Run ID 或 Tool call ID；
 - 通过 `model.CallObserver` 在逻辑调用结束后收集已脱敏的独立副本，由 composition
@@ -303,8 +319,11 @@ directory/file mode、no-follow、single-link regular-file 校验和非阻塞文
 
 Driver 不读取 Session、skill 或 memory，不执行工具，不写 Store。API key 通过
 headers 的 `${VAR}` 引用从执行环境展开；Codex OAuth 由 Model Service 的
-`CredentialResolver` 在每次 attempt 前解析并注入。resolved secret 不进入
-Profile output、event 或数据库。
+`CredentialResolver` 在每次 attempt 前解析并注入。resolved secret 只进入 HTTP
+请求层，不进入 Profile output、execution snapshot、event 或数据库——Runtime 从不
+注入 secret。事件、结果与返回错误面向消费者原样传递：Provider 回显内容不做字节级
+清洗（对事件 JSON 做字节替换会破坏结构）；脱敏只发生在本地诊断面（Attempt/Call
+observer、API 日志与 raw），且是结构感知的——只替换字符串值，永不改写 JSON key。
 Driver 禁止 `http.Client` 自动跟随 redirect；每次 `Stream` 只调用一次 request，3xx
 作为该次 Provider response 进入 typed protocol error 和同一条 API 日志。
 
@@ -683,19 +702,44 @@ Session
 ```
 
 每个 Turn 可独立选择 Profile，provider 只能在 Turn 边界切换。API tool call 进入
-`requires_action`，Session 不执行 tool。CLI 子进程内部自行执行的工具是 opaque
-provider 行为，不投影成 Runtime tool lifecycle。
+`requires_action`，Session 不执行 tool。CLI 子进程内部自行执行的工具对 Session
+Turn/Execution 语义仍是 opaque provider 行为，不投影成 Runtime tool lifecycle；
+adapter 具备流式能力时，其原生记录归一化为 durable Run journal 的 executor 流式
+事件（见下文），不进入 Session journal 或 transcript。
 
 CLI executor 固定 command adapter exec/canonical：
 
 - Codex：`exec --ephemeral --json`，只有唯一 `turn.completed` 前最后一个 completed
   `agent_message` 可成为 assistant；
-- Claude：`-p --output-format json`，不允许 `--verbose` 改写 stdout shape，只接受
+- Claude：`-p --output-format json`，不允许用户 `--verbose` 改写 stdout shape，只接受
   唯一、成功、`is_error=false` 的 `type=result` document；
 - Grok：`--output-format json --single=<prompt>`，prompt 必须用 `=` 附着（`--` 会被
   当成 prompt 本身），只接受唯一成功 JSON object 的 `text`；`type=error` 拒绝；
+- Pi：`-p --mode json --no-session`，只接受恰好一个 `agent_settled`，终态后无消息/
+  工具记录，最后一个 assistant `message_end` 为权威 assistant；`aborted=true` 视为失败；
 - OS exit=0 与 protocol success terminal 都必须满足；
 - stdout 只承载机器协议，stderr 只承载诊断；partial output 不伪造成 assistant。
+
+adapter 实现 `StreamDecoder` 时，durable Run 内的 managed CLI 执行按能力改走同一
+命令的 streaming selector：Codex 与 canonical 完全相同（`exec --ephemeral --json`），
+Claude 为 `-p --output-format stream-json --verbose --include-partial-messages`
+（`--verbose` 由 selector 拥有，用户配置仍拒绝），Pi 与 canonical 完全相同
+（`-p --mode json --no-session`）。canonical selector 的全部约束在
+streaming 下不放宽：forbidden option 照常拒绝，Codex 仍要求恰好一个
+`turn.completed` 且终态后无 item，Claude 仍要求恰好一个成功 `type=result`，Pi 仍要求
+恰好一个 `agent_settled`；assistant
+终态提取与 canonical 等价，流损坏（含单行超过 1MiB）按 Run 失败收口。stdout 消费
+始终读到 EOF：解码被禁用后继续 drain，不因解码错误停读造成子进程写管道阻塞。
+
+流式原生记录按行顺序归一化为 executor 事件（closed vocabulary）：
+`executor.message.delta`（token 级文本增量，仅 Claude/Pi 投递）、`executor.message`
+（assistant 完整消息）、`executor.tool.started`、`executor.tool.completed`（CLI 内部
+工具的原生投影）与 `executor.event`（未识别原生记录的兜底）。payload 统一为
+`executor{native_type,id,name,text,is_error,data}`，`data` 为有界 JSON 摘录且不超过
+4096 bytes。Codex 投递 item 级事件（无 message.started），Claude 只投递 text delta、
+assistant text/tool_use 与 tool_result，Pi 投递 text delta、assistant `message_end` 与
+`tool_execution_start/end`；thread/turn/session 等原生管线记录不投递。
+事件先落盘后推送，只进入 durable Run journal。
 
 managed process 使用独立 process group，stdout/stderr 并发读取并受硬上限保护。
 Execution 只持久化 observed byte count、prefix digest、truncated/limit facts 和
@@ -723,8 +767,9 @@ durable Session Run 在启动恢复时从 running 转为 `needs_reconciliation`�
 
 Session request 的公开 DTO 只保存 digest/ref。冻结的 CLI snapshot 与 base prompt
 存入 SQLite `private_request_json`，Go 字段为 `json:"-"`，不得出现在
-get/list/result/events/export/log/error。同一 Session 同时只允许一个非 terminal
-durable Session Run。
+get/list/result/events/export/log/error。逐次 `permissions` 档位冻结进 CLI snapshot
+并纳入 `request_digest`，重放校验时公开字段必须与 snapshot 精确一致。同一 Session
+同时只允许一个非 terminal durable Session Run。
 
 Agent 绑定 Session 时，Run 的 combined `request_digest/config_digest` 与
 Session Turn/Execution 的 digest 是两个独立命名空间。Agent private execution
@@ -869,7 +914,8 @@ request 和可选 Session request identity。Provider/tool implementation versio
 Git commit、CLI `contract_version` 或 LoopState schema version。
 
 API Profile 只把 headers 中的 `${VAR}` 引用名（header 名 + 环境变量名）纳入
-snapshot；resolved secret value 不进入 snapshot、digest、event 或 Store。每次新的
+snapshot；resolved secret value 不进入 snapshot、digest、event 或 Store（Provider
+回显内容的传递语义见 §4）。每次新的
 Provider call 仍从执行进程当前环境展开该引用，因此相同 `${VAR}` 引用名下的 secret
 value 轮换不构成 execution drift；修改引用名或其它 Profile literal 则构成 drift。
 
@@ -1040,6 +1086,17 @@ settle 为 `failed` 并保留产物；验证器自身报错（无法判定）则
 存储；`model_calls.provider_request_id` 作为单次模型调用的 span 标识。Trace 属
 query 路径，只加载 Run Store。
 
+公开 Run request 可声明 `timeout_ms`（正整数毫秒，`0`/省略为不限时，最大
+`9223372036854775`，超出 `time.Duration` 表示范围的值在提交时拒绝）：执行
+context 到期即取消执行进程树；到期导致的执行取消在没有 cancellation reservation
+时以 `timeout`/`phase=run` 错误 settle 为 `failed`，用户主动取消优先收口为
+`cancelled`。公开 Run request 还可声明 `permissions`（`read_only|workspace_write`）
+逐次权限档位：session/CLI 执行翻译为 adapter 原生权限 flag（Codex
+`--sandbox read-only|workspace-write`、Claude `--permission-mode plan|acceptEdits`、
+Pi read_only `--tools read,grep,find,ls`），无等价 flag 的档位（Grok 两档、Pi 的
+`workspace_write`）在 Build 阶段显式拒绝；Profile 已配置等价或互斥选项时同样拒绝，
+不静默覆盖。`permissions` 仅对 CLI Profile 有效。
+
 sn-server 后台 reaper 周期扫描 `paused` 与 `needs_reconciliation` Run，对
 `updated_at` 早于 `run.reaper.paused_ttl` / `run.reaper.needs_reconciliation_ttl`
 （默认 30m / 24h，0 禁用）的 Run 以 `timeout`/`phase=run` 错误 settle 为 `failed`，
@@ -1061,10 +1118,10 @@ unique/partial 属性和列序；对象缺失、定义变化、未知对象、�
 固定 CLI namespace：
 
 ```text
-doctor exec call profile auth session agent job server help version update
+doctor exec call profile auth session agent job server aep help version update
 ```
 
-Runtime machine contract 为 `schema_version=1`、`contract_version=18`。
+Runtime machine contract 为 `schema_version=1`、`contract_version=21`。
 bare CLI direct、`exec` 和 `session attach` 不属于 machine wrapper。
 
 根路由优先级为：只允许位于 argv 第一项的 global `--json`；help/version；固定
@@ -1075,7 +1132,7 @@ namespace；active CLI Profile；否则失败。namespace/Profile 后出现的 `
 help 使用单一 topic grammar：
 
 ```text
-sn-cli help [tui|exec|call|auth|doctor|profile|session|agent|job|server|update]
+sn-cli help [tui|exec|call|auth|doctor|profile|session|agent|job|server|aep|update]
 sn-cli --json help [topic]
 ```
 
@@ -1113,6 +1170,7 @@ sn-cli session reconcile|configure|export|delete|gc
 sn-cli agent <api-profile-id> [options] [input]
 sn-cli job get|list|result|trace|events|watch|cancel|continue|retry|reconcile|gc
 sn-cli server info|start|status|stop
+sn-cli aep
 sn-cli update [options]
 sn-cli update upgrade-check [options]
 ```
@@ -1147,9 +1205,60 @@ session，不创建 Runtime Session/Run；adapter 分别映射为 Codex `resume`
 | `session open` | tmux PTY 中的 Provider 原生 TUI | `native_tui` Session + opaque lifecycle Run/Execution；无 Turn/transcript |
 | `agent` | durable model/tool loop；`--queue` 只入队 | Run；可选 Session |
 | `job` | 查询/控制已有 Run | 不提交 fresh work |
+| `aep` | AEP stdio `run.start` 提交 durable `kind=session` Run | Session + Run |
+
+`sn-cli aep` 是 AEP（Agent Execution Protocol）stdio inbound adapter：stdin/stdout
+承载 NDJSON JSON-RPC 2.0 协议帧，stdout 只输出协议帧，诊断只写 stderr，不接受
+`--json`。`initialize` result 报告 `protocol="aep"`、`version="1.0"`、server
+identity 与方法集，且每个连接只能调用一次；未 initialize 的其它 request 一律返回
+`-32002 notInitialized`。方法集固定为：
+
+```text
+initialize executor.list executor.get run.start run.cancel run.get run.result run.events shutdown
+```
+
+`executor.list|get` 报告 `codex|claude-code|pi|acp` 四个 executor ID 的可用性与
+能力真值；codex/claude-code/pi 均已登记 command adapter，`acp` 兼容 adapter 延后，
+以 `metadata.reason` 说明。`run.start` 必须同时携带 `executor` 与显式 CLI `profile`：
+executor 不是独立配置，而是由 Profile `command` basename 派生（`codex|claude|pi`），
+派生不一致返回 `invalid_request`，`executor=acp` 在 MVP 显式拒绝，命令不可执行返回
+`-32001 executorUnavailable`。`run.cancel` 请求参数固定为 `{runId}`，不处理任何
+入站 notification。`input.prompt` 必填；`input.cwd` 必须是已存在目录的绝对路径；
+`input.sessionId` 复用已有 Session ID 或生成新 ID；`input.resumeFromRunId` 引用
+已有 session Run，新 Run 复用其 managed Session 作为同一 Session 的新 Turn（与
+`input.sessionId` 同时给出必须一致），不从 Runtime Session ID 推断 Provider 原生
+resume identity。MVP `options` 接受 `model`、`reasoningEffort`、`timeoutMs`（正整数
+毫秒，映射公开 Run request `timeout_ms`）与 `permissions.mode`
+（`read_only|workspace_write`，映射公开 `permissions`）；`approvalPolicy`、
+`maxOutputBytes` 等未知字段在 decode 阶段拒绝。`run.start` 提交
+`kind=session` Durable Run 并返回
+`runId/sessionId/status`；AEP 只管理 `kind=session` Run，不改写 Run 语义。
+
+Run 状态映射固定：`queued→pending`、`running→running`、`paused→waiting`、
+`cancel_requested` 且非终态→`cancelling`（仅投影，不改 Run 状态机）、
+`completed→succeeded`、`failed→failed`、`cancelled→cancelled`、
+`needs_reconciliation→failed` 且 `error.code="reconciliation_required"`
+（`run.get`/`run.result` 返回同一投影）。事件投影：
+canonical `run.completed|run.failed|run.cancelled` 映射为同名事件并携带
+`status`/`error`，`run.settled` 映射为 `run.status_changed{settled,status}`；
+executor 流式事件映射为 `message.delta{text,messageId}`、
+`message.completed{text,messageId}`、`tool.started{toolCallId,name,input}`、
+`tool.completed{toolCallId,isError,name,output,detail}`；未识别 journal event 以
+`executor.event{nativeType,data}` fallback。事件以 `run.event`
+notification 推送给启动该 Run 的连接，`eventId=<run_id>:<seq>`，`seq` 即 journal
+sequence，`run.events` 支持按 seq 回查。能力真值：`streaming`/`structuredEvents`
+跟随 adapter 的 `StreamDecoder` 能力（codex/claude-code/pi 为 `true`，acp 为
+`false`），`cancellation=true`、`sessionResume` 对已登记执行器为 `true`
+（`resumeFromRunId` 复用源 Run 的 managed Session 开新 Turn，不推断原生 resume
+identity；acp 为 `false`）、`nativeResult=true`。
+
+AEP server 自带 scheduler worker，其生命周期独立于信号 ctx：stdin EOF、`shutdown`
+方法或 `SIGINT|SIGTERM` 触发 graceful 收口——对本连接启动的未终态 Run 发起取消，
+等待 terminal settle（宽限 15s），然后停止 worker 并退出。AEP 是现有 durable Run
+与 Session 之上的协议投影层，不创建第二套状态机，也不复用 HTTP transport。
 
 管理 action 默认输出 compact human text。leading global `--json` 选择
-`schema_version=1,contract_version=18` machine envelope；stream/watch 使用 NDJSON 或
+`schema_version=1,contract_version=21` machine envelope；stream/watch 使用 NDJSON 或
 SSE，并以 event sequence 续读。除下述 `call --raw` 的已发生 attempt 诊断外，machine
 非流失败 stdout 为空，stderr 只有一个 compact
 error document。bare direct/`exec` 继承目标进程 stdout/stderr/exit，`session attach`
@@ -1360,3 +1469,31 @@ reset 授权不能由 archive installer 或 `sn-cli update` 获得。
 schema。CLI Profile 只进入 bare direct、`exec`、`session exec` 或 `session open`；
 API Profile 只进入 `call`、`session call` 或 `agent`。类型不匹配 fail closed，不提供
 alias、自动迁移或 legacy ingress。
+
+## 11. sn-code 私有编程 TUI
+
+`sn-code` 是复用 Runtime 公开能力的私有交互终端，不是公开执行面：
+
+- 只经 `pkg/profile`、`pkg/model`、`pkg/contract` 与 `pkg/agent` 工具注册表集成，
+  不建立第二套 model contract 或工具协议；
+- `codingbootstrap` 负责专属装配，经 `modelruntime` 消费共享 Profile、Provider、
+  认证与日志能力；不调用 sn-cli/sn-server 进程，也不依赖它们的产品装配。
+  认证仍由 `sn-cli auth` 管理；共享 home 的配置与凭证契约保持一致，
+  编程会话与 Runtime Session/Run 分别维护；
+- 直接使用 `*model.Service`（不经缓冲 retry 层），保持真流式；真实 API 调用经
+  CallObserver 写本地 `logs/YYMMDD/api.jsonl`，凭据脱敏规则与 `call` 一致；
+- 会话、偏好保存在 `${SN_CLI_HOME}/sncode/`（`sessions/<cwd-slug>/*.jsonl`、
+  `preferences.json`），不创建 canonical Session/Turn/Run，不进 SQLite Store，
+  与 `managed`/`native_tui` Session ID 不互通；
+- 上下文按 pi 语义压缩：估算逼近 profile 窗口减保留输出时自动触发，切点只落在
+  user/assistant 消息，压缩以摘要条目写入同一 JSONL；
+- 带写副作用的工具调用必须过交互确认门（once/always/deny）；`always` 仅记忆在
+  当前进程会话内，不落盘、不进 Profile；
+- `sn-code acp` 以 Agent Client Protocol v1（agentclientprotocol.com）的 stdio
+  JSON-RPC 服务编辑器等 ACP 客户端（`internal/interfaces/codingacp/`）：复用
+  同一 AgentSession 内核与确认门（映射为 `session/request_permission`），不启动
+  第二个 sn-code 进程，不创建 canonical Session/Run；协议界限见 `docs/ACP.md`。
+  该入口与仓内 `executor=acp`（外部 agent 作为 CLI Profile 的 ACP client
+  adapter）和 AEP（durable Run 的 HTTP 入站协议）是三个互不相干的协议；
+- 从源码构建（`make sn-code-build`），不进入 release payload、install 与
+  self-update 契约；其入口不接受公开命令的 schema/输出承诺。

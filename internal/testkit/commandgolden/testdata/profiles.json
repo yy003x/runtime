@@ -1,6 +1,6 @@
 {
-  "captured_at": "2026-09-08",
-  "source_head": "8b93bf8df847fa2acaff689d8135462f6e63cebf+worktree",
+  "captured_at": "2026-10-28",
+  "source_head": "19f9461bb1baf1b186eb833e31173a743a2385f7+worktree",
   "installed_build": "current source build",
   "profiles": [
     {
@@ -11,7 +11,7 @@
         "--ask-for-approval",
         "never",
         "--model",
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         "-c",
         "model_reasoning_effort=medium",
         "exec",
@@ -27,10 +27,9 @@
     {
       "id": "cx",
       "argv": [
+        "--no-daemon",
         "--model",
-        "gpt-5.6-sol",
-        "-c",
-        "model_reasoning_effort=xhigh"
+        "gpt-6.1-sol"
       ],
       "env": {
         "CODEX_HOME": "${HOME}/.codex-aip"
@@ -49,7 +48,7 @@
       "id": "gk",
       "argv": [
         "--model",
-        "grok-4.6",
+        "grok-4.7",
         "--effort",
         "xhigh"
       ],
@@ -58,38 +57,16 @@
       }
     },
     {
-      "id": "cx-adv",
-      "argv": [
-        "-c",
-        "model_verbosity=high",
-        "-c",
-        "sandbox_mode=danger-full-access",
-        "-c",
-        "approval_policy=never",
-        "--model",
-        "gpt-5.6-terra",
-        "-c",
-        "model_reasoning_effort=max",
-        "exec",
-        "--skip-git-repo-check",
-        "--ignore-user-config",
-        "--color",
-        "never"
-      ],
-      "env": {
-        "CODEX_HOME": "${HOME}/.codex-ait"
-      }
-    },
-    {
       "id": "cx-deep",
       "argv": [
+        "--no-daemon",
         "--search",
         "--sandbox",
         "danger-full-access",
         "--ask-for-approval",
         "never",
         "--model",
-        "gpt-5.6-sol",
+        "gpt-6-astra",
         "-c",
         "model_reasoning_effort=max",
         "exec",
@@ -104,16 +81,40 @@
       }
     },
     {
-      "id": "cx-spark",
+      "id": "cx-core",
       "argv": [
+        "--no-daemon",
+        "-c",
+        "sandbox_mode=danger-full-access",
+        "-c",
+        "approval_policy=never",
+        "--model",
+        "gpt-6-sol",
+        "-c",
+        "model_reasoning_effort=high",
+        "exec",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--color",
+        "never",
+        "--ephemeral"
+      ],
+      "env": {
+        "CODEX_HOME": "${HOME}/.codex-ait"
+      }
+    },
+    {
+      "id": "cx-lite",
+      "argv": [
+        "--no-daemon",
         "--sandbox",
         "read-only",
         "--ask-for-approval",
         "never",
         "--model",
-        "gpt-5.3-codex-spark",
+        "gpt-6-luna",
         "-c",
-        "model_reasoning_effort=xhigh",
+        "model_reasoning_effort=medium",
         "exec",
         "--skip-git-repo-check",
         "--ignore-user-config",

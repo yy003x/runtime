@@ -44,8 +44,15 @@ func (grokAdapter) Build(request BuildRequest) (Invocation, error) {
 	if err != nil {
 		return Invocation{}, err
 	}
+	// grok 尚无实测等价权限 flag，两档均显式拒绝；需要原生 --permission-mode
+	// 的用户直接在 Profile args 配置。
+	permission, err := permissionArgv("grok", request, parsed, nil)
+	if err != nil {
+		return Invocation{}, err
+	}
 	argv := []string{request.Profile.Command}
 	argv = append(argv, plan.common...)
+	argv = append(argv, permission...)
 	if model != "" {
 		argv = append(argv, "--model", model)
 	} else if modelOption != nil {

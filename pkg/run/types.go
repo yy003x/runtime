@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/pkg/agent"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 var (
@@ -71,6 +71,8 @@ type Request struct {
 	Model              string                   `json:"model,omitempty"`
 	Effort             string                   `json:"effort,omitempty"`
 	CWD                string                   `json:"cwd,omitempty"`
+	TimeoutMS          int64                    `json:"timeout_ms,omitempty"`
+	Permissions        string                   `json:"permissions,omitempty"`
 	ModelOptions       contract.GenerateOptions `json:"model_options,omitempty"`
 	AgentBudget        agent.Budget             `json:"agent_budget,omitempty"`
 	CompletionCriteria CompletionCriteria       `json:"completion_criteria,omitempty"`

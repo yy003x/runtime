@@ -29,6 +29,10 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `sn-cli server info|start|status|stop`：HTTP 与 durable worker 生命周期；
 - `sn-cli update ...`：检查/下载/激活 Runtime release，不执行 Profile。
 
+另有独立二进制 `sn-code`（`make sn-code-build` 源码构建，不进入 release payload）：
+交互编程 TUI 与 `sn-code acp`（Agent Client Protocol v1 的 stdio JSON-RPC 接入，
+见 `docs/ACP.md`）复用同一 AgentSession 内核，均不创建 canonical Session/Run。
+
 所有有效 CLI/API Profile 都通过同一 Profile ID 路由，并由 `type=cli|api` 选择
 执行 adapter。公开入口、配置、持久化事实和 machine output 只认当前 contract 的
 完整 schema，不提供 alias、自动 migration、第二套 reader 或兼容 shim。
@@ -43,10 +47,21 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 - `internal/infrastructure/` 保存配置、文件、日志、进程、private tmux carrier、
   Provider HTTP helper 与 MCP adapter，不反向依赖 application/interfaces；
 - `internal/interfaces/cli/` 只做 decode/call/encode，不建立第二套状态机；
+- `internal/interfaces/codingacp/` 是 sn-code 的 ACP v1 stdio 协议投影：
+  复用 codingagent 内核与确认门（映射 `session/request_permission`），不启动
+  子进程、不建立第二套状态机；与 `executor=acp`（ACP client adapter）和 AEP
+  是互不相干的协议；
 - Auth TUI 的短生命周期流程由 `internal/application/authruntime` 编排，CLI 只做
   命令补全、选择和渲染；`internal/infrastructure/terminalinput` 管理可取消的 raw
   terminal I/O，不创建 Session/Run，不保存输入历史或认证日志；
-- `internal/application/runtimebootstrap/` 是 composition root；
+- `internal/application/runtimebootstrap/` 只装配 Runtime Session/Agent/Run；
+  `internal/application/codingbootstrap/` 只装配 sn-code 编程产品；两者依赖
+  `internal/application/modelruntime/` 统一装配 Profile、Provider、认证与日志，
+  共享底座不依赖任何产品专属模块，重试由产品装配层选择；
+- `internal/application/serverruntime/` 编排 server 生命周期，
+  `internal/infrastructure/serverprocess/` 管理进程身份、lease 与锁；CLI 仅解析和渲染；
+- `internal/infrastructure/buildinfo/` 保存共享构建信息，产品名称由入口提供；
+  sn-code 不依赖 CLI 界面包或 Runtime Session/Run 装配，Runtime 不依赖编程模块；
 - `internal/infrastructure/executionlog/` 只保存 best-effort 本地执行诊断，不是
   canonical Store；
 - Agent Kernel 不读取 profile/config、不打开数据库；
@@ -116,9 +131,11 @@ tool `name`。`effect` 为 `read_only`/`write_local`/`write_external` 三档之�
 `call` 和 Session 不自动执行这里的工具。
 
 只有携带 Profile ID 并进入真实 CLI launch/API Provider call 的执行才写本地日志；
-查询、校验和 queue submit 不写。API key 只保留 `${VAR}` 引用，resolved secret 必须
-脱敏。日志写入、锁冲突或路径错误不得改变执行结果，也不与 Session/Run 建事务；当前
-不自动 GC，也不迁移旧 flat log。
+查询、校验和 queue submit 不写。API key 只保留 `${VAR}` 引用；resolved secret 只
+存在于 HTTP 请求层，事件、结果与返回错误面向消费者原样传递，仅本地日志与诊断
+observer 面做结构感知脱敏（只替换字符串值，不改写 JSON key）。日志写入、锁冲突或
+路径错误不得改变执行结果，也不与 Session/Run 建事务；当前不自动 GC，也不迁移旧
+flat log。
 
 ## 同步门禁
 

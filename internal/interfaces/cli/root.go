@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yy003x/runtime/internal/application/nativeconsole"
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	"github.com/yy003x/runtime/internal/interfaces/cli/version"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/application/nativeconsole"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/infrastructure/activationgate"
+	"github.com/yy003x/sn-code/internal/infrastructure/buildinfo"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
 )
 
 var fixedNamespaces = profileid.ReservedNamespaces()
@@ -78,11 +78,11 @@ func Main(args []string) int {
 			if err := output.writeJSON(map[string]any{
 				"schema_version":   cliOutputSchemaVersion,
 				"contract_version": cliOutputContractVersion,
-				"version":          version.String(),
+				"version":          buildinfo.String("sn-cli"),
 			}); err != nil {
 				return output.fail(err)
 			}
-		} else if err := output.line("%s", version.String()); err != nil {
+		} else if err := output.line("%s", buildinfo.String("sn-cli")); err != nil {
 			return output.fail(err)
 		}
 		return 0
@@ -128,6 +128,8 @@ func Main(args []string) int {
 			err = cliValidationf("unknown namespace %q; use job", args[0])
 		case "job":
 			err = runRunNamespace(paths, args[1:], output)
+		case "aep":
+			err = runAEPNamespace(paths, args[1:], output)
 		case "update":
 			err = runUpdateNamespace(paths, args[1:], output)
 		case "server":

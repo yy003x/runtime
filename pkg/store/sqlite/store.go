@@ -18,10 +18,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 const maxPayloadBytes = 4 << 20

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/domain/identity"
 )
 
 const (

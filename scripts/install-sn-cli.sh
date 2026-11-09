@@ -7,4 +7,4 @@ if [ -n "$ROOT_DIR" ] && [ -f "$ROOT_DIR/install.sh" ]; then
 fi
 
 command -v curl >/dev/null 2>&1 || { echo "sn-cli install: curl is required" >&2; exit 1; }
-curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash -s -- "$@"
+curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install.sh | bash -s -- "$@"

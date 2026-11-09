@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 // RetryPolicy bounds the transient-error retry that ResilientModel applies
@@ -133,7 +133,7 @@ func (model *ResilientModel) GenerateStream(
 			first := attempts.values[0]
 			notifyCallObserver(model.callObserver, CallObservation{
 				Origin: first.Origin, ProfileID: first.ProfileID,
-				Attempts: attempts.values, Error: resultError,
+				Attempts: attempts.values, Error: redactedCallError(attempts, resultError),
 			})
 		}()
 	}
@@ -176,6 +176,21 @@ func (model *ResilientModel) GenerateStream(
 		}
 	}
 	return contract.ModelResult{}, lastError
+}
+
+// redactedCallError 为诊断聚合挑选最终错误的展示形态：与最后一次内层调用
+// 错误同 code/phase（即同一 Provider 错误透传）时，用 Service 层留存的脱敏
+// 孪生替换原文；本层新建的 consumer/cancelled 错误文本不含 secret，原样保留。
+// 参数 attempts、resultError 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 *contract.RuntimeError 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func redactedCallError(attempts *callAttempts, resultError *contract.RuntimeError) *contract.RuntimeError {
+	if resultError == nil || attempts.err == nil {
+		return resultError
+	}
+	if resultError.Code == attempts.err.Code && resultError.Phase == attempts.err.Phase {
+		return attempts.err
+	}
+	return resultError
 }
 
 // ExecutionSnapshot forwards to the inner service so the Agent executor can

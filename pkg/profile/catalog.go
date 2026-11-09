@@ -12,10 +12,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	"github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/model"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 const maxProfileBytes int64 = 1 << 20

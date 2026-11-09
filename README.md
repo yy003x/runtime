@@ -1,8 +1,8 @@
 # SN Runtime
 
-[![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/runtime)](https://goreportcard.com/report/github.com/yy003x/runtime)
+[![CI](https://github.com/yy003x/sn-code/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/sn-code/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yy003x/sn-code?include_prereleases&display_name=release)](https://github.com/yy003x/sn-code/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/sn-code)](https://goreportcard.com/report/github.com/yy003x/sn-code)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -25,6 +25,8 @@ points:
 - Keep a long-lived interactive **tmux** window you can attach to later.
 - Run an autonomous **agent** loop (model → tool → tool-result → model).
 - Submit **durable runs** to a SQLite queue and control them via CLI or HTTP.
+- Chat with any API profile in **`sn-code`**, an interactive coding TUI with
+  steering, tool confirmation, and context compaction.
 
 Everything is **local-first**: your data lives under `${SN_CLI_HOME:-~/.sn}`
 (SQLite WAL for runs, regular files for sessions). Contracts are **strict and
@@ -56,6 +58,9 @@ rejected rather than silently papered over.
   streaming events.
 - 🪟 **Long-lived native TUI sessions** — provider TUI in a private default or
   isolated tmux PTY; open, send, attach, interrupt, and close by Runtime Session ID.
+- ⌨️ **Interactive coding TUI** — `sn-code` drives the same API profiles through
+  a terminal agent loop: streaming replies, gated tool calls, `!` shell
+  passthrough, context compaction, and resumable JSONL sessions.
 - 🧪 **Strict JSON Schema validation** — identical rules across CLI and HTTP;
   unknown fields and ambiguous states fail closed.
 - 🌐 **HTTP / SSE control plane** — a loopback `sn-server` exposes the full
@@ -69,14 +74,14 @@ rejected rather than silently papered over.
 One-line install from a GitHub Release (no source build needed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install.sh | bash
 ```
 
 Or build from source (requires Go 1.25):
 
 ```bash
-git clone https://github.com/yy003x/runtime.git
-cd runtime
+git clone https://github.com/yy003x/sn-code.git
+cd sn-code
 make build sn-cli-build
 make install
 ```
@@ -100,6 +105,30 @@ sn-cli profile check     # validate every profile's structure
 > and models (e.g. `api-cx` → Aliyun qwen, `api-cc` → GLM). To actually call a
 > model, supply your own key via the referenced environment variable (e.g.
 > `ALIYUN_API_KEY`) or edit the profile to point at your own endpoint and model.
+
+### Interactive coding TUI
+
+`sn-code` is built from source alongside the Runtime (it is not part of the
+release archive):
+
+```bash
+make sn-code-build
+./bin/sn-code                     # uses the last profile, or the first API profile
+./bin/sn-code --profile api-cx    # start with a specific API profile
+./bin/sn-code --resume list       # pick a previous session to reopen
+./bin/sn-code acp                 # serve editors over ACP v1 on stdio
+```
+
+`sn-code acp` speaks Agent Client Protocol v1 (stdio JSON-RPC) so editors such
+as Zed can drive the same session kernel — no second process, and the write-tool
+confirmation gate maps to `session/request_permission`. See `docs/ACP.md`.
+
+Inside the TUI: type a task to run the agent loop, `esc` interrupts, `!cmd`
+runs a shell command, and `/help` lists commands (`/model`, `/new`, `/resume`,
+`/compact`, `/name`). Tool calls with write effects stop at a confirmation gate
+(`[y]` once, `[a]` always for this session, `[n]` deny); `read`-only tools run
+without prompting. Sessions persist as JSONL under `~/.sn/sncode/sessions/`,
+and context is compacted automatically as it approaches the profile window.
 > See [Configuration](#configuration) and the
 > [sn-cli reference](SN-CLI-USAGE.md).
 
@@ -215,6 +244,7 @@ sn-cli session exec|call ─> Session Service ─> command or model
 sn-cli session open ... ─> native_tui Session ─> provider TUI in tmux PTY
 sn-cli agent <api-id> ─> Agent Kernel ─────> model + configured tools
 sn-cli job ... ────────> Run Harness ──────> SQLite WAL control plane
+sn-cli aep ───────────> AEP stdio adapter ─> durable session runs
 ```
 
 | Entry | Purpose | Persisted |
@@ -226,11 +256,18 @@ sn-cli job ... ────────> Run Harness ──────> SQLite 
 | `sn-cli session open\|send\|attach\|interrupt\|close\|close-all` | provider-native TUI with Runtime identity | `interface=native_tui` Session + opaque lifecycle Run/Execution and tmux binding; no canonical transcript |
 | `sn-cli agent <api-profile-id> [--queue]` | API-only model/tool loop | durable run; local API log per round (session optional) |
 | `sn-cli job ...` | query and control existing durable runs | SQLite WAL |
+| `sn-cli aep` | serve the AEP stdio JSON-RPC adapter that drives durable session runs | Session + durable run (projection over the same Run harness) |
+| `sn-code [--profile <api-id>]` | private interactive coding TUI (agent loop, gated tools, compaction) | JSONL sessions and preferences under `~/.sn/sncode/`; local API log; no canonical Session/Run |
+| `sn-code acp` | private ACP v1 stdio adapter over the same coding session kernel | same `sncode/` JSONL sessions; no canonical Session/Run |
 
 Key boundaries worth remembering up front:
 
 - A **profile** is `cli` (wraps a CLI) or `api` (calls a model). The namespace
   selects the execution contract and `type` validates that the profile belongs there.
+- **`sn-code` is a private TUI, not a public execution surface** — it reuses the
+  same `configs/*.json` API profiles and model contract, but stores its own
+  sessions under `${SN_CLI_HOME}/sncode/` and never creates canonical
+  Session/Run state.
 - **Sessions never auto-execute tool calls** — a tool call from the model pauses
   the turn at `requires_action`. Autonomous tool loops belong to `agent`.
 - The public owner of a provider-native TUI is always a **`native_tui`
@@ -284,8 +321,8 @@ an API profile points at a provider:
 {
   "type": "cli",
   "command": "codex",
-  "model": "gpt-5.6-sol",
-  "effort": "xhigh",
+  "model": "gpt-6.1-sol",
+  "args": ["--no-daemon"],
   "env": { "CODEX_HOME": "${HOME}/.codex-aip" }
 }
 
@@ -424,14 +461,16 @@ can change; see [authentication](https://learn.chatgpt.com/docs/auth) and the
 ## Project layout
 
 ```text
-cmd/             sn-cli and sn-server entry points
+cmd/             sn-cli, sn-server, and sn-code entry points
 pkg/             public Go API: agent, command, contract, model, profile,
                  provider, run, session, store, and HTTP transport
 internal/
   domain/        private Runtime values and invariants
-  application/   activation, bootstrap, and tool/use-case orchestration
-  infrastructure/ config, filesystem, log, process, private tmux, and MCP adapters
-  interfaces/    inbound CLI adapter
+  application/   activation, bootstrap, tool/use-case orchestration, and the
+                 coding-agent loop (codingagent)
+  infrastructure/ config, filesystem, log, process, private tmux, MCP adapters,
+                 and the coding-session store (codingsessions)
+  interfaces/    inbound CLI adapter and the coding TUI (codingtui)
   testkit/       reusable test-only assets
 configs/         source CLI/API profiles
 resources/       schemas and source tools
@@ -440,9 +479,13 @@ docs/            canonical Runtime contract
 scripts/         delivery and verification scripts
 ```
 
-External Go consumers import `github.com/yy003x/runtime/pkg/...`; legacy root
-package paths have no compatibility shim. `internal/application/runtimebootstrap`
-is the composition root, and the four internal layers are adapted to a CLI
+External Go consumers import `github.com/yy003x/sn-code/pkg/...`; legacy root
+package paths have no compatibility shim. `runtimebootstrap` composes the Runtime;
+`codingbootstrap` composes sn-code. Both use `modelruntime` for shared model,
+Profile, authentication, and logging composition, while keeping Runtime
+Session/Run and coding sessions separate. `serverruntime` owns lifecycle use cases;
+`serverprocess` owns processes and locks. Architecture tests enforce transitive
+product boundaries. The four internal layers are adapted to a CLI
 Runtime + Agent rather than an HTTP-service template. An architecture test
 allowlists every direct module dependency of public `pkg/` packages so new
 cross-domain or internal-adapter coupling requires an explicit review.
@@ -459,7 +502,7 @@ addition to state/kind, for example
 `sn-cli --json job list --task-id <task-id> --limit 50` or
 `GET /v1/runs?task_id=<task-id>&limit=50`. Pagination, SSE resume, and
 heartbeats follow the [Runtime contract](docs/runtime-contract.md)
-(`contract_version=18`).
+(`contract_version=21`).
 
 ## Documentation
 

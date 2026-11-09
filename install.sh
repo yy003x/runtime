@@ -3,7 +3,7 @@ set -euo pipefail
 
 umask 077
 
-REPOSITORY="${SN_CLI_REPOSITORY:-yy003x/runtime}"
+REPOSITORY="${SN_CLI_REPOSITORY:-yy003x/sn-code}"
 SN_CLI_HOME="${SN_CLI_HOME:-$HOME/.sn}"
 INSTALL_DIR="${SN_CLI_INSTALL_DIR:-${PREFIX:-$HOME/.local}/bin}"
 VERSION="${SN_CLI_VERSION:-}"
@@ -24,7 +24,7 @@ usage() {
 Install sn-cli from a GitHub Release without downloading source code.
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install.sh | bash
   bash install.sh [--version VERSION] [--dry-run]
 
 Local package options used by `make install`:

@@ -10,12 +10,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/profile"
 )
 
 // MaxInputBytes is the canonical upper bound shared by every Session ingress.
@@ -70,9 +70,24 @@ func NewService(options ServiceOptions) (*Service, error) {
 	return service, nil
 }
 
+// Run 执行 request 描述的 Session 请求且不订阅流式事件。返回 RunResult
+// 包含会话执行结果；*contract.RuntimeError 非空时表示请求或执行失败。
 func (service *Service) Run(
 	ctx context.Context,
 	request RunRequest,
+) (RunResult, *contract.RuntimeError) {
+	return service.RunWithEvents(ctx, request, nil)
+}
+
+// RunWithEvents 执行 Run，并把 CLI executor 流式 stdout 归一化出的事件经
+// sink 推送（durable 落盘由 run 层 sink 包装先执行）。sink 为 nil 时与 Run
+// 等价；事件不进入 Session Turn 投影。
+// 参数 request、sink 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 RunResult、*contract.RuntimeError 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func (service *Service) RunWithEvents(
+	ctx context.Context,
+	request RunRequest,
+	sink contract.EventSink,
 ) (RunResult, *contract.RuntimeError) {
 	if service == nil || service.profiles == nil || service.models == nil {
 		return RunResult{}, sessionRuntimeError(
@@ -112,7 +127,7 @@ func (service *Service) Run(
 			if entry.Kind == profile.KindModel {
 				return service.runModel(ctx, existing, request, entry)
 			}
-			return service.runCommand(ctx, existing, request, entry)
+			return service.runCommand(ctx, existing, request, entry, sink)
 		}
 	}
 	ids, err := service.newExecutionIDs(request.SessionID, request.RunID)
@@ -126,7 +141,7 @@ func (service *Service) Run(
 	if entry.Kind == profile.KindModel {
 		return service.runModel(ctx, started, request, entry)
 	}
-	return service.runCommand(ctx, started, request, entry)
+	return service.runCommand(ctx, started, request, entry, sink)
 }
 
 type executionIDs struct {
@@ -567,11 +582,15 @@ func (service *Service) markExecutionRunning(ids executionIDs) error {
 	})
 }
 
+// runCommand 根据 started 中的执行事实运行 request 对应的 CLI Profile，
+// 并通过 sink 推送事件。返回 RunResult 与运行时错误；错误同时驱动 Session
+// 终态收尾，未使用的 Profile 参数由既有调用契约保留。
 func (service *Service) runCommand(
 	ctx context.Context,
 	started startedExecution,
 	request RunRequest,
 	_ profile.Entry,
+	sink contract.EventSink,
 ) (RunResult, *contract.RuntimeError) {
 	if request.Snapshot == nil {
 		runtimeErr := sessionRuntimeError(
@@ -593,13 +612,32 @@ func (service *Service) runCommand(
 	if effortValue != "" {
 		effortOverride = &effortValue
 	}
+	// 快照权限档位逐次注入 adapter 权限 flag；不支持的档位由 Build 显式拒绝。
+	var permission *runtimecommand.PermissionMode
+	if request.Snapshot.Permissions != "" {
+		value := runtimecommand.PermissionMode(request.Snapshot.Permissions)
+		permission = &value
+	}
+	// adapter 支持 StreamDecoder 时 managed exec 走 streaming 协议：stdout
+	// 逐行归一化经 sink 推送；否则维持 canonical 一次性解码。
+	protocol := runtimecommand.OutputCanonical
+	var streamSession runtimecommand.StreamSession
+	if adapter, resolveErr := runtimecommand.Resolve(
+		request.Snapshot.Profile.Command,
+	); resolveErr == nil {
+		if decoder, ok := adapter.(runtimecommand.StreamDecoder); ok {
+			protocol = runtimecommand.OutputStreaming
+			streamSession = decoder.NewStreamSession()
+		}
+	}
 	invocation, err := runtimecommand.Build(runtimecommand.BuildRequest{
-		Mode: runtimecommand.ModeExec, OutputProtocol: runtimecommand.OutputCanonical,
+		Mode: runtimecommand.ModeExec, OutputProtocol: protocol,
 		Profile: request.Snapshot.Profile,
 		Overrides: runtimecommand.Overrides{
 			Model: modelOverride, Effort: effortOverride, CWD: &cwdValue,
 		},
-		ArgvPrompt: &prompt, InheritedEnvironment: service.environ,
+		Permissions: permission,
+		ArgvPrompt:  &prompt, InheritedEnvironment: service.environ,
 		InvocationBase: request.Snapshot.CWD,
 	})
 	if err != nil {
@@ -631,7 +669,7 @@ func (service *Service) runCommand(
 		Command: executionlog.FormatCommand(request.Snapshot.Profile.Env, invocation.CWD, invocation.Path, invocation.Argv),
 	})
 	executionResult := service.executeManagedCLI(
-		ctx, started.ids, turn, invocation,
+		ctx, started.ids, turn, invocation, streamSession, sink,
 	)
 	result, runtimeErr := service.finishManagedCommand(
 		started.ids, executionResult,
@@ -1119,6 +1157,13 @@ func validateRunRequest(request RunRequest, entry profile.Entry) error {
 	}
 	if len(request.TaskID) > 512 {
 		return fmt.Errorf("task_id exceeds 512 bytes")
+	}
+	if request.Permissions != "" {
+		if _, err := runtimecommand.ParsePermissionMode(
+			request.Permissions,
+		); err != nil {
+			return err
+		}
 	}
 	if !utf8.ValidString(request.TaskID) ||
 		strings.ContainsRune(request.TaskID, '\x00') {

@@ -3,7 +3,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/model"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 func TestCallParamPreservesJSONAndLastValue(t *testing.T) {

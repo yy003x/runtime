@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/testkit/ptyx"
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/internal/testkit/ptyx"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
 )
 
 const capturedEnvKeys = "CODEX_HOME,CLAUDE_CONFIG_DIR,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,GROK_HOME,RUNTIME_GOLDEN_REMOVE_ME"
@@ -540,7 +540,7 @@ func containsAdjacent(values []string, first, second string) bool {
 
 func isExecProfile(id string) bool {
 	switch id {
-	case "commit", "cx-adv", "cx-deep", "cx-spark":
+	case "commit", "cx-core", "cx-deep", "cx-lite":
 		return true
 	default:
 		return false

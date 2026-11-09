@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtimemodel "github.com/yy003x/runtime/pkg/model"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtimemodel "github.com/yy003x/sn-code/pkg/model"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
 )
 
 func runProfileNamespace(

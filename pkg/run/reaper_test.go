@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 type pausingExecutor struct{}

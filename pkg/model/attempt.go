@@ -3,8 +3,8 @@ package model
 import (
 	"context"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 type AttemptNamespace string
@@ -74,6 +74,23 @@ type callAttemptsKey struct{}
 
 type callAttempts struct {
 	values []Attempt
+	// err 是最后一次内层调用终态错误的脱敏孪生，仅供诊断聚合（如
+	// ResilientModel 的 CallObservation.Error）替换原文使用。
+	err *contract.RuntimeError
+}
+
+// stashRedactedError 记录内层调用终态错误的脱敏副本；nil 表示清除，使孪生
+// 始终镜像最后一次内层调用的错误。仅消费诊断面，不影响返回给调用方的原始错误。
+// 参数 err、secrets 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+func (values *callAttempts) stashRedactedError(err *contract.RuntimeError, secrets []string) {
+	values.err = nil
+	if err == nil {
+		return
+	}
+	safe, safeErr := redactValue(*err, secrets)
+	if safeErr == nil {
+		values.err = &safe
+	}
 }
 
 func pendingCallAttempts(ctx context.Context) *callAttempts {

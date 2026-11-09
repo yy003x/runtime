@@ -10,7 +10,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
 )
 
 func TestDefaultIsValid(t *testing.T) {

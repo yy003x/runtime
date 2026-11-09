@@ -3,9 +3,9 @@ package activation
 import (
 	"fmt"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/session"
-	"github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/session"
+	"github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 // ActivationEpoch is bumped only when activation transaction semantics or

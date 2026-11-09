@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/infrastructure/codexauth"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func TestAuthStatusMainIsReadOnly(t *testing.T) {

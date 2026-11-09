@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	runtime "github.com/yy003x/runtime/pkg/run"
+	runtime "github.com/yy003x/sn-code/pkg/run"
 )
 
 func TestListCorrelatesRunsAndUsesStableKeysetPages(t *testing.T) {

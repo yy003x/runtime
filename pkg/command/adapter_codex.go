@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 type codexAdapter struct{}
@@ -17,11 +19,11 @@ func (codexAdapter) Build(request BuildRequest) (Invocation, error) {
 		return Invocation{}, fmt.Errorf("unsupported command mode %q", request.Mode)
 	}
 	if request.OutputProtocol != OutputNative &&
-		request.OutputProtocol != OutputCanonical {
+		!structuredProtocols(request.OutputProtocol) {
 		return Invocation{}, fmt.Errorf("unsupported output protocol %q", request.OutputProtocol)
 	}
 	if request.Mode == ModeInteractive &&
-		request.OutputProtocol == OutputCanonical {
+		structuredProtocols(request.OutputProtocol) {
 		return Invocation{}, fmt.Errorf("interactive mode does not support canonical output")
 	}
 	prepared, err := prepareEffectiveConfig(request)
@@ -49,8 +51,16 @@ func (codexAdapter) Build(request BuildRequest) (Invocation, error) {
 	if err != nil {
 		return Invocation{}, err
 	}
+	permission, err := permissionArgv("codex", request, parsed, map[PermissionMode][]string{
+		PermissionReadOnly:       {"--sandbox", "read-only"},
+		PermissionWorkspaceWrite: {"--sandbox", "workspace-write"},
+	}, "--sandbox", "--dangerously-bypass-approvals-and-sandbox")
+	if err != nil {
+		return Invocation{}, err
+	}
 	argv := []string{request.Profile.Command}
 	argv = append(argv, plan.common...)
+	argv = append(argv, permission...)
 	if model != "" {
 		argv = append(argv, "--model", model)
 	} else if modelOption != nil {
@@ -73,7 +83,7 @@ func (codexAdapter) Build(request BuildRequest) (Invocation, error) {
 	if request.Mode == ModeExec {
 		argv = append(argv, "exec")
 		argv = append(argv, plan.exec...)
-		if request.OutputProtocol == OutputCanonical {
+		if structuredProtocols(request.OutputProtocol) {
 			argv = append(argv, "--ephemeral", "--json")
 		} else {
 			for _, item := range plan.stateless {
@@ -149,6 +159,142 @@ func (codexAdapter) Decode(stdout []byte) (CanonicalOutput, error) {
 		return CanonicalOutput{}, fmt.Errorf("Codex canonical output has no assistant result")
 	}
 	return CanonicalOutput{Assistant: assistant}, nil
+}
+
+// NewStreamSession 执行 NewStreamSession 对应的包内处理，并遵循调用方提供的输入契约。
+// 返回 StreamSession 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func (codexAdapter) NewStreamSession() StreamSession {
+	return &codexStreamSession{}
+}
+
+// codexStreamSession 增量解码 `exec --ephemeral --json` NDJSON。终态校验与
+// canonical Decode 同一纪律：唯一 turn.completed、terminal 后无 item、
+// 存在 agent_message assistant。
+type codexStreamSession struct {
+	terminalCount int
+	terminalSeen  bool
+	assistant     string
+	assistantSeen bool
+	streamErr     error
+}
+
+// DecodeLine 执行 DecodeLine 对应的包内处理，并遵循调用方提供的输入契约。
+// 参数 line、emit 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func (session *codexStreamSession) DecodeLine(
+	line []byte,
+	emit func(contract.Event) error,
+) error {
+	if session.streamErr != nil {
+		return session.streamErr
+	}
+	var record struct {
+		Type string          `json:"type"`
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal(line, &record); err != nil {
+		session.streamErr = fmt.Errorf("decode Codex JSONL: %w", err)
+		return session.streamErr
+	}
+	var item struct {
+		ID               string `json:"id"`
+		Type             string `json:"type"`
+		Text             string `json:"text"`
+		Command          string `json:"command"`
+		AggregatedOutput string `json:"aggregated_output"`
+		ExitCode         *int   `json:"exit_code"`
+		Status           string `json:"status"`
+	}
+	if len(record.Item) > 0 {
+		if err := json.Unmarshal(record.Item, &item); err != nil {
+			session.streamErr = fmt.Errorf("decode Codex item: %w", err)
+			return session.streamErr
+		}
+	}
+	switch record.Type {
+	case "error", "turn.failed":
+		session.streamErr = fmt.Errorf(
+			"Codex streaming output reported %s", record.Type,
+		)
+		return session.streamErr
+	case "turn.completed":
+		session.terminalCount++
+		session.terminalSeen = true
+		return nil
+	case "turn.started", "thread.started":
+		// lifecycle 已由 Runtime run.* 事件投影，原生 turn/thread 边界不重复投递。
+		return nil
+	case "item.started":
+		if item.Type != "command_execution" {
+			return nil
+		}
+		return emitEvent(newExecutorEvent(
+			contract.EventExecutorToolStarted, "item.started", item.ID,
+			"command_execution", "", false,
+			map[string]any{"command": item.Command},
+		), emit)
+	case "item.completed":
+		if session.terminalSeen {
+			session.streamErr = fmt.Errorf("Codex item completed after terminal")
+			return session.streamErr
+		}
+		switch item.Type {
+		case "agent_message":
+			if len(item.Text) > maxCanonicalRecordBytes {
+				session.streamErr = fmt.Errorf(
+					"Codex assistant result exceeds 1048576 bytes",
+				)
+				return session.streamErr
+			}
+			session.assistant = item.Text
+			session.assistantSeen = true
+			if item.Text == "" {
+				return nil
+			}
+			return emitEvent(newExecutorEvent(
+				contract.EventExecutorMessage, "item.completed", item.ID,
+				"", item.Text, false, nil,
+			), emit)
+		case "command_execution":
+			failed := item.ExitCode != nil && *item.ExitCode != 0
+			return emitEvent(newExecutorEvent(
+				contract.EventExecutorToolCompleted, "item.completed", item.ID,
+				"command_execution", item.AggregatedOutput, failed,
+				map[string]any{
+					"command": item.Command, "exit_code": item.ExitCode,
+					"status": item.Status,
+				},
+			), emit)
+		default:
+			return emitEvent(newExecutorEvent(
+				contract.EventExecutorNative, "item.completed", item.ID,
+				"", "", false, json.RawMessage(record.Item),
+			), emit)
+		}
+	default:
+		return emitEvent(newExecutorEvent(
+			contract.EventExecutorNative, record.Type, "", "", "", false,
+			json.RawMessage(line),
+		), emit)
+	}
+}
+
+// Finish 执行 Finish 对应的包内处理，并遵循调用方提供的输入契约。
+// 返回 CanonicalOutput、error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func (session *codexStreamSession) Finish() (CanonicalOutput, error) {
+	if session.streamErr != nil {
+		return CanonicalOutput{}, session.streamErr
+	}
+	if session.terminalCount != 1 {
+		return CanonicalOutput{}, fmt.Errorf(
+			"Codex streaming output requires exactly one turn.completed, got %d",
+			session.terminalCount,
+		)
+	}
+	if !session.assistantSeen {
+		return CanonicalOutput{}, fmt.Errorf("Codex streaming output has no assistant result")
+	}
+	return CanonicalOutput{Assistant: session.assistant}, nil
 }
 
 var codexOptions = newOptionParser([]optionSpec{

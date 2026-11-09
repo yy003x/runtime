@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yy003x/runtime/internal/interfaces/cli/version"
+	"github.com/yy003x/sn-code/internal/infrastructure/buildinfo"
 )
 
 type cliHelpTopic struct {
@@ -140,6 +140,7 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 		Notes: []string{
 			"Managed: session exec/call use interface=managed and create canonical Turn/Execution facts; --queue creates a durable Run.",
+			"Session queue submission does not load Agent tools or runtime.json; workers still require a configured, running sn-server.",
 			"Native TUI: session open/send/attach/interrupt/close/close-all use interface=native_tui in a private tmux PTY; open supports --prompt and is detached unless --attach is supplied.",
 			"session send injects raw input into that TUI; accepted=true only means tmux accepted the transport operation.",
 			"Raw TUI input follows terminal and provider line-editor semantics; use session exec for structured non-interactive tasks.",
@@ -199,6 +200,21 @@ var cliHelpTopics = []cliHelpTopic{
 		},
 	},
 	{
+		Name:    "aep",
+		Summary: "Serve the AEP stdio JSON-RPC adapter that drives durable session Runs.",
+		Usage: []string{
+			"sn-cli aep",
+		},
+		Notes: []string{
+			"stdin/stdout carry AEP NDJSON JSON-RPC messages only; diagnostics go to stderr and --json is rejected.",
+			"The process starts its own scheduler worker for queued session Runs and gracefully cancels still-open Runs on stdin EOF, the shutdown method, SIGINT, or SIGTERM.",
+			"initialize must complete before any other method; MVP methods: initialize, executor.list, executor.get, run.start, run.cancel, run.get, run.result, run.events, shutdown, plus run.event notifications.",
+			"run.start requires an explicit CLI Profile ID; the executor is derived from the Profile command basename and must match the request.",
+			"Options accept model and reasoningEffort only; timeoutMs, maxOutputBytes, and permissions are rejected until supported.",
+			"run.event currently carries lifecycle events (terminal state and settlement) only; streaming message/tool events land in a later release.",
+		},
+	},
+	{
 		Name:    "update",
 		Summary: "Check, download, or activate a Runtime release without starting a Profile.",
 		Usage: []string{
@@ -223,7 +239,7 @@ func printHelp(output *cliOutput, topic string) error {
 		}
 		if output.JSON() {
 			return output.writeJSON(map[string]any{
-				"name": "sn-cli", "version": version.String(),
+				"name": "sn-cli", "version": buildinfo.String("sn-cli"),
 				"topic": value,
 			})
 		}
@@ -232,7 +248,7 @@ func printHelp(output *cliOutput, topic string) error {
 	if output.JSON() {
 		return output.writeJSON(map[string]any{
 			"name":         "sn-cli",
-			"version":      version.String(),
+			"version":      buildinfo.String("sn-cli"),
 			"namespaces":   fixedNamespaces,
 			"topics":       helpTopicNames(),
 			"commands":     cliHelpTopics,
@@ -328,6 +344,7 @@ Usage:
   sn-cli agent <api-profile-id> [options...] [input]
   sn-cli job get|list|result|trace|events|watch|cancel|continue|retry|reconcile|gc
   sn-cli server info|start|status|stop
+  sn-cli aep
   sn-cli update [options...]
   sn-cli help <topic>`); err != nil {
 		return err

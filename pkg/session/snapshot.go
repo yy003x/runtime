@@ -10,10 +10,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	"github.com/yy003x/runtime/pkg/profile"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	"github.com/yy003x/sn-code/pkg/profile"
 	"golang.org/x/sys/unix"
 )
 
@@ -60,6 +60,12 @@ func (service *Service) prepareRunRequest(
 				"private CLI snapshot is invalid for an API Profile",
 			)
 		}
+		if request.Permissions != "" {
+			return RunRequest{}, sessionRuntimeError(
+				contract.ErrorInvalidRequest,
+				"permissions are only supported for CLI Profiles",
+			)
+		}
 		request.preparedRequestDigest = computeRequestDigest(
 			request, configDigest, "",
 		)
@@ -82,7 +88,8 @@ func (service *Service) prepareRunRequest(
 		}
 		if request.Model != snapshot.Model ||
 			request.Effort != snapshot.Effort ||
-			request.CWD != snapshot.CWD {
+			request.CWD != snapshot.CWD ||
+			request.Permissions != snapshot.Permissions {
 			return RunRequest{}, sessionRuntimeError(
 				contract.ErrorConflict,
 				"public Session request does not match its private snapshot",
@@ -186,6 +193,7 @@ func (service *Service) prepareRunRequest(
 		ConfigDigest: configDigest, BasePromptDigest: basePromptDigest,
 		RequestDigest: request.preparedRequestDigest,
 		CWD:           request.CWD, Model: request.Model, Effort: request.Effort,
+		Permissions: request.Permissions,
 	}
 	return request, nil
 }
@@ -334,12 +342,14 @@ func computeRequestDigest(
 		Model            string                   `json:"model,omitempty"`
 		Effort           string                   `json:"effort,omitempty"`
 		CWD              string                   `json:"cwd,omitempty"`
+		Permissions      string                   `json:"permissions,omitempty"`
 		ModelOptions     contract.GenerateOptions `json:"model_options,omitempty"`
 		ConfigDigest     string                   `json:"config_digest"`
 		BasePromptDigest string                   `json:"base_prompt_digest,omitempty"`
 	}{
 		ProfileID: request.ProfileID, Input: request.Input,
 		Model: request.Model, Effort: request.Effort, CWD: request.CWD,
+		Permissions:  request.Permissions,
 		ModelOptions: request.ModelOptions, ConfigDigest: configDigest,
 		BasePromptDigest: basePromptDigest,
 	}

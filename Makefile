@@ -32,7 +32,7 @@ else
 override SN_CLI_VERSION := $(value SN_CLI_VERSION)
 endif
 
-SN_CLI_DEFAULT_LDFLAGS := -X github.com/yy003x/runtime/internal/interfaces/cli/version.Version=$(SN_CLI_VERSION) -X github.com/yy003x/runtime/internal/interfaces/cli/version.Commit=$(SN_CLI_COMMIT) -X github.com/yy003x/runtime/internal/interfaces/cli/version.BuildDate=$(SN_CLI_BUILDDATE) -X github.com/yy003x/runtime/internal/interfaces/cli/version.Dirty=$(SN_CLI_DIRTY)
+SN_CLI_DEFAULT_LDFLAGS := -X github.com/yy003x/sn-code/internal/infrastructure/buildinfo.Version=$(SN_CLI_VERSION) -X github.com/yy003x/sn-code/internal/infrastructure/buildinfo.Commit=$(SN_CLI_COMMIT) -X github.com/yy003x/sn-code/internal/infrastructure/buildinfo.BuildDate=$(SN_CLI_BUILDDATE) -X github.com/yy003x/sn-code/internal/infrastructure/buildinfo.Dirty=$(SN_CLI_DIRTY)
 ifeq ($(origin SN_CLI_LDFLAGS), command line)
 override SN_CLI_LDFLAGS := $(value SN_CLI_LDFLAGS)
 else
@@ -122,7 +122,7 @@ test-serial:
 
 test-race:
 	@$(MAKE_STEP) --stage test-race --meta scope=runtime-domains -- \
-		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./pkg/agent ./pkg/command ./pkg/model ./pkg/session ./pkg/run ./pkg/store/sqlite ./internal/infrastructure/tmux ./pkg/transport/http -count=1
+		"$${GO}" -C "$${RUNTIME_ROOT}" test -race ./pkg/agent ./pkg/command ./pkg/model ./pkg/session ./pkg/run ./pkg/store/sqlite ./internal/infrastructure/tmux ./internal/application/codingagent ./internal/infrastructure/codingsessions ./internal/interfaces/codingacp ./internal/interfaces/codingtui ./pkg/transport/http ./pkg/transport/aep -count=1
 
 coverage:
 	@$(MAKE_STEP) --stage coverage --meta "minimum=$${COVERAGE_MIN}%" --meta "profile=$${COVERAGE_PROFILE}" -- \
@@ -143,6 +143,10 @@ build: | bin
 sn-cli-build: | bin
 	@$(MAKE_STEP) --stage sn-cli-build --meta binary=bin/sn-cli --meta "version=$${SN_CLI_VERSION}" -- \
 		"$${GO}" -C "$${RUNTIME_ROOT}" build -ldflags "$${SN_CLI_LDFLAGS}" -o "$${RUNTIME_ROOT}/bin/sn-cli" ./cmd/sn-cli
+
+sn-code-build: | bin
+	@$(MAKE_STEP) --stage sn-code-build --meta binary=bin/sn-code --meta "version=$${SN_CLI_VERSION}" -- \
+		"$${GO}" -C "$${RUNTIME_ROOT}" build -ldflags "$${SN_CLI_LDFLAGS}" -o "$${RUNTIME_ROOT}/bin/sn-code" ./cmd/sn-code
 
 install: build sn-cli-build
 	@$(MAKE_STEP) --live --stage install --meta local_source_install=1 -- \

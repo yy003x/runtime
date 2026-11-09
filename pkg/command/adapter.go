@@ -21,9 +21,79 @@ type OutputProtocol string
 const (
 	OutputNative    OutputProtocol = "native"
 	OutputCanonical OutputProtocol = "canonical"
+	// OutputStreaming 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	OutputStreaming OutputProtocol = "streaming"
 )
 
-const adapterBasenameMessage = "command must end with an exact codex, claude, or grok basename"
+// PermissionMode 是执行请求的权限档位；由调用方（AEP permissions.mode）逐次
+// 指定，各 adapter 翻译为原生权限 flag，没有等价映射的 adapter 显式拒绝。
+type PermissionMode string
+
+const (
+	// PermissionReadOnly 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	PermissionReadOnly PermissionMode = "read_only"
+	// PermissionWorkspaceWrite 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	PermissionWorkspaceWrite PermissionMode = "workspace_write"
+)
+
+// ParsePermissionMode 执行 ParsePermissionMode 对应的包内处理，并遵循调用方提供的输入契约。
+// 参数 value 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 PermissionMode、error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func ParsePermissionMode(value string) (PermissionMode, error) {
+	switch PermissionMode(value) {
+	case PermissionReadOnly, PermissionWorkspaceWrite:
+		return PermissionMode(value), nil
+	default:
+		return "", fmt.Errorf("unsupported permissions mode %q", value)
+	}
+}
+
+// permissionArgv 将逐次权限档位翻译为 adapter 原生 flag。support 不含请求
+// 档位时显式拒绝（fail-closed）；Profile 已配置等价或互斥选项（conflicts，
+// 传 optionSpec 的规范名）时拒绝，不静默覆盖。nil Permissions 返回 nil。
+// 参数 executor、request、parsed、support、conflicts 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 []string、error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func permissionArgv(
+	executor string,
+	request BuildRequest,
+	parsed []parsedOption,
+	support map[PermissionMode][]string,
+	conflicts ...string,
+) ([]string, error) {
+	if request.Permissions == nil {
+		return nil, nil
+	}
+	mode := *request.Permissions
+	flag, ok := support[mode]
+	if !ok {
+		return nil, fmt.Errorf(
+			"%s executor does not support permissions mode %q", executor, mode,
+		)
+	}
+	for _, conflict := range conflicts {
+		if parsedHasOption(parsed, conflict) {
+			return nil, fmt.Errorf(
+				"permissions mode %q conflicts with Profile argument %s", mode, conflict,
+			)
+		}
+	}
+	return flag, nil
+}
+
+// parsedHasOption 执行 parsedHasOption 对应的包内处理，并遵循调用方提供的输入契约。
+// 参数 parsed、name 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 bool 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func parsedHasOption(parsed []parsedOption, name string) bool {
+	for _, item := range parsed {
+		if item.spec.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// adapterBasenameMessage 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+const adapterBasenameMessage = "command must end with an exact codex, claude, grok, or pi basename"
 
 type Overrides struct {
 	Model  *string
@@ -40,6 +110,9 @@ type BuildRequest struct {
 	InheritedEnvironment []string
 	InvocationBase       string
 	Symbolic             bool
+	// Permissions 是逐次执行的权限档位；nil 表示不注入权限 flag。与用户
+	// Profile 配置的同名 flag 冲突时 Build 拒绝，不静默覆盖。
+	Permissions *PermissionMode
 	// Resume 续接底层 CLI 的既有会话。nil 不续接；&"" 恢复最近会话；
 	// &"<id>" 续接指定 session。由各 adapter 翻译为底层 CLI 的 resume 形式
 	// （claude/grok→--resume、codex→resume 子命令）。仅 interactive 模式支持。
@@ -76,6 +149,8 @@ func Resolve(command string) (Adapter, error) {
 		return claudeAdapter{}, nil
 	case "grok":
 		return grokAdapter{}, nil
+	case "pi":
+		return piAdapter{}, nil
 	default:
 		return nil, fmt.Errorf("no command adapter for %q", base)
 	}
@@ -115,14 +190,25 @@ func CheckProfile(profile Profile) error {
 		return typedBuildError(err)
 	}
 	placeholder := "__SN_CLI_SYMBOLIC_PROMPT__"
-	for _, plan := range []struct {
+	plans := []struct {
 		mode     Mode
 		protocol OutputProtocol
 	}{
 		{ModeInteractive, OutputNative},
 		{ModeExec, OutputNative},
 		{ModeExec, OutputCanonical},
-	} {
+	}
+	// streaming plan 只对实现 StreamDecoder 的 adapter 校验；未实现的
+	// adapter 会在 Build 拒绝该 protocol，不因此判定 Profile 无效。
+	if adapter, err := Resolve(profile.Command); err == nil {
+		if _, ok := adapter.(StreamDecoder); ok {
+			plans = append(plans, struct {
+				mode     Mode
+				protocol OutputProtocol
+			}{ModeExec, OutputStreaming})
+		}
+	}
+	for _, plan := range plans {
 		if _, err := Build(BuildRequest{
 			Mode:           plan.mode,
 			OutputProtocol: plan.protocol,
@@ -315,11 +401,11 @@ func classifyOptions(
 ) (optionPlan, error) {
 	var plan optionPlan
 	for _, item := range parsed {
-		if protocol == OutputCanonical &&
+		if structuredProtocols(protocol) &&
 			(item.spec.forbidInCanon ||
 				item.spec.kind == kindCanonicalForbidden) {
 			return optionPlan{}, fmt.Errorf(
-				"%s is incompatible with canonical output", item.spec.name,
+				"%s is incompatible with structured output", item.spec.name,
 			)
 		}
 		switch item.spec.kind {

@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/pkg/agent"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	sqlitestore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	sqlitestore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 func TestRenderRunResultPrintsStoredAgentAnswer(t *testing.T) {

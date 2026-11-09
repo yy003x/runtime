@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 // Credentials is an ephemeral OAuth identity. It must never be persisted in a

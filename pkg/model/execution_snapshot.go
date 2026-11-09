@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
 )
 
 const ExecutionSnapshotSchemaVersion = 1

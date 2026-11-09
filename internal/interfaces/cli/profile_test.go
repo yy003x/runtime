@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
 )
 
 func TestParseDirectModelInputStreamOverride(t *testing.T) {

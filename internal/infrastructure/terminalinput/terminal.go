@@ -126,6 +126,12 @@ func (terminal *Terminal) ReadKey(ctx context.Context) (Key, error) {
 		return Key{Name: "end"}, nil
 	case 21:
 		return Key{Name: "clear"}, nil
+	case 12:
+		return Key{Name: "ctrl+l"}, nil
+	case 15:
+		return Key{Name: "ctrl+o"}, nil
+	case 16:
+		return Key{Name: "ctrl+p"}, nil
 	case 27:
 		terminal.sequence, terminal.escapeAt = "\x1b", time.Now()
 		return terminal.readSequence(ctx)

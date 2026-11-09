@@ -10,10 +10,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
 )
 
 const nativeTUIInputLimit = 1 << 20

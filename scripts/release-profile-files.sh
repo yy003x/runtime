@@ -10,9 +10,9 @@ SN_CLI_RELEASE_PROFILE_FILES=(
   cc-kmm.json
   cc.json
   commit.json
-  cx-adv.json
+  cx-core.json
   cx-deep.json
-  cx-spark.json
+  cx-lite.json
   cx.json
   gk.json
 )

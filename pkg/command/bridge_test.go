@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func TestBuildCodexCanonicalOverridesSelectorsAndOrdersScopes(t *testing.T) {
@@ -390,7 +390,7 @@ func TestBuildGrokCanonicalRejectsJSONSchemaButNativePreservesIt(t *testing.T) {
 	if !errors.As(err, &runtimeErr) ||
 		runtimeErr.Code != contract.ErrorInvalidRequest ||
 		runtimeErr.Phase != contract.PhaseProfile ||
-		!strings.Contains(runtimeErr.Message, "--json-schema is incompatible with canonical output") {
+		!strings.Contains(runtimeErr.Message, "--json-schema is incompatible with structured output") {
 		t.Fatalf("canonical error=%v", err)
 	}
 
@@ -399,7 +399,7 @@ func TestBuildGrokCanonicalRejectsJSONSchemaButNativePreservesIt(t *testing.T) {
 	if !errors.As(err, &runtimeErr) ||
 		runtimeErr.Code != contract.ErrorInvalidRequest ||
 		runtimeErr.Phase != contract.PhaseProfile ||
-		!strings.Contains(runtimeErr.Message, "--json-schema is incompatible with canonical output") {
+		!strings.Contains(runtimeErr.Message, "--json-schema is incompatible with structured output") {
 		t.Fatalf("profile check error=%v", err)
 	}
 }
@@ -480,7 +480,7 @@ func TestBuildClaudeCanonicalRejectsVerboseButNativePreservesIt(t *testing.T) {
 	if !errors.As(err, &runtimeErr) ||
 		runtimeErr.Code != contract.ErrorInvalidRequest ||
 		runtimeErr.Phase != contract.PhaseProfile ||
-		!strings.Contains(runtimeErr.Message, "--verbose is incompatible with canonical output") {
+		!strings.Contains(runtimeErr.Message, "--verbose is incompatible with structured output") {
 		t.Fatalf("error=%v", err)
 	}
 
@@ -489,7 +489,7 @@ func TestBuildClaudeCanonicalRejectsVerboseButNativePreservesIt(t *testing.T) {
 	if !errors.As(err, &runtimeErr) ||
 		runtimeErr.Code != contract.ErrorInvalidRequest ||
 		runtimeErr.Phase != contract.PhaseProfile ||
-		!strings.Contains(runtimeErr.Message, "--verbose is incompatible with canonical output") {
+		!strings.Contains(runtimeErr.Message, "--verbose is incompatible with structured output") {
 		t.Fatalf("profile check error=%v", err)
 	}
 }
@@ -739,6 +739,112 @@ func TestReplaceProcessAppliesCWDAndNullStdin(t *testing.T) {
 	if string(output) != canonicalRoot+"\neof\n" {
 		t.Fatalf("output=%q", output)
 	}
+}
+
+// TestBuildPermissionModesTranslatePerAdapter 覆盖逐次权限档位的 adapter
+// 映射：支持的档位注入原生 flag，不支持的显式拒绝，Profile 已配置等价或
+// 互斥选项时拒绝而不静默覆盖。
+func TestBuildPermissionModesTranslatePerAdapter(t *testing.T) {
+	readOnly := PermissionReadOnly
+	workspaceWrite := PermissionWorkspaceWrite
+	for _, test := range []struct {
+		name     string
+		command  string
+		args     []string
+		mode     PermissionMode
+		wantArgv []string
+		wantErr  string
+	}{
+		{
+			name: "codex_read_only", command: "codex", mode: readOnly,
+			wantArgv: []string{"--sandbox", "read-only"},
+		},
+		{
+			name: "codex_workspace_write", command: "codex", mode: workspaceWrite,
+			wantArgv: []string{"--sandbox", "workspace-write"},
+		},
+		{
+			name: "codex_user_sandbox_conflict", command: "codex",
+			args: []string{"--sandbox", "read-only"}, mode: workspaceWrite,
+			wantErr: "conflicts with Profile argument --sandbox",
+		},
+		{
+			name: "codex_user_bypass_conflict", command: "codex",
+			args:    []string{"--dangerously-bypass-approvals-and-sandbox"},
+			mode:    readOnly,
+			wantErr: "conflicts with Profile argument --dangerously-bypass-approvals-and-sandbox",
+		},
+		{
+			name: "claude_read_only", command: "claude", mode: readOnly,
+			wantArgv: []string{"--permission-mode", "plan"},
+		},
+		{
+			name: "claude_workspace_write", command: "claude", mode: workspaceWrite,
+			wantArgv: []string{"--permission-mode", "acceptEdits"},
+		},
+		{
+			name: "claude_user_conflict", command: "claude",
+			args: []string{"--permission-mode", "default"}, mode: readOnly,
+			wantErr: "conflicts with Profile argument --permission-mode",
+		},
+		{
+			name: "pi_read_only", command: "pi", mode: readOnly,
+			wantArgv: []string{"--tools", "read,grep,find,ls"},
+		},
+		{
+			name: "pi_workspace_write_unsupported", command: "pi",
+			mode:    workspaceWrite,
+			wantErr: `pi executor does not support permissions mode "workspace_write"`,
+		},
+		{
+			name: "pi_user_tools_conflict", command: "pi",
+			args: []string{"--tools", "edit"}, mode: readOnly,
+			wantErr: "conflicts with Profile argument --tools",
+		},
+		{
+			name: "grok_unsupported", command: "grok", mode: readOnly,
+			wantErr: `grok executor does not support permissions mode "read_only"`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invocation, err := Build(BuildRequest{
+				Mode: ModeExec, OutputProtocol: OutputCanonical,
+				Profile:        Profile{Command: test.command, Args: test.args},
+				Permissions:    &test.mode,
+				ArgvPrompt:     strPtr("reply ok"),
+				Symbolic:       true,
+				InvocationBase: "/__sn_cli_symbolic_cwd__",
+			})
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("err=%v want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsSequence(invocation.Argv, test.wantArgv) {
+				t.Fatalf("argv=%q want sequence %q", invocation.Argv, test.wantArgv)
+			}
+		})
+	}
+}
+
+func containsSequence(argv, want []string) bool {
+	for start := 0; start+len(want) <= len(argv); start++ {
+		matched := true
+		for offset := range want {
+			if argv[start+offset] != want[offset] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func writeCommandFixture(t *testing.T, directory, name string) string {

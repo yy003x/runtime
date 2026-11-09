@@ -9,10 +9,11 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 type Driver interface {
@@ -244,13 +245,18 @@ func (service *Service) GenerateStream(
 	secrets = append(secrets, authSecrets...)
 
 	state := streamState{
-		sink: sink, secrets: secrets, expected: 1,
+		sink: sink, expected: 1,
 		toolCalls: make(map[string]string),
 	}
 	result, wireAttempt, callError := driver.Stream(
 		callContext, resolved, input, state.accept,
 	)
-	defer func() { service.observeAttempt(ctx, request.ModelProfile, wireAttempt, resultError, secrets) }()
+	defer func() {
+		if pending := pendingCallAttempts(ctx); pending != nil {
+			pending.stashRedactedError(resultError, secrets)
+		}
+		service.observeAttempt(ctx, request.ModelProfile, wireAttempt, resultError, secrets)
+	}()
 	if state.failure != nil {
 		return contract.ModelResult{}, state.failure
 	}
@@ -260,7 +266,7 @@ func (service *Service) GenerateStream(
 		)
 	}
 	if callError != nil {
-		return contract.ModelResult{}, redactRuntimeError(callError, secrets)
+		return contract.ModelResult{}, callError
 	}
 	if callContext.Err() != nil {
 		code := contract.ErrorCancelled
@@ -268,12 +274,6 @@ func (service *Service) GenerateStream(
 			code = contract.ErrorTimeout
 		}
 		return contract.ModelResult{}, runtimeError(code, contract.PhaseProvider, callContext.Err().Error())
-	}
-	result, err = redactValue(result, secrets)
-	if err != nil {
-		return contract.ModelResult{}, runtimeError(
-			contract.ErrorInternal, contract.PhaseProvider, "cannot sanitize model result",
-		)
 	}
 	if err := result.Validate(); err != nil {
 		return contract.ModelResult{}, runtimeError(
@@ -300,7 +300,6 @@ func notifyAttemptObserver(observer AttemptObserver, attempt Attempt) {
 
 type streamState struct {
 	sink             contract.EventSink
-	secrets          []string
 	expected         uint64
 	started          bool
 	pendingCompleted *contract.Event
@@ -313,13 +312,8 @@ func (state *streamState) accept(event contract.Event) error {
 	if state.failure != nil || state.sinkFailure != nil {
 		return fmt.Errorf("model stream is already failed")
 	}
-	event, err := redactValue(event, state.secrets)
-	if err != nil {
-		state.failure = runtimeError(
-			contract.ErrorInternal, contract.PhaseProvider, "cannot sanitize model event",
-		)
-		return state.failure
-	}
+	// 事件面向消费者原样传递：resolved secret 只存在于 HTTP 请求层，
+	// 不在事件面上做字节替换（替换本身会破坏 JSON 结构，见 redactValue 注释）。
 	if event.Sequence != state.expected {
 		state.failure = runtimeError(
 			contract.ErrorInvalidProviderResponse,
@@ -498,59 +492,134 @@ func runtimeError(
 	}
 }
 
-func redactRuntimeError(value *contract.RuntimeError, secrets []string) *contract.RuntimeError {
-	if value == nil {
-		return nil
-	}
-	result, err := redactValue(*value, secrets)
-	if err != nil {
-		return runtimeError(
-			contract.ErrorInternal, contract.PhaseProvider, "cannot sanitize provider error",
-		)
-	}
-	if validationErr := result.Validate(); validationErr != nil {
-		return runtimeError(
-			contract.ErrorInvalidProviderResponse,
-			contract.PhaseProvider,
-			validationErr.Error(),
-		)
-	}
-	return &result
-}
-
+// redactValue 深拷贝 value 并把 resolved secret 出现的字符串值替换为
+// [REDACTED]。它只服务本地诊断面（execution log、attempt observer）：
+// secret 只应存在于 HTTP 请求层，日志面收集前做最后兜底。
+//
+// 实现是手术式的：按 JSON 子树递归，只有包含 secret 的字符串值被重写，
+// key 与结构永不改写；不含 secret 的子树保留原始字节（键序、空白、数字
+// 字面量与转义形态不变），诊断副本与 wire 证据保持逐字节一致。此前对整段
+// JSON 文本做字节替换的写法，在 secret 恰好是字段名子串（如单字符 key 命中
+// "text"）时会破坏字段并导致下游校验失败。
 func redactValue[T any](value T, secrets []string) (T, error) {
-	if len(secrets) == 0 {
-		return cloneValue(value)
-	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		var zero T
 		return zero, err
 	}
+	var result T
+	if len(secrets) == 0 {
+		if err := json.Unmarshal(data, &result); err != nil {
+			var zero T
+			return zero, err
+		}
+		return result, nil
+	}
+	// 长 secret 先替换，避免短 secret 截断命中位置后长 secret 失配。
 	ordered := append([]string(nil), secrets...)
 	sort.Slice(ordered, func(left, right int) bool {
 		return len(ordered[left]) > len(ordered[right])
 	})
-	for _, secret := range ordered {
-		if secret == "" {
-			continue
-		}
-		encodedSecret, err := json.Marshal(secret)
-		if err != nil {
-			var zero T
-			return zero, err
-		}
-		if len(encodedSecret) >= 2 {
-			data = bytes.ReplaceAll(data, encodedSecret[1:len(encodedSecret)-1], []byte("[REDACTED]"))
-		}
-		data = bytes.ReplaceAll(data, []byte(secret), []byte("[REDACTED]"))
-	}
-	var result T
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := json.Unmarshal(redactJSON(data, ordered), &result); err != nil {
 		var zero T
 		return zero, err
 	}
 	return result, nil
+}
+
+// redactJSON 返回替换 secret 之后的 JSON 文档。字符串叶子解码后做文本替换，
+// 未命中保持原字节；数组与对象只在有子树变化时重编码（重编码会排序键，仅
+// 影响含 secret 的子树）；数字、布尔、null 与对象 key 一律原样。
+// 参数 data、secrets 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 []byte 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func redactJSON(data []byte, secrets []string) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	switch data[0] {
+	case '"':
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return data
+		}
+		redacted := redactString(text, secrets)
+		if redacted == text {
+			return data
+		}
+		if encoded, err := encodeJSONCompact(redacted); err == nil {
+			return encoded
+		}
+		return data
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return data
+		}
+		redactedItems := make([]json.RawMessage, len(items))
+		changed := false
+		for index, item := range items {
+			redactedItems[index] = redactJSON(item, secrets)
+			changed = changed || !bytes.Equal(redactedItems[index], item)
+		}
+		if !changed {
+			return data
+		}
+		var buffer bytes.Buffer
+		buffer.WriteByte('[')
+		for index, item := range redactedItems {
+			if index > 0 {
+				buffer.WriteByte(',')
+			}
+			buffer.Write(item)
+		}
+		buffer.WriteByte(']')
+		return buffer.Bytes()
+	case '{':
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return data
+		}
+		redactedFields := make(map[string]json.RawMessage, len(fields))
+		changed := false
+		for key, raw := range fields {
+			redactedFields[key] = redactJSON(raw, secrets)
+			changed = changed || !bytes.Equal(redactedFields[key], raw)
+		}
+		if !changed {
+			return data
+		}
+		if encoded, err := encodeJSONCompact(redactedFields); err == nil {
+			return encoded
+		}
+		return data
+	default:
+		return data
+	}
+}
+
+// encodeJSONCompact 产出紧凑且不做 HTML 转义的 JSON，贴近 wire 原始形态。
+// 参数 value 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 []byte、error 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func encodeJSONCompact(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
+}
+
+// redactString 执行 redactString 对应的包内处理，并遵循调用方提供的输入契约。
+// 参数 value、secrets 分别提供该操作所需的输入；调用方负责满足所属类型的约束。
+// 返回 string 表示处理结果；error 非空时报告失败原因，其余结果按零值或约定处理。
+func redactString(value string, secrets []string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[REDACTED]")
+		}
+	}
+	return value
 }
 
 func cloneValue[T any](value T) (T, error) {

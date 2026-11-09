@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 type testDriver struct {
@@ -179,7 +179,9 @@ func TestServiceIsolatesRequestAndSinkMutations(t *testing.T) {
 	}
 }
 
-func TestServiceRedactsSecretsAndDoesNotRetryAfterOutput(t *testing.T) {
+// 消费者面（事件流与返回错误）原样透传：resolved secret 只存在于 HTTP 请求
+// 层；诊断面的脱敏由 attempt/call observer 测试覆盖。
+func TestServiceStreamsSecretTextVerbatimAndDoesNotRetryAfterOutput(t *testing.T) {
 	driver := &testDriver{
 		events: []contract.Event{
 			{Sequence: 1, Type: contract.EventModelStarted},
@@ -206,15 +208,98 @@ func TestServiceRedactsSecretsAndDoesNotRetryAfterOutput(t *testing.T) {
 	if runtimeErr == nil || runtimeErr.Code != contract.ErrorProviderUnavailable {
 		t.Fatalf("error=%#v", runtimeErr)
 	}
-	data, _ := json.Marshal(struct {
-		Events []contract.Event       `json:"events"`
-		Error  *contract.RuntimeError `json:"error"`
-	}{Events: events, Error: runtimeErr})
-	if strings.Contains(string(data), "secret-value") {
-		t.Fatalf("secret leaked: %s", data)
+	if runtimeErr.Message != "secret-value connection closed" {
+		t.Fatalf("consumer error was rewritten: %#v", runtimeErr)
+	}
+	if len(events) != 2 || events[1].Model == nil ||
+		events[1].Model.Text != "partial secret-value" {
+		t.Fatalf("consumer events were rewritten: %#v", events)
 	}
 	if driver.attempts != 1 {
 		t.Fatalf("attempts=%d", driver.attempts)
+	}
+}
+
+// 单字符 secret 是常见 JSON key（"text"、"type"）的子串；脱敏只允许替换
+// 字符串值，改写 key 会破坏结构并让下游 unmarshal 丢弃字段（回归：此前对
+// 整段 JSON 文本做字节替换会命中此缺陷）。
+func TestRedactionKeepsJSONKeysIntactForShortSecrets(t *testing.T) {
+	driver := &testDriver{
+		events: []contract.Event{
+			{Sequence: 1, Type: contract.EventModelStarted},
+			{
+				Sequence: 2, Type: contract.EventContentDelta,
+				Model: &contract.ModelEvent{Text: "x marks"},
+			},
+		},
+		err: &contract.RuntimeError{
+			Code: contract.ErrorProviderUnavailable, Phase: contract.PhaseProvider,
+			Message: "x failed", Retryable: true,
+		},
+		attempt: provider.Attempt{
+			Started: true,
+			Request: provider.Request{
+				Method: "POST", URL: "https://example.invalid",
+				Headers: map[string]string{"Authorization": "Bearer x"},
+				Body: json.RawMessage(
+					`{"text":"x","tool_calls":[{"type":"x"}],"big":9007199254740993}`,
+				),
+			},
+			Response: &provider.Response{
+				Status: 503,
+				Data:   []json.RawMessage{json.RawMessage(`{"error":"x failed"}`)},
+			},
+		},
+	}
+	var events []contract.Event
+	var observed []Attempt
+	service := newTestServiceWithObserver(t, driver, "x", func(attempt Attempt) {
+		observed = append(observed, attempt)
+	})
+	_, runtimeErr := service.GenerateStream(
+		context.Background(),
+		testRequest(),
+		func(event contract.Event) error {
+			events = append(events, event)
+			return nil
+		},
+	)
+	if runtimeErr == nil || runtimeErr.Code != contract.ErrorProviderUnavailable {
+		t.Fatalf("error=%#v", runtimeErr)
+	}
+	// 消费者面原样：含 secret 的 delta 与错误文本不被替换。
+	if len(events) != 2 || events[1].Model.Text != "x marks" ||
+		runtimeErr.Message != "x failed" {
+		t.Fatalf("consumer stream was rewritten: %#v %v", events, runtimeErr)
+	}
+	if len(observed) != 1 {
+		t.Fatalf("observed=%d", len(observed))
+	}
+	safe := observed[0]
+	if safe.Wire.Request.Headers["Authorization"] != "Bearer [REDACTED]" {
+		t.Fatalf("header not redacted: %#v", safe.Wire.Request.Headers)
+	}
+	if safe.Error == nil || safe.Error.Message != "[REDACTED] failed" {
+		t.Fatalf("attempt error not redacted: %#v", safe.Error)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(safe.Wire.Request.Body, &body); err != nil {
+		t.Fatalf("redacted body is not valid JSON: %s", safe.Wire.Request.Body)
+	}
+	if body["text"] != "[REDACTED]" {
+		t.Fatalf(`key "text" was rewritten or value not redacted: %s`, safe.Wire.Request.Body)
+	}
+	calls, _ := body["tool_calls"].([]any)
+	if len(calls) != 1 {
+		t.Fatalf("tool_calls lost: %s", safe.Wire.Request.Body)
+	}
+	first, _ := calls[0].(map[string]any)
+	if first["type"] != "[REDACTED]" {
+		t.Fatalf(`nested key "type" was rewritten: %s`, safe.Wire.Request.Body)
+	}
+	// 大整数经 JSON 树往返必须保持字面量精度（UseNumber 路径）。
+	if !strings.Contains(string(safe.Wire.Request.Body), "9007199254740993") {
+		t.Fatalf("number literal lost precision: %s", safe.Wire.Request.Body)
 	}
 }
 

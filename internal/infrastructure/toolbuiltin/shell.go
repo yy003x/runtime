@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/pkg/agent"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/pkg/agent"
 )
 
 const (

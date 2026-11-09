@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 type timeoutError struct{}

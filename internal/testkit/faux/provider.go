@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yy003x/runtime/internal/testkit/scenario"
+	"github.com/yy003x/sn-code/internal/testkit/scenario"
 )
 
 const SchemaVersion = 1

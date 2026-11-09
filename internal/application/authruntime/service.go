@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
-	"github.com/yy003x/runtime/pkg/model"
+	"github.com/yy003x/sn-code/internal/infrastructure/codexauth"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 type Service struct {

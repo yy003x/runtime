@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/internal/infrastructure/envref"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/infrastructure/envref"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 const authorizationHeader = "Authorization"

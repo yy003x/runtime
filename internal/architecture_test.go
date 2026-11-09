@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
 )
 
-const modulePath = "github.com/yy003x/runtime"
+const modulePath = "github.com/yy003x/sn-code"
 
 // allowedPublicModuleDependencies is the reviewed dependency surface of every
 // public Runtime package. Keeping this list explicit prevents a new dependency
@@ -72,6 +72,7 @@ var allowedPublicModuleDependencies = map[string][]string{
 		modulePath + "/internal/domain/profileid",
 		modulePath + "/internal/infrastructure/strictjson",
 		modulePath + "/pkg/agent",
+		modulePath + "/pkg/command",
 		modulePath + "/pkg/contract",
 		modulePath + "/pkg/model",
 		modulePath + "/pkg/profile",
@@ -102,9 +103,19 @@ var allowedPublicModuleDependencies = map[string][]string{
 		modulePath + "/pkg/run",
 		modulePath + "/pkg/session",
 	},
+	modulePath + "/pkg/transport/aep": {
+		modulePath + "/internal/domain/identity",
+		modulePath + "/internal/infrastructure/strictjson",
+		modulePath + "/pkg/command",
+		modulePath + "/pkg/contract",
+		modulePath + "/pkg/profile",
+		modulePath + "/pkg/run",
+		modulePath + "/pkg/session",
+	},
 }
 
 var allowedConcreteAdapterConsumers = map[string][]string{
+	modulePath + "/internal/infrastructure/serverprocess": {modulePath + "/internal/application/serverruntime"},
 	modulePath + "/internal/infrastructure/providerhttp": {
 		modulePath + "/pkg/provider/anthropic",
 		modulePath + "/pkg/provider/openai",
@@ -123,13 +134,13 @@ var allowedConcreteAdapterConsumers = map[string][]string{
 		modulePath + "/internal/application/runtimebootstrap",
 	},
 	modulePath + "/pkg/provider/anthropic": {
-		modulePath + "/internal/application/runtimebootstrap",
+		modulePath + "/internal/application/modelruntime",
 	},
 	modulePath + "/pkg/provider/openai": {
-		modulePath + "/internal/application/runtimebootstrap",
+		modulePath + "/internal/application/modelruntime",
 	},
 	modulePath + "/pkg/provider/openairesponses": {
-		modulePath + "/internal/application/runtimebootstrap",
+		modulePath + "/internal/application/modelruntime",
 	},
 	modulePath + "/pkg/store/sqlite": {
 		modulePath + "/internal/application/activation",
@@ -272,4 +283,64 @@ func listProductionPackages(t *testing.T) []listedPackage {
 		packages = append(packages, current)
 	}
 	return packages
+}
+
+// TestProductDependencyBoundaries 检查传递依赖，防止通过装配包绕过产品隔离。
+func TestProductDependencyBoundaries(t *testing.T) {
+	packages := listProductionPackages(t)
+	imports := make(map[string][]string, len(packages))
+	for _, pkg := range packages {
+		imports[pkg.ImportPath] = pkg.Imports
+	}
+	coding := []string{
+		"internal/application/codingbootstrap", "internal/application/codingagent",
+		"internal/interfaces/codingtui", "internal/interfaces/codingacp",
+		"internal/infrastructure/codingsessions", "cmd/sn-code",
+	}
+	runtimeOnly := []string{
+		"internal/application/runtimebootstrap", "internal/application/serverruntime",
+		"internal/application/activation", "internal/application/nativeconsole",
+		"internal/interfaces/cli", "internal/infrastructure/serverprocess",
+		"internal/infrastructure/tmux", "internal/infrastructure/toolbuiltin",
+		"internal/infrastructure/toolconfig", "internal/infrastructure/toolmcp",
+		"pkg/run", "pkg/session", "pkg/store/sqlite", "cmd/sn-cli", "cmd/sn-server",
+	}
+	checks := []struct {
+		root      string
+		forbidden []string
+	}{
+		{"cmd/sn-cli", coding}, {"cmd/sn-server", coding},
+		{"internal/application/runtimebootstrap", coding},
+		{"cmd/sn-code", runtimeOnly},
+		{"internal/application/codingbootstrap", runtimeOnly},
+		{"internal/application/modelruntime", append(append([]string{}, coding...), runtimeOnly...)},
+		{"internal/infrastructure/buildinfo", append(append([]string{}, coding...), runtimeOnly...)},
+	}
+	for _, check := range checks {
+		t.Run(check.root, func(t *testing.T) {
+			visited := map[string]bool{}
+			var visit func(string, []string)
+			visit = func(current string, chain []string) {
+				if visited[current] {
+					return
+				}
+				visited[current] = true
+				chain = append(append([]string{}, chain...), current)
+				for _, forbidden := range check.forbidden {
+					if inLayer(current, forbidden) {
+						t.Errorf("product boundary: %s", strings.Join(chain, " -> "))
+						return
+					}
+				}
+				for _, dependency := range imports[current] {
+					visit(dependency, chain)
+				}
+			}
+			root := modulePath + "/" + check.root
+			if _, exists := imports[root]; !exists {
+				t.Fatalf("missing product root %s", root)
+			}
+			visit(root, nil)
+		})
+	}
 }

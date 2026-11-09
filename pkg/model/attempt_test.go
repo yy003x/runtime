@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 func TestRequestAttemptObserverIsolatedFromServiceObserver(t *testing.T) {
@@ -50,7 +50,8 @@ func TestRequestAttemptObserverIsolatedFromServiceObserver(t *testing.T) {
 		panic("fixture request observer failed")
 	})
 	_, runtimeErr := service.Generate(ctx, testRequest())
-	if runtimeErr == nil || runtimeErr.Message != "[REDACTED] rejected" || serviceCalls != 1 || requestCalls != 1 {
+	// 消费者错误面原样透传：secret 只在 HTTP 请求层存在，诊断观察者收到脱敏副本。
+	if runtimeErr == nil || runtimeErr.Message != "fixture-secret rejected" || serviceCalls != 1 || requestCalls != 1 {
 		t.Fatalf("error=%v service=%d request=%d", runtimeErr, serviceCalls, requestCalls)
 	}
 	_, _ = service.Generate(context.Background(), testRequest())

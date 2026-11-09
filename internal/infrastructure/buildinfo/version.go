@@ -1,4 +1,5 @@
-package version
+// Package buildinfo 保存共享构建元数据，产品名称由入口传入。
+package buildinfo
 
 import (
 	"runtime/debug"
@@ -43,7 +44,12 @@ func init() {
 	}
 }
 
-func String() string {
+func String(product string) string {
+	return product + " " + Summary()
+}
+
+// Summary 返回不含产品名的构建信息，供协议握手使用。
+func Summary() string {
 	parts := []string{}
 	if Commit != "" {
 		parts = append(parts, "commit "+Commit)
@@ -58,7 +64,7 @@ func String() string {
 		parts = append(parts, goVersion)
 	}
 	if len(parts) == 0 {
-		return "sn-cli " + Version
+		return Version
 	}
-	return "sn-cli " + Version + " (" + strings.Join(parts, ", ") + ")"
+	return Version + " (" + strings.Join(parts, ", ") + ")"
 }

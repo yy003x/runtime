@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/session"
-	runstore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/pkg/session"
+	runstore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 func TestPreflightStatePerformsExplicitFullSessionValidation(t *testing.T) {

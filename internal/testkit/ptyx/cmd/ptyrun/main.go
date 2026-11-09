@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/yy003x/runtime/internal/testkit/ptyx"
+	"github.com/yy003x/sn-code/internal/testkit/ptyx"
 )
 
 type readResult struct {

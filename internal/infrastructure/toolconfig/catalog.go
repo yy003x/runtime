@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yy003x/runtime/internal/infrastructure/strictjson"
+	"github.com/yy003x/sn-code/internal/infrastructure/strictjson"
 )
 
 const maxManifestBytes int64 = 1 << 20

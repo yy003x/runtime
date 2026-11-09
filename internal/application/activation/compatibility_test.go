@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/testkit/reporoot"
+	"github.com/yy003x/sn-code/internal/testkit/reporoot"
 )
 
 func TestReleaseManifestMatchesCurrentRuntimeCompatibility(t *testing.T) {

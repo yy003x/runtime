@@ -41,10 +41,24 @@ const (
 	EventAgentPaused            EventType = "agent.paused"
 	EventAgentCompleted         EventType = "agent.completed"
 	EventCheckpointCommitted    EventType = "checkpoint.committed"
-	EventRunCompleted           EventType = "run.completed"
-	EventRunFailed              EventType = "run.failed"
-	EventRunCancelled           EventType = "run.cancelled"
-	EventRunSettled             EventType = "run.settled"
+	// EventExecutorMessageDelta 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventExecutorMessageDelta EventType = "executor.message.delta"
+	// EventExecutorMessage 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventExecutorMessage EventType = "executor.message"
+	// EventExecutorToolStarted 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventExecutorToolStarted EventType = "executor.tool.started"
+	// EventExecutorToolCompleted 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventExecutorToolCompleted EventType = "executor.tool.completed"
+	// EventExecutorNative 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventExecutorNative EventType = "executor.event"
+	// EventRunCompleted 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventRunCompleted EventType = "run.completed"
+	// EventRunFailed 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventRunFailed EventType = "run.failed"
+	// EventRunCancelled 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventRunCancelled EventType = "run.cancelled"
+	// EventRunSettled 定义当前流程使用的固定值（无量纲），取值来源为本实现约定。
+	EventRunSettled EventType = "run.settled"
 )
 
 // ErrorCode is the provider-neutral error classification used across the
@@ -227,8 +241,23 @@ type Event struct {
 	Tool       *ToolEvent       `json:"tool,omitempty"`
 	Agent      *AgentEvent      `json:"agent,omitempty"`
 	Checkpoint *CheckpointEvent `json:"checkpoint,omitempty"`
+	Executor   *ExecutorEvent   `json:"executor,omitempty"`
 	Run        *RunEvent        `json:"run,omitempty"`
 	Error      *RuntimeError    `json:"error,omitempty"`
+}
+
+// ExecutorEvent 是 CLI executor 流式 stdout 归一化事件的 payload：由
+// command adapter 把原生记录翻译而来，只携带 Provider-neutral 字段和
+// 有界原生摘录，不落完整原始记录。
+const MaxExecutorEventDataBytes = 4096
+
+type ExecutorEvent struct {
+	NativeType string          `json:"native_type,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	IsError    bool            `json:"is_error,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
 }
 
 type ModelEvent struct {

@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/pkg/contract"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 func (service *Service) loadWindows(
@@ -153,9 +153,14 @@ func (service *Service) inspectWindow(
 	}
 	panePID, err := strconv.Atoi(panePIDValue)
 	if err != nil || panePID <= 0 {
-		return liveWindow{}, tmuxTransportError(
-			contract.ErrorProtocol, "Tmux pane %s has an invalid PID", paneID,
-		)
+		// tmux >= 3.8 对 remain-on-exit 的 dead pane 返回空 pane_pid；进程已
+		// 退出，无活 PID 可验证。dead 分支不消费 PanePID，置 0 放行。
+		if paneDeadValue != "1" {
+			return liveWindow{}, tmuxTransportError(
+				contract.ErrorProtocol, "Tmux pane %s has an invalid PID", paneID,
+			)
+		}
+		panePID = 0
 	}
 	value := liveWindow{
 		Window: Window{

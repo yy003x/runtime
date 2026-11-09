@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
 )
 
 type Config struct {
@@ -30,7 +30,7 @@ func Load() (*Config, error) {
 	enabled := true
 	repository := os.Getenv("SN_CLI_REPOSITORY")
 	if repository == "" {
-		repository = "yy003x/runtime"
+		repository = "yy003x/sn-code"
 	}
 	return &Config{Home: paths.Home, Paths: paths, Update: UpdateConfig{
 		Enabled: &enabled, CheckIntervalHours: 24, Repository: repository,

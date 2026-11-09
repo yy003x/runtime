@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/yy003x/runtime/internal/application/authruntime"
-	"github.com/yy003x/runtime/internal/infrastructure/codexauth"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/internal/infrastructure/terminalinput"
+	"github.com/yy003x/sn-code/internal/application/authruntime"
+	"github.com/yy003x/sn-code/internal/infrastructure/codexauth"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/infrastructure/terminalinput"
 )
 
 type authPTY struct {

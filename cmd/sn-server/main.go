@@ -15,13 +15,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/domain/profileid"
-	"github.com/yy003x/runtime/internal/infrastructure/activationgate"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	transporthttp "github.com/yy003x/runtime/pkg/transport/http"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/domain/profileid"
+	"github.com/yy003x/sn-code/internal/infrastructure/activationgate"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	transporthttp "github.com/yy003x/sn-code/pkg/transport/http"
 )
 
 type serverConfig struct {

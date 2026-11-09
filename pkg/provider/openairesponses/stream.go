@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	httpx "github.com/yy003x/runtime/internal/infrastructure/providerhttp"
-	"github.com/yy003x/runtime/pkg/contract"
+	httpx "github.com/yy003x/sn-code/internal/infrastructure/providerhttp"
+	"github.com/yy003x/sn-code/pkg/contract"
 )
 
 // decodeStream requires a terminal Response, not EOF or [DONE]. Intermediate

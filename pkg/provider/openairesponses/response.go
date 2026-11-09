@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	httpx "github.com/yy003x/runtime/internal/infrastructure/providerhttp"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
+	httpx "github.com/yy003x/sn-code/internal/infrastructure/providerhttp"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
 )
 
 type responseEnvelope struct {

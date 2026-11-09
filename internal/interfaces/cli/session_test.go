@@ -6,15 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtimemodel "github.com/yy003x/runtime/pkg/model"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtimemodel "github.com/yy003x/sn-code/pkg/model"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 func TestSessionInvocationUsesTypedCLIOverridesAndRejectsUnknownOptions(t *testing.T) {
@@ -177,6 +178,37 @@ func TestSessionReqQueueSubmitsDurableSessionRun(t *testing.T) {
 		payload.Run.Request.SessionID != payload.SessionID ||
 		payload.SessionID == "" {
 		t.Fatalf("payload=%#v", payload)
+	}
+}
+
+func TestSessionQueueIgnoresAgentConfiguration(t *testing.T) {
+	paths := prepareRuntimeHome(t)
+	writeRuntimeModel(t, paths.ConfigDir, "api-cx", "https://example.invalid/v1/chat/completions")
+	if err := os.WriteFile(paths.RuntimeConfigFile, []byte("invalid runtime config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.ToolsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(paths.ToolsDir, "broken.json"), []byte("invalid tool"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := runSessionNamespace(paths, []string{"call", "api-cx", "--queue", "queued turn"},
+		newCLIOutput(true, &stdout, &bytes.Buffer{})); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Run runtime.Record `json:"run"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Run.State != runtime.StateQueued || payload.Run.Request.Kind != runtime.KindSession {
+		t.Fatalf("run=%#v", payload.Run)
+	}
+	if files, err := filepath.Glob(filepath.Join(paths.LogsDir, "*", "api.jsonl")); err != nil || len(files) != 0 {
+		t.Fatalf("queue submission wrote execution logs: %v %v", files, err)
 	}
 }
 

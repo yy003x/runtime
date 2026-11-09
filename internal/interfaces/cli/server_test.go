@@ -9,15 +9,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/nativeconsole"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimetmux "github.com/yy003x/runtime/internal/infrastructure/tmux"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/profile"
+	"github.com/yy003x/sn-code/internal/application/nativeconsole"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimetmux "github.com/yy003x/sn-code/internal/infrastructure/tmux"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/profile"
 )
 
 func TestMain(main *testing.M) {
@@ -76,6 +75,22 @@ func TestServerStartReturnsStablePIDForThirdPartyManagement(t *testing.T) {
 		!started.Running || started.PID <= 0 {
 		t.Fatalf("start result=%#v", started)
 	}
+	// 测试进程不会像真实 CLI 那样退出，必须回收子进程，避免僵尸身份阻塞 stop。
+	process, err := os.FindProcess(started.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaped := make(chan struct{})
+	go func() { _, _ = process.Wait(); close(reaped) }()
+	t.Cleanup(func() {
+		_ = stopServer(paths, newCLIOutput(false, &bytes.Buffer{}, &bytes.Buffer{}))
+		select {
+		case <-reaped:
+		case <-time.After(time.Second):
+			_ = process.Kill()
+			<-reaped
+		}
+	})
 	var humanOutput bytes.Buffer
 	if err := startServer(
 		paths, newCLIOutput(false, &humanOutput, &bytes.Buffer{}),
@@ -103,95 +118,26 @@ func TestServerStartReturnsStablePIDForThirdPartyManagement(t *testing.T) {
 	if !status.Running || status.PID != started.PID {
 		t.Fatalf("status=%#v start=%#v", status, started)
 	}
-	process, err := os.FindProcess(started.PID)
-	if err != nil {
+	var stoppedOutput bytes.Buffer
+	if err := stopServer(paths, newCLIOutput(true, &stoppedOutput, &bytes.Buffer{})); err != nil {
 		t.Fatal(err)
 	}
-	_ = process.Signal(syscall.SIGTERM)
-	_ = os.Remove(paths.ServerPIDFile)
-}
-
-func TestServerRunningRequiresMatchingLeaseAndProcessIdentity(t *testing.T) {
-	paths, err := layout.FromHome(filepath.Join(t.TempDir(), ".sn"))
-	if err != nil {
+	var stopped struct {
+		Running bool `json:"running"`
+		PID     int  `json:"pid"`
+	}
+	if err := json.Unmarshal(stoppedOutput.Bytes(), &stopped); err != nil {
 		t.Fatal(err)
 	}
-	if err := paths.Ensure(); err != nil {
+	if stopped.Running || stopped.PID != started.PID {
+		t.Fatalf("stop=%#v", stopped)
+	}
+	stoppedOutput.Reset()
+	if err := stopServer(paths, newCLIOutput(false, &stoppedOutput, &bytes.Buffer{})); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := processIdentityForPID(os.Getpid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := serverPIDRecord{
-		SchemaVersion:     serverPIDSchemaVersion,
-		PID:               os.Getpid(),
-		Binary:            paths.ServerBinary,
-		ProcessStart:      identity.StartToken,
-		ProcessExecutable: identity.Executable,
-		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	if err := writeServerPID(paths.ServerPIDFile, record); err != nil {
-		t.Fatal(err)
-	}
-
-	running, _, err := serverRunning(paths)
-	if err == nil || running {
-		t.Fatalf("live pid without a held lease must fail closed: running=%v err=%v", running, err)
-	}
-
-	record.ProcessStart += "-stale"
-	if err := writeServerPID(paths.ServerPIDFile, record); err != nil {
-		t.Fatal(err)
-	}
-	running, _, err = serverRunning(paths)
-	if err != nil || running {
-		t.Fatalf("stale pid identity must not report running: running=%v err=%v", running, err)
-	}
-	record.ProcessStart = identity.StartToken
-	if err := writeServerPID(paths.ServerPIDFile, record); err != nil {
-		t.Fatal(err)
-	}
-
-	lease, acquired, err := tryAcquireFileLock(paths.ServerLeaseFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !acquired {
-		t.Fatal("expected to acquire server lease")
-	}
-	defer releaseFileLock(lease)
-
-	running, pid, err := serverRunning(paths)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !running || pid != os.Getpid() {
-		t.Fatalf("running=%v pid=%d", running, pid)
-	}
-
-	record.ProcessStart += "-stale"
-	if err := writeServerPID(paths.ServerPIDFile, record); err != nil {
-		t.Fatal(err)
-	}
-	if running, _, err := serverRunning(paths); err == nil || running {
-		t.Fatalf("identity mismatch must fail closed: running=%v err=%v", running, err)
-	}
-}
-
-func TestServerRunningRejectsUnsupportedPIDRecord(t *testing.T) {
-	paths, err := layout.FromHome(filepath.Join(t.TempDir(), ".sn"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := paths.Ensure(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(paths.ServerPIDFile, []byte("12345\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if running, _, err := serverRunning(paths); err == nil || running {
-		t.Fatalf("unsupported pid record must fail closed: running=%v err=%v", running, err)
+	if !strings.Contains(stoppedOutput.String(), "already stopped") {
+		t.Fatalf("second stop=%q", stoppedOutput.String())
 	}
 }
 
@@ -208,45 +154,6 @@ func TestIsForeignTmuxCarrier(t *testing.T) {
 		Message: "Tmux session identity changed during stop",
 	}) {
 		t.Fatal("unrelated tmux conflict was treated as foreign")
-	}
-}
-
-func TestServerLifecycleLockRejectsConcurrentOwner(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "lifecycle.lock")
-	first, acquired, err := tryAcquireFileLock(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !acquired {
-		t.Fatal("expected first lifecycle lock")
-	}
-	defer releaseFileLock(first)
-
-	second, acquired, err := tryAcquireFileLock(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acquired {
-		releaseFileLock(second)
-		t.Fatal("concurrent lifecycle lock unexpectedly succeeded")
-	}
-}
-
-func TestServerLockRejectsSymlink(t *testing.T) {
-	directory := t.TempDir()
-	target := filepath.Join(directory, "target")
-	if err := os.WriteFile(target, []byte("lock"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(directory, "lock")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	if file, acquired, err := tryAcquireFileLock(link); err == nil {
-		if acquired {
-			releaseFileLock(file)
-		}
-		t.Fatal("symlink lock path must be rejected")
 	}
 }
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
 )
 
 type auditResponseWriter struct {

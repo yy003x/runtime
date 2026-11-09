@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yy003x/runtime/pkg/agent"
+	"github.com/yy003x/sn-code/pkg/agent"
 )
 
 func newShellRegistry(t *testing.T) *agent.Registry {

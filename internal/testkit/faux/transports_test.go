@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/model"
-	transporthttp "github.com/yy003x/runtime/pkg/transport/http"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/model"
+	transporthttp "github.com/yy003x/sn-code/pkg/transport/http"
 )
 
 func TestCanonicalScenarioMatchesGoAndHTTP(t *testing.T) {

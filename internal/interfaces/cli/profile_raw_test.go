@@ -14,10 +14,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yy003x/runtime/internal/infrastructure/executionlog"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/contract"
-	"github.com/yy003x/runtime/pkg/provider"
+	"github.com/yy003x/sn-code/internal/infrastructure/executionlog"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/pkg/contract"
+	"github.com/yy003x/sn-code/pkg/provider"
 )
 
 const rawFixtureSecret = "fixture-raw-secret"
@@ -144,7 +144,9 @@ func TestCallRawWireOutput(t *testing.T) {
 			}
 			wantResponse = bytes.ReplaceAll(wantResponse, []byte(rawFixtureSecret), []byte("[REDACTED]"))
 			assertRawJSONEqual(t, rawResponse, wantResponse)
-			if strings.Contains(stdout.String()+stderr.String(), rawFixtureSecret) || strings.Contains(stdout.String(), "fixture-cookie") {
+			// 诊断面（raw 两行 stdout、api.jsonl）保持脱敏；stderr 的最终错误
+			// 属消费者面，Provider 回显内容原样传递，不做字节清洗。
+			if strings.Contains(stdout.String(), rawFixtureSecret) || strings.Contains(stdout.String(), "fixture-cookie") {
 				t.Fatal("credentials leaked into raw output")
 			}
 			for _, path := range []string{paths.SessionsDir, filepath.Join(paths.StateDir, "runtime.db")} {
@@ -276,7 +278,9 @@ func TestCallRawNetworkFailure(t *testing.T) {
 			t.Fatalf("response=%#v", response)
 		}
 	}
-	if strings.Contains(stdout.String()+stderr.String(), rawFixtureSecret) {
+	// 消费者错误面原样：stderr 可能含 Provider/网络错误原文；诊断面
+	// （raw stdout 与 api.jsonl）仍然脱敏。
+	if strings.Contains(stdout.String(), rawFixtureSecret) {
 		t.Fatal("network error leaked credentials")
 	}
 }

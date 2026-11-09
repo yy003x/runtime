@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
 )
 
 func TestSessionMutationRejectsTargetSymlinkSwap(t *testing.T) {

@@ -14,14 +14,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yy003x/runtime/internal/application/runtimebootstrap"
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	runtimecommand "github.com/yy003x/runtime/pkg/command"
-	"github.com/yy003x/runtime/pkg/contract"
-	runtimeprofile "github.com/yy003x/runtime/pkg/profile"
-	runtime "github.com/yy003x/runtime/pkg/run"
-	"github.com/yy003x/runtime/pkg/session"
+	"github.com/yy003x/sn-code/internal/application/runtimebootstrap"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	runtimecommand "github.com/yy003x/sn-code/pkg/command"
+	"github.com/yy003x/sn-code/pkg/contract"
+	runtimeprofile "github.com/yy003x/sn-code/pkg/profile"
+	runtime "github.com/yy003x/sn-code/pkg/run"
+	"github.com/yy003x/sn-code/pkg/session"
 )
 
 func runSessionNamespace(
@@ -653,7 +653,7 @@ func runSessionExecution(
 			return err
 		}
 	}
-	services, err := runtimebootstrap.LoadServices(paths, callerCWD, fixedNamespaces...)
+	services, err := runtimebootstrap.LoadSessionRunServices(paths, fixedNamespaces...)
 	if err != nil {
 		return err
 	}

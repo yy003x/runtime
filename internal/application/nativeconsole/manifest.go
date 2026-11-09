@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"unicode/utf8"
 
-	"github.com/yy003x/runtime/internal/domain/identity"
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/internal/domain/identity"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
 	"golang.org/x/sys/unix"
 )
 

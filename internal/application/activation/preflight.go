@@ -18,9 +18,9 @@ import (
 	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 
-	"github.com/yy003x/runtime/internal/infrastructure/layout"
-	"github.com/yy003x/runtime/pkg/session"
-	runstore "github.com/yy003x/runtime/pkg/store/sqlite"
+	"github.com/yy003x/sn-code/internal/infrastructure/layout"
+	"github.com/yy003x/sn-code/pkg/session"
+	runstore "github.com/yy003x/sn-code/pkg/store/sqlite"
 )
 
 type processTarget struct {
