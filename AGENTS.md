@@ -33,6 +33,10 @@ durable Run 的权威实现。Workbench 等调用方只能通过公开入口集�
 交互编程 TUI 与 `sn-code acp`（Agent Client Protocol v1 的 stdio JSON-RPC 接入，
 见 `docs/ACP.md`）复用同一 AgentSession 内核，均不创建 canonical Session/Run。
 
+`make sn-code-install` 独立安装到 active `bin/sn-code`，并自动创建或校验
+`${SN_CODE_INSTALL_DIR:-${PREFIX:-$HOME/.local}/bin}/sn-code` 软链接。
+该入口不改配置、认证、会话或服务状态，不进入 Runtime install/self-update。
+
 所有有效 CLI/API Profile 都通过同一 Profile ID 路由，并由 `type=cli|api` 选择
 执行 adapter。公开入口、配置、持久化事实和 machine output 只认当前 contract 的
 完整 schema，不提供 alias、自动 migration、第二套 reader 或兼容 shim。

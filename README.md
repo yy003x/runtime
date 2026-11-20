@@ -1,8 +1,8 @@
 # SN Runtime
 
-[![CI](https://github.com/yy003x/sn-code/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/sn-code/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/yy003x/sn-code?include_prereleases&display_name=release)](https://github.com/yy003x/sn-code/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/sn-code)](https://goreportcard.com/report/github.com/yy003x/sn-code)
+[![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/runtime)](https://goreportcard.com/report/github.com/yy003x/runtime)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -74,14 +74,14 @@ rejected rather than silently papered over.
 One-line install from a GitHub Release (no source build needed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
 ```
 
 Or build from source (requires Go 1.25):
 
 ```bash
-git clone https://github.com/yy003x/sn-code.git
-cd sn-code
+git clone https://github.com/yy003x/runtime.git
+cd runtime
 make build sn-cli-build
 make install
 ```
@@ -118,6 +118,21 @@ make sn-code-build
 ./bin/sn-code --resume list       # pick a previous session to reopen
 ./bin/sn-code acp                 # serve editors over ACP v1 on stdio
 ```
+
+Install the binary and create its command symlink:
+
+```bash
+make sn-code-install
+sn-code --version
+```
+
+The defaults are `~/.sn/bin/sn-code` and `~/.local/bin/sn-code`.
+`SN_CLI_HOME` selects the Runtime home; `SN_CODE_INSTALL_DIR` selects the
+command directory (default: `${PREFIX:-$HOME/.local}/bin`). This target only
+updates the sn-code binary and symlink, preserving configuration, credentials,
+and sessions without starting or stopping sn-server. Rerun it to update.
+Conflicting command files or symlinks are rejected. `sn-cli update` does not
+update sn-code.
 
 `sn-code acp` speaks Agent Client Protocol v1 (stdio JSON-RPC) so editors such
 as Zed can drive the same session kernel — no second process, and the write-tool

@@ -62,13 +62,14 @@ export SN_CLI_COMMIT SN_CLI_TAG SN_CLI_DIRTY SN_CLI_BUILDDATE SN_CLI_VERSION SN_
 export GO GOCACHE GOMODCACHE V
 export COVERAGE_PROFILE COVERAGE_MIN TAG RUNTIME_ROOT
 
-.PHONY: help tidy fmt fmt-check test test-serial test-race coverage coverage-critical build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor make-step-contract-test _make-variable-probe
+.PHONY: help tidy fmt fmt-check test test-serial test-race coverage coverage-critical build run dev check clean install publish publish-test release release-assets release-check provider-smoke sn-cli-build sn-cli-install sn-cli-test sn-cli-doctor sn-code-build sn-code-install sn-code-install-test make-step-contract-test _make-variable-probe
 
 help:
 	@printf '%s\n' \
 		"Develop:" \
 		"  make build                    build bin/sn-server" \
 		"  make sn-cli-build             build bin/sn-cli" \
+		"  make sn-code-build            build bin/sn-code" \
 		"  make run                      run sn-server" \
 		"  make dev                      watch sources and restart sn-server" \
 		"  make tidy | fmt | clean       maintain local sources and artifacts" \
@@ -84,6 +85,7 @@ help:
 		"  make release-check            run the complete release gate" \
 		"" \
 		"Install:" \
+		"  make sn-code-install          install sn-code and its command symlink only" \
 		"  make install                  replace local binaries/configs and Runtime state" \
 		"                                close native TUI Sessions and stop sn-server" \
 		"                                do not restart sn-server" \
@@ -147,6 +149,14 @@ sn-cli-build: | bin
 sn-code-build: | bin
 	@$(MAKE_STEP) --stage sn-code-build --meta binary=bin/sn-code --meta "version=$${SN_CLI_VERSION}" -- \
 		"$${GO}" -C "$${RUNTIME_ROOT}" build -ldflags "$${SN_CLI_LDFLAGS}" -o "$${RUNTIME_ROOT}/bin/sn-code" ./cmd/sn-code
+
+sn-code-install: sn-code-build
+	@$(MAKE_STEP) --live --stage sn-code-install -- \
+		bash "$${RUNTIME_ROOT}/scripts/install-sn-code.sh" "$${RUNTIME_ROOT}/bin/sn-code"
+
+sn-code-install-test: sn-code-build
+	@$(MAKE_STEP) --stage sn-code-install-test --meta home=temporary -- \
+		bash "$${RUNTIME_ROOT}/scripts/install-sn-code-test.sh"
 
 install: build sn-cli-build
 	@$(MAKE_STEP) --live --stage install --meta local_source_install=1 -- \

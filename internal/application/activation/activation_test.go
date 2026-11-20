@@ -53,6 +53,27 @@ func TestMain(main *testing.M) {
 	os.Exit(main.Run())
 }
 
+func TestInstallCodeBinaryRespectsRuntimeMaintenance(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	lock, err := acquireUpgradeLock(filepath.Join(home, "state", maintenanceLockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = InstallCodeBinary(source, home, filepath.Join(root, "commands"))
+	if err == nil || !strings.Contains(err.Error(), "maintenance operation is in progress") {
+		t.Fatalf("expected maintenance conflict, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "bin")); !os.IsNotExist(err) {
+		t.Fatalf("install modified bin while maintenance held the lock: %v", err)
+	}
+}
+
 func TestLoadManifestRejectsSymlink(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target.json")

@@ -30,7 +30,7 @@ func Load() (*Config, error) {
 	enabled := true
 	repository := os.Getenv("SN_CLI_REPOSITORY")
 	if repository == "" {
-		repository = "yy003x/sn-code"
+		repository = "yy003x/runtime"
 	}
 	return &Config{Home: paths.Home, Paths: paths, Update: UpdateConfig{
 		Enabled: &enabled, CheckIntervalHours: 24, Repository: repository,

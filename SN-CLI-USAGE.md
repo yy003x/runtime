@@ -148,6 +148,9 @@ API profile 但不创建 canonical Session/Run；会话存在 `~/.sn/sncode/` �
 子命令以 Agent Client Protocol v1（stdio JSON-RPC）服务编辑器，协议界限见
 `docs/ACP.md`；与 `sn-cli aep`（AEP）是两个互不相干的协议。
 
+`make sn-code-install` 独立安装或更新 `~/.sn/bin/sn-code`，自动创建或校验
+`~/.local/bin/sn-code` 软链接；不会执行 Runtime 安装或重置配置和状态。
+
 sn-cli 与 sn-code 分别装配各自的执行能力，复用模型、Profile、认证和日志底座。
 sn-code 无需启动 sn-server；Codex OAuth 认证仍通过 `sn-cli auth` 管理。
 Session 的 `--queue` 提交不加载 Agent 工具配置或 runtime.json；后台 worker
@@ -3168,7 +3171,7 @@ SN_CLI_REPOSITORY
 未设置时默认：
 
 ```text
-yy003x/sn-code
+yy003x/runtime
 ```
 
 ### 10.7 `update upgrade-check`

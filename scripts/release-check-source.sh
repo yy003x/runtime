@@ -69,6 +69,7 @@ validate_release_source() {
     die "missing or unsafe dedicated Tmux bootstrap config: release/tmux.conf"
 
   run_make fmt-check
+  run_make sn-code-install-test
   # This test reads release/release.json and compares it with the compatibility
   # constants compiled into the Runtime contract and both canonical Stores.
   "$GO_BIN" -C "$ROOT_DIR" test ./internal/application/activation \

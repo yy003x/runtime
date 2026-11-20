@@ -1,8 +1,8 @@
 # SN Runtime
 
-[![CI](https://github.com/yy003x/sn-code/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/sn-code/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/yy003x/sn-code?include_prereleases&display_name=release)](https://github.com/yy003x/sn-code/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/sn-code)](https://goreportcard.com/report/github.com/yy003x/sn-code)
+[![CI](https://github.com/yy003x/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/yy003x/runtime/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yy003x/runtime?include_prereleases&display_name=release)](https://github.com/yy003x/runtime/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yy003x/runtime)](https://goreportcard.com/report/github.com/yy003x/runtime)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -66,14 +66,14 @@ SN Runtime 是面向 AI 编程 Agent 与模型调用的自托管执行层。与�
 从 GitHub Release 一行安装（无需源码构建）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yy003x/sn-code/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yy003x/runtime/main/install.sh | bash
 ```
 
 或从源码构建（需要 Go 1.25）：
 
 ```bash
-git clone https://github.com/yy003x/sn-code.git
-cd sn-code
+git clone https://github.com/yy003x/runtime.git
+cd runtime
 make build sn-cli-build
 make install
 ```
@@ -108,6 +108,19 @@ make sn-code-build
 ./bin/sn-code --resume list       # 选择一个历史会话恢复
 ./bin/sn-code acp                 # 以 ACP v1 在 stdio 上服务编辑器
 ```
+
+安装到本机并自动创建命令软链接：
+
+```bash
+make sn-code-install
+sn-code --version
+```
+
+默认二进制为 `~/.sn/bin/sn-code`，命令软链接为 `~/.local/bin/sn-code`。
+`SN_CLI_HOME` 指定 Runtime home；`SN_CODE_INSTALL_DIR` 指定软链接目录，
+默认使用 `${PREFIX:-$HOME/.local}/bin`。此入口只更新 sn-code 二进制与软链接，
+保留配置、认证和会话，不启停 sn-server；重复执行用于更新，已有其他文件或
+指向别处的软链接会报错。它不随 `sn-cli update` 更新。
 
 `sn-code acp` 支持 Agent Client Protocol v1（stdio JSON-RPC），编辑器（如 Zed）
 可直接驱动同一会话内核——不启动第二个进程，写副作用工具的确认门映射为

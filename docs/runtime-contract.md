@@ -1495,5 +1495,12 @@ alias、自动迁移或 legacy ingress。
   第二个 sn-code 进程，不创建 canonical Session/Run；协议界限见 `docs/ACP.md`。
   该入口与仓内 `executor=acp`（外部 agent 作为 CLI Profile 的 ACP client
   adapter）和 AEP（durable Run 的 HTTP 入站协议）是三个互不相干的协议；
-- 从源码构建（`make sn-code-build`），不进入 release payload、install 与
-  self-update 契约；其入口不接受公开命令的 schema/输出承诺。
+- 从源码构建（`make sn-code-build`），不进入 Runtime release payload、
+  `make install` 或 `sn-cli update`；其入口不接受公开命令的 schema/输出承诺。
+- `make sn-code-install` 是独立的本机安装入口：构建后将二进制原子替换到
+  `${SN_CLI_HOME:-~/.sn}/bin/sn-code`，自动创建或校验
+  `${SN_CODE_INSTALL_DIR:-${PREFIX:-$HOME/.local}/bin}/sn-code` 软链接。
+  软链接目录必须在 Runtime home 之外。已有普通命令文件、指向其他位置的
+  命令软链接，以及本身为软链接的二进制目标均拒绝覆盖。
+  安装与 Runtime 更新共用同一 home 的维护锁；存在未完成的激活事务时拒绝写入。
+  重复执行用于更新；配置、认证、编程会话、Runtime 状态与服务进程均保留。
